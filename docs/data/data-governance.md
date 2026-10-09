@@ -7,7 +7,7 @@
 
 AutoClipper processes content made by streamers and messages written by their chat communities. We want to be good citizens of those communities and of the platforms. These rules apply to all code, data and outputs of the project.
 
-> This document is not legal advice. When in doubt, choose the more conservative option and raise it as an issue labeled `status:needs-decision`.
+> This document is not legal advice. When in doubt, choose the more conservative option and raise it as an issue labeled `needs-decision`.
 
 ## 1. Rules for the repository
 

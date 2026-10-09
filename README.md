@@ -32,7 +32,7 @@ Twitch VOD URL
    └─▶ 4. Export               vertical 9:16, captioned clips, ready to upload
 ```
 
-The data science rests on one fact: **Twitch's API reports every clip viewers created and where it starts in the VOD.** That gives us thousands of free, human-made labels for "this moment was worth clipping". We train models on chat, audio and (eventually) video signals to predict those moments in streams where no labels exist yet, and to rank candidates by how well they're likely to perform.
+The data-science plan uses **viewer clips and their VOD start offsets from Twitch's API** as weak labels for "this moment was worth clipping". Query limits and availability mean collection coverage must be checked ([data sources](docs/data/data-sources.md)). We plan to train models on chat, audio and (eventually) video signals to detect moments in streams where no labels exist yet and to rank candidates against a defined relevance target. No dataset or model exists yet.
 
 The project is staged to keep risk low (see [ADR-0004](docs/decisions/0004-staged-scope-chat-and-audio-first.md)):
 

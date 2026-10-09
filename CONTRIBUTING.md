@@ -29,7 +29,7 @@ Thanks for helping build AutoClipper. This guide covers how work moves from an i
 - Work is tracked in **GitHub Issues**. Labels are explained in [`docs/project/labels.md`](docs/project/labels.md).
 - Good starting points:
   - `good first issue`: small and well scoped
-  - `status:agent-ready`: fully specified, so an AI agent or new contributor can pick it up without extra context
+  - `agent-ready`: fully specified, so an AI agent or new contributor can pick it up without extra context
 - **Before starting, assign yourself** (or comment "taking this") so two people don't do the same work.
 - Not sure what matters most right now? Check [`docs/product/roadmap.md`](docs/product/roadmap.md) and [`docs/project/status.md`](docs/project/status.md).
 

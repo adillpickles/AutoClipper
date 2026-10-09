@@ -2,10 +2,12 @@
 
 | | |
 |---|---|
-| **Status** | Proposal. Milestone order is agreed in principle. Dates are TBD by the team. |
+| **Status** | Proposal. Milestone order and dates need reconciliation with the supplied course design (OQ-15). |
 | **Last updated** | 2026-10-09 |
 
 The roadmap is staged so that **every milestone leaves the project in a demoable, defensible state**. If time runs out after M3, we still have a working product and a real result. Later milestones only add to it. The reasoning is in [ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md).
+
+The supplied course design includes a tentative September-December 2026 schedule, a whole-VOD detector and web UI in the MVP. This roadmap instead stages those after the clip ranker. Neither staging nor completion dates are settled; see [setup review](../project/setup-review.md) and OQ-15 before planning implementation.
 
 ```mermaid
 flowchart LR
@@ -26,8 +28,8 @@ flowchart LR
 
 **Goal:** a repo where anyone, human or agent, can pick up a task and ship it consistently.
 
-- [x] Documentation, conventions, ADRs, issue/PR templates *(this PR)*
-- [x] Labels and branch protection on `main`
+- [ ] Documentation, conventions, ADRs, issue/PR templates merged *(drafted locally; remote base branch not yet established)*
+- [x] Labels and `main` protection ruleset configured *(rules inspected; no remote `main` yet)*
 - [ ] Ratify or amend proposed ADRs (tooling, layout, storage, license, web stack)
 - [ ] Python project scaffold: `pyproject.toml`, `uv`, Ruff, Pyright, pytest, pre-commit
 - [ ] CI on GitHub Actions: lint + type check + tests on every PR. Make these required checks.

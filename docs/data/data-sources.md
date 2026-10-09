@@ -5,7 +5,7 @@
 | **Status** | Reference. Endpoint details reflect Twitch's public docs as understood when this was written. **Verify against the official reference before implementing.** Items marked ⚠️ need a spike. |
 | **Last updated** | 2026-10-09 |
 
-> **Agents: don't invent API fields or parameters.** If a field you need isn't documented here or in the official reference, check the live docs or open a `type:spike` issue.
+> **Agents: don't invent API fields or parameters.** If a field you need isn't documented here or in the official reference, check the live docs or open a `spike` issue.
 
 ## Overview
 
@@ -13,7 +13,7 @@
 |---|---|---|---|---|
 | Twitch Helix **Get Users** | Broadcaster ID, type | ✅ | Resolving channels | v1 |
 | Twitch Helix **Get Videos** | VOD metadata, duration, muted segments | ✅ | VOD discovery | v1 |
-| Twitch Helix **Get Clips** | Every viewer clip + `vod_offset` + views | ✅ | **Labels** | v1 |
+| Twitch Helix **Get Clips** | Retrievable viewer clips + `vod_offset` + views (query limits apply) | ✅ | **Labels** | v1 |
 | **TwitchDownloader** (CLI) | Chat replay with offsets | ❌ unofficial | Chat features | v1 |
 | **yt-dlp** | VOD audio/video | ❌ unofficial | Audio features, export | v1 |
 | Twitch **chat** (IRC / EventSub) | Live chat messages | ✅ | Backup chat source; live mode | M1 backup, stretch |
@@ -48,10 +48,11 @@
 ### Get Clips: <https://dev.twitch.tv/docs/api/reference/#get-clips>
 
 - Query by `broadcaster_id` (plus `started_at`/`ended_at`), by `game_id`, or by clip `id`.
-- **There's no "clips for this video" filter.** To get a VOD's clips, query the broadcaster over the VOD's time range `[created_at, created_at + duration + buffer]` and keep rows whose `video_id` matches.
+- **There's no "clips for this video" filter.** Query the broadcaster by clip-creation date range and keep rows whose `video_id` matches. The broadcast's wall-clock interval is only an initial discovery range; refreshed snapshots need a documented horizon for clips created later.
 - Fields we use: `id`, `broadcaster_id`, `creator_id` (hashed at ingest), `video_id`, `game_id`, `language`, `title`, `view_count`, `created_at`, `duration`, `vod_offset`, `is_featured`.
 - **`vod_offset` can be null**, e.g. when the VOD is deleted or not yet processed. Store the row but exclude it from labeling.
-- ⚠️ **Pagination completeness:** for channels with many clips, paginating over a long date range may not return every clip. **Chunk queries into short time ranges** (e.g. per hour of the VOD) and deduplicate by `clip_id`. Measure how complete this is in an early spike.
+- **Pagination limit (verified 2026-10-09):** [Get Clips](https://dev.twitch.tv/docs/api/reference/#get-clips) returns approximately 1,000 results across pages for a query. **Chunk queries into short time ranges** and deduplicate by `clip_id`; subdivide saturated ranges. A completed page sequence does not prove all clips were retrieved. ⚠️ Measure coverage and record potentially incomplete ranges in the early spike.
+- **Clip creation time is not VOD event time.** Date filters select when a clip was created; viewers can clip a past VOD later. Searching only the broadcast's wall-clock interval can miss those clips. The collection spike must choose and document the later discovery horizon for refreshed snapshots, then filter by `video_id`.
 - ⚠️ **View counts grow over time** and may be updated with a delay. Always store `fetched_at`. For labeling, prefer a consistent observation lag (e.g. re-fetch clips N days after the VOD; see [collection plan](collection-plan.md)).
 
 ### Get Users: <https://dev.twitch.tv/docs/api/reference/#get-users>

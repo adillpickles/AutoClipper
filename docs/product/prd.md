@@ -2,11 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | Draft v0.1. Initial idea agreed. Details open for team refinement. |
+| **Status** | Draft v0.1. Working idea; scope and technical details remain open for team refinement. |
 | **Last updated** | 2026-10-09 |
 | **Related** | [Roadmap](roadmap.md) · [Architecture](../architecture/overview.md) · [Evaluation](../ml/evaluation.md) · [Open questions](../project/open-questions.md) |
 
 > This PRD is a living document. Sections marked **Proposal** reflect the current best plan but haven't been ratified by the team.
+
+This draft differs from the supplied course design in MVP staging, audience, evaluation and deployment. Those differences are recorded in [setup review](../project/setup-review.md) and tracked in OQ-15; this draft does not supersede the course design by itself.
 
 ---
 
@@ -85,7 +87,7 @@ Requirement IDs are stable. Reference them in issues and PRs (e.g. "implements F
 ### Ingestion
 
 - **FR-1** Accept a Twitch VOD URL or video ID and resolve its metadata (channel, duration, created time, muted segments) via the Twitch Helix API.
-- **FR-2** Fetch every viewer clip linked to that VOD with its `vod_offset`, duration, view count and creation time.
+- **FR-2** Fetch retrievable viewer clips linked to that VOD with `vod_offset`, duration, view count and creation time. Handle query limits and report incomplete discovery coverage ([data sources](../data/data-sources.md)).
 - **FR-3** Obtain the VOD's **chat replay** with per-message offsets. Pseudonymize usernames at ingestion.
 - **FR-4** Obtain the VOD's **audio** (audio-only download) for feature extraction.
 - **FR-5** Cache everything locally so re-running analysis never re-downloads.

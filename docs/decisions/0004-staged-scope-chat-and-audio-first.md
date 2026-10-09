@@ -18,11 +18,13 @@ Prospective contributors raised the same worry: training on raw video is painful
 
 Meanwhile:
 
-- Labels are free. The Twitch API reports every viewer clip and its offset into the VOD, so no hand-labeling is needed.
+- Viewer clips supply weak labels with offsets into the VOD. API query limits and later-created clips mean coverage must be measured; manual auditing is still needed ([data sources](../data/data-sources.md)).
 - Chat rate and audio loudness are cheap, per-second signals. Prior work on live-stream highlights found chat reactions alone to be strongly predictive.
 - Audio-only downloads are small enough for laptops. Video is roughly 10× larger.
 
 ## Decision
+
+This staging remains a proposal. The supplied course design places whole-VOD detection and a web UI in the MVP; the differences require team review under OQ-15 ([setup review](../project/setup-review.md)).
 
 Build in stages, each one a complete, demoable product:
 

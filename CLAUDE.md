@@ -10,4 +10,4 @@ Claude Code reads this file automatically. The canonical instructions for all ag
 - **Subagents:** fine for read-only research such as exploring the codebase or summarizing docs. Implementation should happen in the main session so the diff stays coherent.
 - **Worktrees:** when running several sessions in parallel, give each one its own worktree and branch (see `docs/agents/parallel-work.md`).
 - **Memory:** don't store project facts in personal memory if they belong in the repo. If you learn something that every future session needs, propose adding it to `AGENTS.md` or the relevant doc in your PR.
-- **Commits and PRs:** follow `docs/development/git-workflow.md`. Don't add `Co-Authored-By` trailers or "Generated with" footers. Don't push or open PRs unless the human asks you to.
+- **Commits and PRs:** follow `docs/development/git-workflow.md`. Don't add AI co-author, contributor or ownership trailers, attribution lines, or "Generated with" footers. Don't name yourself as an author, contributor or owner. Keep the PR template's AI-assistance disclosure. Don't push or open PRs unless the human asks you to.

@@ -1,7 +1,7 @@
 name: Data task
 description: Data collection, labeling, or dataset definition changes.
 title: "data(<scope>): <short summary>"
-labels: ["type:data", "area:data", "status:needs-triage"]
+labels: ["data", "needs-triage"]
 body:
   - type: markdown
     attributes:

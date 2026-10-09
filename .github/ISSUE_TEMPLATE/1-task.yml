@@ -1,7 +1,7 @@
 name: Task
 description: A unit of implementation work with clear acceptance criteria (the default).
 title: "<type>(<scope>): <short imperative summary>"
-labels: ["status:needs-triage"]
+labels: ["needs-triage"]
 body:
   - type: markdown
     attributes:

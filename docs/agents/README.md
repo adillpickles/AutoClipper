@@ -1,6 +1,6 @@
 # Agent-Driven Development on AutoClipper
 
-Most of AutoClipper's code is written by AI coding agents (Claude Code, Codex and similar) directed and reviewed by humans. This section explains how to make that work **consistently**, so any agent or human can pick up any task without someone re-explaining context.
+AutoClipper plans to use AI coding agents (Claude Code, Codex and similar) directed and reviewed by humans. No application code exists yet. This section explains how to make that work **consistently**, so any agent or human can pick up any task without someone re-explaining context.
 
 | Doc | For |
 |---|---|
@@ -30,12 +30,12 @@ The last arrow matters most. **When an agent makes a mistake because the docs we
 
 ## The workflow
 
-1. **Human writes or refines an issue** using the Task template ([writing-tasks.md](writing-tasks.md)). When it's fully specified, label it `status:agent-ready`.
+1. **Human writes or refines an issue** using the Task template ([writing-tasks.md](writing-tasks.md)). When it's fully specified, label it `agent-ready`.
 2. **Human starts an agent session** on a fresh branch (or worktree) and points it at the issue. See [prompts.md § Start a task](prompts.md#start-a-task).
 3. **Agent follows the loop** in [AGENTS.md § 7](../../AGENTS.md#7-how-to-do-a-task-the-standard-loop): read context → plan → implement → test → update docs → PR.
 4. **Human verifies** before requesting review: runs the code and reads the diff. The submitter owns the PR.
 5. **Another team member reviews** ([reviewing-agent-prs.md](reviewing-agent-prs.md)). One approval is required.
-6. **Squash-merge.** If review found a docs gap, the fix is part of the same PR or a follow-up `type:docs` issue.
+6. **Squash-merge.** If review found a docs gap, the fix is part of the same PR or a follow-up `docs` issue.
 
 ## What agents are good and bad at here
 

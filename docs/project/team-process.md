@@ -27,7 +27,7 @@ Roles describe responsibilities, not people. One person can hold several, and ro
 ## Tracking
 
 - **Issues** are the unit of work. One issue per PR, where possible.
-- Optional: a GitHub Project board with columns *Backlog → Ready (`status:agent-ready`) → In progress → In review → Done*.
+- Optional: a GitHub Project board with columns *Backlog → Ready (`agent-ready`) → In progress → In review → Done*.
 - Discussion about a task stays **on the issue or PR**, not only in chat, so agents and future teammates can see it.
 
 ## Communication norms

@@ -1,7 +1,7 @@
 name: Research spike
 description: A time-boxed investigation that ends in a written finding or recommendation.
 title: "spike: <question to answer>"
-labels: ["type:spike", "status:needs-triage"]
+labels: ["spike", "needs-triage"]
 body:
   - type: textarea
     id: question

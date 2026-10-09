@@ -5,7 +5,7 @@
 | **Status** | Proposal. Becomes the binding contract once [ADR-0005](../decisions/0005-local-storage-parquet-duckdb.md) is accepted. |
 | **Last updated** | 2026-10-09 |
 
-These are the tables that pipeline stages exchange. **Changing a column's name, type or meaning requires an ADR** (see [AGENTS.md § Hard rules](../../AGENTS.md#6-hard-rules-never-break-these)), because it silently breaks downstream stages and invalidates past results. Adding a new nullable column is a normal PR, but document it here.
+These are the tables that pipeline stages exchange. **Any schema change, including adding a nullable column, requires an ADR or ADR update in the same PR** (see [AGENTS.md § Hard rules](../../AGENTS.md#6-hard-rules-never-break-these)), because it can break downstream stages and invalidate past results. Document the change here too.
 
 ## Conventions
 

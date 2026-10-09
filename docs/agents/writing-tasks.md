@@ -4,7 +4,7 @@ A task is **agent-ready** when an agent with no prior context can finish it corr
 
 ## The checklist
 
-An issue gets the `status:agent-ready` label only when it has:
+An issue gets the `agent-ready` label only when it has:
 
 - [ ] **A goal** in 1–3 sentences: what will be true, and why.
 - [ ] **Links to the governing docs**: the exact sections, e.g. `docs/data/labeling.md §2`.
@@ -56,4 +56,4 @@ The agent will guess the window size, invent feature names, maybe add a library,
 
 ## Writing the issue with an agent
 
-It's fine to have an agent draft issues: "Read docs/product/roadmap.md M2 and draft agent-ready issues for each item using the Task template." **A human must review every drafted issue** before labeling it `status:agent-ready`, especially the acceptance criteria.
+It's fine to have an agent draft issues: "Read docs/product/roadmap.md M2 and draft agent-ready issues for each item using the Task template." **A human must review every drafted issue** before labeling it `agent-ready`, especially the acceptance criteria.

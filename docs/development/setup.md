@@ -81,5 +81,5 @@ Every team member must use **the same** `AUTOCLIPPER_CHAT_HASH_SALT`, or pseudon
 | `401 Unauthorized` from Helix | Wrong client ID/secret, or an expired token. The client should refresh automatically. Check `.env`. |
 | `429 Too Many Requests` | Rate limit hit. The client should back off. If you see it often, lower concurrency. |
 | yt-dlp fails on Twitch | Update it: `uv lock --upgrade-package yt-dlp && uv sync` |
-| TwitchDownloader output schema changed | Pin the previous release and open a `type:bug` issue |
+| TwitchDownloader output schema changed | Pin the previous release and open a `bug` issue |
 | `ffmpeg: command not found` | Not on `PATH`. Restart the terminal after installing. |

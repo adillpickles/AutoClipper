@@ -39,4 +39,4 @@ If they haven't, send it back. Don't spend review time on unverified output.
 
 ## When the agent was wrong because the docs were unclear
 
-Fix the docs. Either ask the author to update the relevant doc in this PR, or open a `type:docs` issue. Note the gap in your review so the pattern is visible.
+Fix the docs. Either ask the author to update the relevant doc in this PR, or open a `docs` issue. Note the gap in your review so the pattern is visible.
