@@ -1,0 +1,52 @@
+name: Data task
+description: Data collection, labeling, or dataset definition changes.
+title: "data(<scope>): <short summary>"
+labels: ["type:data", "area:data", "status:needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [docs/data/data-governance.md](https://github.com/adillpickles/AutoClipper/blob/main/docs/data/data-governance.md) first.
+        **Never attach data files, media or chat logs to issues.**
+  - type: textarea
+    id: what
+    attributes:
+      label: What data and why
+      description: What will be collected or changed, and which model/experiment needs it.
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: Source(s)
+      description: API endpoints/tools used. See docs/data/data-sources.md.
+      placeholder: Twitch Helix Get Videos + Get Clips; TwitchDownloader chat replay
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Channels, date range, number of VODs, expected size on disk.
+    validations:
+      required: true
+  - type: dropdown
+    id: schema_change
+    attributes:
+      label: Does this change a schema or label definition?
+      options:
+        - "No"
+        - "Yes (an ADR or ADR update is required in the same PR)"
+    validations:
+      required: true
+  - type: checkboxes
+    id: governance
+    attributes:
+      label: Governance checklist
+      options:
+        - label: Usernames are pseudonymized at ingestion
+          required: true
+        - label: Raw data stays out of git (stored under the ignored data/ directory)
+          required: true
+        - label: Collection respects documented rate limits and platform terms
+          required: true

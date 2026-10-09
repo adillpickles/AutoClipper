@@ -1,0 +1,35 @@
+name: Research spike
+description: A time-boxed investigation that ends in a written finding or recommendation.
+title: "spike: <question to answer>"
+labels: ["type:spike", "status:needs-triage"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: The specific question this spike must answer.
+      placeholder: Does Get Clips pagination stop returning results past some limit for large channels, and how should we chunk queries?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+      description: Which decision or task is blocked on the answer?
+    validations:
+      required: true
+  - type: input
+    id: timebox
+    attributes:
+      label: Time box
+      placeholder: 4 hours
+    validations:
+      required: true
+  - type: textarea
+    id: deliverable
+    attributes:
+      label: Deliverable
+      description: Where the finding will be written down.
+      value: |
+        - [ ] Findings summarized in a comment on this issue
+        - [ ] Relevant doc updated (or a new ADR proposed) if the answer changes a plan

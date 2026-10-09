@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/adillpickles/AutoClipper/blob/main/SECURITY.md
+    about: Please report security issues privately. Don't open a public issue.
+  - name: Contributing guide
+    url: https://github.com/adillpickles/AutoClipper/blob/main/CONTRIBUTING.md
+    about: How work flows from issue to merged PR.

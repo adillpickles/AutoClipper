@@ -1,0 +1,120 @@
+# =============================================================================
+# AutoClipper .gitignore
+# Rule of thumb: code, docs and small synthetic fixtures are tracked.
+# Data, media, model artifacts and secrets never are.
+# See docs/data/data-governance.md
+# =============================================================================
+
+# --- Secrets ------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials*.json
+token*.json
+
+# --- Data & artifacts (never commit) -----------------------------------------
+/data/
+/artifacts/
+/outputs/
+/exports/
+/runs/
+/mlruns/
+/wandb/
+/lightning_logs/
+/checkpoints/
+*.parquet
+*.duckdb
+*.duckdb.wal
+*.sqlite
+*.db
+*.h5
+*.hdf5
+*.npy
+*.npz
+# Model weights
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.joblib
+*.pkl
+*.pickle
+*.bin
+# Allow tiny synthetic fixtures in tests (they must contain no real usernames)
+!tests/fixtures/**
+
+# --- Media (never commit) ----------------------------------------------------
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.avi
+*.flv
+*.m3u8
+# Note: MPEG-TS (.ts) segments are not ignored by extension because .ts is TypeScript.
+# Keep downloads under /data/ (ignored) instead.
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.opus
+*.srt
+*.vtt
+*.ass
+# Chat dumps (TwitchDownloader JSON, live logs)
+*.chat.json
+*.jsonl.gz
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.python-version.local
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.ipynb_checkpoints/
+.hypothesis/
+
+# --- Node / web --------------------------------------------------------------
+node_modules/
+.next/
+out/
+.turbo/
+.vercel/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Editors & OS ------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Agent tooling (local, per-user) -----------------------------------------
+.claude/settings.local.json
+.claude/worktrees/
+.worktrees/
