@@ -66,4 +66,14 @@ These are findings, not adopted schema, labeling or evaluation changes. Changes 
 
 Verified live repository settings, plain label names, issue-template label existence, Markdown local links, LF endings, diff whitespace, project-commit authorship and absence of attribution trailers. Get Clips facts were checked against the [official endpoint reference](https://dev.twitch.tv/docs/api/reference/#get-clips). No application tests, lint or type checks exist yet; no Twitch collection or model experiment was run.
 
-The owner must resolve remote bootstrap (OQ-16) before a documentation PR can target `main`. Normal branch protection stays intact. Review changes are on `docs/1-review-repository-setup`, not merged. Team choices above remain open; this review does not ratify proposed ADRs.
+At the initial audit, remote bootstrap (OQ-16) blocked PR publication. The follow-up below records its resolution. Team choices above remain open; this review does not ratify proposed ADRs.
+
+## Publication follow-up
+
+The owner authorized one combined documentation PR, preserving the initial documentation and review commits with human authorship and no AI trailers. `docs/initial-documentation` was already an ancestor of `docs/1-review-repository-setup`, so no merge commit was needed; the redundant local branch was deleted.
+
+The empty initialization commit was pushed as `main`, which is now the default branch. The push succeeded with the ruleset active; no temporary disable was needed. The only ruleset change is the owner's explicitly authorized temporary repository-admin bypass in `pull_request` mode. It permits PR merges without the normal approval requirement while direct pushes remain blocked. The original ruleset snapshot is retained outside the repository for comparison after restoring the empty bypass list.
+
+The pending-invitations API returned no invitations, and only the owner is listed as a collaborator. No unaccepted invitees can be identified from those results. This does not block the authorized documentation publication.
+
+Stop after opening the single PR. After the owner confirms it looks good, squash-merge and immediately remove the temporary bypass; verify all rules and conditions match the original snapshot. The review policy in AGENTS.md, CONTRIBUTING.md, ADR-0008 and the Git workflow describes normal future work and must remain unchanged by this one-time exception.

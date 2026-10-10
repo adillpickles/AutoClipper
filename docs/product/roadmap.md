@@ -28,8 +28,8 @@ flowchart LR
 
 **Goal:** a repo where anyone, human or agent, can pick up a task and ship it consistently.
 
-- [ ] Documentation, conventions, ADRs, issue/PR templates merged *(drafted locally; remote base branch not yet established)*
-- [x] Labels and `main` protection ruleset configured *(rules inspected; no remote `main` yet)*
+- [ ] Documentation, conventions, ADRs, issue/PR templates merged *(included in this combined documentation PR)*
+- [x] Labels and `main` protection ruleset configured *(remote base established; temporary admin PR-only bypass for this PR must be removed after merge)*
 - [ ] Ratify or amend proposed ADRs (tooling, layout, storage, license, web stack)
 - [ ] Python project scaffold: `pyproject.toml`, `uv`, Ruff, Pyright, pytest, pre-commit
 - [ ] CI on GitHub Actions: lint + type check + tests on every PR. Make these required checks.

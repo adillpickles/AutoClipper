@@ -14,12 +14,12 @@ The project idea, scope and plan are documented. **There is no application code,
 
 | Area | State | Notes |
 |---|---|---|
-| Documentation | Drafted locally; not merged | Product, architecture, data, ML, development, agent workflow, ADRs; see [setup review](setup-review.md) |
-| Repo config | Drafted locally; not merged | `.gitignore`, `.gitattributes`, `.editorconfig`, `.env.example`, issue/PR templates |
-| GitHub settings | Configured and inspected | Plain labels; active `main` ruleset (PR + 1 approval, no bypasses, squash only); squash-only merges; auto-delete branches |
-| GitHub branches / PRs | Bootstrap blocked | Remote has no Git refs, including `main`; local initial docs have not been pushed. A PR requires a remote base branch. |
+| Documentation | Initial set in this PR | Product, architecture, data, ML, development, agent workflow, ADRs; see [setup review](setup-review.md) |
+| Repo config | Initial set in this PR | `.gitignore`, `.gitattributes`, `.editorconfig`, `.env.example`, issue/PR templates |
+| GitHub settings | Configured and inspected | Plain labels; active `main` ruleset (PR + 1 approval, squash only); squash-only merges; auto-delete branches. Owner authorized a temporary admin PR-only bypass for this documentation PR; remove immediately after merge. |
+| GitHub branches / PRs | Bootstrapped | Remote `main` contains the empty initialization commit; initial documentation and review are combined on `docs/1-review-repository-setup` for one PR. |
 | GitHub issues | Review tracking started | [#1](https://github.com/adillpickles/AutoClipper/issues/1); implementation backlog still needs team decisions |
-| Team access / security | Partly configured | Only owner listed as collaborator; scanning/push protection enabled; vulnerability alerts and private reporting disabled (OQ-11/OQ-12) |
+| Team access / security | Partly configured | Only owner listed as collaborator; pending-invitations API returned none. Scanning/push protection enabled; vulnerability alerts and private reporting disabled (OQ-11/OQ-12). Invitations do not block this documentation PR. |
 | Python scaffold | ❌ Not started | Waiting on [ADR-0002](../decisions/0002-language-and-tooling.md) ratification |
 | CI | ❌ Not started | |
 | Twitch developer app | ❌ Not registered | OQ-8 |
@@ -37,7 +37,6 @@ See [open questions](open-questions.md). The ones that block upcoming work:
 3. **Shared data storage and collector host** (OQ-5), which block collection at scale.
 4. **v1 ranking target** (OQ-1), which blocks v1 modeling (not M1/M2).
 5. **Reconcile the supplied course design with repository proposals** (OQ-15), including MVP, metrics, privacy and schedule.
-6. **Repository bootstrap** (OQ-16): the owner must establish a remote base branch without treating the unpublished docs as merged.
 
 ## Suggested next tasks
 
@@ -57,3 +56,4 @@ See [open questions](open-questions.md). The ones that block upcoming work:
 
 - 2026-10-09: initial documentation drafted locally and GitHub settings configured.
 - 2026-10-09: setup audit; corrected publication state, simplified labels, and recorded unresolved design differences. Review changes are local pending a PR.
+- 2026-10-09: owner authorized one combined documentation PR and bootstrap of empty `main`; push succeeded without disabling protection. Temporary admin PR-only bypass must be removed after the owner-approved squash merge.
