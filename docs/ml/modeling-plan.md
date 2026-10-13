@@ -2,16 +2,18 @@
 
 | | |
 |---|---|
-| **Status** | Proposal. Model choices are a starting plan. Only the evaluation protocol is meant to be stable. |
-| **Last updated** | 2026-10-09 |
+| **Status** | Proposal. Targets, model choices and evaluation protocol await team agreement (OQ-1/OQ-15, ADR-0009). |
+| **Last updated** | 2026-10-13 |
 | **Related** | [Features](features.md) · [Evaluation](evaluation.md) · [Experiments](experiments.md) · [Labeling](../data/labeling.md) |
 
-## 1. The two ML problems
+## 1. Candidate ML problems
+
+The product needs useful discovery and ranking, not two mandatory models. Available API clips can seed candidates directly. One learned scorer may rank signal-derived candidates across the VOD; heuristic shortlisting followed by learned reranking is another option. The table describes experiment framings, not a fixed architecture.
 
 | | **v1: Clip ranker** | **v2: Moment detector** |
 |---|---|---|
 | Question | Of the moments viewers clipped in this VOD, which are best to post? | Where in this VOD are the clip-worthy moments, including un-clipped ones? |
-| Unit | Moment (merged viewer clips) | 10-second window → candidate moment |
+| Unit | Moment (merged viewer clips) | Proposed windows or signal-derived shortlist → candidate moment |
 | Input | Chat + audio features over the moment's span (and context) | Chat + audio features per window (and neighbors) |
 | Output | Score per moment → ranking | Score per window → peaks → candidates |
 | Label | See OQ-1 (below) | `label_pos` / `label_n_clips` from [labeling](../data/labeling.md) |
@@ -21,25 +23,25 @@
 
 For clips that already exist, Twitch gives us their view counts, so **predicting Twitch views of old clips from features is not useful by itself.** Candidate framings, from most to least recommended:
 
-1. **Early ranking (recommended).** Predict a moment's *mature* strength (7-day `n_clips` / normalized views) using only signals available **when the stream ends**: chat, audio, early clip counts. Baseline: rank by views at stream end. This is the clipper's real situation, since they want to post fast, before views mature.
-2. **Clip-worthiness without popularity.** Train on features only, without views as input, and evaluate on held-out channels against mature strength. The "sort by views" baseline is then an *oracle-ish upper reference*, not a competitor.
-3. **Short-form performance** (stretch). Target is normalized views on TikTok/Reels from external data. This is the true product target, but it depends on that data source (OQ-3).
+1. **Independent discovery/scoring.** Learn from noisy observed clips using chat/audio signals, then compare with heuristics and human judgments. Clip popularity is a proxy outcome, not objective highlight quality. This can also rank generated candidates.
+2. **Early ranking (conditional experiment).** Predict later clip strength from information available at an actual, recorded inference cutoff. Stream-end claims require a stream-end observation; a day-one snapshot cannot substitute. Freeze candidates, clip membership, boundaries and all clip-derived inputs at that cutoff; later snapshots supply targets only. Compare views at the same cutoff. Adoption needs a cutoff/target mapping under OQ-1, not an obligatory first model.
+3. **Short-form performance** (stretch). A separate target using external engagement data (OQ-3), not the semester product's underlying requirement.
 
-Until OQ-1 is decided, v1 work should build the shared pieces (features, moments, eval harness) that every option needs.
+Until OQ-1 is decided, synthetic adapters, signal extraction, UI/export and toy evaluation mechanics can proceed under explicitly authorized proposals. Do not train a claimed ranking model or finalize its harness against an unspecified target.
 
 ## 2. Model progression
 
-Each step must beat the previous one on validation **and** stay explainable enough to debug. Don't skip steps: the simple models are the baselines that make the fancy ones credible.
+Start with applicable heuristics and a simple trained model. Add complexity only for a measured weakness or an agreed learning goal. Report comparisons on validation; a model need not win to be a valid experiment. Delivery continues alongside research.
 
 | Step | Model | Purpose |
 |---|---|---|
-| B0–B3 | Heuristic baselines ([evaluation § baselines](evaluation.md#2-baselines)) | The floor every model must beat |
+| B0–B4 | Applicable heuristic baselines ([evaluation § baselines](evaluation.md#2-baselines)) | References on the same population and budget |
 | M-1 | Logistic regression on standardized features | Sanity check. Coefficients show which signals matter. |
 | M-2 | Gradient-boosted trees (LightGBM). For v1 ranking, `LGBMRanker` with `lambdarank`. | Strong tabular default. Handles non-linearity and missing values. |
-| M-3 | Small neural net: an MLP on window features, then a **temporal model** (1D-CNN or GRU) over a sequence of windows | Captures build-up and payoff patterns over time, so chat lag doesn't need hand-crafted lead features |
+| M-3 (optional) | Small MLP or temporal model (1D-CNN/GRU) | Investigate temporal context if simpler approaches leave a useful gap |
 | M-4 (stretch) | Add audio embeddings (pretrained audio model) and/or video features | Measured as an ablation over M-2/M-3 |
 
-**Proposal:** M-2 is the expected "production" model for the demo. M-3 is the main neural-network deliverable. Keep both if M-3 doesn't clearly win.
+No model family is a mandatory demo deliverable. Select the useful approach based on evaluation, cost and maintainability; include genuine trained-ML work and meaningful signal ablations even if a heuristic remains strongest.
 
 ## 3. v2 candidate generation
 
@@ -48,8 +50,10 @@ Window scores → candidate moments:
 1. Smooth scores over time (e.g. a rolling mean over 3 windows).
 2. **Peak picking:** local maxima above a threshold chosen on validation to hit a target candidates-per-hour rate.
 3. **Non-max suppression:** drop peaks within `MIN_GAP_S` (e.g. 60 s) of a higher one.
-4. **Boundaries:** start at `peak - PRE_S`, end at `peak + POST_S`, then adjust for chat lag. Proposed: `PRE_S = 20`, `POST_S = 10`, tuned on validation against human clip boundaries.
-5. Merge candidates that overlap existing viewer-clip moments, and tag them `source=viewer_clips` vs. `source=model`.
+4. **Boundaries:** predictions trained against source-time labels already locate the source event. Apply context padding only: proposed `PRE_S = 20`, `POST_S = 10`, tuned on validation, clamped to VOD bounds. A raw chat-time heuristic converts its peak to source time once before padding; export never shifts it again.
+5. At product inference, available viewer clips may be combined with discovered candidates using an agreed deduplication policy. For independent-discovery evaluation, hide clip metadata through scoring, boundary generation and selection; join ground truth only afterward. Do not use held-out clips to refine candidates.
+
+Candidate budgets, peak/boundary rules and provenance representation require agreement before adopting this proposal; record them in the experiment config (ADR-0009). The final pipeline need not use peak picking if another justified approach works better.
 
 ## 4. Training practices
 
@@ -58,10 +62,10 @@ Window scores → candidate moments:
 - **Hyperparameter search:** small and budgeted (e.g. ≤ 30 trials, Optuna or random search) on validation. Record the search space in the run config.
 - **Seeds:** every run takes a seed. Report mean ± std over ≥ 3 seeds for the NN.
 - **Feature leakage checklist:**
-  - No features computed from clip metadata in window models (clip count, clip titles) unless the experiment is explicitly "early ranking" with timestamps checked.
-  - Normalization statistics are computed on train only.
+  - Independent-discovery inputs exclude clip metadata and clip-derived context (counts, titles, views, clip-inferred categories); apply the versioned chat clip-announcement filter in [features](features.md).
+  - Fit cross-dataset preprocessing on train only. Unsupervised normalization within the current full input VOD is allowed for offline inference; see [features § Normalization](features.md#normalization).
   - No information from after the prediction time in "live" experiments.
-- **Explainability:** SHAP or permutation importance for M-2. Report the top signals per candidate for the UI.
+- **Explainability (optional polish):** permutation importance or SHAP when useful; avoid presenting an explanation as proof of quality.
 
 ## 5. Ablations we plan to report
 

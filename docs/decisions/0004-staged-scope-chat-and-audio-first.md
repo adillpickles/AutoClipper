@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed (the working plan the project was pitched on; awaiting team ratification) |
+| **Status** | Proposed (amended 2026-10-13; implementation order, not a reduced semester MVP) |
 | **Date** | 2026-10-09 |
 | **Related** | [Roadmap](../product/roadmap.md), [Modeling plan](../ml/modeling-plan.md), [Risks](../project/risks.md) |
 
@@ -24,12 +24,12 @@ Meanwhile:
 
 ## Decision
 
-This staging remains a proposal. The supplied course design places whole-VOD detection and a web UI in the MVP; the differences require team review under OQ-15 ([setup review](../project/setup-review.md)).
+The original design and owner's clarification require useful VOD discovery, preview and export through an appealing application, including a discovery path when viewer clips are absent. This ADR proposes implementation order and inexpensive initial signals; it does not replace those product goals. The exact strategy remains open under OQ-1/OQ-15.
 
-Build in stages, each one a complete, demoable product:
+Build in stages, with interface and export work proceeding alongside analysis:
 
-1. **v1: Clip ranker.** Rank the moments viewers already clipped, using **chat + audio** features. There's no search over the full VOD, which also addresses concern 3 for v1.
-2. **v2: Moment detector.** Score 10-second windows over the full VOD, still **chat + audio** only. Audio-only download plus chat logs keeps this laptop-scale.
+1. **Optional early clip-ranking prototype.** Use available clips to exercise deduplication, review and export. Establish a useful target before training a ranker; sorting known views is a baseline.
+2. **Independent discovery.** Analyze chat/audio across the VOD, either scoring windows or shortlisting candidates for learned reranking. Window size and candidate rules remain proposals. One trained scorer can serve discovery and ranking; two models are not required.
 3. **Stretch:** video/CV features (as a measured ablation), live mode, short-form performance model, online posting experiment.
 
 Video is **required for export** (cutting and 9:16 reframing, using existing tools and detectors) but **optional for ranking**.
@@ -38,15 +38,15 @@ Video is **required for export** (cutting and 9:16 reframing, using existing too
 
 | Option | Pros | Cons |
 |---|---|---|
-| **Staged, chat + audio first** (chosen) | Low risk. Every stage is demoable. Directly answers the instructor's concerns. "Does video help?" becomes a measurable question. | Might leave visual-only highlights (quiet clutch plays) undetected in v1/v2 |
+| **Staged, chat + audio first** (proposed) | Low initial cost; early review/export integration; video can be measured later | Can miss quiet visual highlights |
 | Multimodal from the start | Potentially higher ceiling | High risk. Expensive data. Hard to debug. Might not finish. |
 | Moment detector first | Most impressive capability | Hardest problem first, and no simpler model to compare against |
 
 ## Consequences
 
-- **Positive:** a working product and real result early. Laptop-scale compute. A clear story for the course ("we measured what each signal adds").
+- **Positive:** a useful integration prototype early, with laptop-scale experiments and signal ablations.
 - **Negative:** v1/v2 can't see purely visual moments. Video work is deferred and might not happen.
-- **Follow-ups:** the roadmap is ordered accordingly. The feature catalog keeps video in a separate family for clean ablations.
+- **Follow-ups:** agree the first learning target and discovery strategy. UI/export development and delivery gates are independent of favorable ML results. Keep optional signals separate for ablations.
 
 ## Revisit when
 

@@ -1,7 +1,7 @@
 # AutoClipper
 
-> **Find the 30 seconds worth posting in an 8-hour stream.**
-> AutoClipper takes a Twitch VOD, finds and ranks the moments most worth turning into short-form clips, and exports them ready to post.
+> **Find the highlights in a long Twitch stream.**
+> AutoClipper helps viewers, streamers, clippers and editors discover, review and export interesting moments from a Twitch VOD.
 
 ![Status: pre-alpha, design phase](https://img.shields.io/badge/status-design%20phase-lightgrey)
 ![License: not yet chosen](https://img.shields.io/badge/license-TBD-lightgrey)
@@ -14,35 +14,35 @@
 
 ## The problem
 
-Clipping streams is a real side hustle. Many streamers allow fans to repost highlights, and some pay clippers for them. The hard part is finding the clips:
+Long streams take time to review. A viewer may want to catch up, a streamer may want highlights from their broadcast, and an editor may want clips suitable for short-form video. Finding those moments is the shared problem:
 
-- A clipper either scrubs through hours of footage by hand, **or**
-- picks from the hundreds of clips viewers made during the stream, without knowing which ones will perform as a standalone short.
+- Scrubbing through hours of footage is slow.
+- Viewer-made clips are useful starting points, but can be repetitive, incomplete or unavailable. View counts measure popularity, not whether a moment makes a good highlight.
 
-AutoClipper is a tool **for clippers, not viewers**. It does the finding and ranking so the clipper can focus on posting.
+AutoClipper brings these audiences into one workflow: browse suggested moments, preview them, adjust the trim, and export useful clips.
 
 ## How it will work
 
 ```text
 Twitch VOD URL
    │
-   ├─▶ 1. Collect candidates   viewer-made clips (Twitch API) + moments the model flags
-   ├─▶ 2. Extract signals      chat activity, audio energy, (later) video features
-   ├─▶ 3. Score and rank       trained models predict which moments are worth posting
-   └─▶ 4. Export               vertical 9:16, captioned clips, ready to upload
+   ├─▶ 1. Gather information   available viewer clips + chat/audio signals
+   ├─▶ 2. Discover and rank    API candidates, heuristics and useful trained ML
+   ├─▶ 3. Review in the app    understandable highlights, previews and trimming
+   └─▶ 4. Export               basic framing and captions for selected clips
 ```
 
-The data-science plan uses **viewer clips and their VOD start offsets from Twitch's API** as weak labels for "this moment was worth clipping". Query limits and availability mean collection coverage must be checked ([data sources](docs/data/data-sources.md)). We plan to train models on chat, audio and (eventually) video signals to detect moments in streams where no labels exist yet and to rank candidates against a defined relevance target. No dataset or model exists yet.
+Twitch's API supplies **viewer clips, available VOD offsets and views**. These can provide candidates, ranking signals and noisy training labels. Query limits and availability mean coverage must be checked ([data sources](docs/data/data-sources.md)). Chat and audio are proposed initial signals; speech or video can be added when experiments justify them. The analysis should remain useful when clips are scarce or absent. No dataset or model exists yet.
 
-The project is staged to keep risk low (see [ADR-0004](docs/decisions/0004-staged-scope-chat-and-audio-first.md)):
+The proposed staging keeps an existing-clip prototype available without making it the finished semester deliverable ([ADR-0004](docs/decisions/0004-staged-scope-chat-and-audio-first.md)):
 
 | Stage | What it does | Signals |
 |---|---|---|
-| **v1: Clip ranker** | Rank the clips viewers already made for a VOD | Chat + audio |
-| **v2: Moment detector** | Find clip-worthy moments in a full VOD, including ones nobody clipped | Chat + audio, 10-second windows |
-| **Stretch** | Video/CV features, live mode, short-form performance model, posting experiment | + video, + external engagement data |
+| **Early prototype** | Review and rank available viewer clips; exercise preview/export | API information; proposed chat + audio |
+| **Semester product** | Discover across a supported VOD, including when clips are absent; review and export through an appealing app | Heuristics and trained ML, architecture to be agreed |
+| **Optional later work** | Advanced video understanding, live mode, longer compilations, publishing integrations | Evidence and separate scope decisions |
 
-Every model is measured against simple baselines, such as sorting by Twitch view count or flagging chat spikes. The project only counts as a success if it beats them. See [`docs/ml/evaluation.md`](docs/ml/evaluation.md).
+Compare learned analysis with sensible baselines on a reproducible, agreed protocol. Improving on them is the research goal; unfavorable results must be reported honestly and need not halt app development. Predicting TikTok views and training two separate models are not requirements. See [`docs/ml/evaluation.md`](docs/ml/evaluation.md).
 
 ## Documentation
 
@@ -74,7 +74,7 @@ All changes go through pull requests against `main`. Each PR needs one approving
 
 ## Responsible use
 
-AutoClipper works with other people's content. Contributors must follow [`docs/data/data-governance.md`](docs/data/data-governance.md). In short: respect Twitch's terms, never commit media or raw chat logs, pseudonymize chat usernames, and only publish clips of streamers who allow it.
+AutoClipper works with other people's content. Follow [`docs/data/data-governance.md`](docs/data/data-governance.md): record the applicable source permissions before real collection/media use, minimize chat data, keep media/logs/secrets out of Git, and publish only with the required permissions.
 
 ## Background
 

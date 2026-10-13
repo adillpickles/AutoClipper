@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Proposal (feature set `v0`). This file is the **contract for feature names**. Code must match it. |
-| **Last updated** | 2026-10-09 |
+| **Status** | Proposal (feature set `v0`, ADR-0009). Candidate names/definitions become a contract only when adopted; implement the task's agreed subset. |
+| **Last updated** | 2026-10-13 |
 
 ## Naming
 
@@ -21,6 +21,14 @@ Channels differ hugely in chat volume and audio levels, so raw values rarely tra
 - **`_z`:** `(x - mean_vod) / std_vod` over all windows of the same VOD. Fine offline, where the whole VOD is known.
 - **`_rz`:** `(x - rolling_mean) / rolling_std` over the previous `R` windows (proposed `R = 30`, i.e. 5 minutes). Usable live.
 - Guard against zero variance: if `std < eps`, set the z-score to 0.
+
+Fit cross-dataset preprocessing (scalers, imputers, learned thresholds) on training data only. Per-input unsupervised VOD statistics are allowed offline even for a held-out VOD; do not pool held-out VODs or use their labels. Outcome transformations are evaluation/label operations, not inference inputs. Live experiments use only observations available at their stated prediction time.
+
+## Chat preprocessing and leakage
+
+Before **all** chat aggregates, proposed filtering removes whole messages containing Twitch clip URLs (`clips.twitch.tv/...` or `twitch.tv/<channel>/clip/...`) and recognized automated clip-created announcements, including any bot metadata linked to clip creation. Removing only URL text would leave giveaway message counts. Use the same versioned URL/announcement rules at training and inference, including lead/lag windows; record filtered counts without logging raw messages.
+
+Ordinary reactions such as "clip it" remain eligible signals. Do not remove all bot messages or all occurrences of "clip". The initial announcement patterns must be explicit, synthetic-tested and ratified with the feature subset (OQ-15/ADR-0009); ablations can test ordinary reaction keywords separately. Clip-derived game/category information also stays out of independent-discovery inputs.
 
 ## Chat features (`features_chat`)
 
@@ -76,7 +84,7 @@ Video features require video download, which is far more expensive than audio. S
 | `ctx_minutes_since_start` | `start_s / 60` | |
 | `ctx_game_id` | Category at that time (categorical) | Only if derivable. Watch for leakage via clips. |
 
-**Not features in window models:** anything derived from clips (counts, titles, views). Those are labels. The only exception is the explicitly time-bounded "early ranking" setup in OQ-1.
+**Not inputs to independent discovery:** anything derived from clips (counts, titles, views or clip-inferred category). Product ranking may use available API information, but must be evaluated as that setup. Time-bounded early ranking needs a pinned inference snapshot under OQ-1; mature outcomes never feed its candidate formation or inputs.
 
 ## Moment-level features (v1)
 

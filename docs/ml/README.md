@@ -2,8 +2,8 @@
 
 | Doc | What it covers |
 |---|---|
-| [modeling-plan.md](modeling-plan.md) | The two ML problems (v1 ranker, v2 detector), model progression, ablations, training practices |
-| [features.md](features.md) | Feature catalog and naming. **The contract for feature names.** |
+| [modeling-plan.md](modeling-plan.md) | Candidate learning targets, optional model progression, ablations and training practices |
+| [features.md](features.md) | Proposed feature catalog, normalization and leakage filtering; adopt the relevant subset before implementation |
 | [evaluation.md](evaluation.md) | Baselines, metrics, splits, confidence intervals, the online experiment design |
 | [experiments.md](experiments.md) | How to run, record and report experiments |
 

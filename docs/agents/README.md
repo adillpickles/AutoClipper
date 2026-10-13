@@ -20,9 +20,15 @@ flowchart LR
     D[AGENTS.md + docs/<br/>rules, conventions, contracts] --> A
     S[status.md<br/>what exists now] --> A
     ADR[ADRs<br/>why things are the way they are] --> A
-    A --> PR[PR<br/>diff + verification notes]
+    A --> PLAN[Plan and appropriate approval]
+    PLAN --> WORK[Implement and validate]
+    WORK --> AUDIT[Independent audit of complete work]
+    AUDIT --> FIX[Verify findings and repair]
+    FIX -->|re-audit when needed| AUDIT
+    FIX --> AUTH[Explicit publication authorization]
+    AUTH --> PR[PR<br/>diff + verification notes]
     PR --> R[Human review]
-    R -->|merge| M[main]
+    R -->|separately authorized merge| M[main]
     R -->|"docs gap found"| D
 ```
 
@@ -30,12 +36,13 @@ The last arrow matters most. **When an agent makes a mistake because the docs we
 
 ## The workflow
 
-1. **Human writes or refines an issue** using the Task template ([writing-tasks.md](writing-tasks.md)). When it's fully specified, label it `agent-ready`.
-2. **Human starts an agent session** on a fresh branch (or worktree) and points it at the issue. See [prompts.md § Start a task](prompts.md#start-a-task).
-3. **Agent follows the loop** in [AGENTS.md § 7](../../AGENTS.md#7-how-to-do-a-task-the-standard-loop): read context → plan → implement → test → update docs → PR.
-4. **Human verifies** before requesting review: runs the code and reads the diff. The submitter owns the PR.
-5. **Another team member reviews** ([reviewing-agent-prs.md](reviewing-agent-prs.md)). One approval is required.
-6. **Squash-merge.** If review found a docs gap, the fix is part of the same PR or a follow-up `docs` issue.
+The canonical task loop is [AGENTS.md §7](../../AGENTS.md#7-how-to-do-a-task-the-standard-loop): **planning → implementation → independent audit → verify/repair → re-audit as necessary → authorized push/PR → human review → separately authorized merge**. It is a general team practice, applicable across tools, rather than a tool-specific habit. See [ADR-0010](../decisions/0010-agent-review-and-publication-workflow.md).
+
+Write a bounded task with acceptance criteria and integration context ([writing tasks](writing-tasks.md)). Substantial/ambiguous plans need appropriate approval; routine authorized tasks can proceed without repeated permission requests. Implementation agents choose architecture-consistent solutions and meaningful validation, rather than mechanically executing a prescribed design. Where available, planning mode helps inspect the repository before edits.
+
+For substantial work, use a separate audit context/reviewer to challenge the completed change and inspect its actual files, tests and complete comparison-base diff ([review guidance](reviewing-agent-prs.md)). Repair agents independently verify each finding. Record fixed, disproved, deferred and unresolved items; re-audit meaningful remaining defects. An agent's own final checks are self-review, not an independent audit. If none is available, return a reviewable local branch pending audit.
+
+The human submitter remains responsible for understanding the change and truthful assistance disclosure. Agent audit does not replace the required approving human review. External issue/comment writes, pushing and PR publication require explicit authorization; a later merge needs separate approval. No AI reviewer integration is required.
 
 ## What agents are good and bad at here
 
@@ -52,6 +59,6 @@ The last arrow matters most. **When an agent makes a mistake because the docs we
 
 - **Branch protection:** nothing reaches `main` without a human approval.
 - **Hard rules** in AGENTS.md: no data/secrets in git, no invented results, no silent schema changes.
-- **Contracts:** [data model](../architecture/data-model.md) and [features](../ml/features.md) give agents exact names and types to follow.
+- **Contracts:** adopt the relevant [data model](../architecture/data-model.md) and [feature](../ml/features.md) proposals explicitly before implementing them as shared contracts.
 - **ADRs** stop agents from "helpfully" swapping a technology choice.
 - **Templates** force verification notes and AI-assistance disclosure.

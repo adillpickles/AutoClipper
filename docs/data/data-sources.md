@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Reference. Endpoint details reflect Twitch's public docs as understood when this was written. **Verify against the official reference before implementing.** Items marked ⚠️ need a spike. |
-| **Last updated** | 2026-10-09 |
+| **Last updated** | 2026-10-13 |
 
 > **Agents: don't invent API fields or parameters.** If a field you need isn't documented here or in the official reference, check the live docs or open a `spike` issue.
 
@@ -13,7 +13,7 @@
 |---|---|---|---|---|
 | Twitch Helix **Get Users** | Broadcaster ID, type | ✅ | Resolving channels | v1 |
 | Twitch Helix **Get Videos** | VOD metadata, duration, muted segments | ✅ | VOD discovery | v1 |
-| Twitch Helix **Get Clips** | Retrievable viewer clips + `vod_offset` + views (query limits apply) | ✅ | **Labels** | v1 |
+| Twitch Helix **Get Clips** | Retrievable viewer clips + `vod_offset` + views (query limits apply) | ✅ | Candidates, signals and possible weak labels | Initial analysis |
 | **TwitchDownloader** (CLI) | Chat replay with offsets | ❌ unofficial | Chat features | v1 |
 | **yt-dlp** | VOD audio/video | ❌ unofficial | Audio features, export | v1 |
 | Twitch **chat** (IRC / EventSub) | Live chat messages | ✅ | Backup chat source; live mode | M1 backup, stretch |
@@ -44,6 +44,7 @@
 
 - Query by `user_id` with `type=archive` for past broadcasts, or by `id` for specific VODs.
 - Fields we use: `id`, `user_id`, `stream_id`, `title`, `created_at`, `duration` (string like `"3h8m33s"`, which we parse to seconds), `type`, `language`, `view_count`, `muted_segments` (`offset`, `duration`).
+- `muted_segments` is `null` when no segments are muted. Normalize documented null to `[]` internally; missing/malformed fields require validation rather than silently assuming no muting.
 
 ### Get Clips: <https://dev.twitch.tv/docs/api/reference/#get-clips>
 
@@ -51,17 +52,22 @@
 - **There's no "clips for this video" filter.** Query the broadcaster by clip-creation date range and keep rows whose `video_id` matches. The broadcast's wall-clock interval is only an initial discovery range; refreshed snapshots need a documented horizon for clips created later.
 - Fields we use: `id`, `broadcaster_id`, `creator_id` (hashed at ingest), `video_id`, `game_id`, `language`, `title`, `view_count`, `created_at`, `duration`, `vod_offset`, `is_featured`.
 - **`vod_offset` can be null**, e.g. when the VOD is deleted or not yet processed. Store the row but exclude it from labeling.
+- `video_id` may be an **empty string** when the associated video is unavailable; normalize it to internal null. Broadcaster/game queries return clips by descending views, so incomplete discovery can favor popular clips.
 - **Pagination limit (verified 2026-10-09):** [Get Clips](https://dev.twitch.tv/docs/api/reference/#get-clips) returns approximately 1,000 results across pages for a query. **Chunk queries into short time ranges** and deduplicate by `clip_id`; subdivide saturated ranges. A completed page sequence does not prove all clips were retrieved. ⚠️ Measure coverage and record potentially incomplete ranges in the early spike.
 - **Clip creation time is not VOD event time.** Date filters select when a clip was created; viewers can clip a past VOD later. Searching only the broadcast's wall-clock interval can miss those clips. The collection spike must choose and document the later discovery horizon for refreshed snapshots, then filter by `video_id`.
 - ⚠️ **View counts grow over time** and may be updated with a delay. Always store `fetched_at`. For labeling, prefer a consistent observation lag (e.g. re-fetch clips N days after the VOD; see [collection plan](collection-plan.md)).
+
+### Authorized clip media
+
+The current official [Get Clips Download](https://dev.twitch.tv/docs/api/reference/#get-clips-download) endpoint offers download URLs for authorized broadcaster/editor workflows. It is not an unrestricted arbitrary-channel VOD download API. Evaluate this route and its current authorization requirements before defaulting to unofficial media tooling; it covers existing clips, not additional surrounding VOD footage. OQ-17 still governs retention, preview and export permissions.
 
 ### Get Users: <https://dev.twitch.tv/docs/api/reference/#get-users>
 
 - Resolve `login` → `id` and `broadcaster_type` (`partner`/`affiliate`/`""`).
 
-### VOD retention ⚠️
+### VOD retention
 
-Twitch deletes past broadcasts after a retention period that depends on the account type. It has historically been about 7 days by default and longer, up to about 60 days, for Partners and some other account types. **Check the current policy.** Either way, **VODs we don't collect promptly are gone**, and clips may lose their `video_id` link afterwards. This is why [collection](collection-plan.md) runs continuously.
+Checked 2026-10-13: [Twitch's VOD policy](https://help.twitch.tv/s/article/video-on-demand) states 7 days for ordinary broadcasters, 14 for Affiliates and 60 for Partners, Prime and Turbo users. `broadcaster_type` alone does not reveal every retention entitlement. Deletion or unpublishing may happen earlier. Features do not preserve video; secure permitted demo/evaluation media while available and report unavailable sources ([collection](collection-plan.md)). Recheck policy before implementing collection.
 
 ## 2. Chat replay: TwitchDownloader (unofficial)
 
@@ -74,7 +80,7 @@ Twitch deletes past broadcasts after a retention period that depends on the acco
 
 - Output: JSON with per-comment `content_offset_seconds`, commenter info, message fragments and emote IDs.
 - **Risks:** relies on Twitch's undocumented internal API and can break without warning. Pin the version in the catalog (`tool` column) and fail loudly on schema surprises.
-- **Privacy:** raw output contains usernames. Parse it into `chat_messages` with hashed IDs immediately. The raw file stays only in git-ignored `data/raw/`.
+- **Privacy:** raw output contains usernames. Parse transiently, apply the approved OQ-9 minimization/redaction policy and delete raw files after validation. No raw sharing; git-ignored storage is not a retention authorization.
 
 ## 3. VOD media: yt-dlp (unofficial)
 
@@ -85,7 +91,7 @@ Twitch deletes past broadcasts after a retention period that depends on the acco
   yt-dlp -f "bestaudio" -o "data/raw/audio/%(id)s.%(ext)s" https://www.twitch.tv/videos/<video_id>
   ```
 
-- **Segments** for export, so we never download the full video:
+- **Segments** for preview/export can reduce download cost, subject to source authorization and a pilot verifying tool behavior:
 
   ```bash
   yt-dlp --download-sections "*<start>-<end>" -f "best[height<=1080]" -o "…" https://www.twitch.tv/videos/<video_id>
@@ -102,6 +108,8 @@ The replay tool can break, so a backup logger records chat **live** for target c
 - **EventSub** `channel.chat.message`: <https://dev.twitch.tv/docs/eventsub/eventsub-subscription-types/>. Requires a user token with the right scopes.
 
 Live offsets must be aligned to VOD time: `offset_s = message_time - vod.created_at`. Validate the alignment on a VOD where we also have replay chat. ⚠️ The stream-start to VOD-start offset may not be exactly zero.
+
+This is a provisional alignment estimate, not proof that API `created_at` is an exact live-clock origin. Validate against stream metadata and known source events, store the alignment basis and apply it once. Do not mix live wall-clock time with replay offsets without that check.
 
 ## 5. Third-party emotes (optional)
 

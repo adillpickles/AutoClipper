@@ -2,29 +2,29 @@
 
 | | |
 |---|---|
-| **Status** | Proposal. Channel list and targets need team sign-off (OQ-4). |
-| **Last updated** | 2026-10-09 |
+| **Status** | Proposal. Real collection requires source authorization, privacy and snapshot decisions (OQ-4/OQ-9/OQ-17, ADR-0009). |
+| **Last updated** | 2026-10-13 |
 
 ## Why collection is urgent
 
-Twitch deletes past broadcasts after a retention period ([data sources § VOD retention](data-sources.md#1-twitch-helix-api-official)). **Every week we don't collect is data we can never get back.** Getting the collector running is the first priority after the scaffold.
+Twitch VODs expire ([data sources](data-sources.md#vod-retention)), so start a small **authorized** pilot promptly after the necessary decisions. API, synthetic UI/export and evaluation work can proceed alongside permission/source investigation; urgency does not authorize downloading or retaining public content.
 
 ## What we collect per VOD
 
 | Item | Source | When | Approx. size (6 h VOD) |
 |---|---|---|---|
 | VOD metadata | Get Videos | Discovery (daily) | KB |
-| Clips snapshot #1 | Get Clips | ~1 day after VOD | KB–MB |
-| Clips snapshot #2 (labeling) | Get Clips | ~7 days after VOD | KB–MB |
+| Initial clips snapshot | Get Clips | Record actual capture time; ~day 1 is a proposal, not a stream-end observation | KB–MB |
+| Later clips snapshot (possible outcomes) | Get Clips | ~day 7, subject to adopted target/retention policy | KB–MB |
 | Chat replay | TwitchDownloader | Within retention window | ~10–200 MB JSON, depending on chat volume |
 | Audio | yt-dlp (audio only) | Within retention window | ~100–400 MB |
-| Video | — | **Not collected.** Fetched per segment at export time. | — |
+| Video | Approved source | Usually on demand; retain a small permitted demo/evaluation set while available | Measure in pilot |
 
-These are rough planning numbers. Measure them on the first 10 VODs and update the table.
+These are rough planning estimates, not observed costs. Measure in the pilot. Preserve snapshots immutably with capture times, query ranges/horizon, coverage and dataset lineage ([data model](../architecture/data-model.md#clips)). Later-created clips and pagination limits affect membership. Early ranking additionally needs a real inference-cutoff observation; never infer it retrospectively from day-one/day-seven counts.
 
 ## Channel selection (proposal)
 
-Pick **20–40 channels** that:
+Agree a small pilot first, then choose an achievable channel mix based on authorization, resource use and grouped-split coverage. The earlier **20–40-channel** estimate is not a required scale. Prefer channels that:
 
 1. **Have an active clip culture:** many viewer clips per stream, so labels are dense.
 2. **Are in English** for v1, to keep captions and text features simple.
@@ -40,10 +40,10 @@ The concrete list lives in a config file in the repo (planned: `configs/channels
 | Milestone | VODs with clips + chat + audio | Notes |
 |---|---|---|
 | Pipeline smoke test | 5 | From 2–3 channels |
-| Baselines (M2) | ≥ 150 | Enough for broadcaster-grouped splits |
-| v1/v2 models (M3–M4) | ≥ 400 | Keep collecting continuously |
+| Baselines (M2) | Team-agreed after pilot | Diverse channels and usable coverage matter; no count guarantees generalization |
+| Models (M3–M4) | Scale based on evidence and budget | Earlier 150/400-VOD estimates are not milestone gates |
 
-Disk estimate: ~0.5 GB per VOD for audio + chat at the high end, so ~200 GB for 400 VODs. **Store audio as compressed AAC/Opus in `raw/`** and convert to WAV only transiently during feature extraction, or keep only derived features. Decide where shared data lives (OQ-5).
+Measure disk/download/feature costs before scaling. Proposed: compressed audio in `raw/`, WAV only transiently, and derived features under approved retention. Features alone cannot support video review/export after expiry; retain authorized media needed for demo and human evaluation. Shared storage is OQ-5 and must respect OQ-17 permissions.
 
 ## Collector design
 
@@ -82,4 +82,4 @@ Raw data **never goes in git**. Options for sharing processed datasets (OQ-5):
 2. An object store bucket (S3/R2) with versioned prefixes.
 3. Each member collects their own subset, and only processed tables are shared.
 
-Whatever is chosen, shared datasets contain **only pseudonymized** data.
+Whatever is chosen, sharing must be authorized. The source design retains aggregate chat statistics; pseudonymized message retention is an alternative awaiting OQ-9, not the default by implication. No raw chat is shared, and neither hashes nor aggregate features automatically remove source restrictions.

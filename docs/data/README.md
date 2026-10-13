@@ -16,4 +16,4 @@ How AutoClipper gets, labels and handles data. Read in this order:
 - Inside the pipeline, time is **seconds from VOD start** (`*_s`).
 - Chat usernames are **pseudonymized at ingestion**.
 - Data lives in git-ignored `data/` and is **never committed**.
-- VODs expire, so **collect early and continuously**.
+- VODs expire, so begin a small **authorized** pilot promptly; synthetic development can proceed while OQ-9/OQ-17 are resolved.

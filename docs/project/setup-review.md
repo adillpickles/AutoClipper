@@ -4,6 +4,8 @@
 **Reviewed:** 2026-10-09
 **Tracking:** [#1](https://github.com/adillpickles/AutoClipper/issues/1)
 
+> **Historical review of 2026-10-09.** The comparisons and defects below describe that earlier draft, not the current repaired specification. See [foundation repair](foundation-repair.md), current PRD and ADR-0009 for dispositions and pending decisions. The publication follow-up records prior authorization; it does not authorize publication, merge or settings changes in the 2026-10-13 repair task.
+
 ## Assessment
 
 The documentation provides a useful foundation: a trained model on real data, explicit baselines, broadcaster-grouped splits, reproducible experiments and exportable clips. Most technology choices are appropriately marked Proposed. There is no application code or measured result to validate yet.

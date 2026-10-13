@@ -16,7 +16,7 @@ One repository containing:
 
 - `src/autoclipper/`: the Python package (pipeline, models, eval, export, API), in the `src` layout.
 - `tests/`: mirrors the package structure.
-- `web/`: the frontend (added at M5).
+- `web/`: proposed web frontend, added for the early app prototype if ADR-0007 is adopted.
 - `experiments/`, `configs/`, `notebooks/`, `scripts/`, `docs/`.
 - Git-ignored `data/` and `artifacts/`.
 
@@ -34,7 +34,7 @@ AutoClipper is a **standalone** project. It doesn't depend on any team member's 
 
 - **Positive:** one place for docs, contracts, issues and CI.
 - **Negative:** CI must handle Python and (later) Node jobs.
-- **Follow-ups:** the scaffold creates the package skeleton. `web/` is created only at M5.
+- **Follow-ups:** create only directories required by actual tasks. Prototype the chosen app alongside analysis; M5 integrates/polishes it.
 
 ## Revisit when
 

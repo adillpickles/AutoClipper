@@ -6,7 +6,7 @@ An ADR records one significant decision: the context, the choice, and its conseq
 
 | Status | Meaning | What contributors do |
 |---|---|---|
-| **Proposed** | A recommendation not yet ratified by the team | Follow it as the default, but avoid hard-to-reverse dependencies on it. Raise objections in the ADR's PR or an issue. |
+| **Proposed** | A recommendation not yet ratified by the team | Adopt only with agreement. An explicitly authorized reversible prototype may use it while recording the assumption and preserving proposal status. |
 | **Accepted** | Agreed by the team | Follow it. Changing it requires a new ADR that supersedes it. |
 | **Superseded by ADR-NNNN** | Replaced | Read the newer ADR instead |
 | **Rejected** | Considered and declined | Kept for the record |
@@ -23,6 +23,8 @@ An ADR records one significant decision: the context, the choice, and its conseq
 | [0006](0006-license.md) | License | Proposed |
 | [0007](0007-web-application-stack.md) | FastAPI backend + Next.js frontend | Proposed |
 | [0008](0008-trunk-based-development-squash-merge.md) | Trunk-based development, reviewed PRs, squash merge | Accepted |
+| [0009](0009-analysis-and-evaluation-contract-repair.md) | Coherent proposed analysis/evaluation contracts | Proposed |
+| [0010](0010-agent-review-and-publication-workflow.md) | Shared agent audit/repair and publication workflow | Accepted (owner-directed practice) |
 
 ## Writing a new ADR
 

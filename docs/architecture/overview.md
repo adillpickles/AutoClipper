@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Proposal. Describes the planned system. **Nothing here is implemented yet.** |
-| **Last updated** | 2026-10-09 |
+| **Last updated** | 2026-10-13 |
 | **Related** | [Data model](data-model.md) · ADR [0002](../decisions/0002-language-and-tooling.md), [0003](../decisions/0003-repository-layout.md), [0005](../decisions/0005-local-storage-parquet-duckdb.md), [0007](../decisions/0007-web-application-stack.md) |
 
 ---
@@ -12,7 +12,7 @@
 
 1. **A pipeline of idempotent stages.** Each stage reads files and writes files. Re-running a stage with the same inputs produces the same outputs and skips work that's already done. This makes the system debuggable, cacheable and agent-friendly: every stage can be built and tested on its own.
 2. **Files are the interface.** Stages communicate through versioned Parquet/JSON artifacts with documented schemas ([data model](data-model.md)), not through in-memory coupling. Any stage can be swapped as long as it honors the contract.
-3. **Library first, then CLI, then API and UI.** All logic lives in the `autoclipper` Python package. The CLI is a thin wrapper. The web API is a thin wrapper around the same functions. Nothing important lives only in a notebook or only in the UI.
+3. **Reusable processing, parallel interface development.** Pipeline logic lives in the proposed Python package; CLI/app adapters call it. Build UI and export prototypes with synthetic candidates while processing/ML develops. The finished semester product is an app, not a CLI demonstration.
 4. **Cheap signals first.** Chat and audio are per-second numbers that are cheap to compute and strong. Video is expensive and optional ([ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md)).
 5. **Laptop scale.** No GPU, cluster or cloud dependency for v1/v2. Audio-only downloads keep data small.
 6. **One time base.** Inside the pipeline, every position is **seconds from VOD start** (`*_s`). Wall-clock time is only used for metadata.
@@ -21,7 +21,7 @@
 
 ```mermaid
 flowchart LR
-    user([Clipper]) -->|VOD URL| app[AutoClipper]
+    user([Viewer / streamer / editor]) -->|VOD URL| app[AutoClipper]
     app -->|Helix API: videos, clips, users| twitch[(Twitch API)]
     app -->|chat replay - unofficial| tdl[TwitchDownloader CLI]
     app -->|audio/video download - unofficial| ytdlp[yt-dlp]
@@ -39,32 +39,36 @@ flowchart TD
         A1 --> A3[Download chat replay<br/>+ pseudonymize]
         A1 --> A4[Download audio only]
     end
-    subgraph label [2 · Moments and labels]
+    subgraph label [Training and evaluation annotations]
         B1[Merge overlapping clips<br/>into moments]
-        B2[Slice VOD into windows<br/>+ label windows]
+        L[Annotate windows<br/>+ saved split]
     end
+    B2[Slice VOD into unlabeled windows]
     subgraph feat [3 · Features]
         C1[Chat features per window]
         C2[Audio features per window]
         C3[Video features per window<br/>stretch]
     end
-    subgraph model [4 · Models]
-        D1[v1: rank moments]
-        D2[v2: score windows → candidates]
+    subgraph model [4 · Discovery and ranking - strategy proposed]
+        D1[Available API candidates]
+        D2[Signal candidates / learned scoring]
     end
     subgraph export [5 · Export]
-        E1[Download video segment] --> E2[Trim + lag correction]
+        E1[Obtain permitted video segment] --> E2[Review source-time trim]
         E2 --> E3[9:16 reframe] --> E4[Captions] --> E5[Encode MP4]
     end
 
     A2 --> B1
     A1 --> B2
-    B1 --> B2
+    B1 --> L
+    B2 --> L
     A3 --> C1
     A4 --> C2
     B2 --> C1 & C2 & C3
-    C1 & C2 & C3 --> D1 & D2
-    B1 --> D1
+    C1 & C2 & C3 --> D2
+    A2 --> D1
+    L -. training / evaluation only .-> T[Fit and evaluate model]
+    T -. trained artifact .-> D2
     D1 & D2 --> F[Candidates JSON]
     F --> export
 ```
@@ -78,9 +82,11 @@ flowchart TD
 | 1c | Chat replay | `video_id` | `chat_messages` (pseudonymized) | `autoclipper.ingest.chat` |
 | 1d | Audio | `video_id` | audio file (e.g. 16 kHz mono) | `autoclipper.ingest.media` |
 | 2a | Moments | `clips` | `moments` | `autoclipper.labels.moments` |
-| 2b | Windows | `vods`, `moments` | `windows` (+ labels) | `autoclipper.labels.windows` |
+| 2b | Windows | `vods` | unlabeled `windows` | `autoclipper.labels.windows` |
+| — | Training annotations | `windows`, pinned `moments`, split | `window_labels` | `autoclipper.labels.windows` |
 | 3 | Features | `windows`, chat, audio | `features_*` tables | `autoclipper.features.{chat,audio,video}` |
-| 4 | Models | features + labels + split | model artifact, `predictions` | `autoclipper.models` |
+| 4 | Scoring | signal features + trained artifact; available API info only in declared assisted setups | `predictions`, candidates | `autoclipper.models` |
+| — | Training | features + annotations + split | model artifact | `autoclipper.models` |
 | — | Evaluation | predictions + labels + split | metrics report | `autoclipper.eval` |
 | 5 | Export | candidate + video | MP4 | `autoclipper.export` |
 
@@ -89,24 +95,26 @@ flowchart TD
 ### 4.1 Ingest
 
 - **Twitch API client:** app access token via the OAuth client-credentials flow, cached until expiry. One small wrapper per endpoint used, with typed response models. Handles pagination cursors, `429` + `Ratelimit-Reset` backoff, and retries on `5xx`. See [data sources](../data/data-sources.md).
-- **Chat:** wraps the TwitchDownloader CLI (subprocess). Parses its JSON into `chat_messages`, hashing usernames and user IDs at parse time. The raw JSON is deleted or kept only in the ignored `data/raw/` folder.
-- **Media:** wraps yt-dlp (subprocess or Python API). The default is **audio only**. Video segments are fetched on demand at export time, never the full video.
+- **Chat:** proposed TwitchDownloader wrapper parses raw JSON transiently, redacts identities and applies the approved privacy policy. OQ-9 must choose retained aggregates versus sanitized messages before real ingestion; ignored storage is not permission to keep raw chat.
+- **Media:** obtain authorized audio for analysis and video for review/export using an approved source. On-demand segments are a cost-saving proposal, not a guarantee of future availability. Secure a small permitted demo/evaluation media set before expiry; creator-provided recordings are another source to assess (OQ-17).
 - **Catalog:** every ingested object is recorded in a catalog table (what, when, tool version, status) so collection is resumable and auditable.
 
 ### 4.2 Moments and labels
 
 - **Moments:** overlapping viewer clips for the same VOD are clustered into one *moment* with aggregate stats (clip count, total views, earliest creation). This removes duplicate-clip noise.
-- **Windows:** fixed-length windows (proposal: 10 s, with a stride equal to the length) cover the VOD. Each window gets labels derived from moments (binary + graded). The exact rules, including chat-lag handling and clip-start bias, are in [labeling](../data/labeling.md).
+- **Windows:** proposed 10 s slices cover the VOD independently of labels. Training/evaluation annotations come from pinned moments in a separate table; inference windows need no labels or split. Window size and grouping remain proposals ([labeling](../data/labeling.md), ADR-0009).
 
 ### 4.3 Features
 
-Pure functions from (window table + raw signal) → feature table, one module per signal family. Window-relative normalization (z-scores against the stream's own rolling baseline) is essential, because chat rate varies by orders of magnitude between channels. The catalog is in [features](../ml/features.md).
+Pure functions from (unlabeled window table + signal) → feature table. Normalize within the current input VOD offline, or use a rolling baseline; fit learned cross-dataset transforms on train only. Apply the same versioned clip-announcement filter during training/inference. Candidate features are in [features](../ml/features.md).
 
 ### 4.4 Models
 
 - A thin, consistent interface: `fit(train_df) → model`, `predict(df) → scores`, `save/load`.
 - Baselines implement the same interface, so evaluation code treats every model the same way.
 - Model artifacts are saved under `artifacts/models/<run_id>/` with their config, feature list, dataset version and git SHA.
+
+The architecture does not require separate ranker and detector models. API-assisted candidates, whole-VOD scoring or signal shortlisting with learned reranking remain alternatives. Independent-discovery evaluation hides clip metadata through candidate selection; ground truth joins afterward.
 
 ### 4.5 Evaluation
 
@@ -116,17 +124,19 @@ A single harness takes predictions + labels + a saved split and produces the met
 
 FFmpeg-based:
 
-1. Fetch only the needed video segment (with padding).
-2. Trim, applying lag correction and padding rules.
-3. Reframe to 9:16. v1: center crop or a fixed "facecam on top, gameplay below" layout with configurable crop boxes. v2: detection-based (face detector to locate the facecam).
+1. Check source-video availability and the approved access/display/export basis; fetch a permitted segment or use retained authorized media.
+2. Preview and trim the already aligned VOD interval, respecting manual adjustments and clamping to media bounds. Chat-time heuristics align once during candidate generation; export never applies another lag shift. Context padding is separate and explicit.
+3. Basic 9:16 crop or configured layout; other aspect ratios and detection-based smart crop are optional.
 4. Captions: speech-to-text (faster-whisper, CPU-capable) → word timestamps → burned-in subtitles.
 5. Encode H.264/AAC, 1080×1920.
+
+Analytical results may remain usable when video is unavailable. Return candidates with clear media-unavailable status and disable preview/export with an actionable explanation; do not claim an export succeeded or invent replacement media. Saved features/audio cannot recreate source video. A saved Twitch clip may cover only part of the desired interval and is not a guarantee that additional context can be fetched. Retained demo media follows source-specific permissions and deletion requirements ([governance](../data/data-governance.md)).
 
 ### 4.7 Interfaces
 
 - **CLI** (`autoclipper …`) is the primary interface for development and data work. Planned subcommands: `ingest`, `collect`, `build-dataset`, `features`, `train`, `eval`, `analyze`, `export`.
-- **Web API** (FastAPI, proposal): `POST /jobs` (VOD URL) → job ID. `GET /jobs/{id}` → status + candidates. `POST /exports` → MP4. Long-running work runs in a background worker. A simple in-process queue is enough for a single-user demo.
-- **Web UI** (Next.js, proposal): paste URL → progress → timeline heat-strip with clip markers and model scores → ranked candidate list → preview → export.
+- **Web API** (FastAPI, proposal): `POST /jobs` → job ID; status/results endpoint; export endpoint. Long-running work runs outside request handling with bounded concurrency, explicit failure states and documented restart behavior. An in-process queue is a local single-user demo proposal, not hosted-service infrastructure.
+- **Application:** input → progress/errors → understandable shortlist/timeline → preview → basic trim → export. Next.js remains a proposal alongside simpler web or desktop options (ADR-0007). Build this flow early with synthetic candidates; player/display choice follows OQ-17.
 
 ## 5. Storage layout (proposal)
 
@@ -139,13 +149,14 @@ data/
 │   ├── chat/<video_id>.json     # TwitchDownloader output (contains usernames, local only)
 │   └── audio/<video_id>.m4a
 ├── interim/                     # parsed, pseudonymized, per-VOD
-│   ├── chat/<video_id>.parquet
+│   ├── chat/<video_id>.parquet # only if message retention is approved (OQ-9)
 │   └── audio/<video_id>.wav     # 16 kHz mono, for feature extraction
 ├── processed/                   # analysis-ready tables (see data-model.md)
 │   ├── vods.parquet
-│   ├── clips.parquet
+│   ├── clips/<snapshot_id>.parquet  # immutable observation + manifest
 │   ├── moments.parquet
 │   ├── windows.parquet
+│   ├── window_labels.parquet    # training/evaluation only
 │   └── features/<family>.parquet
 ├── splits/<dataset_version>.json
 └── catalog.parquet
@@ -162,9 +173,9 @@ artifacts/
 | Configuration | One config module that reads env vars (`.env.example`) with typed defaults. CLI flags override env. |
 | Logging | Python `logging`, structured key=value messages. Never log secrets or raw usernames. |
 | Errors | Fail loudly with actionable messages. Stage-level retry for network errors only. Never silently drop rows: count and log them. |
-| Idempotency | Stages check for existing outputs (keyed by input IDs + stage version) and skip unless `--force` is passed. |
+| Idempotency | Key outputs by inputs (including snapshot/dataset IDs) and stage version. A refresh is a new observation; `--force` must not overwrite pinned historical inputs. |
 | Versioning | `dataset_version` for processed data. Each stage records its code version. Each run records its git SHA. |
-| Privacy | Pseudonymize at ingest. Raw chat stays local in `data/raw/`. See [governance](../data/data-governance.md). |
+| Privacy | Transient raw handling, approved redaction/retention, no raw sharing; OQ-9 selects retained fields. See [governance](../data/data-governance.md). |
 | Testing | Unit tests on pure functions with synthetic fixtures. No network in unit tests. See [testing](../development/testing.md). |
 
 ## 7. What's deliberately not in the architecture

@@ -21,7 +21,7 @@ If you commit a secret (Twitch client secret, OAuth token, API key, etc.), even 
 2. Tell the maintainer.
 3. Remove it from the branch. If it reached `main`, the maintainer decides whether to rewrite history.
 
-## Practices this project follows
+## Required practices for implementation
 
 - Secrets live only in a local `.env` (git-ignored). `.env.example` documents the variable names with no values.
 - Library code reads credentials through the config module only, never from hard-coded strings.
@@ -29,4 +29,4 @@ If you commit a secret (Twitch client secret, OAuth token, API key, etc.), even 
 - Downloaded media is treated as untrusted input. It's processed with FFmpeg and media libraries, never executed, and stays out of the repository.
 - New dependencies are justified in PRs and kept to well-maintained packages.
 
-Planned (see [`docs/project/open-questions.md`](docs/project/open-questions.md)): Dependabot alerts, secret scanning with push protection, and private vulnerability reporting enabled in repository settings.
+Secret scanning and push protection are enabled (verified 2026-10-13). Vulnerability alerts and private reporting remain OQ-12 follow-ups (see [`docs/project/open-questions.md`](docs/project/open-questions.md)); no security setting is changed by this repair.

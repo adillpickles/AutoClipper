@@ -107,6 +107,7 @@ uv run pytest
 
 ### Opening a PR
 
+- Agents prepare and validate the complete local change first; pushing and PR publication require explicit authorization. Substantial work follows the independent audit/repair loop in [AGENTS.md §7](AGENTS.md#7-how-to-do-a-task-the-standard-loop).
 - Fill in the PR template completely. **"How was this verified?"** is the most important section.
 - Link the issue with `Closes #N`.
 - Keep PRs small, ideally under ~400 changed lines excluding generated files. Large PRs get split.
@@ -135,11 +136,11 @@ Reviewers: be specific and kind. Mark suggestions as **blocking** or **nit**. Ap
 
 ### Merging
 
-The **author** merges after approval, using **Squash and merge**, and checks that the squash title is a good Conventional Commit. The branch is deleted automatically.
+The **author** merges after the required human approval, using **Squash and merge**, and checks the title. An agent needs separate explicit merge authorization; permission to publish a PR is not permission to merge it. The branch is deleted automatically.
 
 ## 6. Working with AI coding agents
 
-This project is built mostly with AI coding agents, and that's encouraged. The full playbook is in [`docs/agents/`](docs/agents/README.md). The essentials:
+AI-assisted development follows a general team practice: planning, implementation, independent adversarial audit, verified repairs and re-audit where needed, authorized publication, human review and separately authorized merge. The canonical loop is in [AGENTS.md §7](AGENTS.md#7-how-to-do-a-task-the-standard-loop), with guidance in [`docs/agents/`](docs/agents/README.md). The essentials:
 
 - **You own what you submit.** If an agent wrote it, you're still responsible for understanding it, verifying it and defending it in review.
 - **Give agents good tasks.** A well-written issue matters more than a clever prompt. See [`docs/agents/writing-tasks.md`](docs/agents/writing-tasks.md).

@@ -16,13 +16,13 @@ Tests protect the parts where bugs are **silent**: a label shifted by 10 seconds
 | **Unit** | Pure functions: parsing, moment merging, windowing, features, metrics | `tests/<module>/` | ❌ never | ✅ always |
 | **Contract** | A stage's output matches [data model](../architecture/data-model.md) (columns, dtypes, keys) | `tests/contracts/` | ❌ | ✅ |
 | **Integration** | Several stages chained on a tiny synthetic VOD (generated audio + fake chat + fake clips) | `tests/integration/` | ❌ | ✅ |
-| **Live API** | Real Twitch API / tool calls | `tests/live/`, marked `@pytest.mark.live` | ✅ | ❌ (manual, needs `.env`) |
+| **Live API** | Authorized real Twitch API / tool calls | `tests/live/`, marked `@pytest.mark.live` and excluded by default | ✅ | ❌ (manual, needs `.env` and source authorization) |
 | **Metric checks** | Eval metrics match hand-computed values on toy inputs | `tests/eval/` | ❌ | ✅ |
 
 ## Must-have tests (by area)
 
 - **Duration parsing:** `"3h8m33s"`, `"45m"`, `"59s"`, `"1h0m0s"` → seconds.
-- **Moment merging:** overlapping, adjacent within `GAP_S`, disjoint, chained beyond `MAX_MOMENT_S`, null offsets.
+- **Moment merging:** overlapping, gap-boundary, disjoint, long connected chains, null offsets, duplicate snapshot observations and deterministic ties under the adopted grouping rule.
 - **Windowing:** exact boundaries, last partial window, muted-segment flags.
 - **Labels:** window/moment overlap at edges (touching ≠ overlapping, unless the rule says so), confident-negative buffer.
 - **Features:** empty chat window → 0 not NaN, zero-variance z-score → 0, lead/lag at VOD edges.
@@ -45,6 +45,7 @@ Tests protect the parts where bugs are **silent**: a label shifted by 10 seconds
 - No sleeps, no network, no reliance on wall-clock time in unit tests. Inject clocks and HTTP clients.
 - Test **behavior, not implementation**. A refactor that keeps behavior shouldn't break tests.
 - Bug fixes come with a regression test that fails before the fix.
+- The scaffold must configure default pytest selection to exclude live tests (a marker alone does not exclude them). Explicit live runs need the appropriate credentials/authorization and never run in ordinary CI.
 
 ## Commands (planned)
 

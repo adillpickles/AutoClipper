@@ -14,7 +14,7 @@ Experiments are how this project produces claims. They have to be reproducible b
 3. **Write a config** (`experiments/<id>/config.yaml`): dataset version, split, feature families, model + hyperparameters, seed(s).
 4. **Run** through the CLI, e.g. `uv run autoclipper train --config experiments/<id>/config.yaml`. Notebooks are for exploration, not for producing reported numbers.
 5. **Record** results in `experiments/<id>/README.md` (template below).
-6. **Open a PR** with the config, any code changes and the README. Large artifacts stay out of git.
+6. **Prepare a PR** with config, code and README after validation/independent audit as appropriate; publish only when explicitly authorized under AGENTS.md. Large artifacts stay out of git.
 7. **Close the issue** with a one-paragraph conclusion: supported, refuted or inconclusive.
 
 ## Experiment IDs

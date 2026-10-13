@@ -8,20 +8,17 @@ This is the operating manual for **anyone making changes to this repository**: A
 
 ## 1. What this project is (30-second version)
 
-AutoClipper takes a **Twitch VOD**, finds and ranks the moments most worth turning into **short-form clips** (TikTok / Reels / Shorts), and exports them **vertical and captioned**. It is a tool for *clippers*.
+AutoClipper helps **viewers, streamers, clippers and editors** discover, review and export highlights from a **Twitch VOD**. The semester product should provide an appealing application flow: enter a supported VOD, browse interesting moments, preview and trim candidates, and export useful clips with basic framing and captions.
 
-The core data-science idea: the Twitch API lists **viewer-made clips** with their offsets into the VOD, subject to query limits and availability. Those are weak labels for "this moment was clip-worthy"; collection coverage must be checked. We extract **chat** and **audio** signals (and later **video**) per time window and train models to:
+Use available **viewer-made clips**, VOD offsets and views as candidates, signals or weak labels where appropriate; they are incomplete and popularity is not highlight quality. Chat and audio are proposed inexpensive signals; speech and video may be added when justified. The product needs a discovery path when viewer clips are sparse or absent. A ranker-first prototype may help implementation, but neither two trained models nor one detection strategy is mandatory.
 
-1. **Rank** existing viewer clips (v1).
-2. **Detect** clip-worthy moments in un-clipped VOD time (v2).
-
-Success means **beating simple baselines** (sort by Twitch views; chat-spike heuristic), measured offline. See `docs/ml/evaluation.md`.
+The course work should include useful trained ML, reproducible evaluation and comparisons with sensible baselines. Report unfavorable results honestly; interface and export work need not wait for a model to beat a heuristic. See `docs/product/prd.md` and `docs/ml/evaluation.md`.
 
 ## 2. Current state. Read before assuming anything exists.
 
 - **Phase:** design / pre-code. **No application code, no dependencies, no CI yet.**
 - The live source of truth for project state is [`docs/project/status.md`](docs/project/status.md). Read it at the start of every task.
-- Many technical choices are **proposals**. Check the ADR status in [`docs/decisions/`](docs/decisions/README.md) before treating a choice as settled. `Proposed` means *don't build an irreversible dependency on it without asking*. `Accepted` means *follow it*.
+- Many technical choices are **proposals**. Check the ADR status in [`docs/decisions/`](docs/decisions/README.md) before treating a choice as settled. Use a proposal for a reversible prototype only when the task explicitly authorizes that assumption; contract adoption and hard-to-reverse dependencies need team agreement. `Accepted` means *follow it*.
 
 ## 3. Context loading: what to read for which task
 
@@ -88,19 +85,20 @@ Use `uv run …` for everything. Never `pip install` into a global environment.
 4. **Don't change a data schema, label definition, or evaluation metric without an ADR** (or an ADR update) in the same PR. These silently invalidate past results.
 5. **Don't add a dependency** without saying why in the PR description. Prefer the standard library and the libraries already chosen.
 6. **Don't invent results.** Never write metrics, numbers or claims into docs, READMEs or PRs unless they come from a reproducible run that's linked in `experiments/`. Prefer "TBD" over a guess.
-7. **Don't silently resolve open decisions.** If a task depends on something listed in `docs/project/open-questions.md` or a `Proposed` ADR, stop and ask in the issue or PR. If you must proceed, choose the documented proposal and say so explicitly in the PR.
-8. **Respect platform terms.** No scraping or automation that breaks Twitch/TikTok terms beyond what `docs/data/data-governance.md` permits. No code that posts to social accounts without an explicit, reviewed task.
+7. **Don't silently resolve open decisions.** If a task depends on an open question or a `Proposed` ADR, obtain agreement before adopting the contract. A task may explicitly authorize a reversible prototype using the documented proposal; record that assumption without changing its status. Continue independent work while a decision is pending.
+8. **Respect platform terms.** Follow `docs/data/data-governance.md`; research assumptions are not permissions. No access-control circumvention or code that posts to social accounts without an explicit, reviewed task.
+9. **Publication needs explicit authorization.** Local implementation and commits do not authorize pushing, opening/updating a PR, or external issue/comment writes. Merge requires separate approval. Keep a prepared PR description local until publication is authorized.
 
 ## 7. How to do a task (the standard loop)
 
-1. **Understand.** Read the issue, the docs from §3, and the code you'll touch. If the acceptance criteria are unclear or contradict the docs, comment on the issue before writing code.
-2. **Branch.** `git switch -c <type>/<issue#>-<short-slug>`, e.g. `feat/12-chat-rate-features`. One issue per branch.
-3. **Plan small.** Aim for a PR a reviewer can read in about 15 minutes (< ~400 changed lines excluding generated files). Split bigger work and say so in the issue.
-4. **Implement**, following `docs/development/conventions.md`. Match the surrounding code.
-5. **Test.** Add or adjust tests for behavior you change (`docs/development/testing.md`). Run lint, types and tests locally.
-6. **Update docs in the same PR.** If behavior, schemas, commands or decisions changed, update the relevant doc. If project state changed (e.g. a milestone item is done), update `docs/project/status.md`.
-7. **Commit** using [Conventional Commits](https://www.conventionalcommits.org/): `feat(features): add chat message-rate per window`.
-8. **Open a PR** using the template. Link the issue (`Closes #12`), describe what you verified and how, and list anything you weren't sure about.
+1. **Understand and plan.** Read the issue/task, §3 docs, actual code, dependencies and integration boundaries. Use planning mode where supported. For substantial or ambiguous work, get the plan approved before implementation unless the current task already authorizes the repair approach. Routine well-specified work does not need repeated approval. Raise unresolved requirements with the human; draft external comments unless sending them is authorized.
+2. **Branch.** Create `<type>/<issue#>-<short-slug>`, or stay on an existing PR branch when directed. Preserve unrelated work. Aim for a reviewable diff (< ~400 changed lines excluding generated files); explain necessary exceptions.
+3. **Implement and validate.** Choose sound solutions consistent with the architecture, following `docs/development/conventions.md`. Test changed behavior, including regression cases (`docs/development/testing.md`), and run available checks.
+4. **Update docs.** Include affected behavior, schemas, commands, decisions and project state in the same change. Do not mark unmerged work complete on `main`.
+5. **Independent audit for substantial work.** A separate reviewer/agent inspects the actual completed work, tests and complete diff against the correct base. Follow [review guidance](docs/agents/reviewing-agent-prs.md); self-review is not independent review.
+6. **Verify findings, repair, re-audit.** Independently reproduce or disprove reported defects before choosing fixes. Record evidence and disagreements; repeat independent review when meaningful actionable defects remain. If no independent reviewer is available, hand off the validated branch and state that limitation.
+7. **Commit and prepare publication.** Use [Conventional Commits](https://www.conventionalcommits.org/), preserve configured human authorship, and draft the PR template with issue links, verification, uncertainty and truthful AI-assistance disclosure.
+8. **Authorized push/PR → human review → separately authorized merge.** Publish only within explicit authorization. Independent agent audit does not replace the required approving human review. Follow `docs/development/git-workflow.md`.
 
 ## 8. Definition of done
 
@@ -112,6 +110,7 @@ A change is done when **all** of these are true:
 - [ ] Docs affected by the change are updated in the same PR.
 - [ ] No data, media, secrets or real usernames are in the diff.
 - [ ] PR description says what was verified, how, and what's still uncertain.
+- [ ] Substantial work has an independent audit and verified disposition of actionable findings, or is explicitly handed off pending that audit.
 
 ## 9. Conventions at a glance
 
@@ -128,10 +127,10 @@ Full detail in `docs/development/conventions.md`.
 
 ## 10. When you're unsure
 
-- **Ambiguous requirement:** ask on the issue. Don't guess at product behavior.
+- **Ambiguous requirement:** ask the human and record the answer on the issue when external posting is authorized. Don't guess at product behavior.
 - **Doc is wrong or stale:** fix it in your PR (small) or open a `docs` issue (large).
 - **Found an unrelated bug:** don't fix it in this PR. Open an issue labeled `bug`.
-- **Blocked on a decision:** label the issue `needs-decision`, write down the options and your recommendation, and stop.
+- **Blocked on a decision:** record options and a recommendation; use `needs-decision` when authorized to update the issue. Stop dependent work and continue independent tasks.
 - **Something you did might be risky** (data deletion, history rewrite, external API writes): don't do it. Describe it in the PR and let a human decide.
 
 ## 11. Notes for specific agents
@@ -139,5 +138,5 @@ Full detail in `docs/development/conventions.md`.
 - **Claude Code** reads `CLAUDE.md`, which imports this file. Put Claude-specific notes there, not here.
 - **Codex / other agents** read this file directly.
 - **Parallel agents:** use separate git worktrees and separate issues. Don't have two agents edit the same files at the same time. See `docs/agents/parallel-work.md`.
-- **Windows hosts:** the repo enforces LF line endings via `.gitattributes`. Don't commit CRLF. Use forward slashes in docs and code paths.
+- **Windows hosts:** `.gitattributes` enforces LF except `.bat`, `.cmd` and `.ps1`, which use CRLF consistently with `.editorconfig`. Use forward slashes in docs and code paths.
 - **Don't add AI attribution lines, co-author, contributor or ownership trailers, or "generated by" footers** to commits, PRs or files. Do not add an AI agent as an author, contributor or owner. Authorship is the human who opens the PR. Keep required third-party license/source acknowledgments and the PR template's AI-assistance disclosure.

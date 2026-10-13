@@ -19,6 +19,8 @@ Start with the [project README](../README.md) for the overview, and [AGENTS.md](
 
 **Reviewing the initial setup:** [Setup review](project/setup-review.md) records verified GitHub settings, corrections and unresolved differences from the supplied course design.
 
+**Reviewing the repaired foundation:** [Foundation repair](project/foundation-repair.md) adjudicates F1–F14, records validation and separates implementation blockers from optional choices.
+
 **New contributor (human):** README → [PRD](product/prd.md) → [Architecture](architecture/overview.md) → [Setup](development/setup.md) → [CONTRIBUTING](../CONTRIBUTING.md) → [Status](project/status.md)
 
 **AI agent starting a task:** [AGENTS.md](../AGENTS.md) → [Status](project/status.md) → the issue → the docs listed in AGENTS.md § 3 for that task type

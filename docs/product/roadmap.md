@@ -2,25 +2,28 @@
 
 | | |
 |---|---|
-| **Status** | Proposal. Milestone order and dates need reconciliation with the supplied course design (OQ-15). |
-| **Last updated** | 2026-10-09 |
+| **Status** | Proposal. Implementation staging and dates await team agreement; semester product goals are in the PRD. |
+| **Last updated** | 2026-10-13 |
 
-The roadmap is staged so that **every milestone leaves the project in a demoable, defensible state**. If time runs out after M3, we still have a working product and a real result. Later milestones only add to it. The reasoning is in [ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md).
+The roadmap stages internal work while building the application alongside it. A clip-ranking prototype can exercise ingestion and export early, but M3 alone is not the finished semester product. The demo must include discovery independent of existing clips, understandable results, preview, basic trim and useful export ([PRD](prd.md)).
 
-The supplied course design includes a tentative September-December 2026 schedule, a whole-VOD detector and web UI in the MVP. This roadmap instead stages those after the clip ranker. Neither staging nor completion dates are settled; see [setup review](../project/setup-review.md) and OQ-15 before planning implementation.
+The original course design includes a tentative September-December 2026 schedule. Replan from the actual M0 state under OQ-13. Ranker-first remains an option ([ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md)); one learned scorer may serve both discovery and ranking, and shortlisted analysis is also possible. Neither two models nor a neural-network sequence is a completion requirement.
 
 ```mermaid
 flowchart LR
     M0[M0 Foundations] --> M1[M1 Data collection]
     M1 --> M2[M2 Dataset + baselines]
-    M2 --> M3[M3 v1 clip ranker + export]
-    M3 --> M4[M4 v2 moment detector]
-    M4 --> M5[M5 Demo-ready app]
+    M2 --> M3[M3 learned scoring + basic export]
+    M2 --> M4[M4 independent discovery]
+    M0 --> APP[App with synthetic candidates]
+    APP --> M5[M5 integrated demo and polish]
+    M3 --> M5
+    M4 --> M5
     M5 -.-> S[Stretch goals]
     M1 -. runs continuously .-> M1
 ```
 
-> **M1 collection runs continuously from the start.** Twitch VODs expire, so we can't backfill old streams later. Start the collector as early as possible and keep it running.
+> **Start a small authorized data pilot promptly**, then collect at an agreed scale while app/export work proceeds. VODs expire, but urgency does not establish permission. Synthetic development can proceed while collection decisions are resolved.
 
 ---
 
@@ -35,6 +38,7 @@ flowchart LR
 - [ ] CI on GitHub Actions: lint + type check + tests on every PR. Make these required checks.
 - [ ] Config module and `.env` loading
 - [ ] Twitch developer application registered (team-owned credentials, shared privately)
+- [ ] Choose application form and initial review flow (ADR-0007); start UI/job-state work with synthetic candidates
 
 **Exit criteria:** `uv sync && uv run pytest` passes on a fresh clone on Windows and macOS/Linux, and CI is green on `main`.
 
@@ -43,61 +47,62 @@ flowchart LR
 **Goal:** a growing, versioned local corpus of VOD metadata, clips, chat and audio for a fixed set of channels.
 
 - [ ] Choose target channels and categories ([collection plan](../data/collection-plan.md))
+- [ ] Record source authorization, retention and privacy choice (OQ-9/OQ-17) before real collection
 - [ ] Twitch API client: app token, Get Users, Get Videos, Get Clips with pagination and rate-limit handling
 - [ ] Chat replay downloader wrapper (TwitchDownloader CLI) with username pseudonymization
 - [ ] Audio-only VOD downloader (yt-dlp) with resumable downloads
 - [ ] Scheduled collector: new VODs per channel, plus a clip refresh N days later so clips can accumulate
-- [ ] Backup live-chat logger (official chat interface) for target channels
+- [ ] Investigate live-chat backup only if replay access/reliability requires it
 - [ ] Manifest/catalog of what's been collected, with dataset versioning
 
-**Exit criteria:** at least the target number of VODs from the collection plan ingested end to end, with clips, chat and audio, and a reproducible catalog.
+**Exit criteria:** an agreed pilot ingested with a reproducible catalog, immutable observations, coverage records and explicit missing-data status. Scale targets follow measured cost and channel coverage; arbitrary corpus counts do not block baselines.
 
 ## M2: Dataset and baselines
 
-**Goal:** a clean, versioned training dataset and baseline numbers that every model has to beat.
+**Goal:** a clean, versioned training dataset and reproducible baseline comparisons.
 
 - [ ] Moment merging (dedupe overlapping clips) per [labeling](../data/labeling.md)
 - [ ] Windowing and window labels, with chat-lag handling
 - [ ] Chat features and audio features per [features](../ml/features.md)
 - [ ] Train/validation/test split by broadcaster and time, saved to disk
 - [ ] Evaluation harness implementing [evaluation](../ml/evaluation.md) metrics, with bootstrap CIs
-- [ ] Baselines B0–B3 evaluated and recorded
-- [ ] Decide OQ-1 (v1 ranking target)
+- [ ] Applicable baselines B0–B4 evaluated on the same population and candidate budget
+- [ ] Agree the first learning target and evaluation protocol (OQ-1/OQ-15, ADR-0009)
 
 **Exit criteria:** `autoclipper eval --baseline all` reproduces the baseline table from a clean checkout plus the dataset.
 
 ## M3: v1 clip ranker and basic export
 
-**Goal:** the first end-to-end product: paste a VOD and get ranked, exportable clips.
+**Goal:** useful learned scoring and basic export; an existing-clip prototype is one possible first integration.
 
-- [ ] Train ranking models (logistic regression → gradient boosting → small NN) on chat + audio features
+- [ ] Train a simple model justified by the agreed target; compare with heuristics before adding complexity
 - [ ] Ablations: chat only, audio only, both
 - [ ] Export: cut, center/fixed-layout 9:16 crop, burned-in captions (faster-whisper)
 - [ ] CLI: `autoclipper analyze <vod>` → ranked candidates JSON. `autoclipper export <candidate>` → MP4.
 - [ ] Results write-up in `experiments/`
 
-**Exit criteria:** the v1 model beats baselines on the test split with CIs reported, and a full VOD → exported MP4 run works on a laptop.
+**Exit criteria:** a reproducible learned-model comparison and a supported VOD → exported MP4 flow work on a laptop. Baseline improvement is the research goal, reported separately from delivery readiness. Negative results prompt analysis, not suspension of app work.
 
 ## M4: v2 moment detector
 
-**Goal:** find clip-worthy moments in VOD time nobody clipped.
+**Goal:** independent discovery in VOD time nobody clipped. This may reuse the M3 scorer or combine heuristics and learned reranking.
 
-- [ ] Window-level classifier/sequence model over chat + audio features
+- [ ] Whole-VOD signal analysis with an agreed discovery strategy; a separate classifier/sequence model is optional
 - [ ] Candidate generation: peak picking, non-max suppression, boundary refinement
 - [ ] Evaluation: recall of held-out human moments, precision@k, comparison against heuristics
 - [ ] "Zero-clip VOD" mode: run on a VOD while hiding its clips, and measure how many held-out clips we recover
 - [ ] Explanations: top contributing signals per candidate
 
-**Exit criteria:** the v2 detector beats chat-spike and loudness heuristics on recall@k, and works on VODs with no clips.
+**Exit criteria:** signal-derived candidates work without clip metadata; baseline comparisons and limitations are recorded. Hidden clips test independence from clip availability, not generalization to small audiences by itself.
 
 ## M5: Demo-ready app
 
-**Goal:** the one-minute demo.
+**Goal:** integrate and polish the semester app. UI development starts in M0/M1, rather than after ML research finishes.
 
-- [ ] FastAPI backend wrapping the pipeline, with job status
-- [ ] Web UI: paste URL → progress → highlight timeline → ranked list → preview → export
+- [ ] Application/job integration using the agreed form (FastAPI + Next.js remains a proposal)
+- [ ] VOD input → progress/errors → understandable highlights → preview → basic trim → export
 - [ ] Smart 9:16 crop (face/facecam detection) if time allows
-- [ ] Pre-processed demo VODs cached for a reliable live demo
+- [ ] Small permitted demo/evaluation media set retained before expiry; processed features alone cannot support preview/export
 - [ ] Final results write-up and slides
 
 **Exit criteria:** a non-team member can run the demo flow unassisted.

@@ -21,13 +21,13 @@ src/autoclipper/
 ├── models/               # base.py (interface), baselines.py, gbm.py, nn.py
 ├── eval/                 # metrics.py, harness.py, bootstrap.py
 ├── export/               # cut.py, reframe.py, captions.py, encode.py
-└── api/                  # FastAPI app (M5)
+└── api/                  # proposed FastAPI app, alongside pipeline development
 tests/                    # mirrors src/autoclipper/ structure
 experiments/              # configs + results write-ups (see docs/ml/experiments.md)
 configs/                  # channels.yaml, lexicons, default params
 notebooks/                # exploration only; see §8
 scripts/                  # one-off/maintenance scripts (not imported by the package)
-web/                      # Next.js frontend (M5)
+web/                      # proposed web frontend, early app prototype if chosen
 ```
 
 Create directories only when a task needs them.
@@ -99,6 +99,6 @@ These rules prevent the most common silent bugs in this project:
 - Justify every new dependency in the PR. Prefer what's already in [ADR-0002](../decisions/0002-language-and-tooling.md).
 - Heavy optional stacks (PyTorch, video/CV models) go in optional dependency groups so the core pipeline stays light.
 
-## 10. Frontend (M5, proposal)
+## 10. Frontend (proposal)
 
 TypeScript strict mode, Next.js App Router, ESLint + Prettier, components in `web/src/components/`, API calls through one typed client module. Detailed conventions will be added when `web/` is scaffolded (ADR-0007).
