@@ -5,16 +5,6 @@
 # See docs/data/data-governance.md
 # =============================================================================
 
-# --- Secrets ------------------------------------------------------------------
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-secrets/
-credentials*.json
-token*.json
-
 # --- Data & artifacts (never commit) -----------------------------------------
 /data/
 /artifacts/
@@ -44,8 +34,20 @@ token*.json
 *.pkl
 *.pickle
 *.bin
-# Allow tiny synthetic fixtures in tests (they must contain no real usernames)
-!tests/fixtures/**
+# Allow tiny synthetic tabular fixtures; secret and media rules still apply.
+!tests/fixtures/**/*.parquet
+!tests/fixtures/**/*.npy
+!tests/fixtures/**/*.npz
+
+# --- Secrets (after fixture exceptions so they cannot be overridden) ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials*.json
+token*.json
 
 # --- Media (never commit) ----------------------------------------------------
 *.mp4
