@@ -10,15 +10,6 @@ PRs that change user-visible behavior, data schemas, label definitions or evalua
 
 ### Added
 
-- Initial project documentation: README, agent and contributor guides, product requirements, roadmap, architecture, data, ML and development docs, ADRs, and GitHub issue/PR templates.
-- Repository configuration: `.gitignore`, `.gitattributes`, `.editorconfig`, `.env.example`.
-
-### Changed
-
-- Align the product and staging with discovery/review/export for viewers, streamers and editors; keep model/application choices open and separate research outcomes from delivery.
-- Repair proposed snapshots, unlabeled inference, source-time alignment and evaluation/label contracts under ADR-0009; document source-specific permissions and retention decisions.
-- Establish shared planning, independent audit/verified repair and publication authorization guidance under ADR-0010.
-
-### Fixed
-
-- Synthetic-fixture exceptions no longer override private-key, environment or credential ignore rules.
+- Initial project documentation: README, agent and contributor guides, product requirements with scope table, roadmap, architecture, data, ML and development docs, and GitHub issue/PR templates.
+- ADRs: core stack accepted (Python/uv tooling, `src/` layout, chat + audio first, Parquet + DuckDB, FastAPI + Next.js); proposed analysis/evaluation contracts (ADR-0009); agent workflow with an optional second-opinion review loop (ADR-0010).
+- Repository configuration: `.gitignore` (synthetic fixtures allowed without exposing secrets), `.gitattributes`, `.editorconfig`, `.env.example`.
