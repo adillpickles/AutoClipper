@@ -2,13 +2,35 @@
 
 | | |
 |---|---|
-| **Status** | Clarified product direction; technical proposals and detailed acceptance parameters await team agreement. |
-| **Last updated** | 2026-10-13 |
+| **Status** | Product scope agreed (2026-10-16), based on the team's project design doc. The exact training target and detailed label/evaluation rules are still open (see below). |
+| **Last updated** | 2026-10-16 |
 | **Related** | [Roadmap](roadmap.md) · [Architecture](../architecture/overview.md) · [Evaluation](../ml/evaluation.md) · [Open questions](../project/open-questions.md) |
 
-> This PRD is a living document. Sections marked **Proposal** reflect the current best plan but haven't been ratified by the team.
+## Scope at a glance
 
-The original course design establishes a whole-VOD discovery, preview and export experience for viewers, streamers and editors. The owner's 2026-10-13 clarification preserves that experience while keeping application form, detection strategy and model architecture open. Technical departures remain proposals under OQ-15 and [ADR-0009](../decisions/0009-analysis-and-evaluation-contract-repair.md).
+**The MVP, end to end by demo night:** paste a Twitch VOD link → the pipeline pulls viewer clips, chat and audio → chat and audio signals plus a trained model rank moments across the whole VOD → the web app shows the top moments with scores, a timeline and a preview → the user adjusts start/end → one click exports a vertical (9:16), captioned MP4.
+
+| Priority | What's in it |
+|---|---|
+| **Must (MVP)** | Paste a VOD link · collect VOD info, viewer clips, chat replay and audio · find and rank moments across the whole VOD, **including VODs with no viewer clips** · show viewer clips too, with duplicates merged · web app with ranked shortlist, timeline and preview · adjust start/end · export a 9:16 MP4 with basic crop and burned-in captions · 3 simple baselines (random, biggest chat spike, loudest audio) and at least one trained model (logistic regression, then LightGBM), evaluated on VODs and streamers it never trained on |
+| **Should (polish)** | Speech (Whisper) signals on the shortlist · signal-by-signal comparison (ablations) · blind taste test with classmates · smart crop (facecam stacked over gameplay) · "why this moment" explanations · caching processed VODs · progress bar and clear errors (bad link, expired VOD, missing chat) · evaluation script in CI |
+| **Could (stretch)** | Video signal experiment · learning the chat delay automatically · thumbs up/down feedback · interactive heatmap dashboard · AI-suggested titles and hooks · Docker · hosted deployment (OQ-18) |
+| **Won't (this semester)** | Clipping live streams in real time · auto-posting to TikTok, Reels or Shorts · training video models from scratch · predicting TikTok/Reels views · YouTube or Kick input · accounts and payments · mobile app |
+
+**Editing is deliberately small:** trim (start/end), a basic 9:16 crop and captions. No timeline editor, effects or multi-clip compilations. Nothing from Should or Could starts until the MVP runs end to end.
+
+**The model goal** is to beat the baselines on streamers it never trained on. If it doesn't, we report that honestly and the app still ships; app and export work never wait on the model.
+
+### Decided vs. still open
+
+| Decided (follow it) | Still open (don't decide alone; see [open questions](../project/open-questions.md)) |
+|---|---|
+| Users: viewers, streamers, clippers/editors, all in one app | **OQ-1:** the exact training target (what counts as a positive, how views are used) |
+| Web app: FastAPI backend + Next.js frontend ([ADR-0007](../decisions/0007-web-application-stack.md)) | **OQ-9 / OQ-17:** chat retention and source permissions. These block *real* data collection; synthetic data is fine meanwhile. |
+| Python 3.12 + uv, single repo ([ADR-0002](../decisions/0002-language-and-tooling.md), [ADR-0003](../decisions/0003-repository-layout.md)) | **OQ-18:** hosting and the app's database (local demo first) |
+| Chat + audio first; video optional for ranking, required for export ([ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md)) | **ADR-0009 details:** window size, moment grouping, matching rules for evaluation |
+| Parquet + DuckDB for pipeline data ([ADR-0005](../decisions/0005-local-storage-parquet-duckdb.md)) | **OQ-4:** which channels to collect |
+| Baselines → logistic regression → LightGBM; splits grouped by streamer ([modeling plan](../ml/modeling-plan.md)) | |
 
 ---
 
@@ -61,7 +83,8 @@ These audiences share one analysis and review workflow. Separate applications ar
 - **Auto-publishing to social platforms.** Out of scope: platform API approval and scope creep. A clipper uploads the exported files themselves.
 - **Platforms other than Twitch** as an input source.
 - **Training on raw video end to end.** Video is optional and comes later (see [ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md)).
-- **Real-time / live-stream clipping** for v1 or v2. It's a stretch goal.
+- **Real-time / live-stream clipping.** Possible future work after the semester.
+- **Predicting TikTok/Reels views** or any other platform's engagement.
 - **Monetization** or revenue targets as a success metric.
 - **Multi-user accounts, auth, billing.** The app is a single-user tool for the demo.
 
@@ -78,7 +101,7 @@ These audiences share one analysis and review workflow. Separate applications ar
 | US-7 | user | analyze a supported VOD with zero viewer clips | the tool still offers signal-derived candidates | MVP |
 | US-8 | streamer/editor | adjust start/end before export | I can fix a bad trim | MVP |
 | US-9 | team member | inspect contributing signals where supported | we can debug and explain the analysis | Optional polish |
-| US-10 | clipper | get candidates while a stream is still live | I can post before other clippers | Stretch |
+| US-10 | clipper | get candidates while a stream is still live | I can post before other clippers | Won't (this semester) |
 
 ## 6. Functional requirements
 
@@ -98,7 +121,7 @@ Requirement IDs are stable. Reference them in issues and PRs (e.g. "implements F
 - **FR-7** Compute per-window chat and audio features (see [features](../ml/features.md)).
 - **FR-8** Score and rank candidates, using API-derived information where useful. An existing-clip ranker is a possible intermediate prototype.
 - **FR-9** Analyze across a supported VOD and propose moments independently of existing clips. Whole-VOD scoring or heuristic shortlisting with learned reranking are possible approaches; a second trained model is not required.
-- **FR-10** Return, for each candidate, the score, start/end in VOD seconds, and the top contributing signals.
+- **FR-10** Return, for each candidate, the score and start/end in VOD seconds. Top contributing signals ("why this moment") are optional polish (US-9), not an MVP requirement.
 
 ### Export
 
@@ -110,7 +133,7 @@ Requirement IDs are stable. Reference them in issues and PRs (e.g. "implements F
 ### Interface
 
 - **FR-15** Internal CLI tools for reproducible pipeline and experiment work.
-- **FR-16** An appealing application for the semester demo: VOD input → progress/errors → understandable highlights → preview → trim → export. Web versus desktop and detailed screens remain open (ADR-0007); UI development proceeds alongside analysis.
+- **FR-16** A web app for the semester demo (FastAPI + Next.js, [ADR-0007](../decisions/0007-web-application-stack.md)): VOD input → progress/errors → understandable highlights → preview → trim → export. UI development starts early with synthetic candidates and proceeds alongside analysis.
 
 ## 7. Non-functional requirements
 
@@ -145,7 +168,7 @@ Requirement IDs are stable. Reference them in issues and PRs (e.g. "implements F
 - **Compute:** laptops. Free tiers only, unless the team decides otherwise.
 - **Data access:** Twitch Helix API (official, free developer app). Chat replay and VOD download rely on **unofficial** tools (see [data sources](../data/data-sources.md)). This is a known risk.
 - **VOD retention:** Twitch deletes past broadcasts after a retention period, so **collection must start early and run continuously**.
-- **Course aim:** useful ML trained on real, authorized data, sensible experimental evaluation and a polished product. Confirm exact staff requirements under OQ-13; neither a neural network nor TikTok-view prediction is an established requirement.
+- **Course aim:** useful ML trained on real, authorized data, sensible experimental evaluation and a polished product. Neither a neural network nor TikTok-view prediction is a requirement.
 
 ## 10. Risks
 

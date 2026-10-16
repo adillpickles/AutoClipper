@@ -16,15 +16,15 @@ An ADR records one significant decision: the context, the choice, and its conseq
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
-| [0002](0002-language-and-tooling.md) | Python 3.12 with uv, Ruff, Pyright, pytest | Proposed |
-| [0003](0003-repository-layout.md) | Single repository, `src/` layout | Proposed |
-| [0004](0004-staged-scope-chat-and-audio-first.md) | Staged scope: rank viewer clips first, chat + audio before video | Proposed |
-| [0005](0005-local-storage-parquet-duckdb.md) | Local file storage with Parquet + DuckDB | Proposed |
+| [0002](0002-language-and-tooling.md) | Python 3.12 with uv, Ruff, Pyright, pytest | Accepted |
+| [0003](0003-repository-layout.md) | Single repository, `src/` layout | Accepted |
+| [0004](0004-staged-scope-chat-and-audio-first.md) | Staged scope: chat + audio before video | Accepted |
+| [0005](0005-local-storage-parquet-duckdb.md) | Local file storage with Parquet + DuckDB | Accepted (pipeline data; app storage → OQ-18) |
 | [0006](0006-license.md) | License | Proposed |
-| [0007](0007-web-application-stack.md) | FastAPI backend + Next.js frontend | Proposed |
+| [0007](0007-web-application-stack.md) | FastAPI backend + Next.js frontend | Accepted (hosting → OQ-18) |
 | [0008](0008-trunk-based-development-squash-merge.md) | Trunk-based development, reviewed PRs, squash merge | Accepted |
-| [0009](0009-analysis-and-evaluation-contract-repair.md) | Coherent proposed analysis/evaluation contracts | Proposed |
-| [0010](0010-agent-review-and-publication-workflow.md) | Shared agent audit/repair and publication workflow | Accepted (owner-directed practice) |
+| [0009](0009-analysis-and-evaluation-contract-repair.md) | Proposed analysis/evaluation contracts | Proposed |
+| [0010](0010-agent-review-and-publication-workflow.md) | Agent workflow, publishing and optional second-opinion review | Accepted |
 
 ## Writing a new ADR
 

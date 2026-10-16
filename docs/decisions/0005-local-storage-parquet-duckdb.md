@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
+| **Status** | Accepted for pipeline and dataset storage (2026-10-16). The app's job/result store and hosting are deferred to OQ-18. |
 | **Date** | 2026-10-09 |
 | **Related** | [Data model](../architecture/data-model.md), [Architecture § Storage](../architecture/overview.md#5-storage-layout-proposal) |
 
@@ -16,7 +16,7 @@ Data volumes are moderate: hundreds of VODs, millions of chat messages, ~10⁵�
 - Store media (audio) as files under `data/raw/`.
 - Track collection state in a `catalog.parquet` table.
 - Version datasets via `data/splits/<dataset_version>.json` (see [data model § Dataset versioning](../architecture/data-model.md#dataset-versioning)).
-- No database server for v1/v2.
+- The data pipeline needs no database server. Where the web app keeps job state and results (local files/SQLite or hosted Postgres such as Supabase, as in the project design doc) is decided together with hosting under OQ-18.
 
 ## Options considered
 

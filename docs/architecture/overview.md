@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Proposal. Describes the planned system. **Nothing here is implemented yet.** |
-| **Last updated** | 2026-10-13 |
+| **Status** | Planned system. **Nothing here is implemented yet.** Stack choices are accepted in ADR-0002/0003/0005/0007; details marked "proposal" still need agreement. |
+| **Last updated** | 2026-10-16 |
 | **Related** | [Data model](data-model.md) · ADR [0002](../decisions/0002-language-and-tooling.md), [0003](../decisions/0003-repository-layout.md), [0005](../decisions/0005-local-storage-parquet-duckdb.md), [0007](../decisions/0007-web-application-stack.md) |
 
 ---
@@ -12,7 +12,7 @@
 
 1. **A pipeline of idempotent stages.** Each stage reads files and writes files. Re-running a stage with the same inputs produces the same outputs and skips work that's already done. This makes the system debuggable, cacheable and agent-friendly: every stage can be built and tested on its own.
 2. **Files are the interface.** Stages communicate through versioned Parquet/JSON artifacts with documented schemas ([data model](data-model.md)), not through in-memory coupling. Any stage can be swapped as long as it honors the contract.
-3. **Reusable processing, parallel interface development.** Pipeline logic lives in the proposed Python package; CLI/app adapters call it. Build UI and export prototypes with synthetic candidates while processing/ML develops. The finished semester product is an app, not a CLI demonstration.
+3. **Reusable processing, parallel interface development.** Pipeline logic lives in the `autoclipper` Python package; CLI/app adapters call it. Build UI and export prototypes with synthetic candidates while processing/ML develops. The finished semester product is an app, not a CLI demonstration.
 4. **Cheap signals first.** Chat and audio are per-second numbers that are cheap to compute and strong. Video is expensive and optional ([ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md)).
 5. **Laptop scale.** No GPU, cluster or cloud dependency for v1/v2. Audio-only downloads keep data small.
 6. **One time base.** Inside the pipeline, every position is **seconds from VOD start** (`*_s`). Wall-clock time is only used for metadata.
@@ -135,8 +135,8 @@ Analytical results may remain usable when video is unavailable. Return candidate
 ### 4.7 Interfaces
 
 - **CLI** (`autoclipper …`) is the primary interface for development and data work. Planned subcommands: `ingest`, `collect`, `build-dataset`, `features`, `train`, `eval`, `analyze`, `export`.
-- **Web API** (FastAPI, proposal): `POST /jobs` → job ID; status/results endpoint; export endpoint. Long-running work runs outside request handling with bounded concurrency, explicit failure states and documented restart behavior. An in-process queue is a local single-user demo proposal, not hosted-service infrastructure.
-- **Application:** input → progress/errors → understandable shortlist/timeline → preview → basic trim → export. Next.js remains a proposal alongside simpler web or desktop options (ADR-0007). Build this flow early with synthetic candidates; player/display choice follows OQ-17.
+- **Web API** (FastAPI, ADR-0007): `POST /jobs` → job ID; status/results endpoint; export endpoint. Long-running work runs outside request handling with bounded concurrency, explicit failure states and documented restart behavior. An in-process queue is enough for the local single-user demo; hosted infrastructure is decided under OQ-18.
+- **Web app** (Next.js + TypeScript + Tailwind, ADR-0007): input → progress/errors → understandable shortlist/timeline → preview → basic trim → export. Build this flow early with synthetic candidates; player/display choice follows OQ-17.
 
 ## 5. Storage layout (proposal)
 
@@ -180,7 +180,7 @@ artifacts/
 
 ## 7. What's deliberately not in the architecture
 
-- No database server. Parquet + DuckDB is enough at our scale.
-- No distributed processing or message broker. Revisit only for live mode.
-- No cloud deployment requirement for the demo.
+- No database server for pipeline data. Parquet + DuckDB is enough at our scale. (The app's job/result store is decided with hosting, OQ-18.)
+- No distributed processing or message broker.
+- No cloud deployment requirement for the demo. The app must run on a laptop; hosting is optional (OQ-18).
 - No model serving infrastructure beyond loading a pickled/ONNX model in the API process.

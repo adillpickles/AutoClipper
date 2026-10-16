@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Status** | Proposal. Implementation staging and dates await team agreement; semester product goals are in the PRD. |
-| **Last updated** | 2026-10-13 |
+| **Status** | Agreed milestones. Week-by-week dates are replanned at the weekly sync. |
+| **Last updated** | 2026-10-16 |
 
-The roadmap stages internal work while building the application alongside it. A clip-ranking prototype can exercise ingestion and export early, but M3 alone is not the finished semester product. The demo must include discovery independent of existing clips, understandable results, preview, basic trim and useful export ([PRD](prd.md)).
+**Key dates (course syllabus):** Demo of Demos on **Fri Dec 4, 2026**; final presentations and demo night on **Fri Dec 11, 2026**. The MVP must run end to end before Dec 4.
 
-The original course design includes a tentative September-December 2026 schedule. Replan from the actual M0 state under OQ-13. Ranker-first remains an option ([ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md)); one learned scorer may serve both discovery and ranking, and shortlisted analysis is also possible. Neither two models nor a neural-network sequence is a completion requirement.
+The milestones build the pipeline and the web app **in parallel**: the app starts with synthetic candidates in M0/M1 and is wired to real results later. The finished semester product is the MVP in the [PRD scope](prd.md#scope-at-a-glance): whole-VOD discovery (including VODs with no viewer clips), a ranked shortlist, preview, trim and 9:16 captioned export. One trained model can serve both discovery and ranking; two separate models are not required.
 
 ```mermaid
 flowchart LR
@@ -31,14 +31,15 @@ flowchart LR
 
 **Goal:** a repo where anyone, human or agent, can pick up a task and ship it consistently.
 
-- [ ] Documentation, conventions, ADRs, issue/PR templates merged *(included in this combined documentation PR)*
-- [x] Labels and `main` protection ruleset configured *(remote base established; temporary admin PR-only bypass for this PR must be removed after merge)*
-- [ ] Ratify or amend proposed ADRs (tooling, layout, storage, license, web stack)
+- [ ] Documentation, conventions, ADRs, issue/PR templates merged
+- [x] Labels and `main` protection ruleset configured
+- [x] Core ADRs accepted: tooling, layout, scope, pipeline storage, web stack (license still open)
+- [ ] Teammates added as collaborators; first issue backlog created
 - [ ] Python project scaffold: `pyproject.toml`, `uv`, Ruff, Pyright, pytest, pre-commit
 - [ ] CI on GitHub Actions: lint + type check + tests on every PR. Make these required checks.
 - [ ] Config module and `.env` loading
 - [ ] Twitch developer application registered (team-owned credentials, shared privately)
-- [ ] Choose application form and initial review flow (ADR-0007); start UI/job-state work with synthetic candidates
+- [ ] Next.js app skeleton showing synthetic candidates (shortlist → preview → trim → export flow)
 
 **Exit criteria:** `uv sync && uv run pytest` passes on a fresh clone on Windows and macOS/Linux, and CI is green on `main`.
 
@@ -91,7 +92,7 @@ flowchart LR
 - [ ] Candidate generation: peak picking, non-max suppression, boundary refinement
 - [ ] Evaluation: recall of held-out human moments, precision@k, comparison against heuristics
 - [ ] "Zero-clip VOD" mode: run on a VOD while hiding its clips, and measure how many held-out clips we recover
-- [ ] Explanations: top contributing signals per candidate
+- [ ] *(Optional polish, US-9)* Explanations: top contributing signals per candidate
 
 **Exit criteria:** signal-derived candidates work without clip metadata; baseline comparisons and limitations are recorded. Hidden clips test independence from clip availability, not generalization to small audiences by itself.
 
@@ -99,7 +100,7 @@ flowchart LR
 
 **Goal:** integrate and polish the semester app. UI development starts in M0/M1, rather than after ML research finishes.
 
-- [ ] Application/job integration using the agreed form (FastAPI + Next.js remains a proposal)
+- [ ] Wire the Next.js app to real FastAPI jobs and results (ADR-0007)
 - [ ] VOD input → progress/errors → understandable highlights → preview → basic trim → export
 - [ ] Smart 9:16 crop (face/facecam detection) if time allows
 - [ ] Small permitted demo/evaluation media set retained before expiry; processed features alone cannot support preview/export
@@ -107,14 +108,13 @@ flowchart LR
 
 **Exit criteria:** a non-team member can run the demo flow unassisted.
 
-## Stretch goals (unordered, each needs its own ADR)
+## Stretch goals (only after the MVP runs end to end; each needs its own ADR)
 
 - **Video features:** scene cuts, motion, game-specific CV. Measured as an ablation ("does video add anything beyond chat + audio?").
-- **Short-form performance model:** predict TikTok/Reels performance from external clip-account data (views normalized per account).
 - **Online posting experiment:** model picks vs. random picks on a clip account, with streamer permission.
-- **Live mode:** stream ingestion, low-latency scoring, candidates while the stream is live.
 - **Clip refinement:** learned start/end boundaries instead of fixed padding.
+- The other Should/Could items in the [PRD scope table](prd.md#scope-at-a-glance).
 
-## Out of scope
+## Out of scope this semester
 
-Auto-publishing to social platforms, non-Twitch sources, multi-user accounts. See [PRD § Non-goals](prd.md#non-goals-for-the-course-project).
+Live-stream clipping, predicting TikTok/Reels views, auto-publishing to social platforms, non-Twitch sources, accounts and payments, mobile app. See the Won't row in the [PRD scope table](prd.md#scope-at-a-glance).

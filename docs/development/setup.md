@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Partly proposal. There's no code to run yet. Prerequisites follow [ADR-0002](../decisions/0002-language-and-tooling.md) (*Proposed*). **The PR that scaffolds the project must turn this into exact, tested steps.** |
+| **Status** | Partly proposal. There's no code to run yet. Prerequisites follow [ADR-0002](../decisions/0002-language-and-tooling.md) (*Accepted*). **The PR that scaffolds the project must turn this into exact, tested steps.** |
 | **Last updated** | 2026-10-09 |
 
 ## Prerequisites

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
+| **Status** | Accepted (2026-10-16) |
 | **Date** | 2026-10-09 |
 | **Related** | [Conventions § Repository layout](../development/conventions.md#1-repository-layout-planned), [Architecture](../architecture/overview.md) |
 
@@ -16,7 +16,7 @@ One repository containing:
 
 - `src/autoclipper/`: the Python package (pipeline, models, eval, export, API), in the `src` layout.
 - `tests/`: mirrors the package structure.
-- `web/`: proposed web frontend, added for the early app prototype if ADR-0007 is adopted.
+- `web/`: the Next.js frontend ([ADR-0007](0007-web-application-stack.md)).
 - `experiments/`, `configs/`, `notebooks/`, `scripts/`, `docs/`.
 - Git-ignored `data/` and `artifacts/`.
 

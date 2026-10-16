@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
+| **Status** | Accepted (2026-10-16, matches the team's project design doc) |
 | **Date** | 2026-10-09 |
 | **Related** | [Conventions](../development/conventions.md), [Setup](../development/setup.md) |
 

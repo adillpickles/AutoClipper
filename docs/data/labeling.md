@@ -69,7 +69,7 @@ Missing clip collection/ground truth is not `label_pos=False`. New-VOD inference
 Chat reacts **after** the event: viewers see the stream with a delay, then type. Expect a lag of several seconds up to roughly 15 s. ⚠️ Estimate it from data by cross-correlating chat rate with moment starts.
 
 - **Features handle lag, labels don't.** Labels stay in true VOD time (where the clip is). Chat features for window *t* include **lead** features from windows *t+1…t+k* (see [features](../ml/features.md)). For offline VOD analysis it's legitimate to look slightly ahead in chat.
-- **Live mode** (stretch) can't look ahead, so it must use only past chat. Keep lead features in a separate, clearly named group so they can be dropped.
+- **Live mode** (future work, not this semester) can't look ahead, so it must use only past chat. Keep lead features in a separate, clearly named group so they can be dropped.
 - **Source-time output:** viewer-clip boundaries and model predictions against these labels are already in VOD time. A heuristic locating a peak in chat time converts it once before creating candidates. **Export applies no chat-lag shift**; context padding and manual trimming are separate operations ([architecture § export](../architecture/overview.md#46-export)).
 
 ## 6. Normalization across channels

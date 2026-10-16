@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Proposal. Targets, model choices and evaluation protocol await team agreement (OQ-1/OQ-15, ADR-0009). |
-| **Last updated** | 2026-10-13 |
+| **Status** | Model progression agreed: baselines → logistic regression → LightGBM. The training target (OQ-1) and evaluation details (ADR-0009) are still open. |
+| **Last updated** | 2026-10-16 |
 | **Related** | [Features](features.md) · [Evaluation](evaluation.md) · [Experiments](experiments.md) · [Labeling](../data/labeling.md) |
 
 ## 1. Candidate ML problems
@@ -25,7 +25,7 @@ For clips that already exist, Twitch gives us their view counts, so **predicting
 
 1. **Independent discovery/scoring.** Learn from noisy observed clips using chat/audio signals, then compare with heuristics and human judgments. Clip popularity is a proxy outcome, not objective highlight quality. This can also rank generated candidates.
 2. **Early ranking (conditional experiment).** Predict later clip strength from information available at an actual, recorded inference cutoff. Stream-end claims require a stream-end observation; a day-one snapshot cannot substitute. Freeze candidates, clip membership, boundaries and all clip-derived inputs at that cutoff; later snapshots supply targets only. Compare views at the same cutoff. Adoption needs a cutoff/target mapping under OQ-1, not an obligatory first model.
-3. **Short-form performance** (stretch). A separate target using external engagement data (OQ-3), not the semester product's underlying requirement.
+3. **Short-form performance.** Out of scope this semester ([PRD scope](../product/prd.md#scope-at-a-glance)). It would need a separate target built from external engagement data (OQ-3).
 
 Until OQ-1 is decided, synthetic adapters, signal extraction, UI/export and toy evaluation mechanics can proceed under explicitly authorized proposals. Do not train a claimed ranking model or finalize its harness against an unspecified target.
 

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed (amended 2026-10-13; implementation order, not a reduced semester MVP) |
+| **Status** | Accepted (2026-10-16). Sets implementation order and initial signals, not a reduced semester MVP. |
 | **Date** | 2026-10-09 |
 | **Related** | [Roadmap](../product/roadmap.md), [Modeling plan](../ml/modeling-plan.md), [Risks](../project/risks.md) |
 
@@ -30,7 +30,7 @@ Build in stages, with interface and export work proceeding alongside analysis:
 
 1. **Optional early clip-ranking prototype.** Use available clips to exercise deduplication, review and export. Establish a useful target before training a ranker; sorting known views is a baseline.
 2. **Independent discovery.** Analyze chat/audio across the VOD, either scoring windows or shortlisting candidates for learned reranking. Window size and candidate rules remain proposals. One trained scorer can serve discovery and ranking; two models are not required.
-3. **Stretch:** video/CV features (as a measured ablation), live mode, short-form performance model, online posting experiment.
+3. **Stretch:** video/CV features (as a measured ablation), online posting experiment. Live mode and short-form (TikTok/Reels) performance prediction are out of scope this semester ([PRD scope](../product/prd.md#scope-at-a-glance)).
 
 Video is **required for export** (cutting and 9:16 reframing, using existing tools and detectors) but **optional for ranking**.
 

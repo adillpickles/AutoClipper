@@ -18,7 +18,7 @@
 | **yt-dlp** | VOD audio/video | ❌ unofficial | Audio features, export | v1 |
 | Twitch **chat** (IRC / EventSub) | Live chat messages | ✅ | Backup chat source; live mode | M1 backup, stretch |
 | 7TV / BTTV / FFZ emote APIs | Third-party emote sets | ✅ (their own APIs) | Emote features | optional |
-| External short-form engagement data | Public clip-account videos + views | depends on tool | Short-form performance model | stretch |
+| External short-form engagement data | Public clip-account videos + views | depends on tool | Short-form performance model | out of scope this semester |
 
 ---
 
