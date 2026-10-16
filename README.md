@@ -21,7 +21,7 @@
 3. [`docs/product/prd.md` § Scope at a glance](docs/product/prd.md#scope-at-a-glance): what we're building (must / should / could / won't) and what's still undecided.
 4. [`docs/architecture/overview.md`](docs/architecture/overview.md): how the system fits together.
 5. [`CONTRIBUTING.md`](CONTRIBUTING.md): how to pick up an issue, open a PR and get it merged.
-6. The issue you're working on, plus the docs [`AGENTS.md` § 3](AGENTS.md#3-what-to-read-for-which-task) lists for that kind of task.
+6. The issue you're working on (planned work is drafted in [`docs/project/backlog.md`](docs/project/backlog.md)), plus the docs [`AGENTS.md` § 3](AGENTS.md#3-what-to-read-for-which-task) lists for that kind of task.
 
 > **AI agents:** if you were pointed at this README, read `AGENTS.md` next and follow it. Don't start changing files until you've read items 1–3 and your issue.
 
@@ -76,6 +76,7 @@ Viewer clips double as **noisy training labels**: roughly, a stretch of the VOD 
 |---|---|
 | Know what we're building and why | [PRD](docs/product/prd.md) |
 | See the plan, milestones and dates | [Roadmap](docs/product/roadmap.md) |
+| Find something to work on | [Implementation backlog](docs/project/backlog.md) (copy-ready issue drafts in dependency order) |
 | Understand the system design | [Architecture](docs/architecture/overview.md) · [Data model](docs/architecture/data-model.md) |
 | Work with the data | [`docs/data/`](docs/data/README.md) |
 | Work on the models | [`docs/ml/`](docs/ml/README.md) |

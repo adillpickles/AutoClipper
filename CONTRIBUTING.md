@@ -36,14 +36,14 @@ How work moves from an issue to a merged pull request. It applies to everyone, w
 1. **Find one.** Open the repo's **Issues** tab. Good starting filters:
    - `agent-ready`: fully specified, ready to hand to you or an AI agent
    - `good first issue`: small and well scoped
-   - Or check the current milestone in the [roadmap](docs/product/roadmap.md).
+   - A category you want to work on, e.g. `frontend` or `modeling`
 
-   From the terminal: `gh issue list --label agent-ready`.
+   From the terminal: `gh issue list --label agent-ready`. The planned work, in dependency order, is in the [backlog](docs/project/backlog.md). Until those drafts are published as issues, pick from the backlog and tell the team.
 2. **Make sure you can work on it independently.**
    - Nobody else is assigned.
    - Everything under **Depends on** in the issue is already merged. If not, pick another issue or ask the person working on the dependency.
    - It doesn't have the `blocked` or `needs-decision` label.
-   - It won't edit the same files as someone else's open PR (check "Likely files touched").
+   - It won't edit the same files as someone else's open PR (check its scope / likely files).
 3. **Claim it.** Assign yourself: issue page → right sidebar → **Assignees** → yourself. Or run `gh issue edit <N> --add-assignee @me`. If you can't assign, comment "taking this".
 4. **Unclear?** Ask in a comment on the issue before you start, not halfway through.
 
@@ -109,7 +109,7 @@ Commits inside your branch can be messy; they get squashed into one commit when 
    - **Screenshots:** for anything visual (see step 7).
    - **Checklist:** tick what's true; explain anything you couldn't tick.
 5. **Link the issue.** Write `Closes #14` in the description (or `Fixes #14`). GitHub links the PR to the issue and closes the issue automatically when the PR merges. For several issues, use one line each (`Closes #14`, `Closes #15`). If the PR only does part of an issue, write `Part of #14` instead so the issue stays open.
-6. **Add labels.** Copy the issue's **type** and **area** labels onto the PR (e.g. `feature` + `export`). PR page → right sidebar → **Labels**, or `gh pr edit --add-label feature,export`. See [§10](#10-labels).
+6. **Add labels.** Copy the issue's **category** labels onto the PR (e.g. `export`). PR page → right sidebar → **Labels**, or `gh pr edit --add-label export`. See [§10](#10-labels).
 7. **Screenshots for UI or visual work.** If your change affects anything you can see (web UI, exported video framing, captions, charts), add a screenshot. If it changes something that already existed, add **before and after**. Drag and drop the image into the description box on GitHub. A side-by-side table works well:
 
    ```markdown
@@ -169,9 +169,9 @@ A good issue is **small** (one PR), **testable** (acceptance criteria you can ch
 
 ## 10. Labels
 
-Every issue gets **one type** label (`feature`, `bug`, `docs`, `chore`, `experiment`, `spike`, `data`), **at least one area** label (`ingestion`, `features`, `modeling`, `export`, `api`, `web`, `infra`, `data`), and once triaged a **priority** (`p0`–`p2`) and **size** (`small`/`medium`/`large`). New issues start with `needs-triage`.
+Labels show what kind of work an issue is. Add what's useful, usually one or two **categories** (`frontend`, `backend`, `ingestion`, `data`, `modeling`, `export`, `tooling`) plus a **type** if it isn't plain feature work (`bug`, `docs`, `spike`, `experiment`, `decision`). Readiness labels: `agent-ready` (ready to pick up), `needs-decision` (waits on a team decision), `blocked` (stuck on something external). There are no priority or size labels.
 
-**How to add one:** issue or PR page → right sidebar → **Labels** → tick the labels. Or `gh issue edit <N> --add-label feature,export` (`gh pr edit` works the same way for PRs).
+**How to add one:** issue or PR page → right sidebar → **Labels** → tick the labels. Or `gh issue edit <N> --add-label frontend,feature` (`gh pr edit` works the same way for PRs).
 
 Full list and meanings: [labels](docs/project/labels.md).
 

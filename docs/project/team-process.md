@@ -34,8 +34,9 @@ Roles are loose starting points; everyone works across areas and owns at least o
 ## Tracking
 
 - **Issues** are the unit of work: one issue → one PR. Every issue has an owner (assignee) once someone starts it.
+- **Planned issues** are drafted in the [backlog](backlog.md) in dependency order. Once a draft is published, the GitHub issue is the live record.
 - **Project board** (GitHub Projects): *Backlog → Ready (`agent-ready`) → In progress → In review → Done*.
-- Work is grouped by **milestone** ([roadmap](../product/roadmap.md)).
+- Work is grouped by **milestone** ([roadmap](../product/roadmap.md)). No priority or size labels; the backlog's wave order and **Depends on** lists set the sequence.
 - At each milestone boundary: update [status](status.md), review [risks](risks.md) and [open questions](open-questions.md).
 
 ## Norms

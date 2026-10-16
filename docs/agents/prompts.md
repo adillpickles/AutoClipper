@@ -25,7 +25,7 @@ Work on issue #<N> in this repo.
 
 ```text
 Push this branch and open a PR against main using .github/pull_request_template.md.
-Title: a Conventional Commit. Include "Closes #<N>". Add the issue's type and area labels.
+Title: a Conventional Commit. Include "Closes #<N>". Add the issue's category labels.
 Don't merge.
 ```
 
@@ -39,13 +39,25 @@ locally, and summarize what you changed and what you pushed back on. If a commen
 a docs gap, fix the doc too. Draft replies for me; don't post them.
 ```
 
-## Draft issues from the roadmap
+## Add issue drafts to the backlog
 
 ```text
-Read docs/product/roadmap.md milestone <M> and the docs it links.
-Draft agent-ready issues for each unchecked item, following docs/agents/writing-tasks.md
-and the Task template (.github/ISSUE_TEMPLATE/1-task.yml). Include "Depends on" for each.
-Split anything larger than M. Output them as Markdown for me to review. Don't create them on GitHub.
+Read docs/project/backlog.md (format and existing drafts), docs/agents/writing-tasks.md and
+the docs relevant to <new work>. Add drafts for it in the same format: exact title, labels from
+docs/project/labels.md, goal, scope, docs, acceptance criteria, "Depends on" (exact existing
+titles or None), parallel work and verification. Place them after their dependencies, keep each
+to one reviewable PR, and mark anything waiting on a decision `needs-decision`. Don't create
+GitHub issues.
+```
+
+## Publish backlog drafts as GitHub issues (owner)
+
+```text
+Create GitHub issues for the backlog drafts in docs/project/backlog.md, in index order,
+from <first title> through <last title>. Use each heading as the exact title and the matching
+issue template's fields; replace each "Depends on" title with the created issue's #number.
+Apply the suggested labels (they must already exist on GitHub). List what you created; don't
+create anything else.
 ```
 
 ## Review someone's PR

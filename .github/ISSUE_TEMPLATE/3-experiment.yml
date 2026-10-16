@@ -1,7 +1,7 @@
 name: Experiment
 description: An ML experiment with a hypothesis, a metric and a baseline.
-title: "exp(<area>): <hypothesis in a few words>"
-labels: ["experiment", "modeling", "needs-triage"]
+title: "Experiment: <hypothesis in a few words>"
+labels: ["experiment", "modeling"]
 body:
   - type: markdown
     attributes:

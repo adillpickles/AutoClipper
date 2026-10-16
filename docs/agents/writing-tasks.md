@@ -11,9 +11,9 @@ An issue gets the `agent-ready` label only when it has:
 - [ ] **Concrete acceptance criteria**: inputs → expected outputs, including edge cases.
 - [ ] **Scope boundaries**: likely files touched, and what's explicitly **out of scope**.
 - [ ] **A verification step**: a command or check that proves it works.
-- [ ] **No open decisions**: anything undecided is resolved in the issue or named as "use the documented proposal".
-- [ ] **A size of S or M.** L tasks get split first.
-- [ ] **Dependencies** listed (`Depends on #12`) and already merged.
+- [ ] **No open decisions upstream**: nothing it relies on is waiting on a `decision` issue or an open question. Otherwise it gets `needs-decision` instead.
+- [ ] **Fits in one reviewable PR** (aim for under ~400 changed lines). Split anything bigger.
+- [ ] **Dependencies** listed under "Depends on" (or "None"). Whoever picks it up waits until they're merged.
 
 ## Good vs. bad
 
@@ -39,13 +39,9 @@ The agent will guess the window size, invent feature names, maybe add a library,
 >
 > **Verify:** `uv run pytest tests/features/test_chat.py`
 
-## Sizing
+## Keeping tasks small
 
-| Size | Rough effort | Agent suitability |
-|---|---|---|
-| S | < 2 h human-equivalent; one module | Ideal |
-| M | Half a day to a day; a module + tests + small wiring | Good, with a plan step first |
-| L | Multiple days or several modules | **Split it.** Agents drift on long tasks. |
+There are no size labels. Instead, aim for one module plus its tests and a little wiring per issue. If a task spans several modules or would take several days, split it: agents drift on long tasks, and big PRs are hard to review. Don't go the other way either: one issue per function is too fine.
 
 ## Task types that need extra care
 
@@ -56,4 +52,4 @@ The agent will guess the window size, invent feature names, maybe add a library,
 
 ## Writing the issue with an agent
 
-It's fine to have an agent draft issues: "Read docs/product/roadmap.md M2 and draft agent-ready issues for each item using the Task template." **A human must review every drafted issue** before labeling it `agent-ready`, especially the acceptance criteria.
+Planned MVP work already has drafts in the [backlog](../project/backlog.md); start there. For new work, it's fine to have an agent draft issues in the same format ([prompt](prompts.md#add-issue-drafts-to-the-backlog)). **A human must review every drafted issue** before labeling it `agent-ready`, especially the acceptance criteria.

@@ -7,23 +7,25 @@
 
 **Key dates (course syllabus):** Demo of Demos on **Fri Dec 4, 2026**; final presentations and demo night on **Fri Dec 11, 2026**. The MVP must run end to end before Dec 4.
 
-The milestones build the pipeline and the web app **in parallel**: the app starts with synthetic candidates in M0/M1 and is wired to real results later. The finished semester product is the MVP in the [PRD scope](prd.md#scope-at-a-glance): whole-VOD discovery (including VODs with no viewer clips), a ranked shortlist, preview, trim and 9:16 captioned export. One trained model can serve both discovery and ranking; two separate models are not required.
+This page is the **high-level milestone view**. The individual tasks, their dependencies and acceptance criteria live in one place: the [implementation backlog](../project/backlog.md), grouped into waves.
+
+The milestones build the pipeline and the web app **in parallel**: the app starts with synthetic candidates and is wired to real results later, and it never waits on model results. The finished semester product is the MVP in the [PRD scope](prd.md#scope-at-a-glance): whole-VOD discovery (including VODs with no viewer clips), a ranked shortlist, preview, trim and 9:16 captioned export. One trained model can serve both discovery and ranking; two separate models are not required.
 
 ```mermaid
 flowchart LR
     M0[M0 Foundations] --> M1[M1 Data collection]
     M1 --> M2[M2 Dataset + baselines]
-    M2 --> M3[M3 learned scoring + basic export]
-    M2 --> M4[M4 independent discovery]
-    M0 --> APP[App with synthetic candidates]
-    APP --> M5[M5 integrated demo and polish]
+    M2 --> M3[M3 Learned scoring + export]
+    M2 --> M4[M4 Independent discovery]
+    M0 --> APP[App and export on synthetic data]
+    APP --> M5[M5 Integrated demo]
     M3 --> M5
     M4 --> M5
-    M5 -.-> S[Stretch goals]
+    M5 -.-> S[Optional polish]
     M1 -. runs continuously .-> M1
 ```
 
-> **Start a small authorized data pilot promptly**, then collect at an agreed scale while app/export work proceeds. VODs expire, but urgency does not establish permission. Synthetic development can proceed while collection decisions are resolved.
+> **Start a small authorized data pilot promptly**, then collect at an agreed scale while app/export work proceeds. VODs expire, but urgency does not establish permission. Synthetic development proceeds while collection decisions are resolved.
 
 ---
 
@@ -31,89 +33,53 @@ flowchart LR
 
 **Goal:** a repo where anyone, human or agent, can pick up a task and ship it consistently.
 
-- [ ] Documentation, conventions, ADRs, issue/PR templates merged
-- [x] Labels and `main` protection ruleset configured
-- [x] Core ADRs accepted: tooling, layout, scope, pipeline storage, web stack (license still open)
-- [ ] Teammates added as collaborators; first issue backlog created
-- [ ] Python project scaffold: `pyproject.toml`, `uv`, Ruff, Pyright, pytest, pre-commit
-- [ ] CI on GitHub Actions: lint + type check + tests on every PR. Make these required checks.
-- [ ] Config module and `.env` loading
-- [ ] Twitch developer application registered (team-owned credentials, shared privately)
-- [ ] Next.js app skeleton showing synthetic candidates (shortlist → preview → trim → export flow)
+**Backlog:** Wave 0 (team access, Twitch app), Wave 1 (Python and Next.js scaffolds with CI, plus the decision tasks) and the config module.
 
-**Exit criteria:** `uv sync && uv run pytest` passes on a fresh clone on Windows and macOS/Linux, and CI is green on `main`.
+**Exit criteria:** teammates have access and the backlog is published as issues; `uv sync && uv run pytest` passes on a fresh clone on Windows and macOS/Linux; CI is green on `main`; the decisions that unblock Wave 2 (dataset rules, feature set, API contract) are recorded.
 
 ## M1: Data collection
 
-**Goal:** a growing, versioned local corpus of VOD metadata, clips, chat and audio for a fixed set of channels.
+**Goal:** a growing, versioned local corpus of VOD metadata, clips, chat and audio for an agreed set of channels, collected only as the permissions decision allows.
 
-- [ ] Choose target channels and categories ([collection plan](../data/collection-plan.md))
-- [ ] Record source authorization, retention and privacy choice (OQ-9/OQ-17) before real collection
-- [ ] Twitch API client: app token, Get Users, Get Videos, Get Clips with pagination and rate-limit handling
-- [ ] Chat replay downloader wrapper (TwitchDownloader CLI) with username pseudonymization
-- [ ] Audio-only VOD downloader (yt-dlp) with resumable downloads
-- [ ] Scheduled collector: new VODs per channel, plus a clip refresh N days later so clips can accumulate
-- [ ] Investigate live-chat backup only if replay access/reliability requires it
-- [ ] Manifest/catalog of what's been collected, with dataset versioning
+**Backlog:** the mocked ingestion adapters in Wave 2; the ingest command, pilot, pilot analysis and collector in Wave 3.
 
 **Exit criteria:** an agreed pilot ingested with a reproducible catalog, immutable observations, coverage records and explicit missing-data status. Scale targets follow measured cost and channel coverage; arbitrary corpus counts do not block baselines.
 
 ## M2: Dataset and baselines
 
-**Goal:** a clean, versioned training dataset and reproducible baseline comparisons.
+**Goal:** a clean, versioned dataset and reproducible baseline comparisons.
 
-- [ ] Moment merging (dedupe overlapping clips) per [labeling](../data/labeling.md)
-- [ ] Windowing and window labels, with chat-lag handling
-- [ ] Chat features and audio features per [features](../ml/features.md)
-- [ ] Train/validation/test split by broadcaster and time, saved to disk
-- [ ] Evaluation harness implementing [evaluation](../ml/evaluation.md) metrics, with bootstrap CIs
-- [ ] Applicable baselines B0–B4 evaluated on the same population and candidate budget
-- [ ] Agree the first learning target and evaluation protocol (OQ-1/OQ-15, ADR-0009)
+**Backlog:** windows/moments, features, the evaluation harness and baselines in Wave 2; labels/splits and dataset v1 in Wave 3; the baseline run in Wave 4.
 
-**Exit criteria:** `autoclipper eval --baseline all` reproduces the baseline table from a clean checkout plus the dataset.
+**Exit criteria:** the baseline table reproduces from a clean checkout plus dataset v1.
 
-## M3: v1 clip ranker and basic export
+## M3: Learned scoring and export
 
-**Goal:** useful learned scoring and basic export; an existing-clip prototype is one possible first integration.
+**Goal:** trained models compared honestly with the baselines, and a working vertical, captioned export.
 
-- [ ] Train a simple model justified by the agreed target; compare with heuristics before adding complexity
-- [ ] Ablations: chat only, audio only, both
-- [ ] Export: cut, center/fixed-layout 9:16 crop, burned-in captions (faster-whisper)
-- [ ] CLI: `autoclipper analyze <vod>` → ranked candidates JSON. `autoclipper export <candidate>` → MP4.
-- [ ] Results write-up in `experiments/`
+**Backlog:** the export tasks in Wave 2; the training command in Wave 3; the logistic regression and LightGBM experiments in Wave 4.
 
-**Exit criteria:** a reproducible learned-model comparison and a supported VOD → exported MP4 flow work on a laptop. Baseline improvement is the research goal, reported separately from delivery readiness. Negative results prompt analysis, not suspension of app work.
+**Exit criteria:** a reproducible learned-model comparison and a VOD interval → exported MP4 flow work on a laptop. Baseline improvement is the research goal, reported separately from delivery readiness. Negative results prompt analysis, not suspension of app work.
 
-## M4: v2 moment detector
+## M4: Independent discovery
 
-**Goal:** independent discovery in VOD time nobody clipped. This may reuse the M3 scorer or combine heuristics and learned reranking.
+**Goal:** find moments across the whole VOD, including time nobody clipped and VODs with no viewer clips.
 
-- [ ] Whole-VOD signal analysis with an agreed discovery strategy; a separate classifier/sequence model is optional
-- [ ] Candidate generation: peak picking, non-max suppression, boundary refinement
-- [ ] Evaluation: recall of held-out human moments, precision@k, comparison against heuristics
-- [ ] "Zero-clip VOD" mode: run on a VOD while hiding its clips, and measure how many held-out clips we recover
-- [ ] *(Optional polish, US-9)* Explanations: top contributing signals per candidate
+**Backlog:** candidate generation (with zero-clip mode) in Wave 2; the analyze command in Wave 5.
 
 **Exit criteria:** signal-derived candidates work without clip metadata; baseline comparisons and limitations are recorded. Hidden clips test independence from clip availability, not generalization to small audiences by itself.
 
-## M5: Demo-ready app
+## M5: Integrated demo
 
-**Goal:** integrate and polish the semester app. UI development starts in M0/M1, rather than after ML research finishes.
+**Goal:** the semester app working end to end on real, permitted VODs, ready for demo night. UI work starts in M0, not after ML research finishes.
 
-- [ ] Wire the Next.js app to real FastAPI jobs and results (ADR-0007)
-- [ ] VOD input → progress/errors → understandable highlights → preview → basic trim → export
-- [ ] Smart 9:16 crop (face/facecam detection) if time allows
-- [ ] Small permitted demo/evaluation media set retained before expiry; processed features alone cannot support preview/export
-- [ ] Final results write-up and slides
+**Backlog:** the app tasks in Wave 2; integration in Wave 5; results write-up and demo preparation in Wave 6.
 
-**Exit criteria:** a non-team member can run the demo flow unassisted.
+**Exit criteria:** a non-team member can run the demo flow unassisted, and results are written up honestly with links to `experiments/`.
 
-## Stretch goals (only after the MVP runs end to end; each needs its own ADR)
+## Optional polish and future work
 
-- **Video features:** scene cuts, motion, game-specific CV. Measured as an ablation ("does video add anything beyond chat + audio?").
-- **Online posting experiment:** model picks vs. random picks on a clip account, with streamer permission.
-- **Clip refinement:** learned start/end boundaries instead of fixed padding.
-- The other Should/Could items in the [PRD scope table](prd.md#scope-at-a-glance).
+Only after the MVP runs end to end. Optional polish (speech signals, ablations, taste test, smart crop, explanations, caching, detailed progress, evaluation in CI) has drafts at the end of the [backlog](../project/backlog.md#optional-polish-should). Future work is listed there without drafts; each item needs a team decision (and an ADR if it changes contracts) before it starts.
 
 ## Out of scope this semester
 

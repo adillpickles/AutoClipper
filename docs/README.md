@@ -13,7 +13,7 @@ Start with the [project README](../README.md) for the overview, and [AGENTS.md](
 | **Development** | [Setup](development/setup.md) · [Conventions](development/conventions.md) · [Testing](development/testing.md) · [Git workflow](development/git-workflow.md) | How do I set up, write code, test it and ship it? |
 | **Agents** | [Overview](agents/README.md) · [Prompts](agents/prompts.md) · [Writing tasks](agents/writing-tasks.md) · [Reviewing agent PRs](agents/reviewing-agent-prs.md) · [Optional review loop](agents/review-loop.md) · [Parallel work](agents/parallel-work.md) | How do we build this with AI agents without losing consistency? |
 | **Decisions** | [ADR index](decisions/README.md) | Why are things the way they are? |
-| **Project** | [Status](project/status.md) · [Open questions](project/open-questions.md) · [Risks](project/risks.md) · [Team process](project/team-process.md) · [Labels](project/labels.md) · [Glossary](project/glossary.md) | What's the current state, what's undecided, and how do we work? |
+| **Project** | [Status](project/status.md) · [Backlog](project/backlog.md) · [Open questions](project/open-questions.md) · [Risks](project/risks.md) · [Team process](project/team-process.md) · [Labels](project/labels.md) · [Glossary](project/glossary.md) | What's the current state, what's next, what's undecided, and how do we work? |
 
 ## Reading paths
 

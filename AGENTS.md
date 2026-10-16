@@ -18,7 +18,8 @@ The full scope (must / should / could / won't) is in [`docs/product/prd.md`](doc
 
 ## 2. Current state. Read before assuming anything exists.
 
-- **Phase:** M0 Foundations. **No application code, dependencies or CI yet.** The first implementation task is the Python scaffold + CI.
+- **Phase:** M0 Foundations. **No application code, dependencies or CI yet.** The first implementation tasks are the Python and Next.js scaffolds with CI.
+- Planned work lives in [`docs/project/backlog.md`](docs/project/backlog.md): copy-ready issue drafts in dependency order. Don't start a task whose **Depends on** items aren't merged or whose label is `needs-decision`.
 - [`docs/project/status.md`](docs/project/status.md) is the source of truth for what exists. Read it at the start of every task.
 - **Decided** (ADRs marked *Accepted*, follow them): Python 3.12 + uv tooling, single repo with `src/` layout, chat + audio before video, Parquet + DuckDB for pipeline data, FastAPI backend + Next.js frontend. See [`docs/decisions/`](docs/decisions/README.md).
 - **Still open** (don't decide these yourself; see [open questions](docs/project/open-questions.md)): the exact training target (OQ-1), chat retention and data permissions (OQ-9/OQ-17), hosting and app database (OQ-18), and the detailed label/evaluation contracts in ADR-0009.
@@ -40,6 +41,7 @@ Then, by task type:
 | Repo layout, tooling, style | `docs/development/conventions.md`, ADR-0002, ADR-0003 |
 | Tests | `docs/development/testing.md` |
 | Git, PRs, commits | `CONTRIBUTING.md`, `docs/development/git-workflow.md` |
+| Writing or picking issues, labels | `docs/project/backlog.md`, `docs/agents/writing-tasks.md`, `docs/project/labels.md` |
 | Unfamiliar term | `docs/project/glossary.md` |
 
 Don't load every doc for every task. Read what the task needs.
@@ -60,7 +62,7 @@ Don't load every doc for every task. Read what the task needs.
 │   ├── development/       ← setup, conventions, testing, git workflow
 │   ├── agents/            ← working with AI agents (tasks, prompts, optional review loop)
 │   ├── decisions/         ← Architecture Decision Records (ADRs)
-│   └── project/           ← status, open questions, risks, labels, glossary
+│   └── project/           ← status, backlog (issue drafts), open questions, risks, labels, glossary
 └── .github/               ← issue/PR templates
 ```
 

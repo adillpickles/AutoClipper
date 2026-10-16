@@ -17,9 +17,10 @@ Scope, architecture and team workflow are documented, and the core tech stack is
 |---|---|---|
 | Documentation | ✅ Initial set (PR #2) | Product scope, architecture, data, ML, development and agent workflow docs, ADRs |
 | Repo config | ✅ Initial set (PR #2) | `.gitignore`, `.gitattributes`, `.editorconfig`, `.env.example`, issue/PR templates |
-| GitHub settings | ✅ Configured | Labels; `main` ruleset (PR + 1 approval, squash only). A temporary admin bypass for initial setup PRs is active; remove it once teammates are reviewing. |
+| GitHub settings | ✅ Configured | `main` ruleset (PR + 1 approval, squash only). A temporary admin bypass for initial setup PRs is active; remove it once teammates are reviewing. |
+| Labels | ⚠️ Old set live | Docs and templates use the simplified set; the owner still needs to apply the [mapping](labels.md#pending-mapping-owner-action) on GitHub |
 | Team access | ⚠️ Owner only | Teammates still need to be added as collaborators (OQ-11) |
-| Issue backlog | ❌ Not created | Only #1 (setup review) exists |
+| Issue backlog | 📝 Drafted, not published | Copy-ready drafts in [backlog](backlog.md); only #1 (setup review) exists on GitHub |
 | Python scaffold | ❌ Not started | ADR-0002/0003 accepted; first implementation task |
 | CI | ❌ Not started | Added with the scaffold (GitHub Actions; free for this public repo) |
 | Twitch developer app | ❌ Not registered | OQ-8 |
@@ -30,21 +31,18 @@ Scope, architecture and team workflow are documented, and the core tech stack is
 
 ## Decisions pending
 
-See [open questions](open-questions.md). The ones that block upcoming work:
+See [open questions](open-questions.md). Each one has a draft in Wave 0 (team access) or Wave 1 (`decision` tasks) of the [backlog](backlog.md):
 
 1. **Teammate access** (OQ-11): blocks teammates picking up issues.
-2. **Channel list and collection scale** (OQ-4): blocks real collection.
-3. **Source permissions and chat retention** (OQ-9/OQ-17): blocks real collection. Synthetic development can proceed.
-4. **Training target** (OQ-1) and the relevant ADR-0009 contracts (OQ-15): block training and reporting a model.
-5. **Shared data storage and collector host** (OQ-5): blocks collection at scale.
+2. **Job and candidate API contract** (ADR-0009): blocks the FastAPI and Next.js screens.
+3. **Dataset construction rules and v0 feature set** (ADR-0009): block windows, moments and features.
+4. **Source permissions and chat retention** (OQ-9/OQ-17): block real collection. Synthetic development can proceed.
+5. **Channels, collection scale and storage** (OQ-4/OQ-5): block the pilot and collector.
+6. **Training target** (OQ-1) and **evaluation protocol** (ADR-0009): block labels, metrics and reported models.
 
 ## Suggested next tasks
 
-1. Add teammates as collaborators and create the first issue backlog from the roadmap.
-2. Scaffold the Python project (ADR-0002/0003) with CI.
-3. Next.js + FastAPI skeleton showing synthetic candidates (shortlist → preview → trim → export).
-4. Register the Twitch app; implement and mock the Helix client (Get Videos, Get Clips).
-5. Decide OQ-4/OQ-9/OQ-17 and start a small data pilot.
+Work through the [backlog](backlog.md) in wave order. Startable now: the Wave 0 owner tasks (team access, Twitch app), both scaffolds, and the five Wave 1 decisions that have no dependencies. Once the Python scaffold and config module merge, the mocked ingestion adapters, synthetic dataset and export tasks can start; they're already `agent-ready`.
 
 ## Known issues / caveats
 
@@ -57,3 +55,4 @@ See [open questions](open-questions.md). The ones that block upcoming work:
 - 2026-10-09: initial documentation drafted and GitHub settings configured.
 - 2026-10-13: contract and workflow repairs after the first audit.
 - 2026-10-16: core ADRs accepted, scope table added to the PRD, contributor workflow simplified, optional review loop documented.
+- 2026-10-16: implementation backlog drafted; label policy simplified (live labels not yet changed).
