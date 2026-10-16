@@ -1,31 +1,42 @@
 # Prompt Library
 
-Reusable prompts for common tasks. They work with Claude Code, Codex and similar agents. Replace `<…>` placeholders. These prompts are deliberately short: the repo docs carry the context, so the prompt only needs to point at it.
+Copy-paste prompts for common tasks. They work with Claude Code, Codex, Cursor and similar agents. Replace `<…>` placeholders. The prompts are short on purpose: the repo docs carry the context, so the prompt only needs to point at them.
+
+Prompts for the optional audit → verify loop are in [review-loop.md](review-loop.md).
 
 ## Start a task
 
 ```text
 Work on issue #<N> in this repo.
 
-1. Read AGENTS.md, docs/project/status.md, and the issue (gh issue view <N>).
-2. Read the docs the issue links and the code you'll touch.
-3. Before writing code, inspect dependencies/integration boundaries and give a short plan:
-   files, validation, ambiguities and conflicts. For substantial/ambiguous work, obtain
-   approval unless already authorized; routine well-specified work can proceed.
-4. Then implement on branch <type>/<N>-<slug>, following the task loop in AGENTS.md §7.
-5. Validate, update affected docs/status and prepare an independent-audit handoff for
-   substantial work. Verify findings before repairing; re-audit meaningful defects.
-6. Commit and draft the PR template truthfully. Stop before pushing/PR publication unless
-   explicitly authorized. Merge requires separate approval after human review.
+1. Read AGENTS.md, docs/project/status.md and the issue (gh issue view <N>).
+2. Check the issue's "Depends on" list. If anything there isn't merged, stop and tell me.
+3. Read the docs the issue links and the code you'll touch.
+4. If the task is more than a small, well-specified change, give me a short plan
+   (files, approach, tests, open questions) and wait for my OK.
+5. Implement on branch <type>/<N>-<slug>. Add tests, update affected docs and status.md.
+6. Run lint, type check and tests. Read your full diff against main.
+7. Commit locally with short Conventional Commit messages. Don't push.
+8. Tell me what changed, how you verified it and what's uncertain, and draft the PR
+   description using .github/pull_request_template.md.
 ```
 
-## Continue after review feedback
+## Open the PR (after you've checked the work)
 
 ```text
-PR #<N> got review comments (gh pr view <N> --comments). Independently verify each finding
-against the actual completed work before choosing repairs. Report what you changed, what
-you disproved, what remains open and the evidence. Draft replies locally unless posting is authorized.
-Don't make unrelated changes. Re-run tests. If a comment reveals a docs gap, fix the doc too.
+Push this branch and open a PR against main using .github/pull_request_template.md.
+Title: a Conventional Commit. Include "Closes #<N>". Add the issue's type and area labels.
+Don't merge.
+```
+
+## Address review comments
+
+```text
+PR #<N> got review comments (gh pr view <N> --comments).
+Check each comment against the actual code before changing anything. Fix the valid ones;
+for any you disagree with, explain why. Don't make unrelated changes. Re-run tests, commit
+locally, and summarize what you changed and what you pushed back on. If a comment reveals
+a docs gap, fix the doc too. Draft replies for me; don't post them.
 ```
 
 ## Draft issues from the roadmap
@@ -33,30 +44,18 @@ Don't make unrelated changes. Re-run tests. If a comment reveals a docs gap, fix
 ```text
 Read docs/product/roadmap.md milestone <M> and the docs it links.
 Draft agent-ready issues for each unchecked item, following docs/agents/writing-tasks.md
-and the Task template (.github/ISSUE_TEMPLATE/1-task.yml). Split anything larger than M.
-Output them as Markdown for me to review. Do not create them on GitHub.
+and the Task template (.github/ISSUE_TEMPLATE/1-task.yml). Include "Depends on" for each.
+Split anything larger than M. Output them as Markdown for me to review. Don't create them on GitHub.
 ```
 
-## Review a PR (as a second opinion)
+## Review someone's PR
 
 ```text
-Review PR #<N> against docs/agents/reviewing-agent-prs.md and CONTRIBUTING.md.
-Identify the actual comparison base, head and working-tree state; inspect the complete diff,
-tests and integration boundaries, not just the implementation summary or latest commit.
-Check contracts (docs/architecture/data-model.md, docs/ml/features.md), units/time handling,
-leakage, test quality, and doc updates. List findings as blocking / nit, with file:line and
-the doc section that applies. Don't modify code.
-```
-
-## Audit a local branch before publication
-
-```text
-Independently audit <branch> against <target/base SHA> for task <issue/brief>.
-Read AGENTS.md and docs/agents/reviewing-agent-prs.md. Inspect the actual files, complete diff,
-tests and available checks. Account for any uncommitted/untracked work explicitly.
-Prior findings/repairs: <evidence and unresolved objections, or none>.
-Return defects with severity, location, reproduction and consequence; distinguish pending
-decisions and optional improvements. No edits, remote comments, pushes or PR writes.
+Review PR #<N> against CONTRIBUTING.md § 7 and docs/agents/reviewing-agent-prs.md.
+Look at the complete diff (gh pr diff <N>), not just the description. Check the issue's
+acceptance criteria, contracts (docs/architecture/data-model.md, docs/ml/features.md),
+units/time handling, leakage, test quality and doc updates. List findings as blocking / nit
+with file:line. Don't modify code or post comments.
 ```
 
 ## Investigate (research spike)
@@ -65,7 +64,7 @@ decisions and optional improvements. No edits, remote comments, pushes or PR wri
 Spike for issue #<N>: <question>. Time box: <T>.
 Investigate using official docs and small throwaway scripts outside src/ (scripts/spikes/).
 Write findings as an issue comment draft: answer, evidence, recommendation, and which docs
-or ADRs should change. Do not change src/ or commit data.
+or ADRs should change. Don't change src/ or commit data.
 ```
 
 ## Update docs after a change
@@ -81,5 +80,5 @@ structure. List each file changed and why.
 ```text
 Compare docs/project/status.md and docs/product/roadmap.md against the code on main and merged
 PRs (gh pr list --state merged --limit 30). Propose edits so both accurately reflect what exists.
-Do not mark anything done that isn't merged and tested.
+Don't mark anything done that isn't merged and tested.
 ```

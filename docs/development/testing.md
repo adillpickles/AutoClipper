@@ -25,7 +25,7 @@ Tests protect the parts where bugs are **silent**: a label shifted by 10 seconds
 - **Moment merging:** overlapping, gap-boundary, disjoint, long connected chains, null offsets, duplicate snapshot observations and deterministic ties under the adopted grouping rule.
 - **Windowing:** exact boundaries, last partial window, muted-segment flags.
 - **Labels:** window/moment overlap at edges (touching ≠ overlapping, unless the rule says so), confident-negative buffer.
-- **Features:** empty chat window → 0 not NaN, zero-variance z-score → 0, lead/lag at VOD edges.
+- **Features:** empty chat window → raw counts/rates 0 not NaN (its z-score still follows the formula), zero-variance VOD → z-score 0, lead/lag at VOD edges.
 - **Pseudonymization:** the same name + salt gives the same hash, a different salt gives a different hash, and the raw name never appears in output.
 - **Splits:** no broadcaster appears in two splits. Deterministic given the seed.
 - **Metrics:** NDCG, recall@k, IoU matching and bootstrap on tiny hand-worked examples.

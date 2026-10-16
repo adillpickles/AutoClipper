@@ -1,21 +1,28 @@
-# ADR-0010: Shared agent review and publication workflow
+# ADR-0010: Agent workflow, publishing and optional second-opinion review
 
 | | |
 |---|---|
-| **Status** | Accepted by the owner's explicit 2026-10-13 repair instruction for repository development practice. Technical/product proposals remain unratified. |
-| **Date** | 2026-10-13 |
-| **Related** | [AGENTS.md §7](../../AGENTS.md#7-how-to-do-a-task-the-standard-loop), [Agent guidance](../agents/README.md), [Git workflow](../development/git-workflow.md), [ADR-0008](0008-trunk-based-development-squash-merge.md) |
+| **Status** | Accepted |
+| **Date** | 2026-10-16 (first drafted 2026-10-13 in the same setup PR) |
+| **Related** | [AGENTS.md §7](../../AGENTS.md#7-how-to-do-a-task), [Review loop](../agents/review-loop.md), [CONTRIBUTING](../../CONTRIBUTING.md), [ADR-0008](0008-trunk-based-development-squash-merge.md) |
 
 ## Context
 
-Shared instructions directed agents to publish, while tool-specific guidance prohibited it without a request. The substantial-task independent audit/repair loop was missing. A four-student team needs one general practice across environments, with enough autonomy for routine work and explicit publication boundaries.
+Every teammate builds with AI coding agents, using different tools. Earlier drafts gave agents conflicting instructions about whether to open PRs on their own, and then made a multi-step audit/repair loop mandatory for any "substantial" change. That loop is one teammate's personal practice; making it compulsory adds process the team didn't agree to and makes the instructions hard to follow.
 
 ## Decision
 
-Use the canonical loop in AGENTS.md: planning → implementation/validation → independent audit → independently verify findings and repair → re-audit as necessary → authorized push/PR → required human review → separately authorized merge. Substantial/ambiguous plans need appropriate approval unless already authorized; routine well-specified tasks need no repeated approval. Review actual complete work against the correct base, with evidence for defect dispositions. An unavailable independent reviewer is an explicit handoff limitation, not invented approval.
-
-Local task authorization does not authorize external comments, pushing or PR writes. Merge requires separate approval. Preserve configured human authorship and truthful AI-assistance disclosure. CLAUDE.md remains a thin entry point; detailed review guidance expands the canonical loop without overriding it.
+- **One task loop for all agents** (AGENTS.md §7): read → plan when the task isn't small → branch → implement and test → update docs → self-check → commit locally → hand off to the human.
+- **Agents don't publish on their own.** They push, open or update PRs, or comment on GitHub only when their human asks. They never merge without a human's go-ahead.
+- **The required review is human.** One teammate approval per PR, as in ADR-0008.
+- **A second-opinion AI review is optional.** For large or risky changes, contributors are encouraged to have a different model audit the branch and to verify each finding in a fresh session before opening the PR ([review loop](../agents/review-loop.md)). It's a recommendation, not a merge requirement.
+- **No AI attribution** in commits, PRs or files. No AI-assistance disclosure is required in PRs: everyone uses AI, and the author owns what they merge regardless.
 
 ## Consequences
 
-ADR-0008's normal one-human-approval and squash policy is unchanged. Independent agent audit supplements human review. No reviewer service, CI, GitHub settings or permissions are introduced by this decision. The owner-authorized bootstrap exception remains historical and requires separately authorized restoration; this repair does not extend it.
+- **Positive:** short, consistent instructions for every agent; no surprise pushes; teammates choose how much extra review their change needs.
+- **Negative:** whether a big change gets an AI audit depends on the author's judgment. Human review stays the safety net.
+
+## Revisit when
+
+Review comments keep catching the same agent mistakes. Then consider making the review loop required for specific areas (e.g. labels, evaluation).

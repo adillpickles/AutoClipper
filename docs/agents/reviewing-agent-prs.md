@@ -1,26 +1,16 @@
 # Reviewing Agent-Written PRs
 
-Agent-written code usually *looks* right. Review checks whether it *is* right. Use this alongside the general checklist in [CONTRIBUTING § What reviewers check](../../CONTRIBUTING.md#what-reviewers-check).
+Agent-written code usually *looks* right. Review checks whether it *is* right. Use this alongside the reviewer checklist in [CONTRIBUTING § 7](../../CONTRIBUTING.md#7-review). To have an agent audit a branch *before* the PR is opened, see the optional [review loop](review-loop.md).
 
-## Independent audit before publication
-
-For substantial work, a separate reviewer/agent audits the actual completed branch before authorized publication. Start with the task, governing documents and comparison base. Review the **complete change**, not only the last commit or an implementation summary. Record base/head SHAs and working-tree state; if unpublished edits exist, inspect staged, unstaged and untracked files too. A detached worktree at the intended head is useful for isolation; it does not include uncommitted edits unless explicitly supplied.
-
-For a PR targeting `main`, identify `git merge-base HEAD origin/main`, then inspect `git diff <base> HEAD`, `git diff`, `git diff --cached` and `git status --short`. If the task is stacked or uses another target, inspect that actual base instead. Confirm the base is current enough; do not reset or overwrite contributor work to obtain it. Run available checks, inspect tests/fixtures and look across integration boundaries.
-
-Report each finding with severity, exact location, evidence/reproduction, consequence and a recommended direction. Separate confirmed defects, unsettled decisions, speculative risks and optional improvements. Challenge assertions independently; adversarial review is an attempt to find consequential mistakes, not a quota of objections. Audit findings do not authorize edits, remote comments or publication.
-
-Repair agents reproduce or disprove findings before choosing fixes and document the disposition with evidence. A later audit receives the original task, current base/head, complete diff, prior findings, repairs and unresolved objections. Re-audit when changes affect correctness or meaningful actionable defects remain. Declare when independent review was unavailable; self-checks cannot be labeled independent approval.
-
-## Before review (the submitter's job)
+## Before review (the author's job)
 
 The person who opened the PR must have:
 
 - run the code and the tests themselves
 - read the whole diff
-- filled in "How was this verified?" with specifics
+- said in the description how they checked it, and added screenshots for UI changes
 
-If they haven't, send it back. Don't spend review time on unverified output.
+If they haven't, send it back. Don't spend review time on unchecked output.
 
 ## Common agent failure modes in this project
 

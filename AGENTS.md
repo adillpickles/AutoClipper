@@ -1,26 +1,29 @@
 # AGENTS.md
 
-This is the operating manual for **anyone making changes to this repository**: AI coding agents (Claude Code, Codex, Cursor, Copilot, …) and humans alike. Agents should read it in full before starting any task. It's kept short enough to read in one pass. Details live in `docs/`, and this file tells you which doc to read for which task.
+The operating manual for **anyone changing this repository**: AI coding agents (Claude Code, Codex, Cursor, Copilot, …) and humans. Agents: read it in full before starting any task. Details live in `docs/`; this file tells you which doc to read for which task.
 
 > If this file and another doc disagree, **this file wins** and the other doc has a bug. Fix it or flag it in your PR.
 
 ---
 
-## 1. What this project is (30-second version)
+## 1. What we're building (30-second version)
 
-AutoClipper helps **viewers, streamers, clippers and editors** discover, review and export highlights from a **Twitch VOD**. The semester product should provide an appealing application flow: enter a supported VOD, browse interesting moments, preview and trim candidates, and export useful clips with basic framing and captions.
+AutoClipper finds the highlights in a long **Twitch VOD**. A user pastes a VOD link; the app pulls the stream's chat, audio and any viewer-made clips, finds and ranks the best moments, and shows them in a web app. The user previews a moment, adjusts its start/end, and exports it as a vertical (9:16) MP4 with captions.
 
-Use available **viewer-made clips**, VOD offsets and views as candidates, signals or weak labels where appropriate; they are incomplete and popularity is not highlight quality. Chat and audio are proposed inexpensive signals; speech and video may be added when justified. The product needs a discovery path when viewer clips are sparse or absent. A ranker-first prototype may help implementation, but neither two trained models nor one detection strategy is mandatory.
+It's for **viewers** who missed a stream, **streamers** without an editor, and **clippers/editors** who don't want to scrub hours of footage. All three use the same app.
 
-The course work should include useful trained ML, reproducible evaluation and comparisons with sensible baselines. Report unfavorable results honestly; interface and export work need not wait for a model to beat a heuristic. See `docs/product/prd.md` and `docs/ml/evaluation.md`.
+Under the hood: cheap signals (chat activity, audio loudness) are computed for the whole VOD; viewer clips act as noisy training labels; a trained model (logistic regression, then LightGBM) is compared against simple baselines. The app must still find moments when a VOD has no viewer clips. Report results honestly, even when a baseline wins; app and export work never wait on the model.
+
+The full scope (must / should / could / won't) is in [`docs/product/prd.md`](docs/product/prd.md#scope-at-a-glance).
 
 ## 2. Current state. Read before assuming anything exists.
 
-- **Phase:** design / pre-code. **No application code, no dependencies, no CI yet.**
-- The live source of truth for project state is [`docs/project/status.md`](docs/project/status.md). Read it at the start of every task.
-- Many technical choices are **proposals**. Check the ADR status in [`docs/decisions/`](docs/decisions/README.md) before treating a choice as settled. Use a proposal for a reversible prototype only when the task explicitly authorizes that assumption; contract adoption and hard-to-reverse dependencies need team agreement. `Accepted` means *follow it*.
+- **Phase:** M0 Foundations. **No application code, dependencies or CI yet.** The first implementation task is the Python scaffold + CI.
+- [`docs/project/status.md`](docs/project/status.md) is the source of truth for what exists. Read it at the start of every task.
+- **Decided** (ADRs marked *Accepted*, follow them): Python 3.12 + uv tooling, single repo with `src/` layout, chat + audio before video, Parquet + DuckDB for pipeline data, FastAPI backend + Next.js frontend. See [`docs/decisions/`](docs/decisions/README.md).
+- **Still open** (don't decide these yourself; see [open questions](docs/project/open-questions.md)): the exact training target (OQ-1), chat retention and data permissions (OQ-9/OQ-17), hosting and app database (OQ-18), and the detailed label/evaluation contracts in ADR-0009.
 
-## 3. Context loading: what to read for which task
+## 3. What to read for which task
 
 Always read: this file → `docs/project/status.md` → the issue you're working on.
 Then, by task type:
@@ -36,7 +39,7 @@ Then, by task type:
 | Backend API or web UI | `docs/architecture/overview.md`, ADR-0007 |
 | Repo layout, tooling, style | `docs/development/conventions.md`, ADR-0002, ADR-0003 |
 | Tests | `docs/development/testing.md` |
-| Git, PRs, commits | `docs/development/git-workflow.md` |
+| Git, PRs, commits | `CONTRIBUTING.md`, `docs/development/git-workflow.md` |
 | Unfamiliar term | `docs/project/glossary.md` |
 
 Don't load every doc for every task. Read what the task needs.
@@ -45,27 +48,27 @@ Don't load every doc for every task. Read what the task needs.
 
 ```text
 .
-├── AGENTS.md              ← you are here (canonical agent + human operating manual)
+├── AGENTS.md              ← you are here (agent + human operating manual)
 ├── CLAUDE.md              ← Claude Code entry point; imports this file
-├── README.md              ← public overview
-├── CONTRIBUTING.md        ← how to contribute (PR flow, reviews)
+├── README.md              ← public overview and "start here"
+├── CONTRIBUTING.md        ← step by step: issue → branch → PR → merge
 ├── docs/
-│   ├── product/           ← PRD, roadmap: the "what" and "why"
+│   ├── product/           ← PRD (scope), roadmap: the "what" and "why"
 │   ├── architecture/      ← system design, data model: the "how"
 │   ├── data/              ← sources, collection, labeling, governance
 │   ├── ml/                ← modeling plan, features, evaluation, experiments
 │   ├── development/       ← setup, conventions, testing, git workflow
-│   ├── agents/            ← how to run an agent-driven workflow on this repo
+│   ├── agents/            ← working with AI agents (tasks, prompts, optional review loop)
 │   ├── decisions/         ← Architecture Decision Records (ADRs)
-│   └── project/           ← status, risks, glossary, labels, open questions
+│   └── project/           ← status, open questions, risks, labels, glossary
 └── .github/               ← issue/PR templates
 ```
 
-The **planned** code layout (ADR-0003, *Proposed*) is `src/autoclipper/` (Python package), `web/` (frontend), `tests/`, `experiments/`, `notebooks/`, `scripts/`, and a git-ignored `data/` and `artifacts/`. Don't create these directories speculatively. Create one only when a task needs it.
+Code layout (ADR-0003, *Accepted*): `src/autoclipper/` (Python package), `web/` (Next.js frontend), `tests/`, `experiments/`, `notebooks/`, `scripts/`, and git-ignored `data/` and `artifacts/`. Create a directory only when a task needs it.
 
 ## 5. Commands
 
-> No code exists yet, so there are no commands. When the project is scaffolded, **the PR that adds tooling must update this section**. Planned (ADR-0002, *Proposed*):
+> No code exists yet. The scaffold PR adds these and **must update this section** with the exact, tested commands. Planned (ADR-0002, *Accepted*):
 
 ```bash
 uv sync                      # install deps
@@ -79,38 +82,38 @@ Use `uv run …` for everything. Never `pip install` into a global environment.
 
 ## 6. Hard rules (never break these)
 
-1. **Never commit data, media, model weights, or secrets.** No `.mp4/.mkv/.wav/.m4a`, no VOD or chat dumps, no `.env`, no tokens, no `.pt/.onnx/.pkl` artifacts. `data/` and `artifacts/` are git-ignored. Small, synthetic **test fixtures** are allowed under `tests/fixtures/` and must not contain real usernames.
-2. **Never commit real chat usernames or user IDs.** Pseudonymize at ingestion (see `docs/data/data-governance.md`).
-3. **Never push to `main`.** Every change is a PR from a branch. `main` is protected and needs one approving review.
-4. **Don't change a data schema, label definition, or evaluation metric without an ADR** (or an ADR update) in the same PR. These silently invalidate past results.
-5. **Don't add a dependency** without saying why in the PR description. Prefer the standard library and the libraries already chosen.
-6. **Don't invent results.** Never write metrics, numbers or claims into docs, READMEs or PRs unless they come from a reproducible run that's linked in `experiments/`. Prefer "TBD" over a guess.
-7. **Don't silently resolve open decisions.** If a task depends on an open question or a `Proposed` ADR, obtain agreement before adopting the contract. A task may explicitly authorize a reversible prototype using the documented proposal; record that assumption without changing its status. Continue independent work while a decision is pending.
-8. **Respect platform terms.** Follow `docs/data/data-governance.md`; research assumptions are not permissions. No access-control circumvention or code that posts to social accounts without an explicit, reviewed task.
-9. **Publication needs explicit authorization.** Local implementation and commits do not authorize pushing, opening/updating a PR, or external issue/comment writes. Merge requires separate approval. Keep a prepared PR description local until publication is authorized.
+1. **Never commit data, media, model weights or secrets.** No `.mp4/.mkv/.wav/.m4a`, no VOD or chat dumps, no `.env`, no tokens, no `.pt/.onnx/.pkl` files. `data/` and `artifacts/` are git-ignored. Small synthetic test fixtures are allowed under `tests/fixtures/` and must not contain real usernames.
+2. **Never commit real chat usernames or user IDs.** Pseudonymize at ingestion ([data governance](docs/data/data-governance.md)).
+3. **Never push to `main`.** Every change is a PR from a branch.
+4. **Don't change a data schema, label definition or evaluation metric without an ADR** (or ADR update) in the same PR. These silently invalidate past results.
+5. **Don't add a dependency** without saying why in the PR description. Prefer the standard library and libraries already chosen in ADR-0002.
+6. **Don't invent results.** No metrics or performance claims in docs, READMEs or PRs unless they come from a reproducible run linked in `experiments/`. Write "TBD" instead of guessing.
+7. **Don't decide open questions yourself.** If your task depends on something in [open questions](docs/project/open-questions.md) or a *Proposed* ADR, stop and ask your human. Keep working on the parts that don't depend on it.
+8. **Respect platform terms.** Follow [data governance](docs/data/data-governance.md). Never write code that posts to social accounts.
+9. **Don't push, open or update PRs, comment on GitHub, or merge unless your human tells you to.** Committing locally is fine. Merging always needs a human's go-ahead.
 
-## 7. How to do a task (the standard loop)
+## 7. How to do a task
 
-1. **Understand and plan.** Read the issue/task, §3 docs, actual code, dependencies and integration boundaries. Use planning mode where supported. For substantial or ambiguous work, get the plan approved before implementation unless the current task already authorizes the repair approach. Routine well-specified work does not need repeated approval. Raise unresolved requirements with the human; draft external comments unless sending them is authorized.
-2. **Branch.** Create `<type>/<issue#>-<short-slug>`, or stay on an existing PR branch when directed. Preserve unrelated work. Aim for a reviewable diff (< ~400 changed lines excluding generated files); explain necessary exceptions.
-3. **Implement and validate.** Choose sound solutions consistent with the architecture, following `docs/development/conventions.md`. Test changed behavior, including regression cases (`docs/development/testing.md`), and run available checks.
-4. **Update docs.** Include affected behavior, schemas, commands, decisions and project state in the same change. Do not mark unmerged work complete on `main`.
-5. **Independent audit for substantial work.** A separate reviewer/agent inspects the actual completed work, tests and complete diff against the correct base. Follow [review guidance](docs/agents/reviewing-agent-prs.md); self-review is not independent review.
-6. **Verify findings, repair, re-audit.** Independently reproduce or disprove reported defects before choosing fixes. Record evidence and disagreements; repeat independent review when meaningful actionable defects remain. If no independent reviewer is available, hand off the validated branch and state that limitation.
-7. **Commit and prepare publication.** Use [Conventional Commits](https://www.conventionalcommits.org/), preserve configured human authorship, and draft the PR template with issue links, verification, uncertainty and truthful AI-assistance disclosure.
-8. **Authorized push/PR → human review → separately authorized merge.** Publish only within explicit authorization. Independent agent audit does not replace the required approving human review. Follow `docs/development/git-workflow.md`.
+1. **Read.** This file, `status.md`, the issue, the §3 docs for your task type, and the code you'll touch. Check the issue's **Depends on** list: if a dependency isn't merged yet, stop and tell your human.
+2. **Plan.** For a small, well-specified issue, go ahead. For anything bigger or unclear, give a short plan (files, approach, tests, open questions) and wait for your human's OK. Use plan mode if your tool has one.
+3. **Branch.** `<type>/<issue#>-<short-slug>`, e.g. `feat/14-audio-loudness`. Keep the diff reviewable (aim for < ~400 changed lines, excluding generated files).
+4. **Implement and test.** Follow [conventions](docs/development/conventions.md). Test the changed behavior; bug fixes get a regression test ([testing](docs/development/testing.md)).
+5. **Update docs** in the same change: affected behavior, schemas, commands, and `docs/project/status.md` if project state changed.
+6. **Check your own work.** Run lint, type check and tests. Read your full diff. Walk through the definition of done (§8).
+7. **Commit** with short [Conventional Commits](https://www.conventionalcommits.org/) messages, e.g. `feat(features): add chat message rate`.
+8. **Hand off.** Tell your human what changed, how you verified it and what's uncertain. Draft the PR description using [the template](.github/pull_request_template.md). Push and open the PR only when asked.
+
+**Optional second-opinion review.** Some teammates have a different agent audit the finished branch before opening the PR, then verify each finding in a fresh session. It's recommended for large or risky changes, not required. If your human asks you to audit a branch or to verify audit findings, follow [docs/agents/review-loop.md](docs/agents/review-loop.md).
 
 ## 8. Definition of done
 
-A change is done when **all** of these are true:
-
-- [ ] Acceptance criteria in the issue are met (or deviations are explained in the PR).
+- [ ] The issue's acceptance criteria are met (or the PR explains why not).
 - [ ] Lint, format, type check and tests pass locally (once tooling exists).
 - [ ] New logic has tests. Bug fixes include a regression test.
 - [ ] Docs affected by the change are updated in the same PR.
-- [ ] No data, media, secrets or real usernames are in the diff.
-- [ ] PR description says what was verified, how, and what's still uncertain.
-- [ ] Substantial work has an independent audit and verified disposition of actionable findings, or is explicitly handed off pending that audit.
+- [ ] No data, media, secrets or real usernames in the diff.
+- [ ] UI changes include a screenshot (before/after if something changed visually).
+- [ ] The PR description says what changed, how it was verified and what's still uncertain.
 
 ## 9. Conventions at a glance
 
@@ -127,16 +130,16 @@ Full detail in `docs/development/conventions.md`.
 
 ## 10. When you're unsure
 
-- **Ambiguous requirement:** ask the human and record the answer on the issue when external posting is authorized. Don't guess at product behavior.
-- **Doc is wrong or stale:** fix it in your PR (small) or open a `docs` issue (large).
-- **Found an unrelated bug:** don't fix it in this PR. Open an issue labeled `bug`.
-- **Blocked on a decision:** record options and a recommendation; use `needs-decision` when authorized to update the issue. Stop dependent work and continue independent tasks.
-- **Something you did might be risky** (data deletion, history rewrite, external API writes): don't do it. Describe it in the PR and let a human decide.
+- **Ambiguous requirement:** ask your human. Don't guess at product behavior.
+- **Doc is wrong or stale:** fix it in your PR (small) or suggest a `docs` issue (large).
+- **Found an unrelated bug:** don't fix it in this PR. Suggest a `bug` issue.
+- **Blocked on a decision:** write down the options and your recommendation for your human. Continue with independent work.
+- **Something might be risky** (deleting data, rewriting history, writing to external services): don't do it. Describe it and let a human decide.
 
 ## 11. Notes for specific agents
 
-- **Claude Code** reads `CLAUDE.md`, which imports this file. Put Claude-specific notes there, not here.
-- **Codex / other agents** read this file directly.
-- **Parallel agents:** use separate git worktrees and separate issues. Don't have two agents edit the same files at the same time. See `docs/agents/parallel-work.md`.
-- **Windows hosts:** `.gitattributes` enforces LF except `.bat`, `.cmd` and `.ps1`, which use CRLF consistently with `.editorconfig`. Use forward slashes in docs and code paths.
-- **Don't add AI attribution lines, co-author, contributor or ownership trailers, or "generated by" footers** to commits, PRs or files. Do not add an AI agent as an author, contributor or owner. Authorship is the human who opens the PR. Keep required third-party license/source acknowledgments and the PR template's AI-assistance disclosure.
+- **Claude Code** reads `CLAUDE.md`, which imports this file. Put Claude-specific notes there.
+- **Codex, Cursor, Copilot and others** read this file directly.
+- **Parallel agents:** use separate git worktrees and separate issues. Don't have two agents edit the same files at once. See `docs/agents/parallel-work.md`.
+- **Windows hosts:** `.gitattributes` enforces LF except `.bat`, `.cmd` and `.ps1` (CRLF). Use forward slashes in docs and code paths.
+- **No AI attribution.** Don't add co-author, contributor or "generated by" lines to commits, PRs or files, and don't list an AI agent as an author or owner. The human who opens the PR is the author.

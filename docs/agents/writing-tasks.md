@@ -31,7 +31,7 @@ The agent will guess the window size, invent feature names, maybe add a library,
 >
 > **Acceptance criteria:**
 > - [ ] `autoclipper.features.chat.compute_chat_features(windows, messages) -> DataFrame` keyed by `window_id`, with exactly those 4 columns + `feature_version="chat-v0"`
-> - [ ] Windows with no messages → 0 (not NaN). Zero-variance VOD → `_z` = 0.
+> - [ ] Windows with no messages → raw rates (`chat_msg_rate`, `chat_unique_rate`, `chat_emote_rate`) are 0, not NaN. `chat_msg_rate_z` follows the normal z-score formula (usually negative for an empty window); only a zero-variance VOD gives `_z` = 0.
 > - [ ] A message at exactly `end_s` belongs to the *next* window
 > - [ ] Unit tests for: empty chat, single message, boundary message, zero variance
 >
@@ -52,7 +52,7 @@ The agent will guess the window size, invent feature names, maybe add a library,
 - **Schema / label / metric changes:** the issue must say "ADR required". Usually a human writes the ADR first.
 - **Anything with external services** (Twitch API, downloads): include the exact endpoints and the documented behavior, and link `docs/data/data-sources.md`. Tell the agent to write tests against recorded, scrubbed responses, not live calls.
 - **Exploratory or research work:** use the Research spike template with a time box and a written deliverable, not a Task.
-- **UI work:** include a sketch or a description of the screen states (empty, loading, error, success).
+- **UI work:** include a sketch or a description of the screen states (empty, loading, error, success). The PR needs a screenshot (before/after for changes to existing screens).
 
 ## Writing the issue with an agent
 

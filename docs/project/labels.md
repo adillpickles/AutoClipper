@@ -4,6 +4,13 @@ Labels use plain names, without prefixes. The sections below explain their purpo
 
 `data` covers both data tasks and the data area; add it once. For a data task, it satisfies both requirements. For another task type (for example, `bug` + `data`), it identifies the area.
 
+## How to add labels
+
+- **On GitHub:** open the issue or PR → right sidebar → **Labels** (gear icon) → tick the labels → click away to save.
+- **From the terminal:** `gh issue edit <N> --add-label feature,export` or `gh pr edit <N> --add-label feature,export`. Remove with `--remove-label`.
+- **Issues:** the templates add `needs-triage` (and a type label for bugs, experiments, spikes and data tasks). Whoever triages adds the rest.
+- **PRs:** copy the linked issue's type and area labels onto the PR.
+
 ## Type (exactly one)
 
 | Label | Use for |

@@ -1,59 +1,53 @@
 # Contributing to AutoClipper
 
-Thanks for helping build AutoClipper. This guide covers how work moves from an idea to a merged pull request. It applies to everyone, human or AI agent. Agents should also read [`AGENTS.md`](AGENTS.md), which has the hard rules and the standard task loop.
+How work moves from an issue to a merged pull request. It applies to everyone, whether you write the code yourself or hand the issue to an AI agent. Agents also follow [`AGENTS.md`](AGENTS.md).
+
+**The short version:** pick an issue → assign yourself → branch → build and test → open a PR that says `Closes #N` → get one approval → squash and merge.
 
 ## Contents
 
 1. [Ground rules](#1-ground-rules)
-2. [Finding work](#2-finding-work)
-3. [Filing issues](#3-filing-issues)
-4. [Making a change](#4-making-a-change)
-5. [Pull requests and review](#5-pull-requests-and-review)
-6. [Working with AI coding agents](#6-working-with-ai-coding-agents)
-7. [Documentation changes](#7-documentation-changes)
-8. [Decisions and ADRs](#8-decisions-and-adrs)
-9. [Getting help](#9-getting-help)
+2. [Pick up an issue](#2-pick-up-an-issue)
+3. [Create a branch](#3-create-a-branch)
+4. [Do the work](#4-do-the-work)
+5. [Commit](#5-commit)
+6. [Open a pull request](#6-open-a-pull-request)
+7. [Review](#7-review)
+8. [Merge](#8-merge)
+9. [Filing new issues](#9-filing-new-issues)
+10. [Labels](#10-labels)
+11. [Working with AI agents](#11-working-with-ai-agents)
+12. [Docs and decisions](#12-docs-and-decisions)
+13. [Getting help](#13-getting-help)
 
 ---
 
 ## 1. Ground rules
 
-- Be kind and constructive. See the [Code of Conduct](CODE_OF_CONDUCT.md).
-- **`main` is protected.** No direct pushes. Every change lands through a PR with **at least one approving review** from someone other than the author, and is **squash-merged**.
-- **No data, media, secrets or real chat usernames in git, ever.** See [`docs/data/data-governance.md`](docs/data/data-governance.md).
-- **Docs are part of the change.** A PR that changes behavior without updating the relevant docs isn't done.
-- **Honesty over polish.** Don't report results you didn't reproduce, and say what you didn't test.
+- **One issue → one branch → one PR.**
+- **`main` is protected.** No direct pushes. Every change lands through a PR with **one approving review** from someone other than the author, and is **squash-merged**.
+- **You own what you merge.** If an AI wrote it, you still need to understand it and be able to explain it.
+- **No data, media, secrets or real chat usernames in git, ever.** See [data governance](docs/data/data-governance.md).
+- **Docs are part of the change.** If behavior changes, the docs change in the same PR.
+- **Be kind.** See the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-## 2. Finding work
+## 2. Pick up an issue
 
-- Work is tracked in **GitHub Issues**. Labels are explained in [`docs/project/labels.md`](docs/project/labels.md).
-- Good starting points:
-  - `good first issue`: small and well scoped
-  - `agent-ready`: fully specified, so an AI agent or new contributor can pick it up without extra context
-- **Before starting, assign yourself** (or comment "taking this") so two people don't do the same work.
-- Not sure what matters most right now? Check [`docs/product/roadmap.md`](docs/product/roadmap.md) and [`docs/project/status.md`](docs/project/status.md).
+1. **Find one.** Open the repo's **Issues** tab. Good starting filters:
+   - `agent-ready`: fully specified, ready to hand to you or an AI agent
+   - `good first issue`: small and well scoped
+   - Or check the current milestone in the [roadmap](docs/product/roadmap.md).
 
-## 3. Filing issues
+   From the terminal: `gh issue list --label agent-ready`.
+2. **Make sure you can work on it independently.**
+   - Nobody else is assigned.
+   - Everything under **Depends on** in the issue is already merged. If not, pick another issue or ask the person working on the dependency.
+   - It doesn't have the `blocked` or `needs-decision` label.
+   - It won't edit the same files as someone else's open PR (check "Likely files touched").
+3. **Claim it.** Assign yourself: issue page → right sidebar → **Assignees** → yourself. Or run `gh issue edit <N> --add-assignee @me`. If you can't assign, comment "taking this".
+4. **Unclear?** Ask in a comment on the issue before you start, not halfway through.
 
-Use the issue templates. Each one asks for what a reviewer, or an agent, needs:
-
-| Template | Use for |
-|---|---|
-| **Task** | A unit of implementation work with clear acceptance criteria. This is the default. |
-| **Bug report** | Something behaves incorrectly |
-| **Experiment** | An ML experiment with a hypothesis, metric and baseline |
-| **Research spike** | A time-boxed investigation that ends in a written finding or recommendation |
-| **Data task** | Data collection, labeling or dataset changes |
-
-A good issue is **small** (roughly one PR), **testable** (acceptance criteria you can check) and **self-contained** (links the docs a newcomer needs). See [`docs/agents/writing-tasks.md`](docs/agents/writing-tasks.md). That guide is written for agent-ready issues, but every good issue follows it.
-
-## 4. Making a change
-
-### Setup
-
-Follow [`docs/development/setup.md`](docs/development/setup.md).
-
-### Branching
+## 3. Create a branch
 
 Branch from an up-to-date `main`:
 
@@ -67,107 +61,138 @@ git switch -c <type>/<issue#>-<short-slug>
 | `feat/` | New functionality |
 | `fix/` | Bug fixes |
 | `docs/` | Documentation only |
-| `chore/` | Tooling, CI, deps, repo housekeeping |
-| `refactor/` | Code restructuring with no behavior change |
+| `chore/` | Tooling, CI, dependencies, repo housekeeping |
+| `refactor/` | Restructuring with no behavior change |
 | `exp/` | ML experiments (code + config + results summary) |
 | `data/` | Data collection/labeling scripts or dataset definitions |
 
 Example: `feat/14-audio-loudness-features`.
 
-### Commits
+## 4. Do the work
 
-Use [Conventional Commits](https://www.conventionalcommits.org/):
+- Set up your environment with [setup](docs/development/setup.md).
+- Follow [conventions](docs/development/conventions.md) and add tests ([testing](docs/development/testing.md)).
+- Keep it small: aim for **under ~400 changed lines**. If it's growing past that, split the issue.
+- Before pushing, run the checks (once tooling exists):
+
+  ```bash
+  uv run ruff check . && uv run ruff format --check .
+  uv run pyright
+  uv run pytest
+  ```
+
+## 5. Commit
+
+Use short [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```text
 <type>(<optional scope>): <imperative summary, ≤ 72 chars>
-
-<optional body: what and why, wrapped at 72>
-
-<optional footer: Refs #14>
 ```
 
-Types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `perf`, `exp`, `data`, `ci`, `build`.
-Scopes follow the planned modules: `ingest`, `features`, `labels`, `models`, `eval`, `export`, `api`, `web`, `docs`, `repo`.
+- **Types:** `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `perf`, `exp`, `data`, `ci`, `build`
+- **Scopes** follow the modules: `ingest`, `features`, `labels`, `models`, `eval`, `export`, `api`, `web`, `docs`, `repo`
+- **Examples:** `feat(features): add chat message rate`, `fix(labels): skip clips with null offset`
 
-PRs are squash-merged, so **the PR title becomes the commit on `main`**. Write it as a Conventional Commit too. Commits inside the branch can be messier, though small, clear commits make review easier.
+Commits inside your branch can be messy; they get squashed into one commit when merged.
 
-See [`docs/development/git-workflow.md`](docs/development/git-workflow.md) for rebasing, conflicts and keeping branches fresh.
+## 6. Open a pull request
 
-### Quality checks
+1. **Push your branch:** `git push -u origin <branch>`.
+2. **Open the PR** against `main`, either on GitHub (the yellow "Compare & pull request" banner) or with `gh pr create --base main`. The [PR template](.github/pull_request_template.md) fills in automatically.
+3. **Title:** a Conventional Commit, because it becomes the commit message on `main`.
+   - ✅ `feat(export): burn captions into vertical clips`
+   - ❌ `Update stuff`, `Fixed issue 14`
+4. **Description:** fill in the template. Keep it short:
+   - **Summary:** 1–3 sentences on what and why.
+   - **Closes #N:** see the next step.
+   - **Changes:** a bullet list of what you changed. Mention anything surprising or uncertain.
+   - **Screenshots:** for anything visual (see step 7).
+   - **Checklist:** tick what's true; explain anything you couldn't tick.
+5. **Link the issue.** Write `Closes #14` in the description (or `Fixes #14`). GitHub links the PR to the issue and closes the issue automatically when the PR merges. For several issues, use one line each (`Closes #14`, `Closes #15`). If the PR only does part of an issue, write `Part of #14` instead so the issue stays open.
+6. **Add labels.** Copy the issue's **type** and **area** labels onto the PR (e.g. `feature` + `export`). PR page → right sidebar → **Labels**, or `gh pr edit --add-label feature,export`. See [§10](#10-labels).
+7. **Screenshots for UI or visual work.** If your change affects anything you can see (web UI, exported video framing, captions, charts), add a screenshot. If it changes something that already existed, add **before and after**. Drag and drop the image into the description box on GitHub. A side-by-side table works well:
 
-Once tooling is in place (see [ADR-0002](docs/decisions/0002-language-and-tooling.md)), run these before pushing:
+   ```markdown
+   | Before | After |
+   |---|---|
+   | ![before](paste-image-here) | ![after](paste-image-here) |
+   ```
 
-```bash
-uv run ruff check . && uv run ruff format --check .
-uv run pyright
-uv run pytest
-```
+   For video exports, a screenshot of a frame or a short screen recording is enough. Never attach real VOD files.
+8. **Request a reviewer** in the right sidebar (**Reviewers**), or `gh pr edit --add-reviewer <username>`.
+9. **Not ready yet?** Open it as a **draft** to get early feedback, then click "Ready for review" when done.
 
-## 5. Pull requests and review
+## 7. Review
 
-### Opening a PR
+**For the author:** respond to every comment. Push fixes as new commits on the same branch, then re-request review. Pushing new commits after an approval resets it, so the reviewer needs to approve again.
 
-- Agents prepare and validate the complete local change first; pushing and PR publication require explicit authorization. Substantial work follows the independent audit/repair loop in [AGENTS.md §7](AGENTS.md#7-how-to-do-a-task-the-standard-loop).
-- Fill in the PR template completely. **"How was this verified?"** is the most important section.
-- Link the issue with `Closes #N`.
-- Keep PRs small, ideally under ~400 changed lines excluding generated files. Large PRs get split.
-- Open as a **draft** if you want early feedback.
-- Mark **AI assistance** in the template. It's not a judgment. It tells the reviewer where to look harder (see §6).
+**For the reviewer:** aim to give a first review within **two days**. Check:
 
-### Review requirements (enforced on `main`)
+1. **Does it do what the issue asks?** Edge cases handled (missing VOD, null `vod_offset`, empty chat, muted segments)?
+2. **Tests:** do they actually test the behavior?
+3. **Contracts:** column names, units and time handling match the [data model](docs/architecture/data-model.md) and [features](docs/ml/features.md). No train/test leakage.
+4. **Docs:** updated where behavior changed.
+5. **Safety:** no secrets, media or usernames. New dependencies explained.
+6. **Screenshots** present for UI changes.
 
-- **≥ 1 approving review** from someone other than the author
-- **New commits dismiss stale approvals.** If you push after an approval, it needs re-approval.
-- **The most recent push must be approved by someone other than its pusher**
-- **All review conversations must be resolved** before merging
-- **Squash merge only**, with linear history
-- Once CI exists, required status checks must pass
+Mark each comment **blocking** or **nit**. Approve once the blocking items are fixed. [Reviewing agent PRs](docs/agents/reviewing-agent-prs.md) lists the mistakes AI agents typically make.
 
-### What reviewers check
+## 8. Merge
 
-1. **Correctness:** does it do what the issue asks? Are edge cases handled (missing VOD, null `vod_offset`, empty chat, muted segments)?
-2. **Data integrity:** schemas, label definitions and metrics unchanged, or changed with an ADR. No leakage between train and test splits.
-3. **Tests:** meaningful, not just present.
-4. **Conventions:** matches [`docs/development/conventions.md`](docs/development/conventions.md) and the surrounding code.
-5. **Docs:** updated where behavior changed.
-6. **Safety:** no secrets, media or usernames. No new network calls or dependencies without justification.
+A PR can merge when it has **one approval**, **all conversations are resolved**, and (once CI exists) **checks are green**.
 
-Reviewers: be specific and kind. Mark suggestions as **blocking** or **nit**. Approve once blocking items are resolved. Aim to give a first review within **two working days**.
+1. The **author** merges: PR page → **Squash and merge**.
+2. Check that the commit title is still your Conventional Commit title, then confirm.
+3. GitHub deletes the branch and closes the linked issue automatically.
+4. Clean up locally:
 
-### Merging
+   ```bash
+   git switch main && git pull
+   git branch -d <your-branch>
+   ```
 
-The **author** merges after the required human approval, using **Squash and merge**, and checks the title. An agent needs separate explicit merge authorization; permission to publish a PR is not permission to merge it. The branch is deleted automatically.
+From the terminal: `gh pr merge --squash --delete-branch`.
 
-## 6. Working with AI coding agents
+## 9. Filing new issues
 
-AI-assisted development follows a general team practice: planning, implementation, independent adversarial audit, verified repairs and re-audit where needed, authorized publication, human review and separately authorized merge. The canonical loop is in [AGENTS.md §7](AGENTS.md#7-how-to-do-a-task-the-standard-loop), with guidance in [`docs/agents/`](docs/agents/README.md). The essentials:
+Use the templates (Issues → **New issue**):
 
-- **You own what you submit.** If an agent wrote it, you're still responsible for understanding it, verifying it and defending it in review.
-- **Give agents good tasks.** A well-written issue matters more than a clever prompt. See [`docs/agents/writing-tasks.md`](docs/agents/writing-tasks.md).
-- **Verify, don't trust.** Run the code. Check that tests actually exercise the change. Agents are confident about things that are wrong, especially APIs, file formats and metrics.
-- **Review agent PRs harder** in these areas: invented API fields, silently swallowed errors, tests that assert the implementation instead of the behavior, unrequested scope creep, and fabricated numbers in docs.
-- **Keep context files current.** If an agent made a mistake because the docs were missing something, fix the docs in the same PR. That's how the system improves.
+| Template | Use for |
+|---|---|
+| **Task** | A unit of implementation work with acceptance criteria. The default. |
+| **Bug report** | Something behaves incorrectly |
+| **Experiment** | An ML experiment with a hypothesis, metric and baseline |
+| **Research spike** | A time-boxed investigation that ends in a written finding |
+| **Data task** | Data collection, labeling or dataset changes |
 
-## 7. Documentation changes
+A good issue is **small** (one PR), **testable** (acceptance criteria you can check), **self-contained** (links the docs someone needs) and lists what it **depends on**. See [writing tasks](docs/agents/writing-tasks.md).
 
-- Docs live in `docs/` as Markdown and are reviewed like code.
-- Diagrams use [Mermaid](https://mermaid.js.org/) so they render on GitHub and diff cleanly.
-- Label proposals clearly as **Proposed** and decisions as **Accepted** (see §8).
-- Use relative links between docs. Don't link to branches that will be deleted.
-- Style: short sentences, active voice, concrete examples, and no marketing language.
+## 10. Labels
 
-## 8. Decisions and ADRs
+Every issue gets **one type** label (`feature`, `bug`, `docs`, `chore`, `experiment`, `spike`, `data`), **at least one area** label (`ingestion`, `features`, `modeling`, `export`, `api`, `web`, `infra`, `data`), and once triaged a **priority** (`p0`–`p2`) and **size** (`small`/`medium`/`large`). New issues start with `needs-triage`.
 
-Significant technical decisions are recorded as **Architecture Decision Records** in [`docs/decisions/`](docs/decisions/README.md). Write or update an ADR when you:
+**How to add one:** issue or PR page → right sidebar → **Labels** → tick the labels. Or `gh issue edit <N> --add-label feature,export` (`gh pr edit` works the same way for PRs).
 
-- choose or replace a core technology (language, framework, storage, model family)
-- change a data schema, label definition, train/test split policy or evaluation metric
-- change a project-wide convention
+Full list and meanings: [labels](docs/project/labels.md).
 
-Process: copy `docs/decisions/0000-template.md`, open a PR with status **Proposed**, discuss it in review, and set it to **Accepted** when the team agrees. Never edit the substance of an accepted ADR. Supersede it with a new one.
+## 11. Working with AI agents
 
-## 9. Getting help
+Most of this project is built with AI coding agents. The basics:
+
+- **Hand the agent the issue.** Starter prompts are in [prompts](docs/agents/prompts.md). The agent reads `AGENTS.md` automatically and finds the rest from there.
+- **Verify, don't trust.** Run the code. Check that the tests actually test the change. Agents are confidently wrong about APIs, file formats and metrics.
+- **You open the PR.** Agents don't push or open PRs unless you tell them to, and never merge on their own.
+- **Fix the docs when the agent was misled.** If an agent made a mistake because a doc was missing or unclear, fix the doc in the same PR.
+- **Optional second opinion.** For big or risky changes, consider having a different model audit the branch before you open the PR. That workflow is in [review loop](docs/agents/review-loop.md). It's a recommendation, not a requirement.
+
+## 12. Docs and decisions
+
+- Docs live in `docs/` as Markdown and are reviewed like code. Use relative links and [Mermaid](https://mermaid.js.org/) for diagrams.
+- Style: short sentences, active voice, concrete examples.
+- **Significant technical decisions** get an ADR in [`docs/decisions/`](docs/decisions/README.md): choosing or replacing a core technology, or changing a data schema, label definition, split policy or evaluation metric. Copy the template, open a PR with status **Proposed**, and mark it **Accepted** once the team agrees. To reverse an accepted ADR, write a new one that supersedes it.
+
+## 13. Getting help
 
 - Questions about a task: comment on its issue.
-- General questions: open an issue labeled `question`.
+- General questions: the team Discord, or an issue labeled `question`.
 - Security issues: see [`SECURITY.md`](SECURITY.md). Don't file a public issue.

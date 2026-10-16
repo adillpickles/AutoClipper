@@ -24,7 +24,14 @@ body:
       placeholder: |
         - Feature definition: docs/ml/features.md § Chat features
         - Window schema: docs/architecture/data-model.md § windows
-        - Depends on #12 (chat ingestion)
+    validations:
+      required: true
+  - type: textarea
+    id: depends_on
+    attributes:
+      label: Depends on
+      description: Issues that must be merged before this one can start. Write "None" if it can start now.
+      placeholder: "#12 (chat ingestion)"
     validations:
       required: true
   - type: textarea
