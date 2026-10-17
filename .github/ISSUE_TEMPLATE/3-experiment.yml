@@ -1,0 +1,48 @@
+name: Experiment
+description: An ML experiment with a hypothesis, a metric and a baseline.
+title: "Experiment: <hypothesis in a few words>"
+labels: ["experiment", "modeling"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Experiments follow [docs/ml/experiments.md](https://github.com/adillpickles/AutoClipper/blob/main/docs/ml/experiments.md).
+        **Write the hypothesis and success criterion before running anything.**
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis
+      placeholder: Adding audio loudness features to chat-only features improves NDCG@10 for clip ranking.
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: Dataset version, split, features, model, and what changes vs. the reference run.
+      placeholder: |
+        - Dataset: dataset v1 (split file: splits/v1_by_broadcaster.json)
+        - Reference: exp-003 (chat-only LightGBM)
+        - Change: + audio_rms_mean, audio_rms_max_z
+    validations:
+      required: true
+  - type: textarea
+    id: metric
+    attributes:
+      label: Primary metric and success criterion
+      description: One primary metric, decided in advance. See docs/ml/evaluation.md.
+      placeholder: NDCG@10 on the validation split; success = +0.02 over reference, with a bootstrap 95% CI excluding 0.
+    validations:
+      required: true
+  - type: textarea
+    id: baselines
+    attributes:
+      label: Baselines to compare against
+      placeholder: B0 random, B2 chat-spike heuristic, reference run exp-003
+    validations:
+      required: true
+  - type: textarea
+    id: budget
+    attributes:
+      label: Time / compute budget
+      placeholder: ≤ 1 day; runs on a laptop CPU.

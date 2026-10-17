@@ -1,0 +1,55 @@
+# Writing Agent-Ready Tasks
+
+A task is **agent-ready** when an agent with no prior context can finish it correctly using only the issue and the repo. Most bad agent output comes from vague tasks, not weak agents.
+
+## The checklist
+
+An issue gets the `agent-ready` label only when it has:
+
+- [ ] **A goal** in 1–3 sentences: what will be true, and why.
+- [ ] **Links to the governing docs**: the exact sections, e.g. `docs/data/labeling.md §2`.
+- [ ] **Concrete acceptance criteria**: inputs → expected outputs, including edge cases.
+- [ ] **Scope boundaries**: likely files touched, and what's explicitly **out of scope**.
+- [ ] **A verification step**: a command or check that proves it works.
+- [ ] **No open decisions upstream**: nothing it relies on is waiting on a `decision` issue or an open question. Otherwise it gets `needs-decision` instead.
+- [ ] **Fits in one reviewable PR** (aim for under ~400 changed lines). Split anything bigger.
+- [ ] **Dependencies** listed under "Depends on" (or "None"). Whoever picks it up waits until they're merged.
+
+## Good vs. bad
+
+**Bad:**
+
+> Add chat features.
+
+The agent will guess the window size, invent feature names, maybe add a library, and test nothing in particular.
+
+**Good:**
+
+> **Goal:** Compute the core chat features per window so baselines B2/B4 can run.
+>
+> **Context:** Feature definitions: `docs/ml/features.md` § Chat features (only `chat_msg_rate`, `chat_msg_rate_z`, `chat_unique_rate`, `chat_emote_rate`). Inputs: `chat_messages` and `windows` tables per `docs/architecture/data-model.md`. Depends on #12 (merged).
+>
+> **Acceptance criteria:**
+> - [ ] `autoclipper.features.chat.compute_chat_features(windows, messages) -> DataFrame` keyed by `window_id`, with exactly those 4 columns + `feature_version="chat-v0"`
+> - [ ] Windows with no messages → raw rates (`chat_msg_rate`, `chat_unique_rate`, `chat_emote_rate`) are 0, not NaN. `chat_msg_rate_z` follows the normal z-score formula (usually negative for an empty window); only a zero-variance VOD gives `_z` = 0.
+> - [ ] A message at exactly `end_s` belongs to the *next* window
+> - [ ] Unit tests for: empty chat, single message, boundary message, zero variance
+>
+> **Out of scope:** lead/lag features, emote lexicons, CLI wiring (separate issues).
+>
+> **Verify:** `uv run pytest tests/features/test_chat.py`
+
+## Keeping tasks small
+
+There are no size labels. Instead, aim for one module plus its tests and a little wiring per issue. If a task spans several modules or would take several days, split it: agents drift on long tasks, and big PRs are hard to review. Don't go the other way either: one issue per function is too fine.
+
+## Task types that need extra care
+
+- **Schema / label / metric changes:** the issue must say "ADR required". Usually a human writes the ADR first.
+- **Anything with external services** (Twitch API, downloads): include the exact endpoints and the documented behavior, and link `docs/data/data-sources.md`. Tell the agent to write tests against recorded, scrubbed responses, not live calls.
+- **Exploratory or research work:** use the Research spike template with a time box and a written deliverable, not a Task.
+- **UI work:** include a sketch or a description of the screen states (empty, loading, error, success). The PR needs a screenshot (before/after for changes to existing screens).
+
+## Writing the issue with an agent
+
+Planned MVP work already has drafts in the [backlog](../project/backlog.md); start there. For new work, it's fine to have an agent draft issues in the same format ([prompt](prompts.md#add-issue-drafts-to-the-backlog)). **A human must review every drafted issue** before labeling it `agent-ready`, especially the acceptance criteria.

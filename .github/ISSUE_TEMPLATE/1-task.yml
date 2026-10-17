@@ -1,0 +1,70 @@
+name: Task
+description: A unit of implementation work with clear acceptance criteria (the default).
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write this so a teammate **or an AI coding agent** with no prior context can finish it. Use a plain, imperative title (e.g. "Compute chat features per window").
+        Planned work already has copy-ready drafts in [docs/project/backlog.md](https://github.com/adillpickles/AutoClipper/blob/main/docs/project/backlog.md). Guide: [docs/agents/writing-tasks.md](https://github.com/adillpickles/AutoClipper/blob/main/docs/agents/writing-tasks.md).
+        After creating it, add a category label (`frontend`, `backend`, `ingestion`, `data`, `modeling`, `export`, `tooling`). See [labels](https://github.com/adillpickles/AutoClipper/blob/main/docs/project/labels.md).
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be true when this is done, and why does it matter? 1–3 sentences.
+      placeholder: Compute per-window chat message rate so the baselines have their first chat feature.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and docs
+      description: Background and the exact docs/ADRs/issues that govern this task.
+      placeholder: |
+        - Feature definition: docs/ml/features.md § Chat features
+        - Window schema: docs/architecture/data-model.md § windows
+    validations:
+      required: true
+  - type: textarea
+    id: depends_on
+    attributes:
+      label: Depends on
+      description: Issues that must be merged (or decided) before this one can start. Write "None" if it can start now.
+      placeholder: "#12 (Parse chat replay with pseudonymization)"
+    validations:
+      required: true
+  - type: textarea
+    id: parallel
+    attributes:
+      label: Can run in parallel with
+      description: Optional. Related issues that can be worked on at the same time without conflicts.
+      placeholder: "#14 (Compute audio features per window)"
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: A checklist a reviewer can verify. Be concrete (inputs → expected outputs).
+      placeholder: |
+        - [ ] `chat_msg_rate` computed for every window in `windows.parquet`
+        - [ ] Windows with no messages get a rate of 0, not null
+        - [ ] Unit tests cover empty chat and a single-message VOD
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope (likely files / modules touched)
+      description: Best guess. Helps avoid conflicts between parallel work.
+      placeholder: src/autoclipper/features/chat.py, tests/features/test_chat.py
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: Things that might seem related but should NOT be done in this task.
+      placeholder: Emote-based features (separate issue). Changing the window size.
+  - type: textarea
+    id: verify
+    attributes:
+      label: How to verify
+      description: Commands or steps that prove it works.
+      placeholder: uv run pytest tests/features/test_chat.py

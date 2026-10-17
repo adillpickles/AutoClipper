@@ -1,0 +1,25 @@
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+[*.md]
+# Two trailing spaces are a Markdown line break; we use explicit breaks instead,
+# so trimming is safe. Long lines are fine in prose.
+max_line_length = off
+
+[{Makefile,*.mk}]
+indent_style = tab
+
+[*.{bat,cmd,ps1}]
+end_of_line = crlf

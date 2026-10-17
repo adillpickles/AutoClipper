@@ -1,0 +1,23 @@
+# Normalize line endings: LF in the repo, regardless of contributor OS.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binary files (should rarely be committed; see .gitignore)
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.pdf  binary
+*.parquet binary
+
+# Jupyter notebooks: treat as text for diffs, but mark as generated-ish for GitHub stats
+*.ipynb text eol=lf linguist-documentation
+
+# Docs count as documentation in GitHub language stats
+docs/** linguist-documentation
