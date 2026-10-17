@@ -38,7 +38,7 @@ How work moves from an issue to a merged pull request. It applies to everyone, w
    - `good first issue`: small and well scoped
    - A category you want to work on, e.g. `frontend` or `modeling`
 
-   From the terminal: `gh issue list --label agent-ready`. The planned work, in dependency order, is in the [backlog](docs/project/backlog.md). Until those drafts are published as issues, pick from the backlog and tell the team.
+   From the terminal: `gh issue list --label agent-ready`. The [backlog](docs/project/backlog.md) lists the planned issues in dependency order.
 2. **Make sure you can work on it independently.**
    - Nobody else is assigned.
    - Everything under **Depends on** in the issue is already merged. If not, pick another issue or ask the person working on the dependency.
