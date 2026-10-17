@@ -19,7 +19,7 @@ The full scope (must / should / could / won't) is in [`docs/product/prd.md`](doc
 ## 2. Current state. Read before assuming anything exists.
 
 - **Phase:** M0 Foundations. **No application code, dependencies or CI yet.** The first implementation tasks are the Python and Next.js scaffolds with CI.
-- Planned work lives in [`docs/project/backlog.md`](docs/project/backlog.md): copy-ready issue drafts in dependency order. Don't start a task whose **Depends on** items aren't merged or whose label is `needs-decision`.
+- Planned work is in GitHub issues #3–#50, drafted in dependency order in [`docs/project/backlog.md`](docs/project/backlog.md) (its index maps drafts to issue numbers). Don't start a task whose **Depends on** items aren't merged or whose label is `needs-decision`.
 - [`docs/project/status.md`](docs/project/status.md) is the source of truth for what exists. Read it at the start of every task.
 - **Decided** (ADRs marked *Accepted*, follow them): Python 3.12 + uv tooling, single repo with `src/` layout, chat + audio before video, Parquet + DuckDB for pipeline data, FastAPI backend + Next.js frontend. See [`docs/decisions/`](docs/decisions/README.md).
 - **Still open** (don't decide these yourself; see [open questions](docs/project/open-questions.md)): the exact training target (OQ-1), chat retention and data permissions (OQ-9/OQ-17), hosting and app database (OQ-18), and the detailed label/evaluation contracts in ADR-0009.

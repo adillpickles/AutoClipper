@@ -76,7 +76,7 @@ Viewer clips double as **noisy training labels**: roughly, a stretch of the VOD 
 |---|---|
 | Know what we're building and why | [PRD](docs/product/prd.md) |
 | See the plan, milestones and dates | [Roadmap](docs/product/roadmap.md) |
-| Find something to work on | [Implementation backlog](docs/project/backlog.md) (copy-ready issue drafts in dependency order) |
+| Find something to work on | [Implementation backlog](docs/project/backlog.md) (planned issues in dependency order, with their GitHub issue numbers) |
 | Understand the system design | [Architecture](docs/architecture/overview.md) · [Data model](docs/architecture/data-model.md) |
 | Work with the data | [`docs/data/`](docs/data/README.md) |
 | Work on the models | [`docs/ml/`](docs/ml/README.md) |

@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Binding for this repo's docs and templates. **Live GitHub labels still use the old set** until the owner applies the [mapping below](#changing-live-labels). |
-| **Last updated** | 2026-10-16 |
+| **Status** | Binding. The live GitHub labels match this doc. |
+| **Last updated** | 2026-10-17 |
 
 Labels tell someone scanning the issue list **what kind of work an issue is** and whether it's ready to pick up. Use plain names and add what's useful: usually one or two categories, plus a type if it isn't plain feature work. There's no required number of labels, and no priority or size labels.
 
@@ -60,23 +60,6 @@ Plain unfinished dependencies don't need a label: the issue's **Depends on** sec
 
 Change the labels in this doc and every template/reference in a PR, then apply the change on GitHub (**Issues → Labels**, or `gh label`). **Rename** a label to keep its assignments; to **merge** two labels, move the old label's issues/PRs to the surviving label before deleting it.
 
-### Pending mapping (owner action)
+### Last change (2026-10-17)
 
-The live repo still has the old 31 labels. Apply this once this doc is on `main`:
-
-| Old label | New label | Action | Current assignments (2026-10-16) |
-|---|---|---|---|
-| `web` | `frontend` | Rename | none |
-| `api` | `backend` | Rename | none |
-| `infra` | `tooling` | Rename (keeps the assignment) | issue #1 |
-| `chore` | `tooling` | Merge into `tooling`, then delete | none |
-| `features` | `modeling` | Merge into `modeling`, then delete | none |
-| `invalid` | `wontfix` | Merge into `wontfix`, then delete | none |
-| `p0`, `p1`, `p2` | — | Delete (no priority labels) | `p1`: issue #1 |
-| `small`, `medium`, `large` | — | Delete (no size labels) | `small`: issue #1 |
-| `needs-triage` | — | Delete | none |
-| `help wanted`, `accessibility` | — | Delete (unused) | none |
-| — | `decision` | Create | — |
-| `feature`, `bug`, `docs`, `spike`, `experiment`, `ingestion`, `data`, `modeling`, `export`, `agent-ready`, `needs-decision`, `blocked`, `good first issue`, `question`, `duplicate`, `wontfix` | same | Keep | `docs`: issue #1 |
-
-Only issue #1 has labels today; PR #2 has none. Deleting `p1` and `small` removes them from issue #1 on purpose. Also update label descriptions to match the tables above (e.g. `modeling` now includes features). Afterwards, `gh label list` should show exactly the 20 labels documented above.
+The old 31-label set was mapped to this one: `web`, `api` and `infra` were renamed to `frontend`, `backend` and `tooling`; `chore`, `features` and `invalid` were folded into `tooling`, `modeling` and `wontfix`; the priority (`p0`–`p2`), size (`small`/`medium`/`large`), `needs-triage`, `help wanted` and `accessibility` labels were deleted; `decision` was added.

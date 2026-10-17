@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| **Status** | Living. Copy-ready drafts; **none of these exist as GitHub issues yet.** |
-| **Last updated** | 2026-10-16 |
+| **Status** | Living. Waves 0–6 are published as GitHub issues #3–#50 (numbers in the index); **those issues are now the live record.** Optional drafts aren't published yet. |
+| **Last updated** | 2026-10-17 |
 | **Related** | [Roadmap](../product/roadmap.md) (milestones) · [PRD scope](../product/prd.md#scope-at-a-glance) · [Open questions](open-questions.md) · [Labels](labels.md) · [Writing tasks](../agents/writing-tasks.md) |
 
-This file is the **canonical list of issue drafts** for the semester MVP. The [roadmap](../product/roadmap.md) stays the high-level milestone view; detailed tasks live only here.
+This file is the **canonical list of issue drafts** for the semester MVP. Published drafts are kept for reference; update the GitHub issue, not the draft. The [roadmap](../product/roadmap.md) stays the high-level milestone view; detailed tasks live only here.
 
 ## How to use this file
 
@@ -26,64 +26,64 @@ Waves group work by when it can start. Tasks within a wave can mostly run in par
 ## Index
 
 <!-- index:start -->
-| Wave | Issue title | Labels | Can start |
-|---|---|---|---|
-| 0 | [Set up team access and issue tracking](#set-up-team-access-and-issue-tracking) | `tooling` | Now |
-| 0 | [Register the team Twitch developer app](#register-the-team-twitch-developer-app) | `tooling` `ingestion` | Now |
-| 1 | [Scaffold the Python package with tooling and CI](#scaffold-the-python-package-with-tooling-and-ci) | `tooling` `agent-ready` | Now |
-| 1 | [Scaffold the Next.js app with lint and CI](#scaffold-the-nextjs-app-with-lint-and-ci) | `frontend` `tooling` `agent-ready` | Now |
-| 1 | [Decide real-data permissions and chat retention (OQ-17 and OQ-9)](#decide-real-data-permissions-and-chat-retention-oq-17-and-oq-9) | `decision` `data` | Now |
-| 1 | [Choose pilot channels and data storage (OQ-4 and OQ-5)](#choose-pilot-channels-and-data-storage-oq-4-and-oq-5) | `decision` `data` `needs-decision` | After its decisions and dependencies |
-| 1 | [Decide the first training target and label rules (OQ-1)](#decide-the-first-training-target-and-label-rules-oq-1) | `decision` `modeling` | Now |
-| 1 | [Adopt the dataset construction rules (ADR-0009)](#adopt-the-dataset-construction-rules-adr-0009) | `decision` `data` | Now |
-| 1 | [Adopt the v0 chat and audio feature set (ADR-0009)](#adopt-the-v0-chat-and-audio-feature-set-adr-0009) | `decision` `modeling` | Now |
-| 1 | [Adopt the evaluation protocol (ADR-0009)](#adopt-the-evaluation-protocol-adr-0009) | `decision` `modeling` `needs-decision` | After its decisions and dependencies |
-| 1 | [Define the job and candidate API contract (ADR-0009)](#define-the-job-and-candidate-api-contract-adr-0009) | `decision` `backend` `frontend` | Now |
-| 2 | [Add the config module and logging setup](#add-the-config-module-and-logging-setup) | `tooling` `agent-ready` | After its dependencies merge |
-| 2 | [Generate a synthetic VOD dataset for development](#generate-a-synthetic-vod-dataset-for-development) | `data` `agent-ready` | After its dependencies merge |
-| 2 | [Build the Helix client for auth and VOD metadata](#build-the-helix-client-for-auth-and-vod-metadata) | `ingestion` `agent-ready` | After its dependencies merge |
-| 2 | [Fetch a VOD's viewer clips with chunked queries](#fetch-a-vods-viewer-clips-with-chunked-queries) | `ingestion` `agent-ready` | After its dependencies merge |
-| 2 | [Parse chat replay with pseudonymization](#parse-chat-replay-with-pseudonymization) | `ingestion` `agent-ready` | After its dependencies merge |
-| 2 | [Download VOD audio and normalize it to 16 kHz mono](#download-vod-audio-and-normalize-it-to-16-khz-mono) | `ingestion` `agent-ready` | After its dependencies merge |
-| 2 | [Cut and reframe a source interval to a vertical MP4](#cut-and-reframe-a-source-interval-to-a-vertical-mp4) | `export` `agent-ready` | After its dependencies merge |
-| 2 | [Burn in captions with faster-whisper](#burn-in-captions-with-faster-whisper) | `export` `agent-ready` | After its dependencies merge |
-| 2 | [Build windows and moments from the adopted rules](#build-windows-and-moments-from-the-adopted-rules) | `data` `needs-decision` | After its decisions and dependencies |
-| 2 | [Compute chat features per window](#compute-chat-features-per-window) | `modeling` `needs-decision` | After its decisions and dependencies |
-| 2 | [Compute audio features per window](#compute-audio-features-per-window) | `modeling` `needs-decision` | After its decisions and dependencies |
-| 2 | [Implement evaluation metrics and the report harness](#implement-evaluation-metrics-and-the-report-harness) | `modeling` `needs-decision` | After its decisions and dependencies |
-| 2 | [Implement the B0–B4 baselines](#implement-the-b0b4-baselines) | `modeling` `needs-decision` | After its decisions and dependencies |
-| 2 | [Generate candidates from window scores](#generate-candidates-from-window-scores) | `modeling` `needs-decision` | After its decisions and dependencies |
-| 2 | [Build the FastAPI job API with a mock analysis job](#build-the-fastapi-job-api-with-a-mock-analysis-job) | `backend` `needs-decision` | After its decisions and dependencies |
-| 2 | [Build the VOD input and job status screens](#build-the-vod-input-and-job-status-screens) | `frontend` `needs-decision` | After its decisions and dependencies |
-| 2 | [Build the highlights shortlist and timeline](#build-the-highlights-shortlist-and-timeline) | `frontend` `needs-decision` | After its decisions and dependencies |
-| 2 | [Build the preview player with trim and export controls](#build-the-preview-player-with-trim-and-export-controls) | `frontend` `needs-decision` | After its decisions and dependencies |
-| 2 | [Add the export command and API endpoint](#add-the-export-command-and-api-endpoint) | `export` `backend` `needs-decision` | After its decisions and dependencies |
-| 2 | [Connect the web app to the API](#connect-the-web-app-to-the-api) | `frontend` `backend` `needs-decision` | After its decisions and dependencies |
-| 3 | [Add the ingest command and collection catalog](#add-the-ingest-command-and-collection-catalog) | `ingestion` `needs-decision` | After its decisions and dependencies |
-| 3 | [Run a small authorized data pilot](#run-a-small-authorized-data-pilot) | `data` `ingestion` `needs-decision` | After its decisions and dependencies |
-| 3 | [Explore pilot data for chat lag and clip alignment](#explore-pilot-data-for-chat-lag-and-clip-alignment) | `spike` `data` `modeling` `needs-decision` | After its decisions and dependencies |
-| 3 | [Build the scheduled collector](#build-the-scheduled-collector) | `ingestion` `needs-decision` | After its decisions and dependencies |
-| 3 | [Build window labels and saved splits](#build-window-labels-and-saved-splits) | `data` `needs-decision` | After its decisions and dependencies |
-| 3 | [Add the model training command](#add-the-model-training-command) | `modeling` `needs-decision` | After its decisions and dependencies |
-| 3 | [Build and quality-check dataset v1](#build-and-quality-check-dataset-v1) | `data` `needs-decision` | After its decisions and dependencies |
-| 4 | [Run the baselines on dataset v1](#run-the-baselines-on-dataset-v1) | `experiment` `modeling` `needs-decision` | After its decisions and dependencies |
-| 4 | [Train and evaluate a logistic regression model](#train-and-evaluate-a-logistic-regression-model) | `experiment` `modeling` `needs-decision` | After its decisions and dependencies |
-| 4 | [Train and evaluate a LightGBM model](#train-and-evaluate-a-lightgbm-model) | `experiment` `modeling` `needs-decision` | After its decisions and dependencies |
-| 5 | [Add the analyze command for a VOD](#add-the-analyze-command-for-a-vod) | `backend` `modeling` `needs-decision` | After its decisions and dependencies |
-| 5 | [Run real analysis jobs in the API worker](#run-real-analysis-jobs-in-the-api-worker) | `backend` `needs-decision` | After its decisions and dependencies |
-| 5 | [Preview and export real VOD media](#preview-and-export-real-vod-media) | `backend` `frontend` `export` `needs-decision` | After its decisions and dependencies |
-| 5 | [Use the trained model in analysis](#use-the-trained-model-in-analysis) | `modeling` `backend` `needs-decision` | After its decisions and dependencies |
-| 5 | [Add an end-to-end test on a synthetic VOD](#add-an-end-to-end-test-on-a-synthetic-vod) | `tooling` `needs-decision` | After its decisions and dependencies |
-| 6 | [Write up results against the baselines](#write-up-results-against-the-baselines) | `modeling` `docs` `needs-decision` | After its decisions and dependencies |
-| 6 | [Prepare and rehearse the demo](#prepare-and-rehearse-the-demo) | `tooling` `docs` `needs-decision` | After its decisions and dependencies |
-| Optional | [Add speech signals for shortlisted candidates](#add-speech-signals-for-shortlisted-candidates) | `modeling` `needs-decision` | After its decisions and dependencies |
-| Optional | [Run signal ablations for chat and audio](#run-signal-ablations-for-chat-and-audio) | `experiment` `modeling` `needs-decision` | After its decisions and dependencies |
-| Optional | [Run the blind taste test](#run-the-blind-taste-test) | `experiment` `modeling` `needs-decision` | After its decisions and dependencies |
-| Optional | [Stack the facecam over gameplay in vertical exports](#stack-the-facecam-over-gameplay-in-vertical-exports) | `export` `needs-decision` | After its decisions and dependencies |
-| Optional | [Show why each moment ranked](#show-why-each-moment-ranked) | `frontend` `modeling` `needs-decision` | After its decisions and dependencies |
-| Optional | [Cache processed VODs](#cache-processed-vods) | `backend` `needs-decision` | After its decisions and dependencies |
-| Optional | [Show detailed job progress and clear errors](#show-detailed-job-progress-and-clear-errors) | `frontend` `backend` `needs-decision` | After its decisions and dependencies |
-| Optional | [Run the evaluation harness in CI](#run-the-evaluation-harness-in-ci) | `tooling` `modeling` `needs-decision` | After its decisions and dependencies |
+| Wave | Issue | Title | Labels | Can start |
+|---|---|---|---|---|
+| 0 | [#3](https://github.com/adillpickles/AutoClipper/issues/3) | [Set up team access and issue tracking](#set-up-team-access-and-issue-tracking) | `tooling` | Now |
+| 0 | [#4](https://github.com/adillpickles/AutoClipper/issues/4) | [Register the team Twitch developer app](#register-the-team-twitch-developer-app) | `tooling` `ingestion` | Now |
+| 1 | [#5](https://github.com/adillpickles/AutoClipper/issues/5) | [Scaffold the Python package with tooling and CI](#scaffold-the-python-package-with-tooling-and-ci) | `tooling` `agent-ready` | Now |
+| 1 | [#6](https://github.com/adillpickles/AutoClipper/issues/6) | [Scaffold the Next.js app with lint and CI](#scaffold-the-nextjs-app-with-lint-and-ci) | `frontend` `tooling` `agent-ready` | Now |
+| 1 | [#7](https://github.com/adillpickles/AutoClipper/issues/7) | [Decide real-data permissions and chat retention (OQ-17 and OQ-9)](#decide-real-data-permissions-and-chat-retention-oq-17-and-oq-9) | `decision` `data` | Now |
+| 1 | [#8](https://github.com/adillpickles/AutoClipper/issues/8) | [Choose pilot channels and data storage (OQ-4 and OQ-5)](#choose-pilot-channels-and-data-storage-oq-4-and-oq-5) | `decision` `data` `needs-decision` | After its decisions and dependencies |
+| 1 | [#9](https://github.com/adillpickles/AutoClipper/issues/9) | [Decide the first training target and label rules (OQ-1)](#decide-the-first-training-target-and-label-rules-oq-1) | `decision` `modeling` | Now |
+| 1 | [#10](https://github.com/adillpickles/AutoClipper/issues/10) | [Adopt the dataset construction rules (ADR-0009)](#adopt-the-dataset-construction-rules-adr-0009) | `decision` `data` | Now |
+| 1 | [#11](https://github.com/adillpickles/AutoClipper/issues/11) | [Adopt the v0 chat and audio feature set (ADR-0009)](#adopt-the-v0-chat-and-audio-feature-set-adr-0009) | `decision` `modeling` | Now |
+| 1 | [#12](https://github.com/adillpickles/AutoClipper/issues/12) | [Adopt the evaluation protocol (ADR-0009)](#adopt-the-evaluation-protocol-adr-0009) | `decision` `modeling` `needs-decision` | After its decisions and dependencies |
+| 1 | [#13](https://github.com/adillpickles/AutoClipper/issues/13) | [Define the job and candidate API contract (ADR-0009)](#define-the-job-and-candidate-api-contract-adr-0009) | `decision` `backend` `frontend` | Now |
+| 2 | [#14](https://github.com/adillpickles/AutoClipper/issues/14) | [Add the config module and logging setup](#add-the-config-module-and-logging-setup) | `tooling` `agent-ready` | After its dependencies merge |
+| 2 | [#15](https://github.com/adillpickles/AutoClipper/issues/15) | [Generate a synthetic VOD dataset for development](#generate-a-synthetic-vod-dataset-for-development) | `data` `agent-ready` | After its dependencies merge |
+| 2 | [#16](https://github.com/adillpickles/AutoClipper/issues/16) | [Build the Helix client for auth and VOD metadata](#build-the-helix-client-for-auth-and-vod-metadata) | `ingestion` `agent-ready` | After its dependencies merge |
+| 2 | [#17](https://github.com/adillpickles/AutoClipper/issues/17) | [Fetch a VOD's viewer clips with chunked queries](#fetch-a-vods-viewer-clips-with-chunked-queries) | `ingestion` `agent-ready` | After its dependencies merge |
+| 2 | [#18](https://github.com/adillpickles/AutoClipper/issues/18) | [Parse chat replay with pseudonymization](#parse-chat-replay-with-pseudonymization) | `ingestion` `agent-ready` | After its dependencies merge |
+| 2 | [#19](https://github.com/adillpickles/AutoClipper/issues/19) | [Download VOD audio and normalize it to 16 kHz mono](#download-vod-audio-and-normalize-it-to-16-khz-mono) | `ingestion` `agent-ready` | After its dependencies merge |
+| 2 | [#20](https://github.com/adillpickles/AutoClipper/issues/20) | [Cut and reframe a source interval to a vertical MP4](#cut-and-reframe-a-source-interval-to-a-vertical-mp4) | `export` `agent-ready` | After its dependencies merge |
+| 2 | [#21](https://github.com/adillpickles/AutoClipper/issues/21) | [Burn in captions with faster-whisper](#burn-in-captions-with-faster-whisper) | `export` `agent-ready` | After its dependencies merge |
+| 2 | [#22](https://github.com/adillpickles/AutoClipper/issues/22) | [Build windows and moments from the adopted rules](#build-windows-and-moments-from-the-adopted-rules) | `data` `needs-decision` | After its decisions and dependencies |
+| 2 | [#23](https://github.com/adillpickles/AutoClipper/issues/23) | [Compute chat features per window](#compute-chat-features-per-window) | `modeling` `needs-decision` | After its decisions and dependencies |
+| 2 | [#24](https://github.com/adillpickles/AutoClipper/issues/24) | [Compute audio features per window](#compute-audio-features-per-window) | `modeling` `needs-decision` | After its decisions and dependencies |
+| 2 | [#25](https://github.com/adillpickles/AutoClipper/issues/25) | [Implement evaluation metrics and the report harness](#implement-evaluation-metrics-and-the-report-harness) | `modeling` `needs-decision` | After its decisions and dependencies |
+| 2 | [#26](https://github.com/adillpickles/AutoClipper/issues/26) | [Implement the B0–B4 baselines](#implement-the-b0b4-baselines) | `modeling` `needs-decision` | After its decisions and dependencies |
+| 2 | [#27](https://github.com/adillpickles/AutoClipper/issues/27) | [Generate candidates from window scores](#generate-candidates-from-window-scores) | `modeling` `needs-decision` | After its decisions and dependencies |
+| 2 | [#28](https://github.com/adillpickles/AutoClipper/issues/28) | [Build the FastAPI job API with a mock analysis job](#build-the-fastapi-job-api-with-a-mock-analysis-job) | `backend` `needs-decision` | After its decisions and dependencies |
+| 2 | [#29](https://github.com/adillpickles/AutoClipper/issues/29) | [Build the VOD input and job status screens](#build-the-vod-input-and-job-status-screens) | `frontend` `needs-decision` | After its decisions and dependencies |
+| 2 | [#30](https://github.com/adillpickles/AutoClipper/issues/30) | [Build the highlights shortlist and timeline](#build-the-highlights-shortlist-and-timeline) | `frontend` `needs-decision` | After its decisions and dependencies |
+| 2 | [#31](https://github.com/adillpickles/AutoClipper/issues/31) | [Build the preview player with trim and export controls](#build-the-preview-player-with-trim-and-export-controls) | `frontend` `needs-decision` | After its decisions and dependencies |
+| 2 | [#32](https://github.com/adillpickles/AutoClipper/issues/32) | [Add the export command and API endpoint](#add-the-export-command-and-api-endpoint) | `export` `backend` `needs-decision` | After its decisions and dependencies |
+| 2 | [#33](https://github.com/adillpickles/AutoClipper/issues/33) | [Connect the web app to the API](#connect-the-web-app-to-the-api) | `frontend` `backend` `needs-decision` | After its decisions and dependencies |
+| 3 | [#34](https://github.com/adillpickles/AutoClipper/issues/34) | [Add the ingest command and collection catalog](#add-the-ingest-command-and-collection-catalog) | `ingestion` `needs-decision` | After its decisions and dependencies |
+| 3 | [#35](https://github.com/adillpickles/AutoClipper/issues/35) | [Run a small authorized data pilot](#run-a-small-authorized-data-pilot) | `data` `ingestion` `needs-decision` | After its decisions and dependencies |
+| 3 | [#36](https://github.com/adillpickles/AutoClipper/issues/36) | [Explore pilot data for chat lag and clip alignment](#explore-pilot-data-for-chat-lag-and-clip-alignment) | `spike` `data` `modeling` `needs-decision` | After its decisions and dependencies |
+| 3 | [#37](https://github.com/adillpickles/AutoClipper/issues/37) | [Build the scheduled collector](#build-the-scheduled-collector) | `ingestion` `needs-decision` | After its decisions and dependencies |
+| 3 | [#38](https://github.com/adillpickles/AutoClipper/issues/38) | [Build window labels and saved splits](#build-window-labels-and-saved-splits) | `data` `needs-decision` | After its decisions and dependencies |
+| 3 | [#39](https://github.com/adillpickles/AutoClipper/issues/39) | [Add the model training command](#add-the-model-training-command) | `modeling` `needs-decision` | After its decisions and dependencies |
+| 3 | [#40](https://github.com/adillpickles/AutoClipper/issues/40) | [Build and quality-check dataset v1](#build-and-quality-check-dataset-v1) | `data` `needs-decision` | After its decisions and dependencies |
+| 4 | [#41](https://github.com/adillpickles/AutoClipper/issues/41) | [Run the baselines on dataset v1](#run-the-baselines-on-dataset-v1) | `experiment` `modeling` `needs-decision` | After its decisions and dependencies |
+| 4 | [#42](https://github.com/adillpickles/AutoClipper/issues/42) | [Train and evaluate a logistic regression model](#train-and-evaluate-a-logistic-regression-model) | `experiment` `modeling` `needs-decision` | After its decisions and dependencies |
+| 4 | [#43](https://github.com/adillpickles/AutoClipper/issues/43) | [Train and evaluate a LightGBM model](#train-and-evaluate-a-lightgbm-model) | `experiment` `modeling` `needs-decision` | After its decisions and dependencies |
+| 5 | [#44](https://github.com/adillpickles/AutoClipper/issues/44) | [Add the analyze command for a VOD](#add-the-analyze-command-for-a-vod) | `backend` `modeling` `needs-decision` | After its decisions and dependencies |
+| 5 | [#45](https://github.com/adillpickles/AutoClipper/issues/45) | [Run real analysis jobs in the API worker](#run-real-analysis-jobs-in-the-api-worker) | `backend` `needs-decision` | After its decisions and dependencies |
+| 5 | [#46](https://github.com/adillpickles/AutoClipper/issues/46) | [Preview and export real VOD media](#preview-and-export-real-vod-media) | `backend` `frontend` `export` `needs-decision` | After its decisions and dependencies |
+| 5 | [#47](https://github.com/adillpickles/AutoClipper/issues/47) | [Use the trained model in analysis](#use-the-trained-model-in-analysis) | `modeling` `backend` `needs-decision` | After its decisions and dependencies |
+| 5 | [#48](https://github.com/adillpickles/AutoClipper/issues/48) | [Add an end-to-end test on a synthetic VOD](#add-an-end-to-end-test-on-a-synthetic-vod) | `tooling` `needs-decision` | After its decisions and dependencies |
+| 6 | [#49](https://github.com/adillpickles/AutoClipper/issues/49) | [Write up results against the baselines](#write-up-results-against-the-baselines) | `modeling` `docs` `needs-decision` | After its decisions and dependencies |
+| 6 | [#50](https://github.com/adillpickles/AutoClipper/issues/50) | [Prepare and rehearse the demo](#prepare-and-rehearse-the-demo) | `tooling` `docs` `needs-decision` | After its decisions and dependencies |
+| Optional | Not published | [Add speech signals for shortlisted candidates](#add-speech-signals-for-shortlisted-candidates) | `modeling` `needs-decision` | After its decisions and dependencies |
+| Optional | Not published | [Run signal ablations for chat and audio](#run-signal-ablations-for-chat-and-audio) | `experiment` `modeling` `needs-decision` | After its decisions and dependencies |
+| Optional | Not published | [Run the blind taste test](#run-the-blind-taste-test) | `experiment` `modeling` `needs-decision` | After its decisions and dependencies |
+| Optional | Not published | [Stack the facecam over gameplay in vertical exports](#stack-the-facecam-over-gameplay-in-vertical-exports) | `export` `needs-decision` | After its decisions and dependencies |
+| Optional | Not published | [Show why each moment ranked](#show-why-each-moment-ranked) | `frontend` `modeling` `needs-decision` | After its decisions and dependencies |
+| Optional | Not published | [Cache processed VODs](#cache-processed-vods) | `backend` `needs-decision` | After its decisions and dependencies |
+| Optional | Not published | [Show detailed job progress and clear errors](#show-detailed-job-progress-and-clear-errors) | `frontend` `backend` `needs-decision` | After its decisions and dependencies |
+| Optional | Not published | [Run the evaluation harness in CI](#run-the-evaluation-harness-in-ci) | `tooling` `modeling` `needs-decision` | After its decisions and dependencies |
 <!-- index:end -->
 
 ---
