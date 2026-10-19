@@ -50,13 +50,16 @@ def test_usage_errors_exit_with_user_error(args: list[str], message: str) -> Non
     assert message in result.output
 
 
-def test_installed_console_script_shows_help() -> None:
+def test_installed_console_script_shows_help(monkeypatch: pytest.MonkeyPatch) -> None:
     # Runs the script `uv sync` installed, which exercises the [project.scripts] entry point.
     script = shutil.which("autoclipper", path=sysconfig.get_path("scripts"))
     assert script is not None, "the autoclipper console script is not installed; run `uv sync`"
+    # Pin the child's stdout encoding so decoding doesn't depend on the shell's settings (on
+    # Windows the locale default is a legacy code page, but PYTHONIOENCODING may be set).
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
 
     completed = subprocess.run(
-        [script, "--help"], capture_output=True, text=True, check=False, timeout=60
+        [script, "--help"], capture_output=True, encoding="utf-8", check=False, timeout=60
     )
 
     assert completed.returncode == ExitCode.SUCCESS, completed.stderr
