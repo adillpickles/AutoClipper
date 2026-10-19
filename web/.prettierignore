@@ -1,0 +1,4 @@
+# Prettier also skips everything in .gitignore (.next/, node_modules/, next-env.d.ts, ...).
+package-lock.json
+# Managed by `next dev`, which rewrites its marked block if the formatting differs.
+AGENTS.md
