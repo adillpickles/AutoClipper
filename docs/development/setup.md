@@ -113,6 +113,6 @@ If OQ-9 approves persisted hash-based joins across machines, use the same privat
 | TwitchDownloader output schema changed | Pin the previous release and open a `bug` issue |
 | `ffmpeg: command not found` | Not on `PATH`. Restart the terminal after installing. |
 | `uv: command not found` / `'uv' is not recognized` | Not on `PATH` yet. Open a new terminal after installing uv (see the Windows note above). |
-| `uv sync --locked` fails because the lockfile needs to be updated (CI or locally) | `pyproject.toml` changed without a new lock. Run `uv lock` and commit `uv.lock` with `pyproject.toml`. |
+| ``The lockfile at `uv.lock` needs to be updated, but `--locked` was provided`` (CI or locally) | `pyproject.toml` changed without a new lock. Run `uv lock` and commit `uv.lock` with `pyproject.toml`. |
 | uv warns `Failed to hardlink files; falling back to full copy` | Harmless. The clone and uv's cache are on different drives. Set the environment variable `UV_LINK_MODE=copy` to silence it. |
 | `uv run pytest -m live` reports `no tests ran` (exit code 5) | No live tests exist yet; there's nothing to select. |
