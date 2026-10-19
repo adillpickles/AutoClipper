@@ -7,7 +7,7 @@ Start with the [project README](../README.md) for the overview, and [AGENTS.md](
 | Section | Docs | Answers |
 |---|---|---|
 | **Product** | [PRD](product/prd.md) · [Roadmap](product/roadmap.md) | What are we building, for whom, and in what order? |
-| **Architecture** | [Overview](architecture/overview.md) · [Data model](architecture/data-model.md) | How does the system fit together? What are the contracts between stages? |
+| **Architecture** | [Overview](architecture/overview.md) · [Data model](architecture/data-model.md) · [API contract](architecture/api-contract.md) (proposed) | How does the system fit together? What are the contracts between stages? |
 | **Data** | [Index](data/README.md) · [Governance](data/data-governance.md) · [Sources](data/data-sources.md) · [Collection plan](data/collection-plan.md) · [Labeling](data/labeling.md) | Where does data come from, how is it labeled, and what are the rules? |
 | **ML** | [Index](ml/README.md) · [Modeling plan](ml/modeling-plan.md) · [Features](ml/features.md) · [Evaluation](ml/evaluation.md) · [Experiments](ml/experiments.md) | What do we model, and how do we know it works? |
 | **Development** | [Setup](development/setup.md) · [Conventions](development/conventions.md) · [Testing](development/testing.md) · [Git workflow](development/git-workflow.md) | How do I set up, write code, test it and ship it? |

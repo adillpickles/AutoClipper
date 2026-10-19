@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Proposal. Storage acceptance alone does not ratify schemas; adopt the relevant contracts explicitly under ADR-0009/OQ-15. |
-| **Last updated** | 2026-10-13 |
+| **Last updated** | 2026-10-19 |
 
 These are the tables that pipeline stages exchange. **Any schema change, including adding a nullable column, requires an ADR or ADR update in the same PR** (see [AGENTS.md § Hard rules](../../AGENTS.md#6-hard-rules-never-break-these)), because it can break downstream stages and invalidate past results. Document the change here too.
 
@@ -167,28 +167,20 @@ One table per adopted signal family (`features_chat`, `features_audio`, optional
 
 ## `candidates` (API/CLI output, JSON)
 
-What `autoclipper analyze` returns and what the UI renders.
+**Proposed in the [API contract § 4](api-contract.md#4-results-and-candidates) (#13), awaiting team adoption under ADR-0009.** What `autoclipper analyze` writes and what `GET /api/v1/jobs/{job_id}/result` returns: one `AnalysisResult` JSON document per analyzed VOD, with `schema_version`, `generated_at`, `vod` (ID, title, broadcaster, `duration_s`, `created_at`), `scorer` (`kind`, `name`, `run_id`), `n_viewer_clips_total`, `warnings` and `candidates`. The contract is normative for semantics, invariants and synthetic examples; this table summarizes one candidate.
 
-```json
-{
-  "video_id": "1234567890",
-  "model_run_id": "exp-007",
-  "candidates": [
-    {
-      "candidate_id": "1234567890:15342",
-      "rank": 1,
-      "score": 0.93,
-      "start_s": 15342.0,
-      "end_s": 15372.0,
-      "source": "viewer_clips",
-      "n_viewer_clips": 14,
-      "top_signals": ["chat_msg_rate_z", "audio_rms_max_z"]
-    }
-  ]
-}
-```
+| Field | Type | Notes |
+|---|---|---|
+| `candidate_id` | str | Opaque; unique within one result |
+| `rank` | int | 1 = best; exactly `1..N`; follows `score`, ties by earlier `start_s`, then `candidate_id` |
+| `score` | float | Higher = better according to `scorer`; comparable only within one result; not a calibrated probability |
+| `start_s` | float | Source-time seconds from VOD start, already aligned; export applies no chat-lag shift |
+| `end_s` | float | Exclusive: `[start_s, end_s)` with `0 ≤ start_s < end_s ≤ vod.duration_s` |
+| `source` | str | `viewer_clips`, `discovered` or `both`: **how the candidate was generated**, not whether ground truth overlaps it |
+| `n_viewer_clips` | int | Distinct viewer clip IDs merged into the candidate; 0 exactly when `source` is `discovered` |
+| `top_signals` | list<str>, *nullable* | Feature names, strongest first; null when not computed (optional polish, US-9) |
 
-The example is synthetic and describes no run or measured score. `source` describes **how the candidate was generated**, not whether ground truth overlaps it. API, heuristic, learned or combined provenance and the final enum/output shape require adoption under ADR-0009; the earlier binary `viewer_clips`/`model` example is not sufficient for all proposed strategies.
+This replaces the earlier example's top-level `video_id` (now `vod.video_id`), `model_run_id` (now `scorer.run_id`) and binary `viewer_clips`/`model` provenance. Candidate generation rules (budget, peaks, padding, deduplication) stay with ADR-0009 and #27.
 
 ## `catalog`
 

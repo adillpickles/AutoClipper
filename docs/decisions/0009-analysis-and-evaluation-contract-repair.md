@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Proposed. Documentation repair, not ratification of a training target or shared implementation contract. |
 | **Date** | 2026-10-13 |
-| **Related** | [Data model](../architecture/data-model.md), [Labeling](../data/labeling.md), [Features](../ml/features.md), [Evaluation](../ml/evaluation.md), OQ-1/OQ-9/OQ-15/OQ-17 |
+| **Related** | [Data model](../architecture/data-model.md), [API contract](../architecture/api-contract.md) (proposed, #13), [Labeling](../data/labeling.md), [Features](../ml/features.md), [Evaluation](../ml/evaluation.md), OQ-1/OQ-9/OQ-15/OQ-17 |
 
 ## Context
 
@@ -24,6 +24,10 @@ The pre-code foundation gave incompatible instructions about source time, clip s
 Before a real labeled dataset or reported experiment, resolve the first learning/relevance target and its horizon, unseen-channel view transformation, grouping/window rules, snapshot population, candidate budget/rounding, zero-positive/short-VOD handling, top-percent ties and matching protocol (including peaks versus interval-only methods). An authorized ingestion pilot needs source, privacy and observation contracts, without waiting for model-family selection. Choose the human-study rubric/sampling before that study, and provenance/output shape before app integration. Record adopted subsets and versions here or in focused ADRs; accepting storage ADR-0005 alone does not approve these contracts.
 
 Privacy/retention and real-source authorization are OQ-9/OQ-17, not inferred from this ADR. Exact model families, video features and cloud services may stay open. Reversible synthetic prototypes may use explicitly authorized subsets with their proposal status intact.
+
+## API contract proposal (#13)
+
+The candidate provenance/output shape and the job, media and export API are drafted in the [API contract](../architecture/api-contract.md), with decision points for reviewers. **That draft is proposed, not adopted.** It becomes the adopted app-integration contract only when the team approves it and changes its status to *Adopted*; record that date here. Until then the proposal rules above apply. It doesn't adopt candidate generation rules, the training target (OQ-1), a media route (OQ-17) or hosting (OQ-18). Once adopted, changes follow its versioning section and need a note here or a focused ADR.
 
 ## Consequences
 

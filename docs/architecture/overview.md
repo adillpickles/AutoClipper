@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Status** | Planned system. **Nothing here is implemented yet.** Stack choices are accepted in ADR-0002/0003/0005/0007; details marked "proposal" still need agreement. |
-| **Last updated** | 2026-10-16 |
-| **Related** | [Data model](data-model.md) · ADR [0002](../decisions/0002-language-and-tooling.md), [0003](../decisions/0003-repository-layout.md), [0005](../decisions/0005-local-storage-parquet-duckdb.md), [0007](../decisions/0007-web-application-stack.md) |
+| **Last updated** | 2026-10-19 |
+| **Related** | [Data model](data-model.md) · [API contract](api-contract.md) (proposed) · ADR [0002](../decisions/0002-language-and-tooling.md), [0003](../decisions/0003-repository-layout.md), [0005](../decisions/0005-local-storage-parquet-duckdb.md), [0007](../decisions/0007-web-application-stack.md) |
 
 ---
 
@@ -135,7 +135,7 @@ Analytical results may remain usable when video is unavailable. Return candidate
 ### 4.7 Interfaces
 
 - **CLI** (`autoclipper …`) is the primary interface for development and data work. Planned subcommands: `ingest`, `collect`, `build-dataset`, `features`, `train`, `eval`, `analyze`, `export`.
-- **Web API** (FastAPI, ADR-0007): `POST /jobs` → job ID; status/results endpoint; export endpoint. Long-running work runs outside request handling with bounded concurrency, explicit failure states and documented restart behavior. An in-process queue is enough for the local single-user demo; hosted infrastructure is decided under OQ-18.
+- **Web API** (FastAPI, ADR-0007), versioned under `/api/v1`: `POST /api/v1/jobs` → job ID; job status, results and per-candidate media endpoints; export create/status/download endpoints. Endpoints, payloads, error codes, polling and restart behavior are drafted in the [API contract](api-contract.md) (**proposed, awaiting team adoption in #13**). Long-running work runs outside request handling with bounded concurrency, explicit failure states and documented restart behavior. An in-process queue is enough for the local single-user demo; hosted infrastructure is decided under OQ-18.
 - **Web app** (Next.js + TypeScript + Tailwind, ADR-0007): input → progress/errors → understandable shortlist/timeline → preview → basic trim → export. Build this flow early with synthetic candidates; player/display choice follows OQ-17.
 
 ## 5. Storage layout (proposal)
