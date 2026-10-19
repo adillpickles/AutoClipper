@@ -1,36 +1,60 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AutoClipper web app
 
-## Getting Started
+The Next.js frontend for AutoClipper ([ADR-0007](../docs/decisions/0007-web-application-stack.md)). Right now it's a scaffold with one placeholder home page. It doesn't call the API and shows no data.
 
-First, run the development server:
+Stack: Next.js 16 (App Router, Turbopack), React 19, TypeScript (strict), Tailwind CSS 4, ESLint 9 and Prettier 3. npm is the package manager.
+
+## Run it
+
+You need Node.js 24 (LTS). The version is pinned in [`.nvmrc`](.nvmrc) and in `engines` in `package.json`; `nvm use` or `fnm use` in this folder picks it up.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cd web
+npm ci          # install the exact versions in package-lock.json
+npm run dev     # dev server at http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The same commands work in PowerShell. Full setup steps are in [docs/development/setup.md](../docs/development/setup.md#frontend-web).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Scripts
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Script                 | What it does                                                            |
+| ---------------------- | ----------------------------------------------------------------------- |
+| `npm run dev`          | Dev server with hot reload (Turbopack)                                  |
+| `npm run build`        | Production build                                                        |
+| `npm run start`        | Serve the production build (run `build` first)                          |
+| `npm run lint`         | ESLint (Next.js core-web-vitals + TypeScript rules). Any warning fails. |
+| `npm run typecheck`    | `next typegen` (route types, `next-env.d.ts`), then `tsc --noEmit`      |
+| `npm run format`       | Prettier: format every file, sorting Tailwind classes                   |
+| `npm run format:check` | Prettier: report unformatted files without changing them (what CI runs) |
 
-## Learn More
+Before you push, run what CI runs ([`.github/workflows/web.yml`](../.github/workflows/web.yml)):
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run lint && npm run typecheck && npm run format:check && npm run build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Layout
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```text
+web/
+├── src/
+│   └── app/            # App Router: routes, layouts, global styles
+│       ├── layout.tsx  # root layout and page metadata
+│       ├── page.tsx    # placeholder home page
+│       ├── icon.svg    # favicon
+│       └── globals.css # Tailwind entry point and color tokens
+├── AGENTS.md           # maintained by Next.js; see below
+├── eslint.config.mjs
+├── next.config.ts
+├── .prettierrc.json
+└── tsconfig.json
+```
 
-## Deploy on Vercel
+New code follows the frontend conventions in [docs/development/conventions.md § 10](../docs/development/conventions.md#10-frontend). That's where components and the typed API client will live.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Notes
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **`AGENTS.md`** is written by `next dev` when it detects a coding agent, and points agents at the docs bundled in `node_modules/next/dist/docs/` for the installed version. Commit it if `next dev` updates it, and don't edit the marked block. The repo-wide agent rules are in the root [`AGENTS.md`](../AGENTS.md).
+- **Telemetry:** Next.js collects anonymous usage data. CI turns it off with `NEXT_TELEMETRY_DISABLED=1`. To opt out locally, run `npx next telemetry disable`.
+- **Generated files** (`.next/`, `next-env.d.ts`, `*.tsbuildinfo`) are git-ignored and recreated by `dev`, `build` and `typecheck`.

@@ -15,7 +15,7 @@
 | FFmpeg | 6+ | Audio/video processing | Windows: `winget install Gyan.FFmpeg` · macOS: `brew install ffmpeg` · Linux: package manager |
 | yt-dlp | latest | VOD audio/segment download | Installed as a Python dependency via `uv`, so no global install is needed |
 | TwitchDownloaderCLI | latest release | Chat replay | Download a release binary from <https://github.com/lay295/TwitchDownloader/releases> and put it on `PATH` |
-| Node.js | Supported Active/Maintenance LTS; pin at frontend scaffold time | Proposed web UI | [Release status](https://nodejs.org/en/about/previous-releases) (Node 20 is EOL as checked 2026-10-13) |
+| Node.js | 24 LTS (pinned in `web/.nvmrc`) | Web app in `web/` | <https://nodejs.org/> or a version manager (fnm, nvm, nvm-windows, Volta). npm comes with it. See [Frontend](#frontend-web). |
 | GitHub CLI | optional | Issues/PRs from the terminal | <https://cli.github.com/> |
 
 Check each required tool individually in the shell used by your editor:
@@ -73,6 +73,41 @@ After `pre-commit install`, the hooks run on the files you stage each time you `
 
 When a hook fixes files (Ruff, end-of-file or whitespace fixes, notebook output stripping), the commit stops. Review the changes, `git add` them and commit again. The large-file (500 KB) and private-key checks can't fix anything: unstage the file instead.
 
+## Frontend (web/)
+
+The Next.js app needs only Node.js. It doesn't call the Python backend yet. These steps were tested on Windows 11 (Node 24.19.0) in PowerShell and Git Bash. CI runs them on Ubuntu; nobody has tried them on macOS yet.
+
+**Node version.** `web/.nvmrc` pins Node **24** ("Krypton"). It was the Active LTS line when pinned on 2026-10-19, moves to Maintenance LTS on 2026-10-20, and is supported until 2028-04-30 ([Node.js release schedule](https://github.com/nodejs/Release#release-schedule)). Node 26 becomes Active LTS on 2026-10-28; moving to it means changing `.nvmrc` and `engines` in `web/package.json` together. Check with `node --version` (should print `v24.x`).
+
+Install and run the dev server (<http://localhost:3000>):
+
+```bash
+cd web
+npm ci
+npm run dev
+```
+
+```powershell
+Set-Location web
+npm ci
+npm run dev
+```
+
+Run the same checks as CI before you push:
+
+```bash
+npm run lint && npm run typecheck && npm run format:check && npm run build
+```
+
+```powershell
+# Windows PowerShell 5.1 has no &&, so this runs every check and you read each result.
+npm run lint; npm run typecheck; npm run format:check; npm run build
+```
+
+`npm run format` fixes formatting. All scripts are listed in [`web/README.md`](../../web/README.md).
+
+**Editor:** the ESLint, Prettier and Tailwind CSS IntelliSense extensions for VS Code, with Prettier as the formatter for files in `web/`.
+
 ## Twitch credentials
 
 1. Log in at <https://dev.twitch.tv/console> (two-factor auth must be enabled on the account).
@@ -116,3 +151,7 @@ If OQ-9 approves persisted hash-based joins across machines, use the same privat
 | ``The lockfile at `uv.lock` needs to be updated, but `--locked` was provided`` (CI or locally) | `pyproject.toml` changed without a new lock. Run `uv lock` and commit `uv.lock` with `pyproject.toml`. |
 | uv warns `Failed to hardlink files; falling back to full copy` | Harmless. The clone and uv's cache are on different drives. Set the environment variable `UV_LINK_MODE=copy` to silence it. |
 | `uv run pytest -m live` reports `no tests ran` (exit code 5) | No live tests exist yet; there's nothing to select. |
+
+| `npm warn EBADENGINE` in `web/` | You're not on Node 24. Switch versions (see [Frontend](#frontend-web)). |
+| npm 12+ warns that `unrs-resolver` install scripts were blocked | Harmless. Its native binary comes from an optional dependency; the blocked script is only a fallback. |
+| `npm audit` reports high-severity `braces` advisories in `web/` | Comes from the lint toolchain (`eslint-config-next` → `fast-glob`), not from app code, and has no fixed version yet. Don't run `npm audit fix --force`: it downgrades `eslint-config-next` to v14. |
