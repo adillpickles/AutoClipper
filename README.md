@@ -7,8 +7,8 @@
 ![License: not yet chosen](https://img.shields.io/badge/license-TBD-lightgrey)
 
 > [!IMPORTANT]
-> **Project status: foundations. There is no application code yet.**
-> The repo currently holds the scope, architecture, conventions and plan. See [`docs/project/status.md`](docs/project/status.md) for what exists today.
+> **Project status: foundations. There are no features yet.**
+> The repo holds the scope, architecture, conventions and plan, plus the Python package scaffold with its tooling and CI. See [`docs/project/status.md`](docs/project/status.md) for what exists today.
 
 ---
 

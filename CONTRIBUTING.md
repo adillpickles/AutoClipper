@@ -73,7 +73,7 @@ Example: `feat/14-audio-loudness-features`.
 - Set up your environment with [setup](docs/development/setup.md).
 - Follow [conventions](docs/development/conventions.md) and add tests ([testing](docs/development/testing.md)).
 - Keep it small: aim for **under ~400 changed lines**. If it's growing past that, split the issue.
-- Before pushing, run the checks (once tooling exists):
+- Before pushing, run the checks (CI runs the same ones):
 
   ```bash
   uv run ruff check . && uv run ruff format --check .
@@ -139,7 +139,7 @@ Mark each comment **blocking** or **nit**. Approve once the blocking items are f
 
 ## 8. Merge
 
-A PR can merge when it has **one approval**, **all conversations are resolved**, and (once CI exists) **checks are green**.
+A PR can merge when it has **one approval**, **all conversations are resolved**, and the **CI checks are green**.
 
 1. The **author** merges: PR page → **Squash and merge**.
 2. Check that the commit title is still your Conventional Commit title, then confirm.

@@ -18,7 +18,7 @@ The full scope (must / should / could / won't) is in [`docs/product/prd.md`](doc
 
 ## 2. Current state. Read before assuming anything exists.
 
-- **Phase:** M0 Foundations. **No application code, dependencies or CI yet.** The first implementation tasks are the Python and Next.js scaffolds with CI.
+- **Phase:** M0 Foundations. The Python scaffold exists: the `autoclipper` package with a CLI that has no subcommands yet, its lint/type/test tooling, pre-commit hooks and CI (§5). **No pipeline, app or model code yet.** The Next.js scaffold is a separate task (#6).
 - Planned work is in GitHub issues #3–#50, drafted in dependency order in [`docs/project/backlog.md`](docs/project/backlog.md) (its index maps drafts to issue numbers). Don't start a task whose **Depends on** items aren't merged or whose label is `needs-decision`.
 - [`docs/project/status.md`](docs/project/status.md) is the source of truth for what exists. Read it at the start of every task.
 - **Decided** (ADRs marked *Accepted*, follow them): Python 3.12 + uv tooling, single repo with `src/` layout, chat + audio before video, Parquet + DuckDB for pipeline data, FastAPI backend + Next.js frontend. See [`docs/decisions/`](docs/decisions/README.md).
@@ -54,6 +54,11 @@ Don't load every doc for every task. Read what the task needs.
 ├── CLAUDE.md              ← Claude Code entry point; imports this file
 ├── README.md              ← public overview and "start here"
 ├── CONTRIBUTING.md        ← step by step: issue → branch → PR → merge
+├── pyproject.toml         ← Python project: dependencies and Ruff/Pyright/pytest config
+├── uv.lock                ← locked dependency versions (commit with pyproject.toml)
+├── .pre-commit-config.yaml ← git hooks (Ruff, notebook stripping, large files, private keys)
+├── src/autoclipper/       ← the Python package; cli.py is the `autoclipper` CLI
+├── tests/                 ← pytest suite
 ├── docs/
 │   ├── product/           ← PRD (scope), roadmap: the "what" and "why"
 │   ├── architecture/      ← system design, data model: the "how"
@@ -63,22 +68,26 @@ Don't load every doc for every task. Read what the task needs.
 │   ├── agents/            ← working with AI agents (tasks, prompts, optional review loop)
 │   ├── decisions/         ← Architecture Decision Records (ADRs)
 │   └── project/           ← status, backlog (issue drafts), open questions, risks, labels, glossary
-└── .github/               ← issue/PR templates
+└── .github/               ← issue/PR templates, CI workflow (workflows/ci.yml)
 ```
 
 Code layout (ADR-0003, *Accepted*): `src/autoclipper/` (Python package), `web/` (Next.js frontend), `tests/`, `experiments/`, `notebooks/`, `scripts/`, and git-ignored `data/` and `artifacts/`. Create a directory only when a task needs it.
 
 ## 5. Commands
 
-> No code exists yet. The scaffold PR adds these and **must update this section** with the exact, tested commands. Planned (ADR-0002, *Accepted*):
+Run from the repo root. First-time setup (installing uv, PowerShell variants) is in [setup](docs/development/setup.md).
 
 ```bash
-uv sync                      # install deps
-uv run pytest                # tests
-uv run ruff check . && uv run ruff format --check .   # lint + format check
-uv run pyright               # type check
-uv run autoclipper --help    # CLI entry point
+uv sync                        # create .venv with Python 3.12 and the locked deps, dev tools included
+uv run pre-commit install      # once per clone: run the git hooks on every commit
+uv run ruff check .            # lint (add --fix to apply safe fixes)
+uv run ruff format --check .   # format check (uv run ruff format . reformats)
+uv run pyright                 # type check (src/ and tests/)
+uv run pytest                  # tests; live tests are deselected (-m live runs only those)
+uv run autoclipper --help      # CLI entry point
 ```
+
+CI (`.github/workflows/ci.yml`) runs `uv sync --locked`, which fails if `uv.lock` is out of date, then the Ruff, Pyright and pytest commands above on Ubuntu and Windows for every PR and push to `main`. Add dependencies with `uv add <pkg>` (dev tools: `uv add --dev <pkg>`) and commit `pyproject.toml` and `uv.lock` together. Tool settings live in `pyproject.toml`.
 
 Use `uv run …` for everything. Never `pip install` into a global environment.
 
@@ -110,7 +119,7 @@ Use `uv run …` for everything. Never `pip install` into a global environment.
 ## 8. Definition of done
 
 - [ ] The issue's acceptance criteria are met (or the PR explains why not).
-- [ ] Lint, format, type check and tests pass locally (once tooling exists).
+- [ ] Lint, format, type check and tests pass locally (§5).
 - [ ] New logic has tests. Bug fixes include a regression test.
 - [ ] Docs affected by the change are updated in the same PR.
 - [ ] No data, media, secrets or real usernames in the diff.

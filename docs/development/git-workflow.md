@@ -34,7 +34,7 @@ gitGraph
 | Conversation resolution | All review threads must be resolved |
 | Merge method | **Squash only** |
 | History | Linear. No force pushes, no deletion of `main`. |
-| Status checks | None yet. CI checks become required once CI exists (roadmap M0). |
+| Status checks | None required yet. The `CI` workflow (`Python (ubuntu-latest)`, `Python (windows-latest)`) runs on every PR; the owner makes its checks required once it's green on `main` (#3). |
 
 The repo is also set to **squash merge only** and **delete branches after merge**. The squash commit title defaults to the PR title.
 

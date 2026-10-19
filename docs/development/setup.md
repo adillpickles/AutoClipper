@@ -2,16 +2,16 @@
 
 | | |
 |---|---|
-| **Status** | Partly proposal. There's no code to run yet. Prerequisites follow [ADR-0002](../decisions/0002-language-and-tooling.md) (*Accepted*). **The PR that scaffolds the project must turn this into exact, tested steps.** |
-| **Last updated** | 2026-10-09 |
+| **Status** | Binding for the Python setup. Tested from a fresh clone on Windows 11 in PowerShell and Git Bash; CI runs the same commands on Ubuntu and Windows. Not yet tried on a macOS or Linux machine. Prerequisites follow [ADR-0002](../decisions/0002-language-and-tooling.md) (*Accepted*). Frontend steps arrive with the Next.js scaffold (#6). |
+| **Last updated** | 2026-10-19 |
 
 ## Prerequisites
 
 | Tool | Version | Why | Install |
 |---|---|---|---|
 | Git | recent | Version control | <https://git-scm.com/> |
-| Python | 3.12 | Pipeline and ML | Installed and managed by `uv` (below) |
-| uv | latest | Python package/env manager | <https://docs.astral.sh/uv/getting-started/installation/> |
+| Python | 3.12 (pinned in `.python-version`) | Pipeline and ML | Nothing to install: `uv sync` uses an installed 3.12 or downloads one |
+| uv | latest (the lockfile was made with 0.13) | Python package/env manager | Windows: `winget install --id astral-sh.uv -e` · macOS: `brew install uv` · [all options](https://docs.astral.sh/uv/getting-started/installation/) |
 | FFmpeg | 6+ | Audio/video processing | Windows: `winget install Gyan.FFmpeg` · macOS: `brew install ffmpeg` · Linux: package manager |
 | yt-dlp | latest | VOD audio/segment download | Installed as a Python dependency via `uv`, so no global install is needed |
 | TwitchDownloaderCLI | latest release | Chat replay | Download a release binary from <https://github.com/lay295/TwitchDownloader/releases> and put it on `PATH` |
@@ -27,25 +27,51 @@ ffmpeg -version
 TwitchDownloaderCLI --version
 ```
 
-## First-time setup (planned)
+> **Windows:** winget adds tools to `PATH` for terminals opened *after* the install. If `uv` or `ffmpeg` is "not recognized" right after installing, open a new terminal (and restart VS Code so its terminals pick up the new `PATH`).
+
+## First-time setup
+
+Only Git and uv are needed for these steps. FFmpeg and TwitchDownloaderCLI are needed once you run media or chat tasks.
+
+**macOS, Linux, Git Bash:**
 
 ```bash
 git clone https://github.com/adillpickles/AutoClipper.git
 cd AutoClipper
 
-# Python env + deps (creates .venv, installs Python 3.12 if needed)
+# Create .venv with Python 3.12 and install the locked dependencies, dev tools included
 uv sync
 
-# Local config
-cp .env.example .env        # then fill in values (see below)
+# Local config: fill in values privately (see below); never commit .env
+cp .env.example .env
 
-# Git hooks
+# Git hooks: Ruff, notebook output stripping, large-file and private-key checks
 uv run pre-commit install
 
 # Smoke test
 uv run pytest
 uv run autoclipper --help
 ```
+
+**PowerShell:**
+
+```powershell
+git clone https://github.com/adillpickles/AutoClipper.git
+cd AutoClipper
+uv sync
+Copy-Item .env.example .env
+uv run pre-commit install
+uv run pytest
+uv run autoclipper --help
+```
+
+`uv run pytest` should report only passed tests, and `autoclipper --help` prints the CLI usage. The everyday lint, format, type-check and test commands are in [`AGENTS.md` § 5](../../AGENTS.md#5-commands).
+
+### Git hooks
+
+After `pre-commit install`, the hooks run on the files you stage each time you `git commit`. The first commit takes a minute because pre-commit downloads the hook environments (needs network). Run all hooks on every file with `uv run pre-commit run --all-files`.
+
+When a hook fixes files (Ruff, end-of-file or whitespace fixes, notebook output stripping), the commit stops. Review the changes, `git add` them and commit again. The large-file (500 KB) and private-key checks can't fix anything: unstage the file instead.
 
 ## Twitch credentials
 
@@ -60,13 +86,13 @@ If OQ-9 approves persisted hash-based joins across machines, use the same privat
 
 ## Editor setup
 
-- **VS Code:** recommended extensions are Python, Pylance, Ruff, EditorConfig, Even Better TOML and markdownlint. A `.vscode/extensions.json` will be added with the scaffold.
-- Use the project's `.venv` interpreter (`uv sync` creates it).
+- **VS Code:** accept the recommended extensions when you open the folder (listed in `.vscode/extensions.json`): Python, Pylance, Ruff, EditorConfig, Even Better TOML and markdownlint. Pylance reads the Pyright settings in `pyproject.toml`.
+- Use the project's `.venv` interpreter (`uv sync` creates it): *Python: Select Interpreter* → `.venv`.
 - Format on save with Ruff.
 
 ## Windows notes
 
-- Use **Git Bash** or **PowerShell**. The planned setup example is POSIX; the scaffold PR must provide tested PowerShell commands too. For local config, use `Copy-Item .env.example .env` in PowerShell and fill it privately.
+- Use **Git Bash** or **PowerShell**. The setup steps above are given and tested for both.
 - `.gitattributes` enforces LF except Windows `.bat`, `.cmd` and `.ps1` scripts (CRLF). Match `.editorconfig`; do not reset/re-checkout unrelated work to fix a warning.
 - Long paths: `git config --global core.longpaths true` if you hit path-length errors.
 - Make sure `ffmpeg` and `TwitchDownloaderCLI` are on `PATH` in the shell your editor uses.
@@ -86,3 +112,7 @@ If OQ-9 approves persisted hash-based joins across machines, use the same privat
 | yt-dlp fails on Twitch | Update it: `uv lock --upgrade-package yt-dlp && uv sync` |
 | TwitchDownloader output schema changed | Pin the previous release and open a `bug` issue |
 | `ffmpeg: command not found` | Not on `PATH`. Restart the terminal after installing. |
+| `uv: command not found` / `'uv' is not recognized` | Not on `PATH` yet. Open a new terminal after installing uv (see the Windows note above). |
+| `uv sync --locked` fails because the lockfile needs to be updated (CI or locally) | `pyproject.toml` changed without a new lock. Run `uv lock` and commit `uv.lock` with `pyproject.toml`. |
+| uv warns `Failed to hardlink files; falling back to full copy` | Harmless. The clone and uv's cache are on different drives. Set the environment variable `UV_LINK_MODE=copy` to silence it. |
+| `uv run pytest -m live` reports `no tests ran` (exit code 5) | No live tests exist yet; there's nothing to select. |

@@ -1,0 +1,108 @@
+[project]
+name = "autoclipper"
+version = "0.1.0"
+description = "Find, rank and export the highlights of a long Twitch VOD."
+readme = "README.md"
+# ADR-0002: the project targets Python 3.12 only; `.python-version` pins it for uv.
+requires-python = ">=3.12,<3.13"
+# No license is chosen yet (ADR-0006); this classifier makes PyPI reject accidental uploads.
+classifiers = ["Private :: Do Not Upload"]
+dependencies = [
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+autoclipper = "autoclipper.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.7.0",
+    # The `nodejs` extra ships Node.js as a wheel, so Pyright needs no separate Node install.
+    "pyright[nodejs]>=1.1.414",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    # Keep in sync with the ruff-pre-commit `rev` in .pre-commit-config.yaml.
+    "ruff>=0.17.1",
+]
+
+# --- Ruff (lint + format) ----------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Where a rule set enforces docs/development/conventions.md, its comment names the section.
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort (§2 imports)
+    "UP",  # pyupgrade: modern 3.12 syntax (§2)
+    "B",   # flake8-bugbear: likely bugs
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "PIE", # flake8-pie
+    "RUF", # Ruff-specific rules, including unused `noqa` comments
+    "PGH", # ignore comments must name a specific rule
+    "ANN", # type hints on every signature; `Any` needs a noqa with a reason (§2)
+    "D",   # Google-style docstrings on public functions and classes (§2)
+    "TID", # absolute imports only (§2)
+    "PTH", # pathlib instead of os.path (§5)
+    "DTZ", # no naive datetimes (§3)
+    "T20", # no print() in library code; use logging (§6)
+    "LOG", # flake8-logging (§6)
+    "G",   # lazy %-style logging arguments (§6)
+    "PT",  # flake8-pytest-style
+]
+# Deliberately not selected: N (ML code uses `X`/`y`), A (A005 would flag the planned
+# `autoclipper/logging.py`), S (noisy for tests and subprocess calls to FFmpeg).
+ignore = [
+    "D100", # module docstrings are optional
+    "D104", # package docstrings are optional
+    "D105", # magic-method docstrings are optional
+    "D107", # document constructor arguments in the class docstring instead
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]                # test names describe the behavior
+"scripts/**" = ["T20"]            # one-off scripts may print
+"notebooks/**" = ["D", "T20"]     # exploration only (§8)
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+# --- Pyright (types) ---------------------------------------------------------
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+
+# --- pytest ------------------------------------------------------------------
+[tool.pytest]
+minversion = "9.0"
+testpaths = ["tests"]
+# `-m "not live"` keeps live tests out of default runs and CI; a later `-m live` on the
+# command line replaces it. importlib mode lets test files mirror the package layout
+# (e.g. tests/ingest/test_chat.py and tests/features/test_chat.py) without __init__.py files.
+addopts = ["-ra", "--import-mode=importlib", "-m", "not live"]
+# Unknown markers, config keys and duplicate parametrize ids are errors; xfail is strict.
+strict = true
+markers = [
+    "live: calls real external services (Twitch API, downloads); needs .env credentials and source authorization. Deselected by default; select with `-m live`.",
+]
+filterwarnings = ["error"]
+
+# --- Coverage (uv run pytest --cov=autoclipper) -------------------------------
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:"]
