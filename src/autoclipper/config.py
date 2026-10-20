@@ -19,6 +19,7 @@ An empty value counts as unset, so the blank ``TWITCH_CLIENT_ID=`` lines copied 
 
 import functools
 import io
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -161,8 +162,7 @@ class Settings(BaseSettings):
             raise ValueError(
                 "contains a control character such as a newline or tab. In .env, double quotes "
                 "turn backslash sequences like \\n and \\t in Windows paths into control "
-                "characters: write the path without quotes, in single quotes, or with forward "
-                "slashes"
+                "characters: write the path without quotes or with forward slashes"
             )
         return value
 
@@ -176,6 +176,16 @@ class Settings(BaseSettings):
             expanded = value.expanduser()
         except RuntimeError as exc:  # pathlib raises this when the home directory is unknown
             raise ValueError(f"starts with ~ but the home directory is unknown ({exc})") from None
+        if sys.platform == "win32" and expanded.root and not expanded.drive:
+            # On Windows "\server\share" and "/data" are relative to the current drive, and
+            # `absolute()` would quietly put them on it. The usual cause is a network path that
+            # lost a backslash: inside quotes, python-dotenv decodes "\\" to "\".
+            raise ValueError(
+                "starts with a slash or backslash but has no drive letter, so it would point to "
+                "the drive you happen to run from. Include the drive letter, or for a network "
+                "share write \\\\server\\share\\folder without quotes (in .env, quotes turn \\\\ "
+                "into \\) or //server/share/folder"
+            )
         return expanded.absolute()
 
     @field_validator("log_level", mode="before")

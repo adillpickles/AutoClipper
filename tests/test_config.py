@@ -298,6 +298,16 @@ def test_home_directory_is_expanded(tmp_path: Path, monkeypatch: pytest.MonkeyPa
             Path("//server/share/data"),
             id="unc-share",
         ),
+        pytest.param(
+            "AUTOCLIPPER_DATA_DIR=//server/share/data",
+            Path("//server/share/data"),
+            id="unc-share-forward-slashes",
+        ),
+        pytest.param(
+            f'AUTOCLIPPER_DATA_DIR="{BACKSLASH * 4}server{BACKSLASH * 2}share"',
+            Path("//server/share"),
+            id="unc-share-escaped-double-quoted",
+        ),
     ],
 )
 def test_windows_paths_in_env_file_are_kept_exactly(
@@ -318,6 +328,34 @@ def test_windows_path_from_environment_is_kept_exactly(monkeypatch: pytest.Monke
     assert str(get_settings().artifacts_dir) == f"C:{BACKSLASH}data{BACKSLASH}artifacts"
 
 
+@windows_only
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(
+            f"'{BACKSLASH * 2}synthetic-host{BACKSLASH}pool-share{BACKSLASH}data'",
+            id="unc-share-single-quoted",
+        ),
+        pytest.param(
+            f'"{BACKSLASH * 2}synthetic-host{BACKSLASH}pool-share{BACKSLASH}data"',
+            id="unc-share-double-quoted",
+        ),
+        pytest.param(f"{BACKSLASH}pool-share{BACKSLASH}data", id="leading-backslash"),
+        pytest.param("/pool-share/data", id="leading-slash"),
+    ],
+)
+def test_windows_path_without_a_drive_letter_is_rejected(tmp_path: Path, value: str) -> None:
+    # Regression test: inside quotes python-dotenv decodes "\\" to "\", so a quoted network path
+    # became "\synthetic-host\pool-share\data" and was silently placed on the current drive.
+    write_env_file(tmp_path, f"AUTOCLIPPER_DATA_DIR={value}\n")
+
+    with pytest.raises(ConfigError, match="no drive letter") as excinfo:
+        get_settings()
+
+    assert "AUTOCLIPPER_DATA_DIR" in str(excinfo.value)
+    assert "pool-share" not in str(excinfo.value)
+
+
 @pytest.mark.parametrize("escape", ["n", "t", "r", "a", "b", "f", "v"])
 def test_double_quoted_backslash_escape_in_a_path_is_rejected(tmp_path: Path, escape: str) -> None:
     # python-dotenv decodes "\n" and friends inside double quotes, so "C:\new" would silently
@@ -327,7 +365,7 @@ def test_double_quoted_backslash_escape_in_a_path_is_rejected(tmp_path: Path, es
     with pytest.raises(ConfigError, match="control character") as excinfo:
         get_settings()
 
-    assert "single quotes" in str(excinfo.value)
+    assert "without quotes" in str(excinfo.value)
     assert "AUTOCLIPPER_DATA_DIR" in str(excinfo.value)
 
 
