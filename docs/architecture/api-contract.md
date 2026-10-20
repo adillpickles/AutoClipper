@@ -536,7 +536,7 @@ The app gets something playable without knowing which route OQ-17 will allow. Wh
 
 **Client behavior.** "Media unavailable" is a normal, designed state, not an error page: disable preview and export independently and show the matching `message`. Playback stays within `[media_start_s, media_end_s]`. Trim controls clamp to `[export.min_start_s, export.max_end_s]` and to `export.max_duration_s`; "reset" restores the candidate's `start_s` and `end_s`. If a candidate is longer than `max_duration_s`, the UI asks the user to shorten it before enabling Export.
 
-**Mock (#28):** every mock VOD previews and exports the synthetic sample video (#15) as `video_file`. Preview coverage and export bounds are both `[0, min(sample length, vod.duration_s)]`, so the guarantees above hold. For that to cover every mock candidate, the sample must be at least as long as the longest mock VOD (360 s in these examples; an FFmpeg test pattern can have any length). If it's shorter, shrink the mock durations and candidate times and update these examples in the same PR, so fixture mode and the mock backend stay identical (D13).
+**Mock (#28):** every mock VOD except `9000000007` (§ 10) previews and exports one sample video as `video_file`. #28 generates that sample itself, as an FFmpeg test pattern with a tone (via the shared FFmpeg runner, #51), into a git-ignored directory, at least as long as the longest mock VOD (360 s in these examples), so it doesn't depend on the length of any other task's output (#15's synthetic video may be reused only if it meets that length). Preview coverage and export bounds are both `[0, vod.duration_s]`, so the guarantees above hold for every mock candidate (D13).
 
 ### 5.1 Media files
 
@@ -892,7 +892,7 @@ Job failure codes (§ 3.5) and export failure codes (§ 6.3) are reported inside
 
 ## 10. Mock scenarios (recommended for #28)
 
-Fixed synthetic inputs let the frontend exercise every state against the mock backend and in fixture mode with the same values:
+Fixed synthetic inputs let the frontend exercise every state against the mock backend:
 
 | `vod` | Mock outcome |
 |---|---|
@@ -906,6 +906,8 @@ Fixed synthetic inputs let the frontend exercise every state against the mock ba
 | `twitch.tv/user_001` | `422 invalid_vod_link` (normal validation, not mock-specific) |
 
 Each mock job should take a few seconds so `queued` and `running` are visible, and report `scorer.kind: "mock"`.
+
+**Fixture mode.** The frontend can also run without any backend, from static JSON fixtures (#29–#31). Fixtures follow the examples in this document and the scenarios above. Parity with the mock backend means the same shapes, states, codes and business values (`video_id`, `vod`, candidate fields and order, warnings, failure codes, availability and bounds). It does not cover volatile values, which differ per run and must never be hard-coded or compared: `job_id`, `export_id`, `media_id` and every URL containing them, every `*_at` timestamp, and progress timing. A fixture's `PreviewMedia.url` is any root-relative URL the frontend's dev setup serves a locally generated, git-ignored MP4 from (or the mock backend's media route when it's running); media files are never committed. Scenarios without a full example here get their fixtures from the mock backend's responses once #28 exists, or are written by hand following the field tables.
 
 ## 11. Decision points for reviewers
 
@@ -925,7 +927,7 @@ Each row needs an explicit yes, or a chosen alternative, before adoption.
 | D10 | Cancel | No cancel, list or delete in v1: mock jobs take seconds, and restarting the local server stops a mistaken real job. A later cancel endpoint that fails the job with a new `cancelled` code is a minor change (§ 2, § 8.3, § 9) | Add `POST /api/v1/jobs/{job_id}/cancel` (and one for exports) now |
 | D11 | File routes and URLs | Media at `GET /api/v1/media/{media_id}` with range support; file routes resolve IDs only through server records; every returned URL is root-relative and resolved by the client against its API origin (§ 1, § 5.1, § 8.4) | Absolute URLs built from a configured public base URL; keep the media path server-private |
 | D12 | CLI exit codes | `1` input can't be analyzed (incl. `no_usable_signals`), `2` `upstream_unavailable`, a new `3` for `internal_error` (§ 4.6) | `internal_error` exits `1` (Python's default for an unhandled exception) and conventions § 7 stays as is |
-| D13 | Mock data | Fixed synthetic VOD IDs per state (§ 10); one sample video (#15) at least as long as the longest mock VOD, covering `[0, min(sample length, duration_s)]` (§ 5) | Take mock durations from #15's actual video length, making these examples illustrative |
+| D13 | Mock data and fixtures | Fixed synthetic VOD IDs per state (§ 10); #28 generates its own sample video, at least as long as the longest mock VOD, covering `[0, duration_s]` (§ 5); fixture mode matches the mock on everything except volatile IDs, URLs and timestamps (§ 10) | Reuse #15's video and take mock durations from its length, making these examples illustrative |
 
 **To adopt:** settle each row in review, then change this doc's status to "Adopted (date)" in the same PR or a follow-up, update the [ADR-0009 note](../decisions/0009-analysis-and-evaluation-contract-repair.md#api-contract-proposal-13) and the [data model § candidates](data-model.md#candidates-apicli-output-json) status, add any exit code chosen in D12 to [conventions § 7](../development/conventions.md#7-cli), and re-check #27–#33 (later #44–#46) for swapping `needs-decision` to `agent-ready`.
 
