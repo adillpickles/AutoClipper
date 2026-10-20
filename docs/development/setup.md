@@ -75,7 +75,7 @@ When a hook fixes files (Ruff, end-of-file or whitespace fixes, notebook output 
 
 ## Frontend (web/)
 
-The Next.js app needs only Node.js. It doesn't call the Python backend yet. These steps were tested on Windows 11 (Node 24.19.0) in PowerShell and Git Bash. CI runs them on Ubuntu; nobody has tried them on macOS yet.
+The Next.js app needs only Node.js. It doesn't call the Python backend yet. These steps were tested on Windows 11 (Node 24.19.0) in PowerShell and Git Bash. CI runs the same checks on Ubuntu; nobody has tried them on macOS or Linux by hand yet.
 
 **Node version.** `web/.nvmrc` pins Node **24** ("Krypton"). It was the Active LTS line when pinned on 2026-10-19, moves to Maintenance LTS on 2026-10-20, and is supported until 2028-04-30 ([Node.js release schedule](https://github.com/nodejs/Release#release-schedule)). Node 26 becomes Active LTS on 2026-10-28; moving to it means changing `.nvmrc` and `engines` in `web/package.json` together. Check with `node --version` (should print `v24.x`).
 
