@@ -107,6 +107,15 @@ npm run lint; npm run typecheck; npm run format:check; npm run build
 `npm run format` fixes formatting. All scripts are listed in [`web/README.md`](../../web/README.md).
 
 **Editor:** the ESLint, Prettier and Tailwind CSS IntelliSense extensions for VS Code, with Prettier as the formatter for files in `web/`.
+## Configuration
+
+`autoclipper` reads its settings once per run, from environment variables and from the `.env` file in the directory you run it in. Run it from the repository root, where you copied `.env.example`; parent directories are not searched. A variable set in the environment wins over the same variable in `.env`. Every variable is described in `.env.example`, and the code is `src/autoclipper/config.py`.
+
+- An empty value (`TWITCH_CLIENT_ID=`) means unset. The Twitch credentials and the chat hash salt are only needed by the commands that use them; those stop with an error naming the missing variable.
+- Relative paths in `AUTOCLIPPER_DATA_DIR` and `AUTOCLIPPER_ARTIFACTS_DIR`, and their defaults `./data` and `./artifacts`, are relative to the directory you run from. Use an absolute path to share one data folder between worktrees. `~` means your home directory.
+- **Windows paths:** write them unquoted (`AUTOCLIPPER_DATA_DIR=D:\AutoClipper Data`), in single quotes, or with forward slashes. Inside double quotes, `\n`, `\t` and similar are decoded as escapes, so `"C:\new"` would contain a newline. AutoClipper rejects a path like that instead of using it.
+- **Malformed lines:** a line python-dotenv can't parse (for example an unclosed quote), or a `.env` that isn't UTF-8, stops every command with exit code 1 and the line number. AutoClipper never skips the line and falls back to a default.
+- `.env` may only contain AutoClipper's variables, so a misspelled name is caught. An invalid value or an unknown name stops every command with `Error: invalid settings ...` and exit code 1. The message names the variable but never shows its value.
 
 ## Twitch credentials
 
@@ -118,6 +127,14 @@ npm run lint; npm run typecheck; npm run format:check; npm run build
 ## Chat hash salt
 
 If OQ-9 approves persisted hash-based joins across machines, use the same privately shared `AUTOCLIPPER_CHAT_HASH_SALT` for that dataset. Aggregate-only retention may need hashes only transiently for unique-chatter counts. Decide linkage scope before real ingestion; never commit the salt.
+
+To make a salt, generate a long random value and put it in `.env`:
+
+```bash
+uv run python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Code that pseudonymizes gets the salt with `get_settings().require_chat_hash_salt()` and hashes with `autoclipper.privacy.pseudonymize()`; without a salt it stops with an error naming the variable.
 
 ## Editor setup
 
@@ -142,6 +159,9 @@ If OQ-9 approves persisted hash-based joins across machines, use the same privat
 
 | Symptom | Likely cause / fix |
 |---|---|
+| `Error: invalid settings in the environment or …` | The lines below it name each bad variable. Fix the value, or remove or rename a line that isn't in `.env.example` ([Configuration](#configuration)). |
+| `… .env has lines that can't be parsed (line N)` or `… is not valid UTF-8 text` | Fix that line of `.env` (usually an unclosed quote), or save the file as UTF-8. |
+| `TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET are not set, but calling the Twitch API needs them` | Fill both in `.env` ([Twitch credentials](#twitch-credentials)), and run the command from the directory that holds `.env`. |
 | `401 Unauthorized` from Helix | Wrong client ID/secret, or an expired token. The client should refresh automatically. Check `.env`. |
 | `429 Too Many Requests` | Rate limit hit. The client should back off. If you see it often, lower concurrency. |
 | yt-dlp fails on Twitch | Update it: `uv lock --upgrade-package yt-dlp && uv sync` |
