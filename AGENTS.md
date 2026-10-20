@@ -37,7 +37,7 @@ Then, by task type:
 | Feature extraction, models, training | `docs/ml/modeling-plan.md`, `docs/ml/features.md` |
 | Metrics, experiments, results | `docs/ml/evaluation.md`, `docs/ml/experiments.md` |
 | Cutting / cropping / captioning | `docs/architecture/overview.md` § Export |
-| Backend API or web UI | `docs/architecture/overview.md`, ADR-0007 |
+| Backend API or web UI | `docs/architecture/overview.md`, `docs/architecture/api-contract.md` (proposed), ADR-0007 |
 | Repo layout, tooling, style | `docs/development/conventions.md`, ADR-0002, ADR-0003 |
 | Tests | `docs/development/testing.md` |
 | Git, PRs, commits | `CONTRIBUTING.md`, `docs/development/git-workflow.md` |

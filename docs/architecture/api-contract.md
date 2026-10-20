@@ -16,7 +16,9 @@ It deliberately does **not** decide candidate generation rules (#27, ADR-0009), 
 - **Field names** are `snake_case` in JSON, matching the [data model](data-model.md) and the CLI output. The TypeScript client uses the same names (no camelCase mapping).
 - **VOD positions and durations** are JSON numbers in **seconds from VOD start**, with names ending `_s` ([conventions § 3](../development/conventions.md#3-units-time-and-ids)). They are **source time**: already aligned, never chat-lag shifted again.
 - **Wall-clock times** are **UTC ISO-8601 strings with a `Z` suffix**, with names ending `_at`, e.g. `"2026-10-19T15:00:00Z"`.
-- **IDs are strings.** Twitch IDs (`video_id`, `broadcaster_id`) stay exactly as Twitch uses them (digits, never cast to a number). IDs that AutoClipper generates (`job_id`, `export_id`, `candidate_id`) are opaque, match `^[A-Za-z0-9_-]{1,64}$` and must not be parsed.
+- **IDs are strings.** Twitch IDs (`video_id`, `broadcaster_id`) stay exactly as Twitch uses them (digits, never cast to a number). IDs that AutoClipper generates (`job_id`, `export_id`, `candidate_id`, and `media_id` in file URLs) are opaque, match `^[A-Za-z0-9_-]{1,64}$` and must not be parsed.
+- **Job, export and media IDs are random and never reused**, including across server restarts: a short prefix plus at least 64 bits from a cryptographic random source (e.g. `"job_" + secrets.token_hex(8)`), never a counter or anything derived from the VOD. So a stale ID kept in a page URL from before a restart gets a `404`, never another VOD's job (§ 8.3). `candidate_id` only has to be unique within its result, because it's always used together with a `job_id`.
+- **Returned URLs are root-relative** (`PreviewMedia.url`, `Export.download_url`, `Location`), e.g. `/api/v1/exports/{export_id}/file`, so the server never needs to know its public address. Clients resolve them against the API origin they're configured with (e.g. `new URL(url, apiOrigin)`, § 8.4) and otherwise use them as given. If a later media route returns an absolute URL, the same resolution leaves it unchanged.
 - **Every field is always present.** An optional value is `null`, never omitted; an empty list is `[]`. Numbers are finite (no `NaN` or `Infinity`).
 - **Requests are strict, responses are tolerant.** The server rejects unknown request fields and invalid values (`422 invalid_request`). Clients ignore unknown response fields and give *open* enums a default branch (§ 9).
 - **Messages are for people.** `message` fields are short English sentences that are safe to show in the UI: no secrets, tokens, file paths or chat usernames. Clients branch on `code`, never on `message`.
@@ -44,11 +46,12 @@ Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`
 | `GET` | `/api/v1/jobs/{job_id}` | Job status and progress (poll this) | `200` `Job` |
 | `GET` | `/api/v1/jobs/{job_id}/result` | Ranked candidates of a `done` job | `200` `AnalysisResult` |
 | `GET` | `/api/v1/jobs/{job_id}/candidates/{candidate_id}/media` | Preview and export availability for one candidate | `200` `CandidateMedia` |
+| `GET` | `/api/v1/media/{media_id}` | Preview video file, reached only through `PreviewMedia.url` (§ 5.1) | `200`/`206` `video/mp4` |
 | `POST` | `/api/v1/exports` | Start exporting a trimmed candidate | `201` new `Export`; `200` if an identical export is queued/running |
 | `GET` | `/api/v1/exports/{export_id}` | Export status (poll this) | `200` `Export` |
 | `GET` | `/api/v1/exports/{export_id}/file` | Download the finished MP4 | `200` `video/mp4` |
 
-Preview media is served from whatever URL `PreviewMedia.url` gives (§ 5); clients never build media URLs. Errors for every endpoint are in § 7. There's no list, cancel or delete endpoint in v1.
+Clients never build media or file URLs; they use `PreviewMedia.url` and `Export.download_url` as returned (§ 1). Errors for every endpoint are in § 7. There's no list, cancel or delete endpoint in v1 (decision point D10).
 
 ## 3. Jobs
 
@@ -79,7 +82,7 @@ The digits become `video_id`. Not accepted in v1: clip links, channel pages, oth
 
 | Field | Type | Notes |
 |---|---|---|
-| `job_id` | str | Server-generated, opaque |
+| `job_id` | str | Server-generated, opaque, random, never reused (§ 1) |
 | `video_id` | str | Normalized from the request |
 | `state` | `queued` \| `running` \| `done` \| `failed` | § 3.3 |
 | `progress` | `Progress` \| null | § 3.4 |
@@ -134,12 +137,12 @@ Analysis stages, in order. Skipped stages (e.g. served from a cache) are passed 
 
 ### 3.5 Degraded results and failures
 
-**Proposed (decision point D1): a missing signal degrades the result instead of failing the job.** The PRD requires moments for VODs with no viewer clips and robustness to missing chat (NFR-6), #44 asks the pipeline to *report* missing chat or audio clearly, and [overview § 4.6](overview.md#46-export) keeps analytical results usable when video is missing. So when one input can't be obtained, the job carries on with the rest, finishes `done` and records an `AnalysisWarning` (`{ "code": str, "message": str }`):
+**Proposed (decision point D1): a missing signal degrades the result instead of failing the job.** The PRD requires moments for VODs with no viewer clips and robustness to missing chat (NFR-6), #44 asks the pipeline to *report* missing chat or audio clearly, and [overview § 4.6](overview.md#46-export) keeps analytical results usable when video is missing. So when one input can't be obtained, the job carries on with the rest, finishes `done` and records an `AnalysisWarning` (`{ "code": str, "message": str }`). Under D1, the "missing chat" and "missing audio" codes that #13, #44 and #45 ask for are these warnings.
 
 | Warning `code` | When |
 |---|---|
-| `chat_missing` | No chat replay could be obtained. Chat signals are absent. |
-| `audio_missing` | No audio could be obtained. Audio signals are absent. |
+| `chat_missing` | No chat replay could be obtained, for any reason (see **Precedence** below). Chat signals are absent. |
+| `audio_missing` | No audio could be obtained, for any reason. Audio signals are absent. |
 | `audio_partly_muted` | Twitch muted part of the VOD's audio, so audio signals are unreliable there. |
 | `viewer_clips_missing` | The viewer clip list couldn't be fetched. No candidate is `viewer_clips` or `both`, and `n_viewer_clips_total` is `null` (unknown, not zero). |
 | `viewer_clips_incomplete` | Clip discovery hit a known query limit ([data sources](../data/data-sources.md), Get Clips), so some clips may be missing. |
@@ -152,12 +155,19 @@ A job **fails** only when it can't produce a meaningful result. `Job.error.code`
 |---|---|---|
 | `vod_unavailable` | Twitch has no accessible video with this ID: not found, deleted or expired, or not publicly viewable (e.g. subscriber-only) | `resolving_vod` |
 | `vod_unsupported` | The video exists but isn't a past broadcast (Helix `type` other than `archive`, e.g. a highlight or upload) | `resolving_vod` |
-| `no_usable_signals` | Chat and audio are both missing and no viewer clips with VOD offsets are available: nothing to rank | any |
-| `upstream_unavailable` | Twitch or a download tool kept failing after retries (network, rate limit, tool breakage). Trying again later may work. | any |
+| `no_usable_signals` | Nothing to rank (chat and audio both missing, no viewer clips with VOD offsets) and none of those inputs failed transiently, so trying again won't help | `downloading_audio` (after the last input) |
+| `upstream_unavailable` | Twitch or a download tool kept failing after retries (network, rate limit, tool breakage) while resolving the VOD, or while fetching inputs that left nothing to rank. Trying again later may work. | `resolving_vod` or `downloading_audio` |
 | `interrupted` | The server stopped while the job was queued or running (§ 8.3) | any |
 | `internal_error` | A bug. Details go to the server log; `message` stays generic. | any |
 
-*If the team rejects D1:* move `chat_missing` and `audio_missing` from the warning table to the failure table. Nothing else changes.
+**Precedence.** Every step first retries transient errors (network, rate limits, `5xx`; [overview § 6](overview.md#6-cross-cutting-concerns)). What remains is classified like this:
+
+1. **Resolving the VOD is required.** Twitch says the video doesn't exist or isn't viewable → `vod_unavailable`; it isn't an archive → `vod_unsupported`; Twitch or the network keeps failing → `upstream_unavailable`.
+2. **A per-input step never fails the job on its own.** If viewer clips, chat or audio still can't be obtained, whatever the cause (the VOD has none, TwitchDownloader or yt-dlp broke, the network dropped), the job records `viewer_clips_missing`, `chat_missing` or `audio_missing` and carries on. The warning's `message` says whether analyzing again later may help; there's no machine-readable retry flag in v1 (D1).
+3. **Nothing to rank fails the job** once all inputs have been tried: `upstream_unavailable` if any missing input failed transiently (tool and network errors count as transient; when unsure, treat as transient), otherwise `no_usable_signals`.
+4. Anything unexpected is `internal_error`.
+
+*If the team rejects D1:* `chat_missing` and `audio_missing` become failure codes for input that's genuinely absent (stages `downloading_chat` and `downloading_audio`); a transient chat or audio failure becomes `upstream_unavailable`; `no_usable_signals` can no longer happen and is dropped. Also update the precedence rules, the degraded job and result examples (§ 3.6, § 4.7) and the `chat_missing`/`audio_missing` warning examples, which become failure examples; mock scenarios `9000000003` and `9000000005` (§ 10); the CLI exit codes (§ 4.6); and D1 itself. #44's and #45's "missing chat or audio" criteria then mean failing the job instead of warning.
 
 ### 3.6 Examples
 
@@ -266,12 +276,13 @@ The other failure and warning codes, one object per line:
 ```jsonc
 // Job.error
 { "code": "vod_unsupported", "message": "This video is a highlight or upload. AutoClipper analyzes past broadcasts only.", "details": null }
-{ "code": "no_usable_signals", "message": "Neither chat nor audio could be obtained and this VOD has no viewer clips, so there's nothing to rank.", "details": null }
+{ "code": "no_usable_signals", "message": "This VOD has no chat replay, no usable audio and no viewer clips, so there's nothing to rank.", "details": null }
 { "code": "upstream_unavailable", "message": "Twitch or a download tool isn't responding. Try again in a few minutes.", "details": null }
 { "code": "interrupted", "message": "The server stopped while this analysis was running. Analyze the VOD again.", "details": null }
 { "code": "internal_error", "message": "Something went wrong on the server. Try again.", "details": null }
 
 // Job.warnings[] and AnalysisResult.warnings[]
+{ "code": "chat_missing", "message": "Chat replay couldn't be downloaded right now, so moments are ranked from audio and viewer clips only. Analyzing the VOD again later may include it." }
 { "code": "audio_missing", "message": "Audio isn't available for this VOD, so moments are ranked from chat and viewer clips only." }
 { "code": "audio_partly_muted", "message": "Twitch muted parts of this VOD's audio, so audio signals are unreliable there." }
 { "code": "viewer_clips_missing", "message": "Viewer clips couldn't be loaded, so only discovered moments are shown." }
@@ -371,12 +382,21 @@ The server checks every result against these before returning it, and the CLI be
 4. `top_signals` is `null` or a list of distinct strings.
 5. At most 200 candidates. Zero is valid (e.g. a very short VOD) and the UI shows an empty state.
 6. All numbers are finite.
+7. `n_viewer_clips_total` is `null` exactly when `warnings` contains `viewer_clips_missing`, and then every candidate is `discovered`. Otherwise `n_viewer_clips ≤ n_viewer_clips_total` for every candidate.
 
 Candidates may overlap each other; the timeline has to cope with overlapping markers.
 
+**Across API responses** (checked by the server, not by the result model alone): `AnalysisResult.vod.video_id`, `CandidateMedia.video_id` and `Export.video_id` equal the job's `video_id`; `CandidateMedia.job_id` and `candidate_id` echo the request path; and a `done` job's `warnings` equal its result's `warnings`.
+
 ### 4.6 Relation to the CLI
 
-`autoclipper analyze <vod>` (#44) accepts the same inputs as `POST /jobs` (one shared normalization function) and writes one `AnalysisResult` as JSON: the same Pydantic model and `schema_version` the API returns, so a saved CLI result is also a valid frontend fixture. Warnings go into `warnings` and are also printed to stderr. If analysis fails, the CLI writes no result, prints the failure `code` and `message` to stderr and exits per [conventions § 7](../development/conventions.md#7-cli): `1` for `invalid_vod_link`, `vod_unavailable`, `vod_unsupported` and `no_usable_signals`; `2` for `upstream_unavailable`. Jobs, media and exports exist only in the API.
+`autoclipper analyze <vod>` (#44) accepts the same inputs as `POST /jobs` (one shared normalization function) and writes one `AnalysisResult` as JSON: the same Pydantic model and `schema_version` the API returns, so a saved CLI result is also a valid frontend fixture. Warnings go into `warnings` and are also printed to stderr. If analysis fails, the CLI writes no result, prints the failure `code` and `message` to stderr and exits per [conventions § 7](../development/conventions.md#7-cli):
+
+- `1` (this input can't be analyzed): `invalid_vod_link`, `vod_unavailable`, `vod_unsupported` and `no_usable_signals`, which by the precedence in § 3.5 means the inputs are genuinely absent.
+- `2` (external failure; trying again later may work): `upstream_unavailable`.
+- Proposed `3` (a bug): `internal_error`. Conventions § 7 has no code for bugs yet; D12 decides, and adoption adds the line there.
+
+`interrupted` is API-only. Jobs, media and exports exist only in the API.
 
 ### 4.7 Examples
 
@@ -482,15 +502,14 @@ The app gets something playable without knowing which route OQ-17 will allow. Wh
 | Field | Type | Notes |
 |---|---|---|
 | `status` | `available` \| `preparing` \| `unavailable` | `preparing`: the server is obtaining media (e.g. a permitted segment); poll again (§ 8.1) |
-| `kind` | `video_file` \| `twitch_embed` \| null | Non-null iff `available`. Open enum: treat an unknown kind as unavailable. |
-| `url` | str \| null | Absolute URL of an MP4 (H.264/AAC) that an HTML `<video>` element can play, served with HTTP range support for seeking. Non-null iff `kind` is `video_file`. |
+| `kind` | `video_file` \| null | Non-null iff `available`. Open enum: treat an unknown kind as unavailable. |
+| `url` | str \| null | Root-relative URL (§ 1) of an MP4 (H.264/AAC) that an HTML `<video>` element can play, with range support for seeking (§ 5.1). Non-null iff `kind` is `video_file`. |
 | `media_start_s` | float \| null | VOD time at media time 0. Non-null iff `available`. |
 | `media_end_s` | float \| null | VOD time at the end of the media. Non-null iff `available`. |
 | `reason` | str \| null | `MediaUnavailableReason`; non-null iff `unavailable` |
 | `message` | str \| null | Explanation for the user. Non-null when `unavailable`; optional while `preparing`. |
 
-- **`video_file`:** position *p* seconds into the file shows VOD time `media_start_s + p`, so to play a candidate, seek to `start_s - media_start_s`. The file may cover a segment around the candidate (`media_start_s > 0`) or the whole VOD.
-- **`twitch_embed`:** reserved in case OQ-17 approves Twitch's own player. `url` is `null`; the client embeds Twitch's player for `video_id` and seeks to `start_s`. #46 specifies the embed parameters from Twitch's documentation. The mock never returns it, and clients built before #46 may show it as unavailable.
+**`video_file`:** position *p* seconds into the file shows VOD time `media_start_s + p`, so to play a candidate, seek to `start_s - media_start_s`. The file may cover a segment around the candidate (`media_start_s > 0`) or the whole VOD. If OQ-17 allows playback through Twitch's own player ([governance § OQ-17](../data/data-governance.md#authorization-boundary-before-real-collection-oq-17)), #46 adds a new `kind` for it, a minor change (§ 9) that older clients show as unavailable.
 
 `ExportAvailability`:
 
@@ -517,9 +536,13 @@ The app gets something playable without knowing which route OQ-17 will allow. Wh
 
 **Client behavior.** "Media unavailable" is a normal, designed state, not an error page: disable preview and export independently and show the matching `message`. Playback stays within `[media_start_s, media_end_s]`. Trim controls clamp to `[export.min_start_s, export.max_end_s]` and to `export.max_duration_s`; "reset" restores the candidate's `start_s` and `end_s`. If a candidate is longer than `max_duration_s`, the UI asks the user to shorten it before enabling Export.
 
-**Mock (#28):** preview `available` with `kind: "video_file"` pointing at the synthetic sample video (#15), and export `available`, both covering the sample's actual extent. The synthetic VOD's `duration_s` and candidates must fit inside that extent.
+**Mock (#28):** every mock VOD previews and exports the synthetic sample video (#15) as `video_file`. Preview coverage and export bounds are both `[0, min(sample length, vod.duration_s)]`, so the guarantees above hold. For that to cover every mock candidate, the sample must be at least as long as the longest mock VOD (360 s in these examples; an FFmpeg test pattern can have any length). If it's shorter, shrink the mock durations and candidate times and update these examples in the same PR, so fixture mode and the mock backend stay identical (D13).
 
-### 5.1 Examples
+### 5.1 Media files
+
+`GET /api/v1/media/{media_id}` serves the file behind a `video_file` URL. `media_id` is opaque and random (§ 1); the server looks it up in its own records. It returns `200`, or `206 Partial Content` for a `Range` request, with `Content-Type: video/mp4` and `Accept-Ranges: bytes`. An unknown or no longer available media ID gives `404 media_not_found`. This route and the export file route (§ 6.4) resolve IDs only through server records and never join request text into a filesystem path.
+
+### 5.2 Examples
 
 `GET /api/v1/jobs/job_3f9c2b7a1d4e4c8b/candidates/c001/media` (mock):
 
@@ -531,7 +554,7 @@ The app gets something playable without knowing which route OQ-17 will allow. Wh
   "preview": {
     "status": "available",
     "kind": "video_file",
-    "url": "http://127.0.0.1:8000/api/v1/media/synthetic_9000000001.mp4",
+    "url": "/api/v1/media/med_7b1e4c9a2f3d4e5a",
     "media_start_s": 0.0,
     "media_end_s": 360.0,
     "reason": null,
@@ -621,7 +644,7 @@ Further layouts (e.g. facecam stacked over gameplay, optional polish) would be a
 
 | Field | Type | Notes |
 |---|---|---|
-| `export_id` | str | Server-generated, opaque |
+| `export_id` | str | Server-generated, opaque, random, never reused (§ 1) |
 | `job_id` | str | |
 | `candidate_id` | str | |
 | `video_id` | str | |
@@ -632,7 +655,7 @@ Further layouts (e.g. facecam stacked over gameplay, optional polish) would be a
 | `state` | `queued` \| `running` \| `done` \| `failed` | Same lifecycle as jobs (§ 3.3) |
 | `progress` | `Progress` \| null | Export stages (§ 6.3); same rules as § 3.4 |
 | `error` | `ApiError` \| null | Non-null iff `failed` |
-| `download_url` | str \| null | Absolute URL of the file endpoint. Non-null iff `done` and the file still exists. |
+| `download_url` | str \| null | Root-relative URL (§ 1) of the file endpoint. Non-null iff `done` and the file still exists. |
 | `expires_at` | timestamp \| null | When the file is scheduled for deletion under the retention rules; `null` if no deletion is scheduled |
 | `created_at` | timestamp | |
 | `started_at` | timestamp \| null | |
@@ -659,7 +682,7 @@ Further layouts (e.g. facecam stacked over gameplay, optional polish) would be a
 
 ### 6.4 Download
 
-`GET /api/v1/exports/{export_id}/file` returns `200` with `Content-Type: video/mp4` and `Content-Disposition: attachment` (suggested filename `autoclipper_<video_id>_<start_s>-<end_s>.mp4`). Use `download_url` as given; a plain link works cross-origin because the header forces a download. Errors: `404 export_not_found`, `409 export_not_done`, `410 export_expired` (deleted under retention; export again). Where files are stored on disk is up to the server.
+`GET /api/v1/exports/{export_id}/file` returns `200` with `Content-Type: video/mp4` and `Content-Disposition: attachment` (suggested filename `autoclipper_<video_id>_<start_s>-<end_s>.mp4`). Resolve `download_url` against the API origin (§ 1); a plain link works cross-origin because the header forces a download. Errors: `404 export_not_found`, `409 export_not_done`, `410 export_expired` (deleted under retention; export again). Where files are stored on disk is up to the server, but each export gets its own file keyed by `export_id`, never by `candidate_id` (which repeats across results and trims).
 
 ### 6.5 Examples
 
@@ -716,7 +739,7 @@ While running, `"state": "running"` and, for example, `"progress": { "stage": "t
   "state": "done",
   "progress": null,
   "error": null,
-  "download_url": "http://127.0.0.1:8000/api/v1/exports/exp_5a6b7c8d9e0f4a1b/file",
+  "download_url": "/api/v1/exports/exp_5a6b7c8d9e0f4a1b/file",
   "expires_at": null,
   "created_at": "2026-10-19T15:05:00Z",
   "started_at": "2026-10-19T15:05:01Z",
@@ -787,6 +810,7 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 | 404 | `job_not_found` | `/jobs/{job_id}…`, `POST /exports` | `null` |
 | 404 | `candidate_not_found` | Media endpoint, `POST /exports` | `null` |
 | 404 | `export_not_found` | `/exports/{export_id}…` | `null` |
+| 404 | `media_not_found` | `/media/{media_id}` | `null` |
 | 405 | `method_not_allowed` | Known path, wrong method | `null` |
 | 409 | `job_not_done` | Result, media, `POST /exports` | `{ "state": "<job state>" }` |
 | 409 | `export_not_done` | Export file | `{ "state": "<export state>" }` |
@@ -797,7 +821,7 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 | 422 | `invalid_export_bounds` | `POST /exports` | `{ "min_start_s": …, "max_end_s": …, "max_duration_s": … }` |
 | 500 | `internal_error` | Any | `null` |
 
-Job failure codes (§ 3.5) and export failure codes (§ 6.3) appear only inside `error` on a `200` status response, because fetching the status itself succeeded. Examples for each HTTP code are in § 3.6 and § 6.5; the rest are:
+Job failure codes (§ 3.5) and export failure codes (§ 6.3) are reported inside `Job.error` or `Export.error` of a `200` status response, because fetching the status itself succeeded. Two codes are also HTTP errors and mean the same in both places: `media_unavailable` (`409` when `POST /exports` can't start an export; an export failure when media is lost after it started) and `internal_error` (`500` for a request; a job or export failure for background work). Examples for each HTTP code are in § 3.6 and § 6.5; the rest are:
 
 ```jsonc
 // 404, unknown path
@@ -808,6 +832,9 @@ Job failure codes (§ 3.5) and export failure codes (§ 6.3) appear only inside 
 
 // 404 from GET /api/v1/exports/exp_0000000000000000
 { "error": { "code": "export_not_found", "message": "This export no longer exists. The server may have restarted; export the clip again.", "details": null } }
+
+// 404 from GET /api/v1/media/med_0000000000000000
+{ "error": { "code": "media_not_found", "message": "This video is no longer available. Reload the moment to get a new link.", "details": null } }
 
 // 405, e.g. DELETE /api/v1/jobs/job_3f9c2b7a1d4e4c8b
 { "error": { "code": "method_not_allowed", "message": "This action isn't supported.", "details": null } }
@@ -835,14 +862,14 @@ Job failure codes (§ 3.5) and export failure codes (§ 6.3) appear only inside 
 
 ### 8.3 Worker, concurrency and restarts (local demo)
 
-- Long work runs in an in-process background worker, never in the request handler ([overview § 4.7](overview.md#47-interfaces)). Recommended bound: one analysis job and one export at a time; others wait in `queued`, first in, first out.
-- Job and export records live in memory. **A server restart forgets them**: their IDs return `404 job_not_found` or `export_not_found` and nothing resumes. A client that gets a 404 for an ID it was polling says the job no longer exists (the server may have restarted) and offers to start again. On-disk pipeline caches may make the rerun faster but aren't part of the contract.
+- Long work runs in an in-process background worker, never in the request handler ([overview § 4.7](overview.md#47-interfaces)). Recommended bound: one analysis job and one export at a time; others wait in `queued`, first in, first out. There's no cancel in v1 (D10): a mistaken long job finishes, or restarting the server stops it (and forgets every record, below).
+- Job, export and media records live in memory. **A server restart forgets them**: their IDs return `404 job_not_found`, `export_not_found` or `media_not_found` and nothing resumes. Because IDs are never reused (§ 1), a stale ID can't reach a newer job. A client that gets a 404 for an ID it was polling says the job no longer exists (the server may have restarted) and offers to start again. On-disk pipeline caches may make the rerun faster but aren't part of the contract.
 - If a later store keeps records across restarts (OQ-18), the server must mark anything that was `queued` or `running` at shutdown as `failed` with `interrupted` when it starts, never leave it `running`.
 
 ### 8.4 CORS and local setup
 
 - The API allows cross-origin requests from a configured list of origins, by default the local Next.js dev server (`http://localhost:3000` and `http://127.0.0.1:3000`): methods `GET` and `POST`, request header `Content-Type`, no credentials. It exposes the `Location` and `Content-Disposition` headers. Ports in this doc are examples; #28 and #33 set the real ones.
-- The frontend reads the API base URL from an environment variable (#33). A Next.js rewrite to the API is an acceptable alternative; paths stay the same.
+- The frontend reads the API origin (scheme, host and port, no path) from an environment variable (#33) and resolves every returned URL against it (§ 1). A Next.js rewrite of `/api/v1/*` to the API is an acceptable alternative: the API origin is then the app's own origin, and returned URLs still work because they're root-relative.
 - With no auth, the local server binds to `127.0.0.1` by default. Hosting (OQ-18) must revisit both.
 
 ### 8.5 Health
@@ -858,7 +885,7 @@ Job failure codes (§ 3.5) and export failure codes (§ 6.3) appear only inside 
 ## 9. Versioning
 
 - The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` and `Health`; this contract is `1.0`.
-- **Minor change** (same path, `1.x`): a new response field, or a new value in an **open** enum. Clients must already ignore unknown fields and handle unknown open-enum values with a default branch.
+- **Minor change** (same path, `1.x`): a new endpoint, a new response field, or a new value in an **open** enum. Clients must already ignore unknown fields and handle unknown open-enum values with a default branch.
 - **Major change** (`/api/v2`): anything else, such as renaming or removing a field, changing a type, unit or meaning, adding a required request field, or adding a value to a **closed** enum.
 - **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, and layouts listed in `export.layouts`. **Closed enums:** job and export `state`, `source`, `preview.status`, `export.status`, `scorer.kind`. A request's `layout` must be one the server lists.
 - Once adopted, any change updates this doc, its examples and [data model § candidates](data-model.md#candidates-apicli-output-json), with an ADR-0009 note or a focused ADR in the same PR ([AGENTS.md § 6](../../AGENTS.md#6-hard-rules-never-break-these), rule 4). Before adoption, the draft can change without a version bump.
@@ -869,7 +896,7 @@ Fixed synthetic inputs let the frontend exercise every state against the mock ba
 
 | `vod` | Mock outcome |
 |---|---|
-| `9000000001`, or any valid ID not listed below | `done` with the § 4.7 result (one candidate of each `source`) |
+| `9000000001`, or any valid ID not listed below | `done` with the § 4.7 result (one candidate of each `source`), with `vod.video_id` set to the requested ID (§ 4.5) |
 | `9000000002` | `done`; no viewer clips: `n_viewer_clips_total` is 0 and every candidate is `discovered` |
 | `9000000003` | `done` with a `chat_missing` warning |
 | `9000000004` | `failed` with `vod_unavailable` at `resolving_vod` |
@@ -886,17 +913,21 @@ Each row needs an explicit yes, or a chosen alternative, before adoption.
 
 | # | Decision | Recommendation | Main alternative |
 |---|---|---|---|
-| D1 | Missing chat or audio | Degraded `done` with warnings; fail with `no_usable_signals` only when nothing can be ranked (§ 3.5) | Fail the job with `chat_missing` / `audio_missing` |
+| D1 | Missing inputs and failure precedence | Degraded `done` with warnings. A per-input failure after retries is always a warning, whatever the cause; the job fails only when the VOD can't be resolved, or when nothing can be ranked: `upstream_unavailable` if a missing input failed transiently, else `no_usable_signals`. Warnings say in `message` whether retrying may help, with no retry flag in v1 (a flag can be added later as a minor change) (§ 3.5) | Fail the job with `chat_missing` / `audio_missing`; or fail with `upstream_unavailable` whenever a download tool fails |
 | D2 | `source` values | `viewer_clips` / `discovered` / `both` as generation provenance, with `discovered` exactly when `n_viewer_clips` is 0 (§ 4.4) | Singular `viewer_clip`, or a list of provenance tags |
 | D3 | Score and rank | Uncalibrated score comparable within one result; rank strictly follows score, ties by `start_s` then `candidate_id`; at most 200 candidates, no pagination (§ 4.3, § 4.5) | Rank set independently of score (e.g. interleaving sources) |
 | D4 | Accepted VOD input | Bare digits or `twitch.tv/videos/<id>` (`www.`/`m.`, http(s) or no scheme, query ignored); highlights and uploads rejected as `vod_unsupported` (§ 3.1, § 3.5) | Also accept channel-scoped or player URLs; allow highlights |
 | D5 | Export options | Layouts `center_crop` and `configured_region`; server-configured maximum length, default 90 s; a caption failure fails the export (§ 6) | Per-request crop region; deliver uncaptioned output with a warning |
-| D6 | Media | Per-candidate descriptor with separate preview and export availability, a `preparing` state, `video_file` now and `twitch_embed` reserved for OQ-17 (§ 5) | One per-VOD media URL inside the result |
-| D7 | Restarts and duplicates | In-memory records (restart gives 404, no resume); identical non-terminal requests deduplicated; one job and one export at a time (§ 8) | Persist job records on disk now (overlaps OQ-18) |
+| D6 | Media | Per-candidate descriptor with separate preview and export availability, a `preparing` state, and only `video_file` for now; OQ-17 can add a Twitch player kind later as a minor change (§ 5) | One per-VOD media URL inside the result; reserve a `twitch_embed` kind now |
+| D7 | Restarts, duplicates and IDs | In-memory records (restart gives 404, no resume); random job/export/media IDs with ≥ 64 bits, never reused across restarts; identical non-terminal requests deduplicated; one job and one export at a time (§ 1, § 8) | Persist job records on disk now (overlaps OQ-18); sequential IDs |
 | D8 | Progress | Stage enum, index/count and a measured within-stage fraction; no overall percentage (§ 3.4) | An estimated overall percentage |
 | D9 | Versioning and shape | `/api/v1` plus `schema_version` `"1.0"`; `snake_case`; every field always present; open vs. closed enums (§ 1, § 9) | camelCase JSON via aliases; omit null fields |
+| D10 | Cancel | No cancel, list or delete in v1: mock jobs take seconds, and restarting the local server stops a mistaken real job. A later cancel endpoint that fails the job with a new `cancelled` code is a minor change (§ 2, § 8.3, § 9) | Add `POST /api/v1/jobs/{job_id}/cancel` (and one for exports) now |
+| D11 | File routes and URLs | Media at `GET /api/v1/media/{media_id}` with range support; file routes resolve IDs only through server records; every returned URL is root-relative and resolved by the client against its API origin (§ 1, § 5.1, § 8.4) | Absolute URLs built from a configured public base URL; keep the media path server-private |
+| D12 | CLI exit codes | `1` input can't be analyzed (incl. `no_usable_signals`), `2` `upstream_unavailable`, a new `3` for `internal_error` (§ 4.6) | `internal_error` exits `1` (Python's default for an unhandled exception) and conventions § 7 stays as is |
+| D13 | Mock data | Fixed synthetic VOD IDs per state (§ 10); one sample video (#15) at least as long as the longest mock VOD, covering `[0, min(sample length, duration_s)]` (§ 5) | Take mock durations from #15's actual video length, making these examples illustrative |
 
-**To adopt:** settle each row in review, then change this doc's status to "Adopted (date)" in the same PR or a follow-up, update the [ADR-0009 note](../decisions/0009-analysis-and-evaluation-contract-repair.md#api-contract-proposal-13) and the [data model § candidates](data-model.md#candidates-apicli-output-json) status, and re-check #27–#33 (later #44–#46) for swapping `needs-decision` to `agent-ready`.
+**To adopt:** settle each row in review, then change this doc's status to "Adopted (date)" in the same PR or a follow-up, update the [ADR-0009 note](../decisions/0009-analysis-and-evaluation-contract-repair.md#api-contract-proposal-13) and the [data model § candidates](data-model.md#candidates-apicli-output-json) status, add any exit code chosen in D12 to [conventions § 7](../development/conventions.md#7-cli), and re-check #27–#33 (later #44–#46) for swapping `needs-decision` to `agent-ready`.
 
 ## 12. Not decided here
 

@@ -163,7 +163,7 @@ data/
 artifacts/
 ├── models/<run_id>/
 ├── reports/<run_id>/
-└── exports/<candidate_id>.mp4
+└── exports/<export_id>.mp4      # one file per export; candidate_id repeats across results
 ```
 
 ## 6. Cross-cutting concerns
