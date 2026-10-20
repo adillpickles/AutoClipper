@@ -153,5 +153,5 @@ If OQ-9 approves persisted hash-based joins across machines, use the same privat
 | `uv run pytest -m live` reports `no tests ran` (exit code 5) | No live tests exist yet; there's nothing to select. |
 
 | `npm warn EBADENGINE` in `web/` | You're not on Node 24. Switch versions (see [Frontend](#frontend-web)). |
-| npm 12+ warns that `unrs-resolver` install scripts were blocked | Harmless. Its native binary comes from an optional dependency; the blocked script is only a fallback. |
+| npm warns that `unrs-resolver` install scripts were blocked (seen with npm 11.19 and 12.2) | Harmless. Its native binary comes from an optional dependency; the blocked script is only a fallback. Don't approve it unless something breaks. |
 | `npm audit` reports high-severity `braces` advisories in `web/` | Comes from the lint toolchain (`eslint-config-next` → `fast-glob`), not from app code, and has no fixed version yet. Don't run `npm audit fix --force`: it downgrades `eslint-config-next` to v14. |
