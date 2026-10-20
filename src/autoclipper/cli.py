@@ -9,13 +9,18 @@ from enum import IntEnum
 from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
+
+# Typer vendors Click as a private module and doesn't re-export UsageError, the base class of
+# every bad-input error (unknown command/option, invalid value, missing argument). It's the only
+# way to tell those apart from errors a command raises on purpose, so the import is kept here,
+# in one place; tests/test_cli.py fails if a Typer upgrade moves it.
+from typer._click.exceptions import UsageError
 from typer.core import TyperGroup
 
 from autoclipper import __version__
 
 if TYPE_CHECKING:
-    # Typer vendors Click as a private module. Its Context type is only needed to match the
-    # signatures overridden in _RootGroup; nothing from it is used at runtime.
+    # Only needed to match the signatures overridden in _RootGroup.
     from typer._click import Context
 
 
@@ -33,9 +38,10 @@ class _RootGroup(TyperGroup):
     """Root command group that reports command-line usage errors as `ExitCode.USER_ERROR`.
 
     Typer exits with status 2 on usage errors, but the conventions reserve 2 for external
-    failures. Every error Typer raises for bad input subclasses `typer.TyperException`, both while
-    parsing the root options (`make_context`) and while resolving and parsing a subcommand
-    (`invoke`), so both entry points remap it before Typer prints the error and exits.
+    failures. Every error Typer raises for bad input subclasses `UsageError`, both while parsing
+    the root options (`make_context`) and while resolving and parsing a subcommand (`invoke`), so
+    both entry points remap it before Typer prints the error and exits. Other exceptions,
+    including Click exceptions a command raises with its own `exit_code`, pass through unchanged.
     """
 
     def make_context(
@@ -47,14 +53,14 @@ class _RootGroup(TyperGroup):
     ) -> "Context":
         try:
             return super().make_context(info_name, args, parent, **extra)
-        except typer.TyperException as exc:
+        except UsageError as exc:
             exc.exit_code = ExitCode.USER_ERROR
             raise
 
     def invoke(self, ctx: "Context") -> Any:  # noqa: ANN401 - returns whatever the command returns.
         try:
             return super().invoke(ctx)
-        except typer.TyperException as exc:
+        except UsageError as exc:
             exc.exit_code = ExitCode.USER_ERROR
             raise
 
