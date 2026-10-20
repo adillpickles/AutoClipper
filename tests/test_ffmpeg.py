@@ -198,6 +198,18 @@ def test_refusing_to_overwrite_is_an_exit_error_even_with_exit_code_zero() -> No
     assert "already exists" in excinfo.value.stderr_tail
 
 
+def test_refusing_to_overwrite_with_a_nonzero_exit_code_gets_the_same_headline() -> None:
+    # Regression test: FFmpeg 5.1 (Debian 12) prints the same message but exits with code 1.
+    stderr = b"File '/clips/out.wav' already exists. Exiting.\n"
+    runner = RecordingRunner(CommandResult(1, stderr=stderr))
+
+    with pytest.raises(FFmpegExitError) as excinfo:
+        run_command(ffmpeg_command("-i", "in.mp4", "/clips/out.wav"), timeout_s=5, runner=runner)
+
+    assert excinfo.value.returncode == 1
+    assert "did not overwrite an existing output file (pass -y)" in str(excinfo.value)
+
+
 def test_exit_error_without_stderr_says_so() -> None:
     with pytest.raises(FFmpegExitError, match=r"\(no output on stderr\)"):
         run_command(

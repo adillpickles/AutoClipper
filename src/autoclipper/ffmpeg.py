@@ -223,7 +223,9 @@ class FFmpegExitError(FFmpegError):
         self.command = command
         self.returncode = returncode
         self.stderr_tail = _stderr_tail(stderr)
-        if returncode == 0:
+        # Versions differ in the exit code after refusing (0 for 9.0.2, 1 for 5.1), so the
+        # message, not the code, decides which headline fits.
+        if _REFUSED_OVERWRITE in stderr:
             headline = f"{command.program} did not overwrite an existing output file (pass -y)"
         else:
             headline = f"{command.program} exited with code {returncode}"
