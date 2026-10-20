@@ -29,7 +29,7 @@ Tests protect the parts where bugs are **silent**: a label shifted by 10 seconds
 - **Pseudonymization:** the same name + salt gives the same hash, a different salt gives a different hash, and the raw name never appears in output.
 - **Splits:** no broadcaster appears in two splits. Deterministic given the seed.
 - **Metrics:** NDCG, recall@k, IoU matching and bootstrap on tiny hand-worked examples.
-- **Export:** FFmpeg command construction (as data, without running FFmpeg in unit tests). One integration test on a generated 5-second clip.
+- **Export:** FFmpeg command construction (as data, without running FFmpeg in unit tests). One integration test on a generated 5-second clip ([FFmpeg tests](#ffmpeg-tests)).
 
 ## Fixtures
 
@@ -57,12 +57,41 @@ Set in `[tool.pytest]` in `pyproject.toml` (pytest 9 native TOML config):
 - `strict = true`: an unregistered marker is an error, so a typo like `@pytest.mark.lvie` can't slip a live test into CI. Register new markers under `markers`. `xfail` is strict too: an unexpected pass fails.
 - `filterwarnings = ["error"]`: warnings fail the test. If a third-party library warns and you can't fix the cause, add a targeted `ignore:` entry with a comment saying why.
 
+## FFmpeg tests
+
+FFmpeg is a system binary ([ADR-0002](../decisions/0002-language-and-tooling.md)), and every call to it goes through `autoclipper.ffmpeg`. Tests come in two kinds:
+
+- **Unit tests** need no FFmpeg. Check the argument list that `ffmpeg_command` / `ffprobe_command` builds, or pass a fake `runner` to `run_command`, `probe` or `ffmpeg_version` that records the commands and returns canned `CommandResult`s (`RecordingRunner` in `tests/test_ffmpeg.py` is an example).
+- **FFmpeg tests** run the real `ffmpeg`/`ffprobe`. Mark them `@pytest.mark.ffmpeg`; tests that use the `make_test_media` fixture get the marker automatically.
+
+When `ffmpeg` or `ffprobe` is not on `PATH`, `tests/conftest.py` decides what happens to FFmpeg tests:
+
+| Where | `CI` environment variable | FFmpeg tests |
+|---|---|---|
+| Locally | unset, or anything other than `true`/`1` | **Skipped**, with the reason in the `-ra` summary |
+| CI | `true` or `1`, case-insensitive (GitHub Actions sets `CI=true`) | **Error**, so CI can't go green by skipping them |
+
+CI installs FFmpeg on Ubuntu and Windows (`.github/workflows/ci.yml`) and prints its version. Locally, `CI=true uv run pytest` gives the CI behavior, and `uv run pytest -m "not live and not ffmpeg"` leaves FFmpeg tests out (a `-m` on the command line replaces the default `-m "not live"`, so keep `not live` in it).
+
+`make_test_media` returns a function that generates a small file in the test's `tmp_path` from FFmpeg's `testsrc2` test pattern (H.264) and a constant `sine` tone. Annotate the fixture as `Callable[..., Path]`:
+
+```python
+def test_probe_reads_a_tone(make_test_media: Callable[..., Path]) -> None:
+    video = make_test_media()  # test.mp4: 1 s, 320x180 at 25 fps, 48 kHz stereo AAC
+    tone = make_test_media(
+        "tone.wav", duration_s=5.0, video_size=None, sample_rate_hz=16_000, channels=1
+    )
+```
+
+Keyword arguments: `duration_s`, `video_size` (`(width, height)`, or `None` for audio only), `frame_rate`, `sample_rate_hz`, `channels`, `tone_hz`. The file extension picks the container and its default audio codec. Generated media exists only in `tmp_path`; never commit it.
+
 ## Commands
 
 ```bash
 uv run pytest                       # unit + contract + integration; live tests are deselected
 uv run pytest tests/test_cli.py     # one file (or a folder, or file::test_name)
 uv run pytest -m live               # only live tests (needs .env and source authorization); never in CI
+uv run pytest -m "not live and not ffmpeg"   # also leave out tests that run the real FFmpeg
 uv run pytest --cov=autoclipper     # with a coverage report (branch coverage, missing lines)
 ```
 

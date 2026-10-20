@@ -65,7 +65,7 @@ uv run pytest
 uv run autoclipper --help
 ```
 
-`uv run pytest` should report only passed tests, and `autoclipper --help` prints the CLI usage. The everyday lint, format, type-check and test commands are in [`AGENTS.md` § 5](../../AGENTS.md#5-commands).
+`uv run pytest` should report only passed tests (tests that need FFmpeg are skipped until it is installed; see [testing](testing.md#ffmpeg-tests)), and `autoclipper --help` prints the CLI usage. The everyday lint, format, type-check and test commands are in [`AGENTS.md` § 5](../../AGENTS.md#5-commands).
 
 ### Git hooks
 
@@ -166,7 +166,7 @@ Code that pseudonymizes gets the salt with `get_settings().require_chat_hash_sal
 | `429 Too Many Requests` | Rate limit hit. The client should back off. If you see it often, lower concurrency. |
 | yt-dlp fails on Twitch | Update it: `uv lock --upgrade-package yt-dlp && uv sync` |
 | TwitchDownloader output schema changed | Pin the previous release and open a `bug` issue |
-| `ffmpeg: command not found` | Not on `PATH`. Restart the terminal after installing. |
+| `ffmpeg: command not found`, or AutoClipper reports `'ffmpeg' was not found on PATH` | Not on `PATH`. Restart the terminal after installing. |
 | `uv: command not found` / `'uv' is not recognized` | Not on `PATH` yet. Open a new terminal after installing uv (see the Windows note above). |
 | ``The lockfile at `uv.lock` needs to be updated, but `--locked` was provided`` (CI or locally) | `pyproject.toml` changed without a new lock. Run `uv lock` and commit `uv.lock` with `pyproject.toml`. |
 | uv warns `Failed to hardlink files; falling back to full copy` | Harmless. The clone and uv's cache are on different drives. Set the environment variable `UV_LINK_MODE=copy` to silence it. |

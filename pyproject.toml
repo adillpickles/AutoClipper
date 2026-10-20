@@ -98,6 +98,7 @@ addopts = ["-ra", "--import-mode=importlib"]
 strict = true
 markers = [
     "live: calls real external services (Twitch API, downloads); needs .env credentials and source authorization. Deselected by default; select with `-m live`.",
+    "ffmpeg: runs the real ffmpeg/ffprobe binaries. Added automatically to tests that use the make_test_media fixture. Skipped when FFmpeg is not on PATH, except in CI (CI=true), where that is an error (tests/conftest.py).",
 ]
 filterwarnings = ["error"]
 
