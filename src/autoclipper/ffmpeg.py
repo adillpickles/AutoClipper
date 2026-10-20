@@ -73,8 +73,15 @@ _PROBE_ENTRIES = (
 _VERSION_LINE = re.compile(r"(?P<name>\S+) version (?P<version>\S+)")
 
 # FFmpeg's fatal-level message when it won't overwrite an existing output file because -y is
-# missing. Some versions, 9.0.2 among them, then exit with code 0 without writing anything.
-_REFUSED_OVERWRITE = b"' already exists. Exiting."
+# missing. Some versions, 9.0.2 among them, then exit with code 0 without writing anything. It is
+# a line of its own, after any prefix the -loglevel flags add (time or datetime, then level):
+# "12:00:00.000 [fatal] File 'out.wav' already exists. Exiting." Only whole lines count, so a
+# metadata title that quotes the message (FFmpeg prints titles at -loglevel info) doesn't.
+_REFUSED_OVERWRITE = re.compile(
+    rb"^(?:(?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2}:\d{2}\.\d{3} )?(?:\[fatal\] )?"
+    rb"File '.*' already exists\. Exiting\.\r?$",
+    re.MULTILINE,
+)
 
 
 # --- Commands ----------------------------------------------------------------------------------
@@ -225,7 +232,7 @@ class FFmpegExitError(FFmpegError):
         self.stderr_tail = _stderr_tail(stderr)
         # Versions differ in the exit code after refusing (0 for 9.0.2, 1 for 5.1), so the
         # message, not the code, decides which headline fits.
-        if _REFUSED_OVERWRITE in stderr:
+        if _refused_overwrite(stderr):
             headline = f"{command.program} did not overwrite an existing output file (pass -y)"
         else:
             headline = f"{command.program} exited with code {returncode}"
@@ -236,6 +243,10 @@ class FFmpegExitError(FFmpegError):
 
 class FFmpegOutputError(FFmpegError):
     """The process succeeded, but its output is missing something or can't be parsed."""
+
+
+def _refused_overwrite(stderr: bytes) -> bool:
+    return _REFUSED_OVERWRITE.search(stderr) is not None
 
 
 def _stderr_tail(stderr: bytes) -> str:
@@ -380,7 +391,7 @@ def run_command(
     started = time.monotonic()
     result = execute(command, timeout_s=timeout_s)
     elapsed_s = time.monotonic() - started
-    if result.returncode != 0 or _REFUSED_OVERWRITE in result.stderr:
+    if result.returncode != 0 or _refused_overwrite(result.stderr):
         raise FFmpegExitError(command, result.returncode, result.stderr)
     log.debug("ffmpeg done program=%s elapsed_s=%.3f", command.program, elapsed_s)
     return result

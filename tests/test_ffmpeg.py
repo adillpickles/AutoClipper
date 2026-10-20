@@ -210,6 +210,59 @@ def test_refusing_to_overwrite_with_a_nonzero_exit_code_gets_the_same_headline()
     assert "did not overwrite an existing output file (pass -y)" in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(b"File '/clips/out.wav' already exists. Exiting.\r\n", id="crlf"),
+        pytest.param(b"[fatal] File '/clips/out.wav' already exists. Exiting.\n", id="level"),
+        pytest.param(
+            b"12:00:00.000 [fatal] File '/clips/out.wav' already exists. Exiting.\n",
+            id="time-and-level",
+        ),
+        pytest.param(
+            b"2026-10-20 12:00:00.000 File '/clips/out.wav' already exists. Exiting.\n",
+            id="datetime",
+        ),
+    ],
+)
+def test_refusing_to_overwrite_is_recognized_after_log_prefixes(line: bytes) -> None:
+    # As FFmpeg 9.0.2 prints it on Windows, and with the -loglevel flags time, datetime and level.
+    runner = RecordingRunner(CommandResult(0, stderr=b"Input #0, wav, from 'in.wav':\n" + line))
+
+    with pytest.raises(FFmpegExitError, match=r"did not overwrite an existing output file"):
+        run_command(ffmpeg_command("-i", "in.wav", "/clips/out.wav"), timeout_s=5, runner=runner)
+
+
+_METADATA_QUOTING_THE_REFUSAL = [
+    pytest.param(
+        b"    title           : File '/clips/out.wav' already exists. Exiting.\n", id="value"
+    ),
+    pytest.param(
+        b"[info]     title           : File '/clips/out.wav' already exists. Exiting.\r\n",
+        id="value-after-level",
+    ),
+    pytest.param(b"    File '/clips/out.wav' already exists. Exiting.: x\n", id="key"),
+]
+
+
+@pytest.mark.parametrize("line", _METADATA_QUOTING_THE_REFUSAL)
+def test_metadata_quoting_the_refusal_does_not_fail_a_successful_run(line: bytes) -> None:
+    # Regression test: at -loglevel info FFmpeg prints input metadata, and a title containing the
+    # message made a run that exited with code 0 and wrote its output raise FFmpegExitError.
+    result = CommandResult(0, stderr=b"Input #0, wav, from 'in.wav':\n  Metadata:\n" + line)
+    command = ffmpeg_command("-loglevel", "info", "-y", "-i", "in.wav", "/clips/out.wav")
+
+    assert run_command(command, timeout_s=5, runner=RecordingRunner(result)) == result
+
+
+@pytest.mark.parametrize("line", _METADATA_QUOTING_THE_REFUSAL)
+def test_metadata_quoting_the_refusal_does_not_change_the_exit_error_headline(line: bytes) -> None:
+    runner = RecordingRunner(CommandResult(1, stderr=line + b"Conversion failed!\n"))
+
+    with pytest.raises(FFmpegExitError, match="ffmpeg exited with code 1"):
+        run_command(ffmpeg_command("-y", "-i", "in.wav", "out.wav"), timeout_s=5, runner=runner)
+
+
 def test_exit_error_without_stderr_says_so() -> None:
     with pytest.raises(FFmpegExitError, match=r"\(no output on stderr\)"):
         run_command(
@@ -686,6 +739,22 @@ def test_real_ffmpeg_refusing_to_overwrite_raises(make_test_media: Callable[...,
         run_command(command, timeout_s=60)
 
     assert probe(media).duration_s == pytest.approx(1.0, abs=0.05)  # still the original file
+
+
+def test_real_ffmpeg_input_title_quoting_the_refusal_is_not_a_refusal(
+    make_test_media: Callable[..., Path], tmp_path: Path
+) -> None:
+    # Regression test: at -loglevel info FFmpeg prints the input's title, and this one made the
+    # successful run below raise FFmpegExitError.
+    source = make_test_media("tone.wav", video_size=None)
+    titled = tmp_path / "titled.wav"
+    output = tmp_path / "out.wav"
+    title = f"title=File '{output}' already exists. Exiting."
+    run_command(ffmpeg_command("-i", source, "-metadata", title, titled), timeout_s=60)
+
+    run_command(ffmpeg_command("-loglevel", "info", "-y", "-i", titled, output), timeout_s=60)
+
+    assert probe(output).duration_s == pytest.approx(1.0, abs=0.05)
 
 
 @pytest.mark.ffmpeg
