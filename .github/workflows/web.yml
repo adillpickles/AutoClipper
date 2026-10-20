@@ -15,9 +15,11 @@ on:
 permissions:
   contents: read
 
+# Superseded PR runs are cancelled. Each push to main gets its own group (keyed by run ID): a
+# group holds only one pending run and a newer one replaces it, so a shared group would skip
+# commits that land while main is busy.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Superseded PR runs are cancelled; every push to main is checked.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
