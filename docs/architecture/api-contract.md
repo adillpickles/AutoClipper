@@ -892,22 +892,22 @@ Job failure codes (§ 3.5) and export failure codes (§ 6.3) are reported inside
 
 ## 10. Mock scenarios (recommended for #28)
 
-Fixed synthetic inputs let the frontend exercise every state against the mock backend:
+Fixed synthetic inputs let the frontend exercise every state against the mock backend. Unless its row says otherwise, a `done` scenario returns the first § 4.7 result (one candidate of each `source`) with `vod.video_id` set to the requested ID (§ 4.5), and its job has no warnings:
 
 | `vod` | Mock outcome |
 |---|---|
-| `9000000001`, or any valid ID not listed below | `done` with the § 4.7 result (one candidate of each `source`), with `vod.video_id` set to the requested ID (§ 4.5) |
-| `9000000002` | `done`; no viewer clips: `n_viewer_clips_total` is 0 and every candidate is `discovered` |
-| `9000000003` | `done` with a `chat_missing` warning |
-| `9000000004` | `failed` with `vod_unavailable` at `resolving_vod` |
-| `9000000005` | `failed` with `no_usable_signals` |
-| `9000000006` | `done` with zero candidates |
-| `9000000007` | `done`; the media endpoint returns preview and export `unavailable` (`not_permitted`) |
+| `9000000001`, or any valid ID not listed below | `done` with that result |
+| `9000000002` | `done`; no viewer clips: `n_viewer_clips_total` is 0 and `candidates` holds only the `discovered` candidate shown at the end of § 4.7 (`c001`, score 1.8, 12.0–40.0 s) |
+| `9000000003` | `done` with a `chat_missing` warning: the degraded job and result in § 3.6 and § 4.7, including their `vod` |
+| `9000000004` | `failed` with `vod_unavailable` at `resolving_vod`: the failed job in § 3.6 |
+| `9000000005` | `failed` with the § 3.6 `no_usable_signals` error; `progress` is that of the § 3.6 running job (`downloading_audio`) with `stage_fraction` `null` |
+| `9000000006` | `done` with zero candidates: `n_viewer_clips_total` is 0 and `candidates` is `[]` |
+| `9000000007` | `done`; the media endpoint returns preview and export `unavailable` (`not_permitted`), as in § 5.2 |
 | `twitch.tv/user_001` | `422 invalid_vod_link` (normal validation, not mock-specific) |
 
 Each mock job should take a few seconds so `queued` and `running` are visible, and report `scorer.kind: "mock"`.
 
-**Fixture mode.** The frontend can also run without any backend, from static JSON fixtures (#29–#31). Fixtures follow the examples in this document and the scenarios above. Parity with the mock backend means the same shapes, states, codes and business values (`video_id`, `vod`, candidate fields and order, warnings, failure codes, availability and bounds). It does not cover volatile values, which differ per run and must never be hard-coded or compared: `job_id`, `export_id`, `media_id` and every URL containing them, every `*_at` timestamp, and progress timing. A fixture's `PreviewMedia.url` is any root-relative URL the frontend's dev setup serves a locally generated, git-ignored MP4 from (or the mock backend's media route when it's running); media files are never committed. Scenarios without a full example here get their fixtures from the mock backend's responses once #28 exists, or are written by hand following the field tables.
+**Fixture mode.** The frontend can also run without any backend, from static JSON fixtures (#29–#31). Fixtures follow the examples in this document and the scenarios above. Parity with the mock backend means the same shapes, states, codes and business values (`video_id`, `vod`, candidate fields and order, warnings, failure codes, availability and bounds). It does not cover volatile values, which differ per run and must never be hard-coded or compared: `job_id`, `export_id`, `media_id` and every URL containing them, the server-clock timestamps (`created_at`, `started_at`, `updated_at`, `finished_at` and `expires_at` on jobs and exports, and `generated_at`; `vod.created_at` is a business value), and progress timing. A fixture's `PreviewMedia.url` is any root-relative URL the frontend's dev setup serves a locally generated, git-ignored MP4 from (or the mock backend's media route when it's running); media files are never committed. The table above and the examples it points to fix the business values of each scenario's job, result and media, with one exception: the `warnings` of `9000000005`'s failed job. So fixtures written by hand before #28 exists already match the mock. For that exception, and anything else this page leaves open, the mock's response is canonical: until #28 exists a fixture may use any value the field tables and § 4.5 allow, and it's updated to match the mock afterward.
 
 ## 11. Decision points for reviewers
 
@@ -927,7 +927,7 @@ Each row needs an explicit yes, or a chosen alternative, before adoption.
 | D10 | Cancel | No cancel, list or delete in v1: mock jobs take seconds, and restarting the local server stops a mistaken real job. A later cancel endpoint that fails the job with a new `cancelled` code is a minor change (§ 2, § 8.3, § 9) | Add `POST /api/v1/jobs/{job_id}/cancel` (and one for exports) now |
 | D11 | File routes and URLs | Media at `GET /api/v1/media/{media_id}` with range support; file routes resolve IDs only through server records; every returned URL is root-relative and resolved by the client against its API origin (§ 1, § 5.1, § 8.4) | Absolute URLs built from a configured public base URL; keep the media path server-private |
 | D12 | CLI exit codes | `1` input can't be analyzed (incl. `no_usable_signals`), `2` `upstream_unavailable`, a new `3` for `internal_error` (§ 4.6) | `internal_error` exits `1` (Python's default for an unhandled exception) and conventions § 7 stays as is |
-| D13 | Mock data and fixtures | Fixed synthetic VOD IDs per state (§ 10); #28 generates its own sample video, at least as long as the longest mock VOD, covering `[0, duration_s]` (§ 5); fixture mode matches the mock on everything except volatile IDs, URLs and timestamps (§ 10) | Reuse #15's video and take mock durations from its length, making these examples illustrative |
+| D13 | Mock data and fixtures | Fixed synthetic VOD IDs per state (§ 10); #28 generates its own sample video, at least as long as the longest mock VOD, covering `[0, duration_s]` (§ 5); each scenario's values are fixed by § 10 and its examples, so fixture mode matches the mock on everything except volatile IDs, URLs and server timestamps (§ 10) | Reuse #15's video and take mock durations from its length, making these examples illustrative |
 
 **To adopt:** settle each row in review, then change this doc's status to "Adopted (date)" in the same PR or a follow-up, update the [ADR-0009 note](../decisions/0009-analysis-and-evaluation-contract-repair.md#api-contract-proposal-13) and the [data model § candidates](data-model.md#candidates-apicli-output-json) status, add any exit code chosen in D12 to [conventions § 7](../development/conventions.md#7-cli), and re-check #27–#33 (later #44–#46) for swapping `needs-decision` to `agent-ready`.
 
