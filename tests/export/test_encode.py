@@ -5,7 +5,7 @@ import itertools
 import json
 import math
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -66,8 +66,9 @@ EVERY_2_S = tuple(float(t) for t in range(0, 3600, 2))
 class FakeRunner:
     """Answers ffprobe with canned JSON and records every command.
 
-    Media probes get `source` or, for the temporary export file, `output`. Packet reads
-    (``-read_intervals``) get the `keyframes_s` (absolute times) inside the requested interval.
+    Media probes get `source` or, for the temporary export file, `output`. Keyframe searches
+    get the `keyframes_s` (absolute times) inside the requested interval. Reads for stream ends
+    get one packet per stream in `packet_ends_s` (absolute end time by stream index), or none.
     `on_ffmpeg` runs when the encode command does, e.g. to create a competing output file.
     """
 
@@ -77,12 +78,14 @@ class FakeRunner:
         output: bytes | None = None,
         ffmpeg: CommandResult | None = None,
         keyframes_s: Sequence[float] = EVERY_2_S,
+        packet_ends_s: Mapping[int, float] | None = None,
         on_ffmpeg: Callable[[], object] | None = None,
     ) -> None:
         self.source = source if source is not None else media_json(600.0, VIDEO, AUDIO)
         self.output = output
         self.ffmpeg = ffmpeg if ffmpeg is not None else CommandResult(0)
         self.keyframes_s = keyframes_s
+        self.packet_ends_s = {} if packet_ends_s is None else packet_ends_s
         self.on_ffmpeg = on_ffmpeg
         self.commands: list[FFmpegCommand] = []
         self.timeouts: list[float] = []
@@ -94,6 +97,12 @@ class FakeRunner:
             if self.on_ffmpeg is not None:
                 self.on_ffmpeg()
             return self.ffmpeg
+        if "packet=stream_index,pts_time,duration_time" in command.args:
+            packets = [
+                {"stream_index": index, "pts_time": f"{end_s - 0.02:.6f}", "duration_time": "0.02"}
+                for index, end_s in self.packet_ends_s.items()
+            ]
+            return CommandResult(0, stdout=json.dumps({"packets": packets}).encode())
         if "-read_intervals" in command.args:
             low, _, high = value_after(command, "-read_intervals").partition("%")
             low_s = float(low) if low else -math.inf
@@ -134,10 +143,12 @@ def maps(command: FFmpegCommand) -> list[str]:
 
 
 def exported_interval(command: FFmpegCommand) -> tuple[float, float]:
-    """The source interval a command exports: input seek + trimmed preroll, then -t."""
+    """The source interval a command exports: input seek + skipped preroll, then -t."""
     first_video_filter = value_after(command, "-filter:v").split(",")[0]
-    assert first_video_filter.startswith("trim=start=")
-    start_s = float(value_after(command, "-ss")) + float(first_video_filter.split("=")[-1])
+    assert first_video_filter.startswith("setpts=PTS-")
+    skip_s = float(first_video_filter.removeprefix("setpts=PTS-").removesuffix("/TB"))
+    assert value_after(command, "-filter:a").startswith(f"atrim=start={skip_s:.6f},")
+    start_s = float(value_after(command, "-ss")) + skip_s
     return round(start_s, 6), round(start_s + float(value_after(command, "-t")), 6)
 
 
@@ -187,8 +198,9 @@ def test_command_seeks_before_the_start_and_trims_exactly_to_it(tmp_path: Path) 
         "-i",
         str(source),
     ]
+    # Video: shift the start to 0, resample, then drop what is before 0.
     assert value_after(command, "-filter:v").startswith(
-        "trim=start=5.000000,setpts=PTS-5.000000/TB,fps="
+        "setpts=PTS-5.000000/TB,fps=fps=30:round=down,trim=start=0,crop="
     )
     assert value_after(command, "-filter:a") == "atrim=start=5.000000,asetpts=PTS-5.000000/TB"
     # The duration limit is an output option, after the input.
@@ -224,8 +236,8 @@ def test_command_encodes_h264_aac_with_faststart_and_constant_frame_rate(tmp_pat
     )
 
     assert value_after(command, "-filter:v") == (
-        "trim=start=0.000000,setpts=PTS-0.000000/TB,"
-        "fps=fps=30:round=down,crop=w=606:h=1080:x=656:y=0,"
+        "setpts=PTS-0.000000/TB,fps=fps=30:round=down,trim=start=0,"
+        "crop=w=606:h=1080:x=656:y=0,"
         "scale=w=1080:h=1920:flags=lanczos,setsar=1,format=yuv420p"
     )
     assert value_after(command, "-c:v") == "libx264"
@@ -396,6 +408,23 @@ def test_export_ends_where_the_shorter_source_stream_ends(source: Path) -> None:
     assert (result.start_s, result.end_s) == (5.0, 9.8)
     assert result.cut.clamped_end
     assert result.cut.requested == Interval(5.0, 10.0)
+
+
+def test_export_ends_where_the_packets_end_when_metadata_durations_are_wrong(
+    source: Path,
+) -> None:
+    # MPEG-TS-like: the metadata estimates the audio end at 9.579 s; its packets end at 9.835 s.
+    runner = FakeRunner(
+        source=media_json(10.0, VIDEO, {**AUDIO, "duration": "9.578667"}),
+        packet_ends_s={0: 10.0, 1: 9.834666},
+        output=output_for(0.534666),
+    )
+
+    result = export_clip(request(source, 9.3, 10.0), runner=runner)
+
+    (command,) = runner.ffmpeg_commands
+    assert exported_interval(command) == (9.3, 9.834666)
+    assert result.cut.clamped_end
 
 
 def test_export_starts_where_the_later_source_stream_starts(source: Path) -> None:

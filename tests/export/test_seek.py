@@ -17,6 +17,7 @@ from autoclipper.export.seek import (
     StreamTimes,
     covered_span,
     find_keyframe,
+    probe_stream_ends,
     probe_stream_times,
     seek_point,
 )
@@ -250,3 +251,115 @@ def test_covered_span_never_ends_after_the_container() -> None:
     times = spans(StreamSpan(0, "video", 0.0, 10.2))
 
     assert covered_span(times, [0], 10.0) == (0.0, 10.0)
+
+
+def test_covered_span_prefers_measured_stream_ends_over_metadata() -> None:
+    # MPEG-TS metadata estimates the audio end at 9.579 s; its packets run to 9.835 s.
+    times = spans(StreamSpan(0, "video", 0.021, 10.0), StreamSpan(1, "audio", 0.0, 9.579))
+
+    span = covered_span(times, [0, 1], 10.021, {0: 10.021, 1: 9.835})
+
+    assert span == (0.021, 9.835)
+
+
+def test_covered_span_uses_measured_ends_even_past_the_container_duration() -> None:
+    # MKV reports no stream durations, and its container duration counts from 0, not from its
+    # start; measured ends are in seconds from the container start and are used as they are.
+    times = spans(StreamSpan(0, "video", 0.0, None), StreamSpan(1, "audio", 0.0, None))
+
+    assert covered_span(times, [0, 1], 18.021, {0: 8.0, 1: 8.0}) == (0.0, 8.0)
+    assert covered_span(times, [0, 1], 10.0, {1: 9.8}) == (0.0, 9.8)
+
+
+# --- probe_stream_ends ---------------------------------------------------------------------------
+
+
+class EndRunner:
+    """Answers packet reads with the packets (absolute pts, duration) at or after the read start."""
+
+    def __init__(self, packets: Sequence[tuple[int, float, float]]) -> None:
+        self.packets = packets
+        self.commands: list[FFmpegCommand] = []
+
+    def __call__(self, command: FFmpegCommand, /, *, timeout_s: float) -> CommandResult:
+        self.commands.append(command)
+        interval = self.interval(command)
+        low_s = -math.inf if interval is None else float(interval.removesuffix("%"))
+        packets = [
+            {"stream_index": index, "pts_time": f"{pts_s:.6f}", "duration_time": f"{dur_s:.6f}"}
+            for index, pts_s, dur_s in self.packets
+            if pts_s >= low_s
+        ]
+        return CommandResult(0, stdout=json.dumps({"packets": packets}).encode())
+
+    @staticmethod
+    def interval(command: FFmpegCommand) -> str | None:
+        if "-read_intervals" not in command.args:
+            return None
+        return command.args[command.args.index("-read_intervals") + 1]
+
+
+def test_stream_ends_come_from_the_last_packets_near_the_end(source: Path) -> None:
+    # Timestamps from 1.4 s, as in MPEG-TS; a third stream isn't asked for.
+    runner = EndRunner([(0, 11.388, 0.033333), (1, 11.213333, 0.021333), (2, 5.0, 0.1)])
+
+    ends = probe_stream_ends(
+        source, [0, 1], container_start_s=1.4, duration_hint_s=10.021333, runner=runner
+    )
+
+    assert ends == {0: pytest.approx(10.021333), 1: pytest.approx(9.834666)}
+    (command,) = runner.commands
+    assert EndRunner.interval(command) == "1.421333%"  # 10 s before the expected end
+
+
+def test_stream_ends_widen_the_read_until_every_stream_has_packets(source: Path) -> None:
+    # The audio stopped long before the video.
+    runner = EndRunner([(1, 100.0, 0.02), (0, 3599.0, 0.04)])
+
+    ends = probe_stream_ends(
+        source, [0, 1], container_start_s=0.0, duration_hint_s=3600.0, runner=runner
+    )
+
+    assert ends == {0: pytest.approx(3599.04), 1: pytest.approx(100.02)}
+    assert [EndRunner.interval(c) for c in runner.commands] == [
+        "3590.000000%",
+        "3560.000000%",
+        "3440.000000%",
+        "2960.000000%",
+        "1040.000000%",
+        None,  # the whole file
+    ]
+
+
+def test_stream_ends_with_a_wrong_hint_fall_back_to_reading_the_whole_file(source: Path) -> None:
+    # An MKV whose duration counts from 0 although its timestamps start at 10 s: the first read
+    # starts after the last packet and finds nothing.
+    runner = EndRunner([(0, 17.967, 0.033), (1, 17.979, 0.021)])
+
+    ends = probe_stream_ends(
+        source, [0, 1], container_start_s=10.0, duration_hint_s=18.021, runner=runner
+    )
+
+    assert ends == {0: pytest.approx(8.0), 1: pytest.approx(8.0)}
+    assert [EndRunner.interval(c) for c in runner.commands] == ["18.021000%", None]
+
+
+def test_a_stream_without_packets_is_left_out(source: Path) -> None:
+    runner = EndRunner([(0, 9.9, 0.1)])
+
+    ends = probe_stream_ends(
+        source, [0, 1], container_start_s=0.0, duration_hint_s=10.0, runner=runner
+    )
+
+    assert ends == {0: pytest.approx(10.0)}
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [b"not json", b'{"packets": {}}', b'{"packets": [{"pts_time": "1.0"}]}'],
+)
+def test_unexpected_packet_ends_output_raises(source: Path, stdout: bytes) -> None:
+    with pytest.raises(FFmpegOutputError):
+        probe_stream_ends(
+            source, [0], container_start_s=0.0, duration_hint_s=5.0, runner=answer(stdout)
+        )

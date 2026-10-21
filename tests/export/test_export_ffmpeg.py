@@ -26,15 +26,17 @@ RAMP_DURATION_S = 20.0
 LOSSLESS = EncodeSettings(crf=0, preset="ultrafast")
 
 
-def make_ramp_video(path: Path, *, keyframe_interval: int = 1000, ts_offset_s: float = 0.0) -> Path:
-    """A silent 320x180, 25 fps, 20 s video whose brightness rises with time.
+def make_ramp_video(
+    path: Path, *, keyframe_interval: int = 1000, ts_offset_s: float = 0.0, frame_rate: int = 25
+) -> Path:
+    """A silent 320x180, 20 s video whose brightness rises with time (25 fps by default).
 
     Lossless (``-qp 0``), so a frame's luma reads back exactly. A keyframe every
     `keyframe_interval` frames (by default only one, at 0). `ts_offset_s` shifts the container's
     timestamps, like a VOD whose MPEG-TS timestamps don't start at 0.
     """
     ramp = (
-        f"nullsrc=size=320x180:rate=25:duration={RAMP_DURATION_S},"
+        f"nullsrc=size=320x180:rate={frame_rate}:duration={RAMP_DURATION_S},"
         f"geq=lum='{LUMA_AT_0}+{LUMA_PER_S}*T':cb=128:cr=128"
     )
     command = ffmpeg_command(
@@ -153,6 +155,26 @@ def test_export_starts_at_a_start_between_keyframes(
     assert_vertical_h264_aac(result.output, 1.0)
 
 
+@pytest.mark.parametrize(
+    ("source_fps", "output_fps"),
+    [(10, 30), (5, 30), (25, 120)],
+    ids=["10fps_to_30", "5fps_to_30", "25fps_to_120"],
+)
+def test_export_of_a_source_with_fewer_frames_than_the_output_starts_on_the_frame_shown(
+    tmp_path: Path, source_fps: int, output_fps: int
+) -> None:
+    source = make_ramp_video(tmp_path / "slow.mp4", frame_rate=source_fps)
+    settings = EncodeSettings(frame_rate=output_fps, crf=0, preset="ultrafast")
+
+    # 1.001 s is just after the source frame at 1.0 s, which is still on screen.
+    result = export_clip(
+        ExportRequest(source, Interval(1.001, 2.001), tmp_path / "clip.mp4"), settings=settings
+    )
+
+    assert frame_luma(result.output, 0) == pytest.approx(LUMA_AT_0 + LUMA_PER_S * 1.0, abs=0.5)
+    assert_vertical_h264_aac(result.output, 1.0)
+
+
 def test_export_that_cannot_decode_from_the_start_fails_instead_of_freezing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -234,8 +256,11 @@ def test_export_of_an_odd_sized_portrait_source(tmp_path: Path, layout: Layout) 
     assert_vertical_h264_aac(result.output, 2.0)
 
 
-def make_uneven_media(path: Path, *, video_s: float, audio_s: float) -> Path:
-    """An MP4 whose video and audio streams have different lengths."""
+def make_uneven_media(
+    path: Path, *, video_s: float, audio_s: float, ts_offset_s: float = 0.0
+) -> Path:
+    """A video with AAC audio whose streams have different lengths; the extension picks the
+    container. `ts_offset_s` shifts the container's timestamps."""
     run_command(
         ffmpeg_command(
             "-n",
@@ -251,6 +276,10 @@ def make_uneven_media(path: Path, *, video_s: float, audio_s: float) -> Path:
             "libx264",
             "-preset",
             "ultrafast",
+            "-c:a",
+            "aac",
+            "-output_ts_offset",
+            str(ts_offset_s),
             path,
         ),
         timeout_s=TIMEOUT_S,
@@ -258,16 +287,49 @@ def make_uneven_media(path: Path, *, video_s: float, audio_s: float) -> Path:
     return path
 
 
+# The audio of the 9.8 s tone ends at 9.8 s in MP4 and MKV. MPEG-TS keeps the AAC encoder delay
+# and whole AAC frames, so its last packet ends at about 9.835 s, while ffprobe's metadata
+# estimates 9.579 s. MKV reports no stream durations at all.
+@pytest.mark.parametrize(
+    ("name", "audio_end_s"),
+    [("vod.mp4", 9.8), ("vod.mkv", 9.8), ("vod.ts", 9.835)],
+    ids=["mp4", "mkv_without_stream_durations", "mpegts_with_estimated_durations"],
+)
 def test_export_at_the_end_of_a_vod_whose_audio_stops_first_ends_with_the_audio(
-    tmp_path: Path,
+    tmp_path: Path, name: str, audio_end_s: float
 ) -> None:
-    source = make_uneven_media(tmp_path / "vod.mp4", video_s=10.0, audio_s=9.8)
+    source = make_uneven_media(tmp_path / name, video_s=10.0, audio_s=9.8)
 
     result = export_clip(ExportRequest(source, Interval(5.0, 10.0), tmp_path / "clip.mp4"))
 
-    assert result.end_s == pytest.approx(9.8, abs=0.03)
+    assert result.end_s == pytest.approx(audio_end_s, abs=0.01)
     assert result.cut.clamped_end
     assert_vertical_h264_aac(result.output, result.end_s - 5.0)
+
+
+def test_export_of_the_last_half_second_of_an_mpegts_uses_the_real_audio_end(
+    tmp_path: Path,
+) -> None:
+    # The metadata's 9.579 s audio end would leave only 0.28 s of 9.3-10 s: too short.
+    source = make_uneven_media(tmp_path / "vod.ts", video_s=10.0, audio_s=9.8)
+
+    result = export_clip(ExportRequest(source, Interval(9.3, 10.0), tmp_path / "clip.mp4"))
+
+    assert result.end_s == pytest.approx(9.835, abs=0.01)
+    assert_vertical_h264_aac(result.output, result.end_s - 9.3)
+
+
+def test_export_of_an_mkv_whose_timestamps_start_at_10_s_ends_with_its_content(
+    tmp_path: Path,
+) -> None:
+    # 8 s of content from 10 s on. MKV reports its duration as 18 s, counted from 0.
+    source = make_uneven_media(tmp_path / "vod.mkv", video_s=8.0, audio_s=8.0, ts_offset_s=10.0)
+
+    result = export_clip(ExportRequest(source, Interval(5.0, 20.0), tmp_path / "clip.mp4"))
+
+    assert (result.start_s, result.end_s) == (5.0, pytest.approx(8.0, abs=0.01))
+    assert result.cut.clamped_end
+    assert_vertical_h264_aac(result.output, 3.0)
 
 
 @pytest.mark.parametrize(

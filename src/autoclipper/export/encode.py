@@ -11,17 +11,19 @@ Encoding decisions (docs/architecture/overview.md §4.6):
   decoding the VOD from the beginning. It seeks to just before the last video keyframe at or
   before the start (`autoclipper.export.seek`), so decoding always begins at a frame that can be
   decoded, whatever the container (MPEG-TS has no index) and however far apart the keyframes
-  are. The ``trim``/``atrim`` filters then drop everything before the exact start, so a
+  are. The filters then shift time so that the start is 0 and drop everything before it, so a
   user-trimmed start between keyframes is respected. ``-t`` is an output option, so the clip
-  lasts exactly the interval. Output timestamps start at 0 at the actual start.
+  lasts exactly the interval.
 - **Constant frame rate.** The ``fps`` filter resamples to `EncodeSettings.frame_rate` (30 by
-  default), so every clip has a fixed frame rate whatever the source's rate. It rounds
-  timestamps down, so the first source frame lands on output frame 0, and it doesn't invent
-  frames before the first decoded one: a late start shows up in the output check instead.
+  default) before the trim, on a grid of output frames that starts exactly at the start. Output
+  frame 0 therefore shows the source frame on screen at the start, even when the source has
+  fewer frames per second than the output. ``fps`` never invents frames before the first decoded
+  one, so a decode that begins after the start shows up in the output check instead.
 - **Media bounds.** The interval is clamped to the span that the video stream and the audio
-  stream used both cover, not just to the container duration: at the end of a VOD the audio
-  often stops a fraction of a second before the video, and the clip then ends with the audio
-  (`CutPlan.clamped_end`) instead of failing.
+  stream used both cover, measured from their last packets (`probe_stream_ends`), not from
+  metadata durations, which are missing (MKV) or estimated (MPEG-TS): at the end of a VOD the
+  audio often stops a fraction of a second before the video, and the clip then ends with the
+  audio (`CutPlan.clamped_end`) instead of failing.
 - **Coverage.** The output and each of its streams must start at 0 and last the planned interval
   within `EncodeSettings.duration_tolerance_s` (one output frame plus one AAC frame);
   `export_clip` fails if not, for example when decoding didn't start at the requested frame.
@@ -61,6 +63,7 @@ from autoclipper.export.seek import (
     StreamTimes,
     covered_span,
     find_keyframe,
+    probe_stream_ends,
     probe_stream_times,
     seek_point,
 )
@@ -257,13 +260,15 @@ def build_export_command(
     if not 0.0 <= seek_s <= interval.start_s:
         raise ValueError(f"seek_s must be in 0-{interval.start_s:g} s, got {seek_s!r}")
     encode = EncodeSettings() if settings is None else settings
-    # Seek to `seek_s`, where the decoded timestamps restart at 0. The filters then drop `skip`
-    # seconds of preroll and shift the rest back to 0, so output time 0 is exactly the start.
+    # Seek to `seek_s`, where the decoded timestamps restart at 0. The filters shift time back by
+    # `skip` seconds of preroll, so the start is 0, and drop what comes before it. The video is
+    # resampled before it is trimmed: output frame 0 then repeats the source frame on screen at
+    # the start (its timestamp is just below 0), which a trim first would have dropped.
     skip = _seconds(interval.start_s - seek_s)
     filters = (
-        f"trim=start={skip}",
         f"setpts=PTS-{skip}/TB",
         f"fps=fps={encode.frame_rate}:round=down",
+        "trim=start=0",
         *reframe.filters(),
         *video_filters,
         "format=yuv420p",
@@ -366,7 +371,16 @@ def export_clip(
     video, audio = _pick_streams(info)
     source_times = probe_stream_times(request.source, runner=runner)
     used_streams = [video.index] if audio is None else [video.index, audio.index]
-    media_start_s, media_end_s = covered_span(source_times, used_streams, info.duration_s)
+    stream_ends_s = probe_stream_ends(
+        request.source,
+        used_streams,
+        container_start_s=source_times.container_start_s,
+        duration_hint_s=info.duration_s,
+        runner=runner,
+    )
+    media_start_s, media_end_s = covered_span(
+        source_times, used_streams, info.duration_s, stream_ends_s
+    )
     if media_end_s <= media_start_s:
         raise UnsupportedSourceError(
             f"the video and audio streams of {request.source} don't overlap in time"
