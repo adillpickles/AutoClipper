@@ -586,6 +586,12 @@ class HelixClient:
                 transient_failures += 1
                 self._backoff_or_raise(endpoint, transient_failures, type(exc).__name__, exc)
                 continue
+            except httpx.DecodingError as exc:
+                # httpx decompresses the body while reading it; a corrupt body isn't a
+                # TransportError, but it is a response Twitch sent in the wrong shape.
+                raise TwitchResponseError(
+                    f"{endpoint} returned a body that couldn't be decoded ({type(exc).__name__})"
+                ) from exc
             status = response.status_code
             if authorized:
                 self.rate_limit = _read_rate_limit(response, endpoint)
@@ -619,7 +625,9 @@ class HelixClient:
                 continue
             if status >= 500:
                 transient_failures += 1
-                self._backoff_or_raise(endpoint, transient_failures, f"status {status}", None)
+                self._backoff_or_raise(
+                    endpoint, transient_failures, f"status {status}", None, status_code=status
+                )
                 continue
             if 400 <= status < 500:
                 raise self._client_error(endpoint, response, authorized=authorized)
@@ -628,12 +636,19 @@ class HelixClient:
             return response
 
     def _backoff_or_raise(
-        self, endpoint: str, attempt: int, reason: str, cause: BaseException | None
+        self,
+        endpoint: str,
+        attempt: int,
+        reason: str,
+        cause: BaseException | None,
+        *,
+        status_code: int | None = None,
     ) -> None:
         if attempt > self._policy.max_transient_retries:
             raise TwitchUnavailableError(
                 f"{endpoint} failed {attempt} times (last: {reason}); Twitch or the network may "
-                "be down, try again later"
+                "be down, try again later",
+                status_code=status_code,
             ) from cause
         wait_s = self._policy.backoff_s(attempt)
         log.info(

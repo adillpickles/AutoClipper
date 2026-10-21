@@ -521,6 +521,7 @@ def test_5xx_retries_are_capped(make_client: MakeClient, clock: FakeClock) -> No
         client.get_users(["user_001"])
 
     assert not caught.value.user_error
+    assert caught.value.status_code == 502
     assert len(fake.helix_requests) == 3
     assert clock.sleeps == [1.0, 2.0]
 
@@ -536,7 +537,21 @@ def test_transport_errors_are_retried_then_raised(
         client.get_users(["user_001"])
 
     assert isinstance(caught.value.__cause__, httpx.ConnectTimeout)
+    assert caught.value.status_code is None
     assert clock.sleeps == [1.0]
+
+
+def test_undecodable_body_raises_response_error(make_client: MakeClient) -> None:
+    corrupt = httpx.Response(
+        200, headers={"Content-Encoding": "gzip"}, stream=httpx.ByteStream(b"not gzip data")
+    )
+    client, fake = make_client(corrupt)
+
+    with pytest.raises(TwitchResponseError, match="couldn't be decoded") as caught:
+        client.get_users(["user_001"])
+
+    assert isinstance(caught.value.__cause__, httpx.DecodingError)
+    assert len(fake.helix_requests) == 1
 
 
 @pytest.mark.parametrize("status", [400, 403, 422])
