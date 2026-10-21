@@ -9,7 +9,7 @@
 
 ## Summary
 
-Scope, architecture and team workflow are documented, and the core tech stack is decided. The Python package scaffold (an `autoclipper` CLI with no subcommands yet, lint/type/test tooling, pre-commit hooks and CI) exists. The Next.js frontend scaffold has a placeholder page. **There is no pipeline, backend, dataset or model yet.** No results exist.
+Scope, architecture and team workflow are documented, and the core tech stack is decided. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, lint/type/test tooling and CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
 
 ## What exists
 
