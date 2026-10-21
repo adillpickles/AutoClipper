@@ -8,6 +8,7 @@ requires-python = ">=3.12,<3.13"
 # No license is chosen yet (ADR-0006); this classifier makes PyPI reject accidental uploads.
 classifiers = ["Private :: Do Not Upload"]
 dependencies = [
+    "httpx>=0.28.1",
     "numpy>=2.5.4",
     "pyarrow>=26.0.0",
     "pydantic-settings>=2.16.0",
