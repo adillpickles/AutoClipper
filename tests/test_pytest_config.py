@@ -1,5 +1,10 @@
-"""Tests that the pytest configuration keeps live tests out of runs that don't ask for them."""
+"""Tests for the pytest configuration in pyproject.toml and tests/conftest.py.
 
+Live tests stay out of default runs, and FFmpeg tests skip locally but fail in CI when FFmpeg is
+missing.
+"""
+
+import os
 from pathlib import Path
 
 import pytest
@@ -126,3 +131,111 @@ def test_unregistered_markers_are_errors(project: pytest.Pytester) -> None:
 
     assert result.ret == pytest.ExitCode.INTERRUPTED
     result.stdout.fnmatch_lines(["*'lvie' not found in `markers` configuration option*"])
+
+
+FFMPEG_TESTS = """
+import pytest
+
+
+def test_offline():
+    pass
+
+
+@pytest.mark.ffmpeg
+def test_marked():
+    pass
+
+
+def test_uses_media_fixture(make_test_media):
+    pass
+"""
+
+
+@pytest.fixture
+def ffmpeg_project(pytester: pytest.Pytester) -> pytest.Pytester:
+    """A throwaway project with this repository's pytest config and conftest, and FFmpeg tests."""
+    pytester.makepyprojecttoml(PYPROJECT.read_text(encoding="utf-8"))
+    pytester.makeconftest(CONFTEST.read_text(encoding="utf-8"))
+    tests_dir = pytester.mkdir("tests")
+    (tests_dir / "test_ffmpeg_marker.py").write_text(FFMPEG_TESTS, encoding="utf-8")
+    return pytester
+
+
+def _put_on_path(monkeypatch: pytest.MonkeyPatch, directory: Path, programs: list[str]) -> None:
+    """Make PATH contain only `directory`, holding stand-ins for `programs` (never run)."""
+    directory.mkdir()
+    for program in programs:
+        if os.name == "nt":
+            (directory / f"{program}.bat").write_text("@exit /b 0\n", encoding="utf-8")
+        else:
+            script = directory / program
+            script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            script.chmod(0o755)
+    monkeypatch.setenv("PATH", os.fspath(directory))
+
+
+def test_ffmpeg_tests_skip_locally_when_ffmpeg_is_missing(
+    ffmpeg_project: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    _put_on_path(monkeypatch, tmp_path / "bin", [])
+
+    result = ffmpeg_project.runpytest()
+
+    result.assert_outcomes(passed=1, skipped=2)
+    reason = "ffmpeg and ffprobe not found on PATH; install FFmpeg (docs/development/setup.md)"
+    result.stdout.fnmatch_lines([f"*SKIPPED*{reason}*"])
+
+
+def test_ffmpeg_tests_skip_locally_when_only_ffprobe_is_missing(
+    ffmpeg_project: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    _put_on_path(monkeypatch, tmp_path / "bin", ["ffmpeg"])
+
+    result = ffmpeg_project.runpytest()
+
+    result.assert_outcomes(passed=1, skipped=2)
+    result.stdout.fnmatch_lines(["*SKIPPED*ffprobe not found on PATH*"])
+
+
+@pytest.mark.parametrize("ci", ["true", "TRUE", "1"])
+def test_ffmpeg_tests_error_in_ci_when_ffmpeg_is_missing(
+    ffmpeg_project: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ci: str
+) -> None:
+    monkeypatch.setenv("CI", ci)
+    _put_on_path(monkeypatch, tmp_path / "bin", [])
+
+    result = ffmpeg_project.runpytest()
+
+    result.assert_outcomes(passed=1, errors=2)
+    result.stdout.fnmatch_lines(["*In CI (CI=true), FFmpeg tests must run, not skip.*"])
+
+
+@pytest.mark.parametrize("ci", [None, "true"])
+def test_ffmpeg_tests_run_when_ffmpeg_is_on_path(
+    ffmpeg_project: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ci: str | None
+) -> None:
+    # The stand-in binaries are never started: the inner tests request make_test_media but
+    # don't call it.
+    if ci is None:
+        monkeypatch.delenv("CI", raising=False)
+    else:
+        monkeypatch.setenv("CI", ci)
+    _put_on_path(monkeypatch, tmp_path / "bin", ["ffmpeg", "ffprobe"])
+
+    result = ffmpeg_project.runpytest()
+
+    result.assert_outcomes(passed=3)
+
+
+def test_ffmpeg_tests_can_be_deselected_by_marker(
+    ffmpeg_project: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Deselected tests are not checked, so this passes even in CI without FFmpeg.
+    monkeypatch.setenv("CI", "true")
+    _put_on_path(monkeypatch, tmp_path / "bin", [])
+
+    result = ffmpeg_project.runpytest("-m", "not live and not ffmpeg")
+
+    result.assert_outcomes(passed=1, deselected=2)

@@ -50,6 +50,44 @@ jobs:
       - name: Type check (Pyright)
         run: uv run pyright
 
+      # FFmpeg is a system binary (ADR-0002). In CI, tests marked `ffmpeg` fail instead of
+      # skipping when it is missing (docs/development/testing.md § FFmpeg tests). On Ubuntu this
+      # is the distribution's signed package; its version follows the runner image's release.
+      - name: Install FFmpeg (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+
+      # A pinned Gyan.dev "essentials" release build (the publisher of winget's Gyan.FFmpeg), from
+      # its GitHub release and checked against the SHA-256 digest GitHub lists for the asset. To
+      # upgrade, change both values (https://github.com/GyanD/codexffmpeg/releases).
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          FFMPEG_VERSION: 9.0.2
+          FFMPEG_SHA256: 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $name = "ffmpeg-$env:FFMPEG_VERSION-essentials_build"
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          $url = "https://github.com/GyanD/codexffmpeg/releases/download/$env:FFMPEG_VERSION/$name.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash -Path $zip -Algorithm SHA256).Hash
+          if ($actual -ne $env:FFMPEG_SHA256) {
+            throw "FFmpeg download SHA-256 mismatch: expected $env:FFMPEG_SHA256, got $actual"
+          }
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:RUNNER_TEMP "$name\bin")
+
+      # Records which FFmpeg build this run's tests used.
+      - name: Show FFmpeg version
+        run: |
+          ffmpeg -version
+          ffprobe -version
+
       # Live tests are deselected by the pytest config in pyproject.toml.
       - name: Test (pytest)
         run: uv run pytest

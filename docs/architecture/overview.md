@@ -122,7 +122,7 @@ A single harness takes predictions + labels + a saved split and produces the met
 
 ### 4.6 Export
 
-FFmpeg-based:
+FFmpeg-based. Every FFmpeg call goes through `autoclipper.ffmpeg`: commands are argument lists run with a timeout, and `probe` reads duration and streams.
 
 1. Check source-video availability and the approved access/display/export basis; fetch a permitted segment or use retained authorized media.
 2. Preview and trim the already aligned VOD interval, respecting manual adjustments and clamping to media bounds. Chat-time heuristics align once during candidate generation; export never applies another lag shift. Context padding is separate and explicit.

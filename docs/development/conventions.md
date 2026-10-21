@@ -15,6 +15,7 @@ src/autoclipper/
 ├── cli.py                # Typer app; thin, no business logic
 ├── config.py             # Settings loaded from env (.env); single source of config
 ├── logging.py            # logging setup
+├── ffmpeg.py             # FFmpeg/FFprobe runner and media probe; every FFmpeg call goes through it
 ├── ingest/               # twitch_api.py, chat.py, media.py, catalog.py
 ├── labels/               # moments.py, windows.py, splits.py
 ├── features/             # chat.py, audio.py, video.py, registry.py
