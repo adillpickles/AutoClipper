@@ -223,10 +223,20 @@ def test_refusing_to_overwrite_with_a_nonzero_exit_code_gets_the_same_headline()
             b"2026-10-20 12:00:00.000 File '/clips/out.wav' already exists. Exiting.\n",
             id="datetime",
         ),
+        pytest.param(
+            b"\x1b[48;5;0m\x1b[38;5;0mFile '/clips/out.wav' already exists. Exiting.\r\n\x1b[0m",
+            id="color",
+        ),
+        pytest.param(
+            b"\x1b[48;5;0m\x1b[38;5;0m12:00:00.000 \x1b[0m\x1b[48;5;0m\x1b[38;5;0m[fatal] \x1b[0m"
+            b"\x1b[48;5;0m\x1b[38;5;0mFile '/clips/out.wav' already exists. Exiting.\r\n\x1b[0m",
+            id="color-time-and-level",
+        ),
     ],
 )
 def test_refusing_to_overwrite_is_recognized_after_log_prefixes(line: bytes) -> None:
-    # As FFmpeg 9.0.2 prints it on Windows, and with the -loglevel flags time, datetime and level.
+    # As FFmpeg 9.0.2 prints it on Windows: plain, with the -loglevel flags time, datetime and
+    # level, and in color (AV_LOG_FORCE_COLOR=1 or a terminal).
     runner = RecordingRunner(CommandResult(0, stderr=b"Input #0, wav, from 'in.wav':\n" + line))
 
     with pytest.raises(FFmpegExitError, match=r"did not overwrite an existing output file"):
@@ -739,6 +749,21 @@ def test_real_ffmpeg_refusing_to_overwrite_raises(make_test_media: Callable[...,
         run_command(command, timeout_s=60)
 
     assert probe(media).duration_s == pytest.approx(1.0, abs=0.05)  # still the original file
+
+
+def test_real_ffmpeg_refusing_to_overwrite_in_color_raises(
+    make_test_media: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression test: with colored messages the refusal wasn't recognized, and FFmpeg 9.0.2's
+    # exit code 0 made the run look successful.
+    monkeypatch.setenv("AV_LOG_FORCE_COLOR", "1")
+    media = make_test_media("tone.wav", video_size=None)
+    command = ffmpeg_command("-f", "lavfi", "-i", "sine=duration=0.5", media)  # no -y
+
+    with pytest.raises(FFmpegExitError, match="did not overwrite an existing output file"):
+        run_command(command, timeout_s=60)
+
+    assert probe(media).duration_s == pytest.approx(1.0, abs=0.05)
 
 
 def test_real_ffmpeg_input_title_quoting_the_refusal_is_not_a_refusal(

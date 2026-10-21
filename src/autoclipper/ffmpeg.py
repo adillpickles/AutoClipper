@@ -83,6 +83,10 @@ _REFUSED_OVERWRITE = re.compile(
     re.MULTILINE,
 )
 
+# ANSI color codes ("\x1b[38;5;0m", "\x1b[0m") that FFmpeg puts around its messages when stderr
+# is a terminal or AV_LOG_FORCE_COLOR is set. They're removed before looking for the line above.
+_ANSI_COLOR = re.compile(rb"\x1b\[[0-9;]*m")
+
 
 # --- Commands ----------------------------------------------------------------------------------
 
@@ -246,7 +250,7 @@ class FFmpegOutputError(FFmpegError):
 
 
 def _refused_overwrite(stderr: bytes) -> bool:
-    return _REFUSED_OVERWRITE.search(stderr) is not None
+    return _REFUSED_OVERWRITE.search(_ANSI_COLOR.sub(b"", stderr)) is not None
 
 
 def _stderr_tail(stderr: bytes) -> str:
