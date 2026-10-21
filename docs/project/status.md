@@ -34,7 +34,7 @@ Scope, architecture and team workflow are documented, and the core tech stack is
 See [open questions](open-questions.md). Each one has a draft in Wave 0 (team access) or Wave 1 (`decision` tasks) of the [backlog](backlog.md):
 
 1. **Teammate access** (OQ-11): blocks teammates picking up issues.
-2. **Job and candidate API contract** (ADR-0009): blocks the FastAPI and Next.js screens.
+2. **Job and candidate API contract** (ADR-0009, #13): a draft is in the [API contract](../architecture/api-contract.md), awaiting team review and adoption. Until it's adopted, it blocks the FastAPI and Next.js screens.
 3. **Dataset construction rules and v0 feature set** (ADR-0009): block windows, moments and features.
 4. **Source permissions and chat retention** (OQ-9/OQ-17): block real collection. Synthetic development can proceed.
 5. **Channels, collection scale and storage** (OQ-4/OQ-5): block the pilot and collector.
@@ -63,3 +63,4 @@ Work through the [backlog](backlog.md) in wave order. Startable now: the Wave 0 
 - 2026-10-19: Python package scaffold, tooling and CI added (#5).
 
 - 2026-10-19: Next.js frontend scaffolded in `web/` with lint, typecheck, format and build CI (#6).
+- 2026-10-19: job, candidate, media and export API contract drafted for #13 (proposed, not adopted).
