@@ -31,7 +31,8 @@ Scope, architecture and team workflow are documented, and the core tech stack is
 | Twitch developer app | ❌ Not registered | OQ-8 |
 | Data collection | ❌ Not started | Needs channel list (OQ-4) and source/privacy decisions (OQ-9/OQ-17) before real data |
 | Labels / features / models / eval | ❌ Not started | Training target is OQ-1 |
-| Audio download / export | 🟡 Drafts only (#19/#20) | PR #59 (audio) and PR #60 (vertical export) remain unmerged with unresolved review findings. Their code is not on `main`. |
+| Audio download | 🟡 Draft only (#19) | PR #59 is unmerged; its code is not on `main`. |
+| Export | ⚠️ Cut and reframe only (#20) | `autoclipper.export`: exact source-interval cut (padding separate, clamped, no lag shift), `center_crop` and `fixed_region` layouts, 1080×1920 H.264/AAC MP4 written atomically. No captions (#21) and no CLI/API command (#32) yet |
 | Web app | 🟡 Scaffold only (#6) | Next.js + TypeScript (strict) + Tailwind in `web/` with ESLint, Prettier and its own CI workflow (`web.yml`); one placeholder page. No screens (#29–#31), API client (#33) or FastAPI backend (#28) yet. |
 
 ## Decisions pending
@@ -74,3 +75,4 @@ Work through the [backlog](backlog.md) in dependency order. Next implementation 
 - 2026-10-21: deterministic synthetic dataset generator and `autoclipper synth` added (#15).
 - 2026-10-21: Twitch Helix client for app auth, Get Users and Get Videos added (#16).
 - 2026-10-21: chat replay wrapper and pseudonymizing parser added (#18).
+- 2026-10-24: export cut, reframe and encode to a vertical MP4 added (#20).

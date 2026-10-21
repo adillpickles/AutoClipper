@@ -125,10 +125,10 @@ A single harness takes predictions + labels + a saved split and produces the met
 FFmpeg-based. Every FFmpeg call goes through `autoclipper.ffmpeg`: commands are argument lists run with a timeout, and `probe` reads duration and streams.
 
 1. Check source-video availability and the approved access/display/export basis; fetch a permitted segment or use retained authorized media.
-2. Preview and trim the already aligned VOD interval, respecting manual adjustments and clamping to media bounds. Chat-time heuristics align once during candidate generation; export never applies another lag shift. Context padding is separate and explicit.
-3. Basic 9:16 crop or configured layout; other aspect ratios and detection-based smart crop are optional.
+2. Preview and trim the already aligned VOD interval, respecting manual adjustments and clamping to media bounds. Chat-time heuristics align once during candidate generation; export never applies another lag shift. Context padding is separate and explicit. `autoclipper.export.cut` pads first, then clamps, reports the requested and actual intervals separately, and refuses an interval that starts after the media ends or leaves less than 0.5 s inside it. The cut is frame-accurate at non-keyframe starts.
+3. Basic 9:16 crop or configured layout; other aspect ratios and detection-based smart crop are optional. Layouts (`autoclipper.export.reframe`): `center_crop` (the largest centered 9:16 area) and `fixed_region` (a rectangle in normalized source coordinates, padded with black to fit 9:16 by default, or cropped to 9:16 with `fit="crop"`).
 4. Captions: speech-to-text (faster-whisper, CPU-capable) → word timestamps → burned-in subtitles.
-5. Encode H.264/AAC, 1080×1920.
+5. Encode H.264/AAC, 1080×1920 (`autoclipper.export.encode.export_clip`): libx264 `yuv420p`, constant 30 fps by default, `+faststart`, stereo AAC; a source without audio gets a silent AAC track. The MP4 is written to a temporary file and renamed only after its probe matches, so a failed export leaves nothing at the output path.
 
 Analytical results may remain usable when video is unavailable. Return candidates with clear media-unavailable status and disable preview/export with an actionable explanation; do not claim an export succeeded or invent replacement media. Saved features/audio cannot recreate source video. A saved Twitch clip may cover only part of the desired interval and is not a guarantee that additional context can be fetched. Retained demo media follows source-specific permissions and deletion requirements ([governance](../data/data-governance.md)).
 
