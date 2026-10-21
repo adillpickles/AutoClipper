@@ -15,6 +15,7 @@ dependencies = [
     "python-dotenv>=1.2.4",
     "typer>=0.27.3",
     "tzdata>=2026.5 ; sys_platform == 'win32'",
+    "yt-dlp>=2026.8.19",
 ]
 
 [project.scripts]
