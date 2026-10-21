@@ -263,6 +263,24 @@ def test_known_names_with_combining_marks_are_redacted(display_name: str, body: 
     assert _parse(root).messages[0].text == "user subscribed at Tier 1."
 
 
+@pytest.mark.parametrize("field", ["name", "display_name"])
+@pytest.mark.parametrize("value", ["absent", None, 42, "", "  "])
+def test_comment_whose_author_names_are_unusable_is_skipped(field: str, value: object) -> None:
+    root = _fixture()
+    comment = root["comments"][0]
+    root["comments"] = [comment]
+    comment["message"]["body"] = "User_001 subscribed at Tier 1."
+    if value == "absent":
+        del comment["commenter"][field]
+    else:
+        comment["commenter"][field] = value
+
+    replay = _parse(root)
+
+    assert replay.messages == ()
+    assert replay.malformed_reasons == {"bad_commenter": 1}
+
+
 def test_known_names_are_redacted_as_whole_words_only() -> None:
     root = _fixture()
     root["comments"][0]["message"]["body"] = "USER_002 and user_0022 and xuser_002 and User_002!"

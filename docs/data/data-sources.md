@@ -90,7 +90,7 @@ Checked 2026-10-13: [Twitch's VOD policy](https://help.twitch.tv/s/article/video
   | `comments[].content_id` | per-message VOD check | L163; [downloader L170][td-dl-comment] |
   | `comments[].content_offset_seconds` | `offset_s` | L164 |
   | `comments[].commenter._id` | `user_hash` (the stable user ID; `name` is the login, `display_name` the display name) | L23–L25; [downloader L172–L177][td-dl-comment]; [GQL `commenter.id`][td-gql] |
-  | `commenter.name`, `commenter.display_name` | only used to redact names from text | L23, L25 |
+  | `commenter.name`, `commenter.display_name` | only used to redact names from text; a comment without both is skipped as malformed | L23, L25 |
   | `message.body` | `text`, redacted (concatenated fragment texts) | L105; [downloader L248][td-dl-body] |
   | `message.fragments[].text` / `.emoticon.emoticon_id` | `emote_ids`, `n_emotes` | L49, L55–L56, L107 |
   | `message.user_badges[]._id` | `is_subscriber` (`subscriber` or `founder`), `is_moderator` (`moderator`) | L71, L108 |

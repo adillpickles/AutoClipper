@@ -497,6 +497,10 @@ def _third_party_emote_names(embedded: object) -> frozenset[str] | None:
     return frozenset(name for name in names if isinstance(name, str))
 
 
+def _is_name(value: object) -> TypeGuard[str]:
+    return isinstance(value, str) and bool(value.strip())
+
+
 def _commenter_names(comments: list[object]) -> set[str]:
     """Logins and display names of every commenter, malformed comments included."""
     names: set[str] = set()
@@ -505,7 +509,7 @@ def _commenter_names(comments: list[object]) -> set[str]:
         if isinstance(commenter, dict):
             for key in ("name", "display_name"):
                 value = commenter.get(key)
-                if isinstance(value, str) and value.strip():
+                if _is_name(value):
                     names.add(value.strip())
     return names
 
@@ -534,6 +538,12 @@ def _parse_comment(
     commenter = comment.get("commenter")
     user_id = commenter.get("_id") if isinstance(commenter, dict) else None
     if not isinstance(user_id, str) or not user_id.strip():
+        raise _MalformedCommentError("bad_commenter")
+    # Without its login and display name the author's name can't be redacted from the text
+    # (rule 3), so such a comment is skipped rather than kept with a name in it.
+    if not isinstance(commenter, dict) or not all(
+        _is_name(commenter.get(key)) for key in ("name", "display_name")
+    ):
         raise _MalformedCommentError("bad_commenter")
     message = comment.get("message")
     body = message.get("body") if isinstance(message, dict) else None
