@@ -2,7 +2,7 @@
 
 > **The living "what exists right now" document.** Every agent session reads it first. Update it **in the same PR** that changes the state. Don't mark anything done unless it's merged to `main` and tested.
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-10-21
 **Current phase:** M0 Foundations
 **Next milestone:** M1 Data collection ([roadmap](../product/roadmap.md))
 **Key dates:** Demo of Demos Fri Dec 4, 2026 · Final presentations and demo night Fri Dec 11, 2026
@@ -17,7 +17,7 @@ Scope, architecture and team workflow are documented, and the core tech stack is
 |---|---|---|
 | Documentation | ✅ Initial set (PR #2) | Product scope, architecture, data, ML, development and agent workflow docs, ADRs |
 | Repo config | ✅ Initial set (PR #2) | `.gitignore`, `.gitattributes`, `.editorconfig`, `.env.example`, issue/PR templates |
-| GitHub settings | ✅ Configured | `main` ruleset (PR + 1 approval, squash only). A temporary admin bypass for initial setup PRs is active; remove it once teammates are reviewing. |
+| GitHub settings | ✅ Configured | `main` requires a PR and squash merge, with no second-person approval required. Direct pushes, force pushes and deletion stay blocked; admin bypass is PR-only. |
 | Labels | ✅ Simplified set live | 20 category-first labels per [labels](labels.md) |
 | Team access | ⚠️ Owner only | Teammates still need to be added as collaborators (OQ-11) |
 | Issue backlog | ✅ Published | Waves 0–6 are issues #3–#50 (numbers in the [backlog](backlog.md) index); optional drafts not published yet |
@@ -52,6 +52,8 @@ Work through the [backlog](backlog.md) in wave order. Startable now: the Wave 0 
 - The team's original week-by-week schedule is behind (no code as of Oct 16); replan at the weekly sync.
 
 ## Changelog of this file
+
+- 2026-10-21: made second-person PR approval optional; retained PR-only squash merges and protection against direct pushes to `main`.
 
 - 2026-10-09: initial documentation drafted and GitHub settings configured.
 - 2026-10-13: contract and workflow repairs after the first audit.

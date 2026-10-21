@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Binding. Branch protection on `main` enforces the review rules. |
-| **Last updated** | 2026-10-16 |
+| **Status** | Binding. Branch protection on `main` requires pull requests; second-person review is optional. |
+| **Last updated** | 2026-10-21 |
 
 ## Model
 
@@ -28,9 +28,9 @@ gitGraph
 | Rule | Setting |
 |---|---|
 | Direct pushes | ❌ Blocked. Changes arrive only through PRs. |
-| Required approvals | **1**, from someone other than the author |
-| Stale approvals | Dismissed when new commits are pushed |
-| Last-push approval | The most recent push must be approved by someone other than the pusher |
+| Required approvals | **0**. The author may merge their own PR. |
+| Stale approvals | Not dismissed automatically |
+| Last-push approval | Not required |
 | Conversation resolution | All review threads must be resolved |
 | Merge method | **Squash only** |
 | History | Linear. No force pushes, no deletion of `main`. |
@@ -38,7 +38,7 @@ gitGraph
 
 The repo is also set to **squash merge only** and **delete branches after merge**. The squash commit title defaults to the PR title.
 
-> **Setup period:** while the repository is being set up, the ruleset lets repository admins merge PRs without the approval requirement (direct pushes stay blocked). The admin uses it only for initial setup PRs and removes it once teammates are reviewing. Normal work always follows the rules above.
+Repository admins have a pull-request-only bypass. It does not permit direct pushes to `main`. Second-person review is optional for all contributors, not just during setup.
 
 ## Day-to-day
 

@@ -2,7 +2,7 @@
 
 How work moves from an issue to a merged pull request. It applies to everyone, whether you write the code yourself or hand the issue to an AI agent. Agents also follow [`AGENTS.md`](AGENTS.md).
 
-**The short version:** pick an issue → assign yourself → branch → build and test → open a PR that says `Closes #N` → get one approval → squash and merge.
+**The short version:** pick an issue → assign yourself → branch → build and test → open a PR that says `Closes #N` → squash and merge when ready.
 
 ## Contents
 
@@ -25,7 +25,7 @@ How work moves from an issue to a merged pull request. It applies to everyone, w
 ## 1. Ground rules
 
 - **One issue → one branch → one PR.**
-- **`main` is protected.** No direct pushes. Every change lands through a PR with **one approving review** from someone other than the author, and is **squash-merged**.
+- **`main` is protected.** No direct pushes. Every change lands through a PR and is **squash-merged**. A second person's approval is optional; the author can merge their own PR.
 - **You own what you merge.** If an AI wrote it, you still need to understand it and be able to explain it.
 - **No data, media, secrets or real chat usernames in git, ever.** See [data governance](docs/data/data-governance.md).
 - **Docs are part of the change.** If behavior changes, the docs change in the same PR.
@@ -119,12 +119,12 @@ Commits inside your branch can be messy; they get squashed into one commit when 
    ```
 
    For video exports, a screenshot of a frame or a short screen recording is enough. Never attach real VOD files.
-8. **Request a reviewer** in the right sidebar (**Reviewers**), or `gh pr edit --add-reviewer <username>`.
+8. **Request a reviewer when useful** in the right sidebar (**Reviewers**), or `gh pr edit --add-reviewer <username>`. A second person's approval is optional.
 9. **Not ready yet?** Open it as a **draft** to get early feedback, then click "Ready for review" when done.
 
 ## 7. Review
 
-**For the author:** respond to every comment. Push fixes as new commits on the same branch, then re-request review. Pushing new commits after an approval resets it, so the reviewer needs to approve again.
+**For the author:** respond to review comments and push fixes as new commits on the same branch. If you requested review, let the reviewer know when their feedback is addressed. Approval is not required to merge.
 
 **For the reviewer:** aim to give a first review within **two days**. Check:
 
@@ -139,7 +139,7 @@ Mark each comment **blocking** or **nit**. Approve once the blocking items are f
 
 ## 8. Merge
 
-A PR can merge when it has **one approval**, **all conversations are resolved**, and the **CI checks are green**.
+A PR can merge when the work is ready, **all conversations are resolved**, and the **CI checks are green**. The author may merge without another person's approval.
 
 1. The **author** merges: PR page → **Squash and merge**.
 2. Check that the commit title is still your Conventional Commit title, then confirm.

@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Recommended for large or risky changes. **Not required.** The only required review is one human approval on the PR. |
-| **Last updated** | 2026-10-16 |
+| **Status** | Recommended for large or risky changes. **Not required.** A PR is required; second-person approval is optional. |
+| **Last updated** | 2026-10-21 |
 
 An agent that just wrote the code is bad at spotting its own mistakes. A different model with fresh context often catches bugs, missed acceptance criteria and untested edge cases before a teammate has to. This page describes one workflow that works well. Use it, adapt it or skip it.
 
