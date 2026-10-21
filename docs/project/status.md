@@ -28,10 +28,11 @@ Scope, architecture and team workflow are documented, and the core tech stack is
 | CI | ✅ In place (#5/#6) | Python: locked uv install, Ruff, Pyright and pytest on Ubuntu and Windows. Frontend: npm install, lint, typecheck, format and build on Ubuntu for web changes. Not required checks yet (#3) |
 | FFmpeg runner | ✅ In place (#51) | `autoclipper.ffmpeg`: FFmpeg/FFprobe commands as argument lists, an injectable runner with timeouts and typed errors, `probe` (duration, streams) and the version string. CI installs FFmpeg (apt on Ubuntu, a pinned, checksum-verified build on Windows); FFmpeg tests skip locally without it but fail in CI ([testing](../development/testing.md#ffmpeg-tests)) |
 | Synthetic dataset | ✅ In place (#15) | `autoclipper synth --seed <n>` writes 3 fake VODs (Parquet tables in the proposed data-model schemas, chat, 16 kHz WAVs, test-pattern videos and a SHA-256 manifest) to `data/synthetic/seed-<n>/`; same seed, same bytes. Details: [testing § Synthetic dataset](../development/testing.md#synthetic-dataset) |
+| Audio download | ✅ In place (#19) | `autoclipper.ingest.media`: audio-only VOD download with yt-dlp to `data/raw/audio/<video_id>.<ext>` (resumable, typed errors for unavailable, subscriber-only, network and tool failures), then FFmpeg normalization to 16 kHz mono WAV in `data/interim/audio/` with the probed duration. Tested with fakes and generated tones only: no real download has been run, and real downloads wait for source authorization (OQ-17) |
 | Twitch developer app | ❌ Not registered | OQ-8 |
 | Data collection | ❌ Not started | Needs channel list (OQ-4) and source/privacy decisions (OQ-9/OQ-17) before real data |
 | Labels / features / models / eval | ❌ Not started | Training target is OQ-1 |
-| Audio download / export | 🟡 Drafts only (#19/#20) | PR #59 (audio) and PR #60 (vertical export) remain unmerged with unresolved review findings. Their code is not on `main`. |
+| Export | 🟡 Draft only (#20) | PR #60 is unmerged; its code is not on `main`. |
 | Web app | 🟡 Scaffold only (#6) | Next.js + TypeScript (strict) + Tailwind in `web/` with ESLint, Prettier and its own CI workflow (`web.yml`); one placeholder page. No screens (#29–#31), API client (#33) or FastAPI backend (#28) yet. |
 
 ## Decisions pending
@@ -74,3 +75,4 @@ Work through the [backlog](backlog.md) in dependency order. Next implementation 
 - 2026-10-21: deterministic synthetic dataset generator and `autoclipper synth` added (#15).
 - 2026-10-21: Twitch Helix client for app auth, Get Users and Get Videos added (#16).
 - 2026-10-21: chat replay wrapper and pseudonymizing parser added (#18).
+- 2026-10-24: VOD audio download (yt-dlp) and 16 kHz mono normalization added (#19).
