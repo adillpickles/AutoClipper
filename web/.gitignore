@@ -1,0 +1,28 @@
+# Next.js app ignores. The root .gitignore still applies (data, media, secrets).
+
+# dependencies
+/node_modules
+
+# next.js build output and generated types
+/.next/
+/out/
+/build
+*.tsbuildinfo
+next-env.d.ts
+
+# testing
+/coverage
+
+# debug
+npm-debug.log*
+
+# env files: keep secrets out, allow a committed example
+.env*
+!.env.example
+
+# vercel
+.vercel
+
+# misc
+.DS_Store
+*.pem

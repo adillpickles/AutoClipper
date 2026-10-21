@@ -9,7 +9,7 @@
 
 ## Summary
 
-Scope, architecture and team workflow are documented, and the core tech stack is decided. The Python package scaffold (an `autoclipper` CLI with no subcommands yet, lint/type/test tooling, pre-commit hooks and CI) exists. **There is no pipeline or app code, no dataset and no model yet.** No results exist.
+Scope, architecture and team workflow are documented, and the core tech stack is decided. The Python package scaffold (an `autoclipper` CLI with no subcommands yet, lint/type/test tooling, pre-commit hooks and CI) exists. The Next.js frontend scaffold has a placeholder page. **There is no pipeline, backend, dataset or model yet.** No results exist.
 
 ## What exists
 
@@ -27,7 +27,7 @@ Scope, architecture and team workflow are documented, and the core tech stack is
 | Data collection | ❌ Not started | Needs channel list (OQ-4) and source/privacy decisions (OQ-9/OQ-17) before real data |
 | Labels / features / models / eval | ❌ Not started | Training target is OQ-1 |
 | Export | ❌ Not started | |
-| Web app | ❌ Not started | FastAPI + Next.js accepted (ADR-0007); can start now with synthetic candidates |
+| Web app | 🟡 Scaffold only (#6) | Next.js + TypeScript (strict) + Tailwind in `web/` with ESLint, Prettier and its own CI workflow (`web.yml`); one placeholder page. No screens (#29–#31), API client (#33) or FastAPI backend (#28) yet. |
 
 ## Decisions pending
 
@@ -42,7 +42,7 @@ See [open questions](open-questions.md). Each one has a draft in Wave 0 (team ac
 
 ## Suggested next tasks
 
-Work through the [backlog](backlog.md) in wave order. Startable now: the Wave 0 owner tasks (#3 team access, #4 Twitch app), the Next.js scaffold (#6), the config module (#14), and the five Wave 1 decisions that have no dependencies (#7, #9, #10, #11, #13). Once the config module merges, the mocked ingestion adapters, synthetic dataset and export tasks can start; they're already `agent-ready`.
+Work through the [backlog](backlog.md) in wave order. Startable now: the Wave 0 owner tasks (#3 team access, #4 Twitch app), the config module (#14), and the five Wave 1 decisions that have no dependencies (#7, #9, #10, #11, #13). Once the config module merges, the mocked ingestion adapters, synthetic dataset and export tasks can start; they're already `agent-ready`.
 
 ## Known issues / caveats
 
@@ -61,3 +61,5 @@ Work through the [backlog](backlog.md) in wave order. Startable now: the Wave 0 
 - 2026-10-16: implementation backlog drafted; label policy simplified.
 - 2026-10-17: simplified labels applied on GitHub; backlog Waves 0–6 published as issues #3–#50.
 - 2026-10-19: Python package scaffold, tooling and CI added (#5).
+
+- 2026-10-19: Next.js frontend scaffolded in `web/` with lint, typecheck, format and build CI (#6).

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Binding ([ADR-0002](../decisions/0002-language-and-tooling.md) and [ADR-0003](../decisions/0003-repository-layout.md) are accepted). Tool config in `pyproject.toml` is authoritative for anything automated. |
-| **Last updated** | 2026-10-19 |
+| **Last updated** | 2026-10-21 |
 
 These conventions exist so that code written by different people and different agents looks like it was written by one careful person. **When in doubt, match the surrounding code.** If the surrounding code contradicts this doc, flag it.
 
@@ -99,6 +99,30 @@ These rules prevent the most common silent bugs in this project:
 - Justify every new dependency in the PR. Prefer what's already in [ADR-0002](../decisions/0002-language-and-tooling.md).
 - Heavy optional stacks (PyTorch, video/CV models) go in optional dependency groups so the core pipeline stays light.
 
-## 10. Frontend (proposal)
+## 10. Frontend
 
-TypeScript strict mode, Next.js App Router, ESLint + Prettier, components in `web/src/components/`, API calls through one typed client module. Detailed conventions will be added when `web/` is scaffolded (ADR-0007).
+The Next.js app in `web/` ([ADR-0007](../decisions/0007-web-application-stack.md)). Tool config in `web/` (`package.json`, `tsconfig.json`, `eslint.config.mjs`, `.prettierrc.json`) is authoritative for anything automated. Commands are in [`web/README.md`](../../web/README.md).
+
+- **Stack:** Next.js App Router, React, TypeScript in `strict` mode, Tailwind CSS v4. Node version from `web/.nvmrc`. npm with a committed `package-lock.json`; install with `npm ci`.
+- **Formatting and linting:** Prettier with default settings, plus `prettier-plugin-tailwindcss` to sort class names. ESLint uses `eslint-config-next` (core-web-vitals + TypeScript, including the `jsx-a11y` rules), with `eslint-config-prettier` last so the two never disagree. Don't hand-format. A lint warning fails CI.
+- **Folder layout:**
+
+  ```text
+  web/src/
+  ├── app/            # routes only: page.tsx, layout.tsx, loading/error files, globals.css
+  ├── components/     # reusable UI, e.g. highlight-timeline.tsx
+  └── lib/
+      └── api/        # the one typed API client
+  ```
+
+  Only `app/` exists so far. Create the others when the first file needs them.
+- **File names:** kebab-case (`highlight-timeline.tsx`) exporting a `PascalCase` component (`HighlightTimeline`). This matches Next.js's own file names and avoids case-only renames, which break on Windows and macOS.
+- **Imports:** use the `@/` alias for anything under `src/` (`@/components/highlight-timeline`). Relative imports only within the same folder.
+- **API access:** every call to the FastAPI backend goes through the typed client in `web/src/lib/api/`. Components never `fetch` the API directly. The client mirrors the job and candidate contract (ADR-0009, issue #13); until that's adopted, don't invent endpoints or types. It doesn't exist yet: the screen tasks (#29–#31) add it with a mock mode backed by fixture JSON, and #33 connects it to the real API.
+- **Server and client components:** components are Server Components by default. Add `"use client"` only where you need state, effects or browser APIs (player, trim controls, job polling), and keep those components small. Cache Components is on (`cacheComponents` in `next.config.ts`, the create-next-app default).
+- **Time and IDs:** §3 applies in the UI too. VOD positions stay `number` seconds (`start_s`) in state and are formatted (`1:02:03`) only when rendered. Twitch IDs stay `string`.
+- **Styling:** Tailwind utility classes in JSX. Global CSS lives only in `src/app/globals.css` (Tailwind entry point and color tokens). Support light and dark (`dark:` variants follow the OS setting).
+- **Accessibility:** semantic elements (`header`, `main`, `nav`, real `<button>`s), one `h1` per page, labelled form controls, visible focus, and WCAG AA text contrast in both color schemes.
+- **Next.js version drift:** Next.js 16 changed many APIs. Before relying on memory, check the docs bundled with the installed version in `web/node_modules/next/dist/docs/`. `web/AGENTS.md` (maintained by `next dev`) tells agents the same.
+- **Tests:** no frontend test runner yet. The first UI task with logic worth unit-testing (e.g. timeline math) should propose one.
+- **Dependencies:** `npm install <pkg>` (or `--save-dev`) inside `web/`. Commit `package.json` and `package-lock.json` together and justify the dependency in the PR (§9).
