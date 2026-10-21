@@ -20,7 +20,7 @@ It deliberately does **not** decide candidate generation rules (#27, ADR-0009), 
 - **Job, export and media IDs are random and never reused**, including across server restarts: a short prefix plus at least 64 bits from a cryptographic random source (e.g. `"job_" + secrets.token_hex(8)`), never a counter or anything derived from the VOD. So a stale ID kept in a page URL from before a restart gets a `404`, never another VOD's job (§ 8.3). `candidate_id` only has to be unique within its result, because it's always used together with a `job_id`.
 - **Returned URLs are root-relative** (`PreviewMedia.url`, `Export.download_url`, `Location`), e.g. `/api/v1/exports/{export_id}/file`, so the server never needs to know its public address. Clients resolve them against the API origin they're configured with (e.g. `new URL(url, apiOrigin)`, § 8.4) and otherwise use them as given. If a later media route returns an absolute URL, the same resolution leaves it unchanged.
 - **Every field is always present.** An optional value is `null`, never omitted; an empty list is `[]`. Numbers are finite (no `NaN` or `Infinity`).
-- **Requests are strict, responses are tolerant.** The server rejects unknown request fields and invalid values (`422 invalid_request`). Request models use Pydantic strict mode with unknown fields forbidden (`ConfigDict(strict=True, extra="forbid")`): default (lax) mode would accept `"yes"` or `1` for a boolean and `"115.5"` for a number. Strict mode still accepts a JSON integer for a float field, so `115` is a valid `start_s`. Clients ignore unknown response fields and give *open* enums a default branch (§ 9).
+- **Requests are strict, responses are tolerant.** The server rejects unknown request fields and invalid values (`422 invalid_request`). Request models use Pydantic strict mode with unknown fields forbidden (`ConfigDict(strict=True, extra="forbid")`): default (lax) mode would accept `"yes"` or `1` for a boolean and `"115.5"` for a number. Strict mode still accepts a JSON integer for a float field, so `115` is a valid `start_s`. Request enums are `Literal[...]`: FastAPI validates the parsed body as Python data, where strict mode rejects a plain string for a `StrEnum` field, so `"center_crop"` would fail. Clients ignore unknown response fields and give *open* enums a default branch (§ 9).
 - **Messages are for people.** `message` fields are short English sentences that are safe to show in the UI: no secrets, tokens, file paths or chat usernames. Clients branch on `code`, never on `message`.
 - **No auth, no pagination, no push.** It's a single-user local app ([PRD non-goals](../product/prd.md#non-goals-for-the-course-project)); clients poll (§ 8). Hosting (OQ-18) may revisit this.
 
@@ -33,7 +33,7 @@ It deliberately does **not** decide candidate generation rules (#27, ADR-0009), 
 | counts, `rank`, indexes | `int` | `number` |
 | `*_at` | timezone-aware UTC `datetime` | `string` |
 | nullable | `T \| None`, always serialized | `T \| null` |
-| enum | `Literal[...]` or `StrEnum` | string-literal union |
+| enum | `Literal[...]` (always in request models, § 1) or `StrEnum` | string-literal union |
 
 Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`, `ApiError`, `ErrorResponse`, `AnalysisResult`, `VodSummary`, `ScorerInfo`, `Candidate`, `CandidateMedia`, `PreviewMedia`, `ExportAvailability`, `CreateExportRequest`, `Export`, `Health`.
 
