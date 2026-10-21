@@ -24,26 +24,27 @@
 
 ## 1. Twitch Helix API (official)
 
-- **Reference:** <https://dev.twitch.tv/docs/api/reference>
+- **Reference:** <https://dev.twitch.tv/docs/api/reference>. The details below were checked against it and the [API guide](https://dev.twitch.tv/docs/api/guide) on 2026-10-21; `autoclipper.ingest.twitch_api` implements them.
 - **Base URL:** `https://api.twitch.tv/helix`
-- **Auth:** register an app at <https://dev.twitch.tv/console>, then use the **client-credentials** grant to get an *app access token*:
+- **Auth:** register an app at <https://dev.twitch.tv/console>, then use the [**client-credentials** grant](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#client-credentials-grant-flow) to get an *app access token*. The parameters go in an `x-www-form-urlencoded` body, not the URL:
 
   ```http
   POST https://id.twitch.tv/oauth2/token
-    ?client_id=<TWITCH_CLIENT_ID>
-    &client_secret=<TWITCH_CLIENT_SECRET>
-    &grant_type=client_credentials
+  Content-Type: application/x-www-form-urlencoded
+
+  client_id=<TWITCH_CLIENT_ID>&client_secret=<TWITCH_CLIENT_SECRET>&grant_type=client_credentials
   ```
 
-  Send `Client-Id: <id>` and `Authorization: Bearer <token>` on every request. Cache the token until shortly before `expires_in` runs out, and refresh on `401`.
+  The response has `access_token`, `expires_in` (seconds) and `token_type`. Send `Client-Id: <id>` and `Authorization: Bearer <token>` on every request. Cache the token until shortly before `expires_in` runs out, and on `401` get a new one (app tokens [can't be refreshed](https://dev.twitch.tv/docs/authentication/refresh-tokens/), only requested again).
 
-- **Rate limits:** Helix uses a token-bucket limit per client. **Read the `Ratelimit-Limit`, `Ratelimit-Remaining` and `Ratelimit-Reset` response headers** instead of hard-coding a number. On `429`, sleep until `Ratelimit-Reset`.
-- **Pagination:** responses include `pagination.cursor`. Pass it as `after` to get the next page. `first` sets the page size (max 100).
+- **Rate limits:** Helix uses a token-bucket limit per client. **Read the `Ratelimit-Limit`, `Ratelimit-Remaining` and `Ratelimit-Reset` response headers** instead of hard-coding a number. `Ratelimit-Reset` is a Unix epoch timestamp in seconds. On `429`, sleep until `Ratelimit-Reset`. On `503`, the guide says to retry once.
+- **Pagination:** responses include `pagination.cursor`. Pass it as `after` to get the next page. `first` sets the page size (max 100). An empty `pagination` object means there are no more pages; near the end a cursor can also lead to an empty page.
 
 ### Get Videos: <https://dev.twitch.tv/docs/api/reference/#get-videos>
 
-- Query by `user_id` with `type=archive` for past broadcasts, or by `id` for specific VODs.
-- Fields we use: `id`, `user_id`, `stream_id`, `title`, `created_at`, `duration` (string like `"3h8m33s"`, which we parse to seconds), `type`, `language`, `view_count`, `muted_segments` (`offset`, `duration`).
+- Query by `user_id` with `type=archive` for past broadcasts, or by `id` (up to 100 per request) for specific VODs. By `id`, unknown IDs are ignored, and the response is `404` only if none were found.
+- Fields we use: `id`, `user_id`, `stream_id` (null unless the video is an archive), `title`, `created_at`, `duration` (string like `"3h8m33s"`, which we parse to seconds), `type`, `language`, `view_count`, `muted_segments` (`offset`, `duration`, both integer seconds).
+- There's no game/category field, so `vods.game_ids` can't be filled from Get Videos.
 - `muted_segments` is `null` when no segments are muted. Normalize documented null to `[]` internally; missing/malformed fields require validation rather than silently assuming no muting.
 
 ### Get Clips: <https://dev.twitch.tv/docs/api/reference/#get-clips>
@@ -63,7 +64,7 @@ The current official [Get Clips Download](https://dev.twitch.tv/docs/api/referen
 
 ### Get Users: <https://dev.twitch.tv/docs/api/reference/#get-users>
 
-- Resolve `login` → `id` and `broadcaster_type` (`partner`/`affiliate`/`""`).
+- Resolve `login` → `id` and `broadcaster_type` (`partner`/`affiliate`/`""`). Up to 100 `id` and `login` values in total per request.
 
 ### VOD retention
 
