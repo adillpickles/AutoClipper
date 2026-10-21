@@ -1,7 +1,11 @@
 """Unit tests for `autoclipper.export.encode`: FFmpeg commands as data, run by a fake runner."""
 
+import errno
 import itertools
 import json
+import math
+import os
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +13,6 @@ import pytest
 
 from autoclipper.export.cut import ContextPadding, Interval, IntervalTooShortError
 from autoclipper.export.encode import (
-    SEEK_PREROLL_S,
     EncodeSettings,
     ExportRequest,
     UnsupportedSourceError,
@@ -17,6 +20,7 @@ from autoclipper.export.encode import (
     encode_timeout_s,
     export_clip,
 )
+from autoclipper.export.errors import ExportError
 from autoclipper.export.reframe import (
     CenterCrop,
     FixedRegion,
@@ -44,24 +48,42 @@ AUDIO = {
 OUTPUT_VIDEO = {**VIDEO, "width": 1080, "height": 1920}
 
 
-def probe_json(duration_s: float, *streams: dict[str, Any]) -> bytes:
-    return json.dumps(
-        {"format": {"format_name": "mov,mp4", "duration": f"{duration_s:.6f}"}, "streams": streams}
-    ).encode()
+def media_json(duration_s: float, *streams: dict[str, Any], start_s: float = 0.0) -> bytes:
+    """ffprobe JSON that answers both `probe` and `probe_stream_times`.
+
+    Every stream starts at the container start `start_s` and lasts `duration_s`, unless the
+    stream's dict says otherwise.
+    """
+    times = {"start_time": f"{start_s:.6f}", "duration": f"{duration_s:.6f}"}
+    container = {"format_name": "mov,mp4", **times}
+    return json.dumps({"format": container, "streams": [{**times, **s} for s in streams]}).encode()
+
+
+# A keyframe every 2 s, as Twitch asks broadcasters for.
+EVERY_2_S = tuple(float(t) for t in range(0, 3600, 2))
 
 
 class FakeRunner:
-    """Answers ffprobe with canned JSON (source or export output) and records every command."""
+    """Answers ffprobe with canned JSON and records every command.
+
+    Media probes get `source` or, for the temporary export file, `output`. Packet reads
+    (``-read_intervals``) get the `keyframes_s` (absolute times) inside the requested interval.
+    `on_ffmpeg` runs when the encode command does, e.g. to create a competing output file.
+    """
 
     def __init__(
         self,
         source: bytes | None = None,
         output: bytes | None = None,
         ffmpeg: CommandResult | None = None,
+        keyframes_s: Sequence[float] = EVERY_2_S,
+        on_ffmpeg: Callable[[], object] | None = None,
     ) -> None:
-        self.source = source if source is not None else probe_json(600.0, VIDEO, AUDIO)
+        self.source = source if source is not None else media_json(600.0, VIDEO, AUDIO)
         self.output = output
         self.ffmpeg = ffmpeg if ffmpeg is not None else CommandResult(0)
+        self.keyframes_s = keyframes_s
+        self.on_ffmpeg = on_ffmpeg
         self.commands: list[FFmpegCommand] = []
         self.timeouts: list[float] = []
 
@@ -69,9 +91,19 @@ class FakeRunner:
         self.commands.append(command)
         self.timeouts.append(timeout_s)
         if command.program == "ffmpeg":
+            if self.on_ffmpeg is not None:
+                self.on_ffmpeg()
             return self.ffmpeg
-        target = command.args[-1]
-        if target.endswith(".partial"):
+        if "-read_intervals" in command.args:
+            low, _, high = value_after(command, "-read_intervals").partition("%")
+            low_s = float(low) if low else -math.inf
+            packets = [
+                {"pts_time": f"{t:.6f}", "flags": "K__"}
+                for t in self.keyframes_s
+                if low_s <= t <= float(high)
+            ]
+            return CommandResult(0, stdout=json.dumps({"packets": packets}).encode())
+        if command.args[-1].endswith(".partial"):
             assert self.output is not None, "the test didn't expect an output probe"
             return CommandResult(0, stdout=self.output)
         return CommandResult(0, stdout=self.source)
@@ -82,7 +114,7 @@ class FakeRunner:
 
 
 def output_for(duration_s: float) -> bytes:
-    return probe_json(duration_s, OUTPUT_VIDEO, AUDIO)
+    return media_json(duration_s, OUTPUT_VIDEO, AUDIO)
 
 
 @pytest.fixture
@@ -140,12 +172,13 @@ def test_command_seeks_before_the_start_and_trims_exactly_to_it(tmp_path: Path) 
         AudioStream(1, "aac", 48_000, 2),
         plan_reframe(CenterCrop(), 1920, 1080),
         output,
+        seek_s=7.345,
     )
 
     args = list(command.args)
     source_at = args.index(str(source))
     # Input options (no rotation, accurate seek, seek point) come right before -i. The seek
-    # lands SEEK_PREROLL_S early; trim/atrim drop the preroll and shift time back to 0.
+    # lands before the start; trim/atrim drop the preroll and shift time back to 0.
     assert args[source_at - 5 : source_at + 1] == [
         "-noautorotate",
         "-accurate_seek",
@@ -165,19 +198,18 @@ def test_command_seeks_before_the_start_and_trims_exactly_to_it(tmp_path: Path) 
     assert exported_interval(command) == (12.345, 42.5)
 
 
-def test_command_near_the_vod_start_seeks_to_0_and_trims_the_rest(tmp_path: Path) -> None:
-    command = build_export_command(
-        tmp_path / "vod.mp4",
-        Interval(SEEK_PREROLL_S - 2.5, 20.0),
-        VideoStream(0, "h264", 1920, 1080),
-        AudioStream(1, "aac", 48_000, 2),
-        plan_reframe(CenterCrop(), 1920, 1080),
-        tmp_path / "out.tmp",
-    )
-
-    assert value_after(command, "-ss") == "0.000000"
-    assert value_after(command, "-filter:v").startswith("trim=start=2.500000,")
-    assert exported_interval(command) == (2.5, 20.0)
+@pytest.mark.parametrize("seek_s", [-0.5, 12.5])
+def test_command_rejects_a_seek_point_outside_0_to_the_start(tmp_path: Path, seek_s: float) -> None:
+    with pytest.raises(ValueError, match="seek_s"):
+        build_export_command(
+            tmp_path / "vod.mp4",
+            Interval(12.0, 20.0),
+            VideoStream(0, "h264", 1920, 1080),
+            AudioStream(1, "aac", 48_000, 2),
+            plan_reframe(CenterCrop(), 1920, 1080),
+            tmp_path / "out.tmp",
+            seek_s=seek_s,
+        )
 
 
 def test_command_encodes_h264_aac_with_faststart_and_constant_frame_rate(tmp_path: Path) -> None:
@@ -188,11 +220,12 @@ def test_command_encodes_h264_aac_with_faststart_and_constant_frame_rate(tmp_pat
         AudioStream(1, "aac", 44_100, 1),
         plan_reframe(CenterCrop(), 1920, 1080),
         tmp_path / "out.tmp",
+        seek_s=0.0,
     )
 
     assert value_after(command, "-filter:v") == (
         "trim=start=0.000000,setpts=PTS-0.000000/TB,"
-        "fps=fps=30:start_time=0,crop=w=606:h=1080:x=656:y=0,"
+        "fps=fps=30:round=down,crop=w=606:h=1080:x=656:y=0,"
         "scale=w=1080:h=1920:flags=lanczos,setsar=1,format=yuv420p"
     )
     assert value_after(command, "-c:v") == "libx264"
@@ -219,10 +252,11 @@ def test_command_uses_encode_settings(tmp_path: Path) -> None:
         AudioStream(1, "aac", 48_000, 2),
         plan_reframe(CenterCrop(), 1920, 1080),
         tmp_path / "out.tmp",
+        seek_s=0.0,
         settings=settings,
     )
 
-    assert ",fps=fps=60:start_time=0," in value_after(command, "-filter:v")
+    assert ",fps=fps=60:round=down," in value_after(command, "-filter:v")
     assert value_after(command, "-preset") == "medium"
     assert value_after(command, "-crf") == "18"
     assert value_after(command, "-b:a") == "192k"
@@ -236,6 +270,7 @@ def test_command_maps_the_probed_stream_indexes(tmp_path: Path) -> None:
         AudioStream(0, "opus", 48_000, 2),
         plan_reframe(CenterCrop(), 1920, 1080),
         tmp_path / "out.tmp",
+        seek_s=0.0,
     )
 
     assert maps(command) == [
@@ -253,6 +288,7 @@ def test_command_without_source_audio_adds_a_silent_track(tmp_path: Path) -> Non
         None,
         plan_reframe(CenterCrop(), 1920, 1080),
         tmp_path / "out.tmp",
+        seek_s=0.0,
     )
 
     args = list(command.args)
@@ -273,6 +309,7 @@ def test_extra_video_filters_run_on_the_reframed_frame_before_the_pixel_format(
         AudioStream(1, "aac", 48_000, 2),
         plan_reframe(CenterCrop(), 1920, 1080),
         tmp_path / "out.tmp",
+        seek_s=0.0,
         video_filters=("subtitles=filename=captions.srt",),
     )
 
@@ -345,6 +382,32 @@ def test_export_clamps_the_interval_to_the_probed_duration(source: Path) -> None
     assert result.cut.clamped_end
 
 
+def test_export_seeks_before_the_last_keyframe_at_or_before_the_start(source: Path) -> None:
+    # Keyframes 10 s apart: decoding must begin at the one at 20 s, not after it.
+    runner = FakeRunner(output=output_for(1.0), keyframes_s=(0.0, 10.0, 20.0, 30.0))
+
+    export_clip(request(source, 25.5, 26.5), runner=runner)
+
+    (command,) = runner.ffmpeg_commands
+    assert value_after(command, "-ss") == "19.000000"  # 1 s before the keyframe
+    assert exported_interval(command) == (25.5, 26.5)
+
+
+def test_export_counts_keyframe_times_from_the_container_start(source: Path) -> None:
+    # An MPEG-TS whose timestamps start at 11.4 s: its keyframe at 21.4 s is 10 s into the file.
+    runner = FakeRunner(
+        source=media_json(600.0, VIDEO, AUDIO, start_s=11.4),
+        output=output_for(1.0),
+        keyframes_s=(11.4, 21.4, 31.4),
+    )
+
+    export_clip(request(source, 15.0, 16.0), runner=runner)
+
+    (command,) = runner.ffmpeg_commands
+    assert value_after(command, "-ss") == "9.000000"
+    assert exported_interval(command) == (15.0, 16.0)
+
+
 def test_export_outside_the_media_fails_before_running_ffmpeg(source: Path) -> None:
     runner = FakeRunner()
 
@@ -385,7 +448,7 @@ def test_export_renames_the_temporary_file_and_leaves_nothing_else(source: Path)
 
 
 def test_export_without_source_audio_reports_the_silent_track(source: Path) -> None:
-    runner = FakeRunner(source=probe_json(60.0, VIDEO), output=output_for(10.0))
+    runner = FakeRunner(source=media_json(60.0, VIDEO), output=output_for(10.0))
 
     result = export_clip(request(source, 0.0, 10.0), runner=runner)
 
@@ -395,7 +458,7 @@ def test_export_without_source_audio_reports_the_silent_track(source: Path) -> N
 
 
 def test_export_of_a_source_without_video_fails(source: Path) -> None:
-    runner = FakeRunner(source=probe_json(60.0, AUDIO))
+    runner = FakeRunner(source=media_json(60.0, AUDIO))
 
     with pytest.raises(UnsupportedSourceError, match="no video stream"):
         export_clip(request(source, 0.0, 10.0), runner=runner)
@@ -469,12 +532,12 @@ def test_failed_encode_leaves_no_output_and_no_temporary_file(source: Path) -> N
 @pytest.mark.parametrize(
     ("output", "problem"),
     [
-        (probe_json(10.0, VIDEO, AUDIO), "video is h264 1920x1080"),
-        (probe_json(10.0, {**OUTPUT_VIDEO, "codec_name": "hevc"}, AUDIO), "video is hevc"),
-        (probe_json(10.0, OUTPUT_VIDEO, {**AUDIO, "codec_name": "mp3"}), "audio is mp3"),
-        (probe_json(10.0, OUTPUT_VIDEO), "1 video and 1 audio stream"),
-        (probe_json(9.5, OUTPUT_VIDEO, AUDIO), "duration is 9.500 s, expected 10.000 s"),
-        (probe_json(10.2, OUTPUT_VIDEO, AUDIO), "duration is 10.200 s"),
+        (media_json(10.0, VIDEO, AUDIO), "video is h264 1920x1080"),
+        (media_json(10.0, {**OUTPUT_VIDEO, "codec_name": "hevc"}, AUDIO), "video is hevc"),
+        (media_json(10.0, OUTPUT_VIDEO, {**AUDIO, "codec_name": "mp3"}), "audio is mp3"),
+        (media_json(10.0, OUTPUT_VIDEO), "1 video and 1 audio stream"),
+        (media_json(9.5, OUTPUT_VIDEO, AUDIO), "duration is 9.500 s, expected 10.000 s"),
+        (media_json(10.2, OUTPUT_VIDEO, AUDIO), "duration is 10.200 s"),
     ],
 )
 def test_output_that_does_not_match_the_contract_is_an_error_and_is_removed(
@@ -486,6 +549,87 @@ def test_output_that_does_not_match_the_contract_is_an_error_and_is_removed(
         export_clip(request(source, 0.0, 10.0), runner=runner)
 
     assert sorted(p.name for p in source.parent.iterdir()) == ["vod.mp4"]
+
+
+@pytest.mark.parametrize(
+    ("video", "audio", "problem"),
+    [
+        # Decoding began on a later frame: the video starts after the audio.
+        ({**OUTPUT_VIDEO, "start_time": "1.650000", "duration": "8.350000"}, AUDIO, "video covers"),
+        # A source stream ended inside the interval.
+        ({**OUTPUT_VIDEO, "duration": "1.000000"}, AUDIO, "video covers 0.000-1.000 s"),
+        (OUTPUT_VIDEO, {**AUDIO, "duration": "2.000000"}, "audio covers 0.000-2.000 s"),
+    ],
+)
+def test_output_stream_that_does_not_cover_the_clip_is_an_error(
+    source: Path, video: dict[str, Any], audio: dict[str, Any], problem: str
+) -> None:
+    runner = FakeRunner(output=media_json(10.0, video, audio))
+
+    with pytest.raises(FFmpegOutputError, match=problem):
+        export_clip(request(source, 0.0, 10.0), runner=runner)
+
+    assert sorted(p.name for p in source.parent.iterdir()) == ["vod.mp4"]
+
+
+def test_output_created_during_the_encode_is_kept_and_the_export_fails(source: Path) -> None:
+    output = source.parent / "out.mp4"
+    runner = FakeRunner(
+        output=output_for(10.0), on_ffmpeg=lambda: output.write_bytes(b"another export")
+    )
+
+    with pytest.raises(FileExistsError, match="appeared during the export"):
+        export_clip(request(source, 0.0, 10.0), runner=runner)
+
+    assert output.read_bytes() == b"another export"
+    assert sorted(p.name for p in source.parent.iterdir()) == ["out.mp4", "vod.mp4"]
+
+
+def test_overwrite_replaces_an_output_created_during_the_encode(source: Path) -> None:
+    output = source.parent / "out.mp4"
+    runner = FakeRunner(
+        output=output_for(10.0), on_ffmpeg=lambda: output.write_bytes(b"another export")
+    )
+
+    export_clip(request(source, 0.0, 10.0, overwrite=True), runner=runner)
+
+    assert output.read_bytes() != b"another export"
+    assert sorted(p.name for p in source.parent.iterdir()) == ["out.mp4", "vod.mp4"]
+
+
+def _no_hard_links(*_args: object, **_kwargs: object) -> None:
+    raise OSError(errno.EPERM, "hard links are not supported")
+
+
+def test_without_hard_links_an_output_created_during_the_encode_is_still_kept(
+    source: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    output = source.parent / "out.mp4"
+    runner = FakeRunner(
+        output=output_for(10.0), on_ffmpeg=lambda: output.write_bytes(b"another export")
+    )
+
+    # Windows falls back to a rename, which never replaces; elsewhere the export fails.
+    expected = FileExistsError if os.name == "nt" else ExportError
+    with pytest.raises(expected):
+        export_clip(request(source, 0.0, 10.0), runner=runner)
+
+    assert output.read_bytes() == b"another export"
+    assert sorted(p.name for p in source.parent.iterdir()) == ["out.mp4", "vod.mp4"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the rename fallback is Windows-only")
+def test_without_hard_links_windows_publishes_by_renaming(
+    source: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    runner = FakeRunner(output=output_for(10.0))
+
+    result = export_clip(request(source, 0.0, 10.0), runner=runner)
+
+    assert result.output.is_file()
+    assert sorted(p.name for p in source.parent.iterdir()) == ["out.mp4", "vod.mp4"]
 
 
 def test_export_uses_a_timeout_that_grows_with_the_clip(source: Path) -> None:

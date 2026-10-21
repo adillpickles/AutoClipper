@@ -8,23 +8,27 @@ path. Every FFmpeg call goes through `autoclipper.ffmpeg`, so tests can pass a f
 Encoding decisions (docs/architecture/overview.md §4.6):
 
 - **Accurate cut.** ``-ss`` is an input option, so FFmpeg jumps near the start instead of
-  decoding the VOD from the beginning, but it seeks `SEEK_PREROLL_S` before the start. The
-  ``trim``/``atrim`` filters then drop everything before the exact start, so a user-trimmed start
-  between keyframes is respected. Seeking straight to the start is not enough for every
-  container: MPEG-TS has no index, FFmpeg can land after the keyframe that precedes the start,
-  and the clip would then begin on a later frame. ``-t`` is an output option, so the clip lasts
-  exactly the interval. Output timestamps start at 0 at the actual start.
+  decoding the VOD from the beginning. It seeks to just before the last video keyframe at or
+  before the start (`autoclipper.export.seek`), so decoding always begins at a frame that can be
+  decoded, whatever the container (MPEG-TS has no index) and however far apart the keyframes
+  are. The ``trim``/``atrim`` filters then drop everything before the exact start, so a
+  user-trimmed start between keyframes is respected. ``-t`` is an output option, so the clip
+  lasts exactly the interval. Output timestamps start at 0 at the actual start.
 - **Constant frame rate.** The ``fps`` filter resamples to `EncodeSettings.frame_rate` (30 by
-  default) starting at output time 0, so every clip has a fixed frame rate and a frame at time 0
-  whatever the source's rate.
-- **Duration.** The output lasts the planned interval within `EncodeSettings.duration_tolerance_s`
-  (one output frame plus one AAC frame); `export_clip` fails if it doesn't.
+  default), so every clip has a fixed frame rate whatever the source's rate. It rounds
+  timestamps down, so the first source frame lands on output frame 0, and it doesn't invent
+  frames before the first decoded one: a late start shows up in the output check instead.
+- **Coverage.** The output and each of its streams must start at 0 and last the planned interval
+  within `EncodeSettings.duration_tolerance_s` (one output frame plus one AAC frame);
+  `export_clip` fails if not, for example when the source's video or audio stream ends inside
+  the interval.
 - **Audio.** The first audio stream is encoded as stereo AAC. A source without audio gets a
   silent AAC track, so every export has the same H.264/AAC shape; `ExportResult.silent_audio`
   says so.
-- **Atomic output.** FFmpeg writes a hidden temporary file next to the output; it is renamed to
+- **Atomic output.** FFmpeg writes a hidden temporary file next to the output; it is moved to
   the output path only after the encode succeeded and the probe matched. A failed or interrupted
   export leaves no file at the output path (and no temporary file, unless the process was killed).
+  Without ``overwrite``, the move never replaces a file, even one created during the encode.
 """
 
 import contextlib
@@ -50,6 +54,7 @@ from autoclipper.export.reframe import (
     ReframePlan,
     plan_reframe,
 )
+from autoclipper.export.seek import StreamTimes, find_keyframe, probe_stream_times, seek_point
 from autoclipper.ffmpeg import (
     AudioStream,
     FFmpegCommand,
@@ -72,11 +77,6 @@ OUTPUT_AUDIO_CODEC = "aac"
 # purpose: encode speed depends on the CPU, the preset and the source resolution.
 ENCODE_TIMEOUT_BASE_S = 120.0
 ENCODE_TIMEOUT_PER_OUTPUT_S = 10.0
-
-# How far before the start FFmpeg seeks; the frames in between are decoded and dropped by the
-# trim filters. It must exceed the source's keyframe interval (Twitch asks broadcasters for 2 s)
-# so that a keyframe lies between where a seek lands and the start, even in MPEG-TS sources.
-SEEK_PREROLL_S = 5.0
 
 # Samples per AAC frame; the audio track's length is a multiple of this.
 _AAC_FRAME_SAMPLES = 1024
@@ -153,7 +153,7 @@ class ExportRequest:
         layout: Which part of the frame to show (default `CenterCrop`).
         padding: Context added around `interval` before clamping to the media (default none).
         overwrite: Replace an existing file at `output`. Without it, an existing file is an
-            error.
+            error, also one that another process creates while the export runs.
     """
 
     source: Path
@@ -216,6 +216,7 @@ def build_export_command(
     reframe: ReframePlan,
     output: Path,
     *,
+    seek_s: float,
     settings: EncodeSettings | None = None,
     video_filters: Sequence[str] = (),
 ) -> FFmpegCommand:
@@ -229,6 +230,9 @@ def build_export_command(
         reframe: The layout geometry for `video`'s frame size.
         output: The file FFmpeg writes (an MP4, whatever its extension). Overwritten if it
             exists.
+        seek_s: Where FFmpeg seeks before decoding: at or before the last video keyframe at or
+            before `interval.start_s` (`autoclipper.export.seek.seek_point`). Everything between
+            it and the start is decoded and dropped.
         settings: Encoder settings; defaults to `EncodeSettings()`.
         video_filters: Extra FFmpeg filters applied to the 1080x1920 frame after reframing and
             before encoding, e.g. burned-in subtitles. Each entry is one complete filter, escaped
@@ -237,16 +241,20 @@ def build_export_command(
 
     Returns:
         The command; nothing runs until it is passed to `run_command`.
+
+    Raises:
+        ValueError: `seek_s` is negative or after `interval.start_s`.
     """
+    if not 0.0 <= seek_s <= interval.start_s:
+        raise ValueError(f"seek_s must be in 0-{interval.start_s:g} s, got {seek_s!r}")
     encode = EncodeSettings() if settings is None else settings
     # Seek to `seek_s`, where the decoded timestamps restart at 0. The filters then drop `skip`
     # seconds of preroll and shift the rest back to 0, so output time 0 is exactly the start.
-    seek_s = max(0.0, interval.start_s - SEEK_PREROLL_S)
     skip = _seconds(interval.start_s - seek_s)
     filters = (
         f"trim=start={skip}",
         f"setpts=PTS-{skip}/TB",
-        f"fps=fps={encode.frame_rate}:start_time=0",
+        f"fps=fps={encode.frame_rate}:round=down",
         *reframe.filters(),
         *video_filters,
         "format=yuv420p",
@@ -330,9 +338,13 @@ def export_clip(
         FileExistsError: `request.output` exists and `request.overwrite` is False.
         UnsupportedSourceError: The source has no video stream, or is the output path.
         IntervalTooShortError: Too little of the interval lies inside the media.
+        KeyframeNotFoundError: The video has no keyframe at or before the start.
         InvalidLayoutError: The layout's region is too small for the source.
         FFmpegError: FFmpeg or FFprobe failed (`FFmpegExitError`, `FFmpegTimeoutError`, ...),
-            or the output didn't match (`FFmpegOutputError`). The output path is left as it was.
+            or the output didn't match (`FFmpegOutputError`), for example because a source
+            stream ends inside the interval. The output path is left as it was.
+        ExportError: The output can't be moved into place without replacing (see
+            `ExportRequest.overwrite`) because its file system has no hard links.
     """
     encode = EncodeSettings() if settings is None else settings
     output = request.output.absolute()
@@ -345,11 +357,20 @@ def export_clip(
     video, audio = _pick_streams(info)
     cut = plan_cut(request.interval, info.duration_s, padding=request.padding)
     reframe = plan_reframe(request.layout, video.width, video.height)
+    source_times = probe_stream_times(request.source, runner=runner)
+    keyframe_s = find_keyframe(
+        request.source,
+        video.index,
+        cut.actual.start_s,
+        container_start_s=source_times.container_start_s,
+        runner=runner,
+    )
     log.info(
-        "export start source=%s start_s=%.3f end_s=%.3f layout=%s silent_audio=%s",
+        "export start source=%s start_s=%.3f end_s=%.3f keyframe_s=%.3f layout=%s silent_audio=%s",
         request.source,
         cut.actual.start_s,
         cut.actual.end_s,
+        keyframe_s,
         request.layout.name,
         audio is None,
     )
@@ -368,13 +389,17 @@ def export_clip(
             audio,
             reframe,
             temp,
+            # The keyframe can lie just after the start when the video begins after it.
+            seek_s=min(seek_point(keyframe_s), cut.actual.start_s),
             settings=encode,
             video_filters=video_filters,
         )
         limit_s = encode_timeout_s(cut.actual.duration_s) if timeout_s is None else timeout_s
         run_command(command, timeout_s=limit_s, runner=runner)
-        result = _check_output(probe(temp, runner=runner), cut, encode)
-        temp.replace(output)
+        result = _check_output(
+            probe(temp, runner=runner), probe_stream_times(temp, runner=runner), cut, encode
+        )
+        _publish(temp, output, overwrite=request.overwrite)
     except BaseException:
         # Keep the original error even if the temporary file can't be removed.
         with contextlib.suppress(OSError):
@@ -394,6 +419,43 @@ def export_clip(
         audio_codec=result.audio_codec,
         silent_audio=audio is None,
     )
+
+
+def _publish(temp: Path, output: Path, *, overwrite: bool) -> None:
+    """Move the finished export to `output`; replace an existing file only with `overwrite`."""
+    if overwrite:
+        temp.replace(output)
+        return
+    try:
+        _move_without_replacing(temp, output)
+    except FileExistsError:
+        raise FileExistsError(
+            f"export output appeared during the export and was kept (pass overwrite): {output}"
+        ) from None
+
+
+def _move_without_replacing(temp: Path, output: Path) -> None:
+    """Move `temp` to `output` atomically, or raise FileExistsError if `output` exists."""
+    try:
+        # A hard link is created atomically and fails if `output` exists, even if another
+        # process created it after the check at the start of the export.
+        os.link(temp, output)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        if os.name != "nt":
+            raise ExportError(
+                f"can't move the export to {output} without risking replacing a file: the file "
+                f"system has no hard links ({exc}); pass overwrite to replace instead"
+            ) from exc
+        # FAT and exFAT drives have no hard links. On Windows a rename never replaces an
+        # existing file either: it raises FileExistsError.
+        temp.rename(output)
+        return
+    try:
+        temp.unlink()
+    except OSError as exc:
+        log.warning("export could not remove temporary file path=%s error=%s", temp, exc)
 
 
 def _seconds(value: float) -> str:
@@ -417,7 +479,9 @@ class _OutputCheck:
     audio_codec: str
 
 
-def _check_output(info: MediaInfo, cut: CutPlan, settings: EncodeSettings) -> _OutputCheck:
+def _check_output(
+    info: MediaInfo, times: StreamTimes, cut: CutPlan, settings: EncodeSettings
+) -> _OutputCheck:
     """Confirm the encoded file is what an export promises, or raise FFmpegOutputError."""
     problems: list[str] = []
     videos, audios = info.video_streams, info.audio_streams
@@ -441,6 +505,19 @@ def _check_output(info: MediaInfo, cut: CutPlan, settings: EncodeSettings) -> _O
             f"duration is {info.duration_s:.3f} s, expected {expected_s:.3f} s "
             f"(tolerance {settings.duration_tolerance_s:.3f} s)"
         )
+    tolerance_s = settings.duration_tolerance_s
+    for span in times.streams:
+        if span.start_s is None or span.duration_s is None:
+            problems.append(f"{span.codec_type} stream {span.index} has no start or duration")
+            continue
+        end_s = span.start_s + span.duration_s
+        if span.start_s > tolerance_s or abs(end_s - expected_s) > tolerance_s:
+            # A stream that starts late or ends early: the source stream ends inside the
+            # interval, or decoding didn't start at the requested frame.
+            problems.append(
+                f"{span.codec_type} covers {span.start_s:.3f}-{end_s:.3f} s of the "
+                f"0-{expected_s:.3f} s clip"
+            )
     if problems:
         raise FFmpegOutputError(
             f"the export doesn't match a {OUTPUT_WIDTH}x{OUTPUT_HEIGHT} {OUTPUT_VIDEO_CODEC}/"
