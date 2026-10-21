@@ -85,6 +85,7 @@ uv run ruff format --check .   # format check (uv run ruff format . reformats)
 uv run pyright                 # type check (src/ and tests/)
 uv run pytest                  # tests; live tests are deselected (-m live runs only those)
 uv run autoclipper --help      # CLI entry point
+uv run autoclipper synth --seed 1   # synthetic dev dataset in data/synthetic/seed-1 (docs/development/testing.md)
 ```
 
 CI (`.github/workflows/ci.yml`) runs `uv sync --locked`, which fails if `uv.lock` is out of date, then the Ruff, Pyright and pytest commands above on Ubuntu and Windows for every PR and push to `main`. Add dependencies with `uv add <pkg>` (dev tools: `uv add --dev <pkg>`) and commit `pyproject.toml` and `uv.lock` together. Tool settings live in `pyproject.toml`.

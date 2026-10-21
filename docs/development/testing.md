@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Binding. pytest is configured in `pyproject.toml` (`[tool.pytest]`). The coverage target below is still a proposal. |
-| **Last updated** | 2026-10-20 |
+| **Last updated** | 2026-10-21 |
 
 ## Goals
 
@@ -36,7 +36,26 @@ Tests protect the parts where bugs are **silent**: a label shifted by 10 seconds
 - Live in `tests/fixtures/`. **Synthetic only**: fake usernames (`user_001`), invented messages, generated audio (sine bursts, noise).
 - Keep them tiny (KB). Generate larger ones on the fly in a fixture function.
 - Recorded API responses (for client tests) must be **scrubbed**: replace usernames and IDs with fakes.
+- **Synthetic dataset** (development data bigger than a fixture, see below). Generate it; never commit it.
 - **Isolation from your machine:** an autouse fixture in `tests/conftest.py` runs every test with its own empty `tmp_path` as the working directory. It removes the environment variables behind AutoClipper's settings, clears the `get_settings()` cache before and after the test, and undoes `configure_logging()` afterwards. Tests therefore never read your `.env`, and the default data and artifacts dirs point into `tmp_path`. Set a value with `monkeypatch.setenv(...)` or by writing `tmp_path / ".env"`. Find fixture files relative to `__file__`, not the working directory. Explicitly selected `live` tests are the exception: they keep your working directory, `.env` and environment so they can use real credentials (the settings cache and logging are still reset).
+
+### Synthetic dataset
+
+`autoclipper synth` generates a small fake dataset for feature, evaluation, app and export work before real data exists (`autoclipper.synthetic`, #15):
+
+```bash
+uv run autoclipper synth --seed 1                  # writes data/synthetic/seed-1/
+uv run autoclipper synth --out <dir> --seed 1      # or any new or empty directory
+uv run autoclipper synth --seed 1 --no-video       # without FFmpeg (tables and WAVs only)
+```
+
+- **Contents:** 3 fake VODs of 3–5 minutes from 2 fake broadcasters (`user_001`, `user_002`; IDs like `9000000001`). Viewer clips that overlap, touch end to start, nearly touch (3 s gap) and stand alone; one clip with a null `vod_offset_s` and one with a null `video_id`; one VOD without clips. Chat with a burst 3–8 s after every planted highlight, a quiet stretch per VOD, native and third-party emotes, and one message linking a clip. A 16 kHz mono WAV per VOD, loud at each highlight and digitally silent in the one muted segment (listed in that VOD's `muted_segments`). A `testsrc2` test-pattern MP4 per VOD carrying the same audio, as long as the VOD by default (`--video-duration` changes it).
+- **Layout** mirrors the data dir: `processed/{broadcasters,vods}.parquet`, `processed/clips/synthetic-seed-<seed>.parquet`, `interim/chat/<video_id>.parquet`, `interim/audio/<video_id>.wav`, `raw/video/<video_id>.mp4`, `catalog.parquet` and `manifest.json`.
+- **Schemas** follow the **proposed** tables in [data model](../architecture/data-model.md) for prototype use; they are not adopted contracts (ADR-0009). Chatters and clip creators appear only as `*_hash` values, computed with `autoclipper.privacy.pseudonymize` and a public synthetic salt (not `AUTOCLIPPER_CHAT_HASH_SALT`).
+- **Manifest:** seed, generator version, library versions, every file's SHA-256, and the planted highlights (`planted_events`: highlight time, audio and chat burst windows, clip IDs), quiet stretches and muted segments, so tests can check signals against where they were planted.
+- **Determinism:** the same seed gives byte-identical Parquet files, WAVs and manifest with the locked dependencies (Parquet embeds the pyarrow version, so other library versions give other bytes). Videos were byte-identical across runs with one FFmpeg build, but that is not guaranteed. Different seeds jitter positions, durations, text and IDs; the edge cases stay the same.
+- **Safety:** the command refuses a directory that isn't empty. `--force` replaces only an earlier synthetic dataset (one with its `manifest.json`), never other files. A failed run leaves nothing behind.
+- **In tests:** call `generate_dataset(tmp_path / "synthetic", seed=...)` from `autoclipper.synthetic` (well under a second without video).
 
 ## Conventions
 

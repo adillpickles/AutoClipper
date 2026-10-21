@@ -22,7 +22,8 @@ src/autoclipper/
 ├── models/               # base.py (interface), baselines.py, gbm.py, nn.py
 ├── eval/                 # metrics.py, harness.py, bootstrap.py
 ├── export/               # cut.py, reframe.py, captions.py, encode.py
-└── api/                  # proposed FastAPI app, alongside pipeline development
+├── api/                  # proposed FastAPI app, alongside pipeline development
+└── synthetic/            # deterministic fake dataset for development (`autoclipper synth`)
 tests/                    # mirrors src/autoclipper/ structure
 experiments/              # configs + results write-ups (see docs/ml/experiments.md)
 configs/                  # channels.yaml, lexicons, default params
