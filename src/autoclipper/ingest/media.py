@@ -76,11 +76,24 @@ DOWNLOAD_DURATION_TOLERANCE_FRACTION: Final = 0.002
 # Measuring that reads the whole file without decoding it: seconds even for a long VOD.
 DOWNLOAD_CHECK_TIMEOUT_S: Final = 600.0
 
-# The WAV may differ from its source's container duration by the larger of these (encoder delay
-# and frame rounding are tens of milliseconds); more means part of the source didn't decode, or
-# its timestamps jump back (repeated audio).
+# The WAV may differ from its source's duration by the larger of these (encoder delay and frame
+# rounding are tens of milliseconds); more means part of the source wasn't converted.
 NORMALIZED_DURATION_TOLERANCE_S: Final = 0.5
 NORMALIZED_DURATION_TOLERANCE_FRACTION: Final = 0.001
+
+# How FFmpeg reads a source's timeline, both when checking a download and when normalizing.
+# FFmpeg joins MPEG-TS timestamps that jump back (an HLS discontinuity, or segments written
+# twice) onto the end, and by default also forward jumps of more than `-dts_delta_threshold`
+# (10 s), which would remove a long gap. A day keeps forward gaps as silence. The price: a
+# timestamp reset that jumps forward is also kept as silence.
+_TIMELINE_OPTIONS: Final = ("-dts_delta_threshold", "86400")
+
+# Normalizing fails (FFmpeg exits with `_MAX_ERROR_RATE_EXIT_CODE`) when more than this fraction
+# of the audio frames can't be decoded. Isolated damaged frames are tolerated (they become
+# silence), but 1 % of a 6-hour VOD is already about 3.6 minutes of lost audio, so more means a
+# damaged file, not glitches.
+MAX_DECODE_ERROR_RATE: Final = 0.01
+_MAX_ERROR_RATE_EXIT_CODE: Final = 69
 
 # What `normalize_audio` writes.
 SAMPLE_RATE_HZ: Final = 16_000
@@ -655,10 +668,12 @@ def _played_duration_s(path: Path, runner: Runner | None) -> float:
 
     ffprobe's container duration can't be used: for MPEG-TS it comes from the first and last
     timestamps, so segments that a broken resume wrote twice don't change it. FFmpeg, reading
-    the stream, moves timestamps that jump back to the end, and the copy gets longer (as the WAV
-    from `normalize_audio` would). This reads the whole file but decodes nothing.
+    the stream, moves timestamps that jump back to the end, and the copy gets longer. It reads
+    the timeline the way `normalize_audio` does (`_TIMELINE_OPTIONS`), so the two agree. This
+    reads the whole file but decodes nothing.
     """
     command = ffmpeg_command(
+        *_TIMELINE_OPTIONS,
         *("-progress", "pipe:1", "-i", path, "-map", "0:a:0"),
         *("-c", "copy", "-f", "null", "-"),
     )
@@ -727,13 +742,15 @@ def normalize_audio(
 
     The WAV is 16 kHz, mono (channels mixed down), 16-bit PCM, and keeps the source's timeline:
     gaps in the audio's timestamps become silence, so a time in the WAV is the same time in the
-    source. FFmpeg writes a temporary file, which is probed and checked before it is renamed into
-    place: the format must be right, and its duration must match the source's container
-    duration within `NORMALIZED_DURATION_TOLERANCE_S` or
-    `NORMALIZED_DURATION_TOLERANCE_FRACTION`, whichever is larger. A shorter WAV means part of
-    the source couldn't be decoded (FFmpeg skips undecodable data and still exits with 0); a
-    longer one, that the source's timestamps jump back. If the WAV exists already and passes the
-    same checks, it is returned (pass `force` to convert again).
+    source, and timestamp resets (which jump back) are joined (`_TIMELINE_OPTIONS`). Conversion
+    fails if more than `MAX_DECODE_ERROR_RATE` of the audio can't be decoded; FFmpeg would
+    otherwise turn it into silence. The WAV is written to a temporary file, probed and checked
+    before it is renamed into place: the format must be right, and its duration must match the
+    source's, within `NORMALIZED_DURATION_TOLERANCE_S` or
+    `NORMALIZED_DURATION_TOLERANCE_FRACTION`, whichever is larger. The source's duration is how
+    long FFmpeg reads it to be and, for containers with an index (not MPEG-TS), also the
+    container's duration, which catches a truncated file. If the WAV exists already and passes
+    the same checks, it is returned (pass `force` to convert again).
 
     Args:
         source: The downloaded media file; any container FFmpeg reads, with or without video.
@@ -750,8 +767,8 @@ def normalize_audio(
         InvalidVideoIdError: `video_id` is not a Twitch video ID.
         FileNotFoundError: `source` is not an existing file.
         FFmpegError: FFmpeg or FFprobe failed (as for `autoclipper.ffmpeg.run_command` and
-            `probe`); `FFmpegOutputError` if `source` has no audio stream, or the WAV has the
-            wrong format or duration (it is not kept).
+            `probe`); `FFmpegOutputError` if `source` has no audio stream, too much of it can't
+            be decoded, or the WAV has the wrong format or duration (it is not kept).
     """
     output = normalized_audio_path(data_dir, video_id)
     if not source.is_file():
@@ -759,9 +776,10 @@ def normalize_audio(
     source_info = probe(source, runner=runner)
     if not source_info.audio_streams:
         raise FFmpegOutputError(f"{source} has no audio stream")
+    played_s = _played_duration_s(source, runner)
     if output.exists() and not force:
         try:
-            info = _check_normalized(probe(output, runner=runner), source_info)
+            info = _check_normalized(probe(output, runner=runner), source_info, played_s)
         except (FFmpegExitError, FFmpegOutputError) as exc:
             log.warning(
                 "converting again video_id=%s existing=%s problem=%s", video_id, output, exc
@@ -774,6 +792,8 @@ def normalize_audio(
     partial = output.with_name(f"{output.name}.part")
     command = ffmpeg_command(
         "-y",  # A leftover partial file from an interrupted run is replaced.
+        *_TIMELINE_OPTIONS,
+        *("-max_error_rate", str(MAX_DECODE_ERROR_RATE)),
         "-i",
         source,
         "-map",
@@ -797,8 +817,16 @@ def normalize_audio(
         partial,
     )
     try:
-        run_command(command, timeout_s=timeout_s, runner=runner)
-        info = _check_normalized(probe(partial, runner=runner), source_info)
+        try:
+            run_command(command, timeout_s=timeout_s, runner=runner)
+        except FFmpegExitError as exc:
+            if exc.returncode != _MAX_ERROR_RATE_EXIT_CODE:
+                raise
+            raise FFmpegOutputError(
+                f"more than {MAX_DECODE_ERROR_RATE:.0%} of the audio in {source} could not be "
+                f"decoded (damaged file); FFmpeg said:\n{exc.stderr_tail}"
+            ) from exc
+        info = _check_normalized(probe(partial, runner=runner), source_info, played_s)
         partial.replace(output)
     finally:
         partial.unlink(missing_ok=True)
@@ -808,7 +836,7 @@ def normalize_audio(
     return NormalizedAudio(output, info.duration_s)
 
 
-def _check_normalized(info: MediaInfo, source: MediaInfo) -> MediaInfo:
+def _check_normalized(info: MediaInfo, source: MediaInfo, played_s: float) -> MediaInfo:
     streams = info.audio_streams
     if (
         len(info.streams) != 1
@@ -819,21 +847,24 @@ def _check_normalized(info: MediaInfo, source: MediaInfo) -> MediaInfo:
         raise FFmpegOutputError(
             f"{info.path} is not {SAMPLE_RATE_HZ} Hz mono {CODEC} audio; streams: {info.streams}"
         )
-    if not _durations_agree(
-        info.duration_s,
-        source.duration_s,
-        tolerance_s=NORMALIZED_DURATION_TOLERANCE_S,
-        tolerance_fraction=NORMALIZED_DURATION_TOLERANCE_FRACTION,
-    ):
-        reason = (
-            "part of the source could not be decoded (damaged or truncated file)"
-            if info.duration_s < source.duration_s
-            else "the source's timestamps jump back (repeated audio)"
-        )
-        raise FFmpegOutputError(
-            f"{info.path} is {info.duration_s:.3f} s long, but {source.path} is "
-            f"{source.duration_s:.3f} s: {reason}"
-        )
+    expected = [("plays for", played_s)]
+    # MPEG-TS has no index: its container duration is only the first-to-last timestamp span,
+    # which timestamp resets make meaningless. Other containers (MP4) store the duration, and a
+    # truncated file plays shorter than that.
+    if "mpegts" not in source.format_name.split(","):
+        expected.append(("says it lasts", source.duration_s))
+    for how, expected_s in expected:
+        if not _durations_agree(
+            info.duration_s,
+            expected_s,
+            tolerance_s=NORMALIZED_DURATION_TOLERANCE_S,
+            tolerance_fraction=NORMALIZED_DURATION_TOLERANCE_FRACTION,
+        ):
+            raise FFmpegOutputError(
+                f"{info.path} is {info.duration_s:.3f} s long, but {source.path} {how} "
+                f"{expected_s:.3f} s: part of the source could not be converted (damaged or "
+                "truncated file)"
+            )
     return info
 
 

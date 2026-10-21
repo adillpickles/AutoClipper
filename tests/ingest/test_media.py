@@ -36,6 +36,7 @@ from autoclipper.ffmpeg import (
     FFmpegExitError,
     FFmpegOutputError,
     ffmpeg_command,
+    ffprobe_command,
     probe,
     run_command,
 )
@@ -142,8 +143,9 @@ class FakeFFmpeg:
     """A fake `Runner`.
 
     ffprobe returns `output_probe` for WAVs (``.wav`` or ``.wav.part``) and `source_probe` for
-    anything else. ffmpeg with ``-progress`` (the download check) reports `played_s`; any other
-    ffmpeg command writes its output file.
+    anything else. ffmpeg with ``-progress`` (measuring how long a file plays) reports
+    `played_s`, by default the source's probed duration; any other ffmpeg command writes its
+    output file and exits with `ffmpeg_returncode`.
     """
 
     def __init__(
@@ -151,7 +153,7 @@ class FakeFFmpeg:
         output_probe: bytes = probe_output(),
         source_probe: bytes | None = None,
         ffmpeg_returncode: int = 0,
-        played_s: float = 4.0,
+        played_s: float | None = None,
     ) -> None:
         self.output_probe = output_probe
         self.source_probe = output_probe if source_probe is None else source_probe
@@ -165,7 +167,10 @@ class FakeFFmpeg:
             is_wav = command.args[-1].endswith((".wav", ".wav.part"))
             return CommandResult(0, stdout=self.output_probe if is_wav else self.source_probe)
         if "-progress" in command.args:
-            progress = f"out_time_us={round(self.played_s * 1e6)}\nprogress=end\n"
+            played_s = self.played_s
+            if played_s is None:
+                played_s = float(json.loads(self.source_probe)["format"]["duration"])
+            progress = f"out_time_us={round(played_s * 1e6)}\nprogress=end\n"
             return CommandResult(0, stdout=progress.encode())
         Path(command.args[-1]).write_bytes(b"wav")
         return CommandResult(self.ffmpeg_returncode, stderr=b"error")
@@ -875,11 +880,13 @@ def test_normalize_converts_to_16_khz_mono_pcm_via_a_partial_file(
 
     output = normalized_audio_path(data_dir, VIDEO_ID)
     partial = output.with_name(f"{output.name}.part")
-    check_source, convert, check_output = runner.commands
+    check_source, measure_source, convert, check_output = runner.commands
     assert check_source.args[-1] == os.fspath(source.absolute())
+    measure = " ".join(measure_source.args)
+    assert f"-dts_delta_threshold 86400 -progress pipe:1 -i {source.absolute()}" in measure
     assert convert.args[-1] == os.fspath(partial.absolute())
     args = " ".join(convert.args[:-1])
-    assert f"-i {source.absolute()} -map 0:a:0" in args
+    assert f"-dts_delta_threshold 86400 -max_error_rate 0.01 -i {source.absolute()}" in args
     assert "-af aresample=async=1:first_pts=0 -ac 1 -ar 16000 -c:a pcm_s16le -f wav" in args
     assert check_output.args[-1] == os.fspath(partial.absolute())
     assert audio.path == output
@@ -903,12 +910,48 @@ def test_wrong_output_format_is_an_error_and_leaves_no_file(
     assert list(normalized_audio_path(data_dir, VIDEO_ID).parent.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    ("format_name", "played_s", "message"),
+    [
+        ("mov,mp4,m4a,3gp,3g2,mj2", 10.0, "plays for 10.000 s"),
+        # A truncated MP4 plays as long as its WAV, but its index says how long it should be.
+        ("mov,mp4,m4a,3gp,3g2,mj2", 4.9, "says it lasts 10.000 s"),
+        ("mpegts", 10.0, "plays for 10.000 s"),
+    ],
+    ids=["mp4-shorter-than-played", "mp4-shorter-than-index", "mpegts-shorter-than-played"],
+)
 def test_output_shorter_than_the_source_is_an_error_and_leaves_no_file(
+    source: Path, data_dir: Path, format_name: str, played_s: float, message: str
+) -> None:
+    source_probe = probe_output(format_name=format_name, duration_s=10.0)
+    runner = FakeFFmpeg(probe_output(duration_s=4.9), source_probe, played_s=played_s)
+
+    with pytest.raises(FFmpegOutputError, match=message):
+        normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner)
+
+    assert list(normalized_audio_path(data_dir, VIDEO_ID).parent.iterdir()) == []
+
+
+def test_mpegts_is_checked_against_how_long_it_plays_not_its_timestamp_span(
     source: Path, data_dir: Path
 ) -> None:
-    runner = FakeFFmpeg(probe_output(duration_s=4.9), source_probe=probe_output(duration_s=10.0))
+    # After a timestamp reset, an MPEG-TS's first-to-last span (4.032 s) means nothing.
+    source_probe = probe_output(format_name="mpegts", duration_s=4.032)
+    runner = FakeFFmpeg(probe_output(duration_s=8.064), source_probe, played_s=8.064)
 
-    with pytest.raises(FFmpegOutputError, match=r"could not be decoded"):
+    audio = normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner)
+
+    assert audio.duration_s == pytest.approx(8.064)
+
+
+def test_too_many_undecodable_frames_is_an_error_and_leaves_no_file(
+    source: Path, data_dir: Path
+) -> None:
+    runner = FakeFFmpeg(ffmpeg_returncode=69)  # FFmpeg's exit code for -max_error_rate
+
+    with pytest.raises(
+        FFmpegOutputError, match=r"more than 1% of the audio .* could not be decoded"
+    ):
         normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner)
 
     assert list(normalized_audio_path(data_dir, VIDEO_ID).parent.iterdir()) == []
@@ -935,11 +978,12 @@ def test_existing_output_is_checked_and_reused_unless_forced(source: Path, data_
     runner = FakeFFmpeg()
 
     reused = normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner)
-    assert [command.program for command in runner.commands] == ["ffprobe", "ffprobe"]
+    assert [command.program for command in runner.commands] == ["ffprobe", "ffmpeg", "ffprobe"]
 
     runner.commands.clear()
     normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner, force=True)
-    assert [command.program for command in runner.commands] == ["ffprobe", "ffmpeg", "ffprobe"]
+    programs = [command.program for command in runner.commands]
+    assert programs == ["ffprobe", "ffmpeg", "ffmpeg", "ffprobe"]
     assert reused.duration_s == pytest.approx(3.0)
 
 
@@ -953,12 +997,8 @@ def test_existing_output_that_fails_the_checks_is_converted_again(
     with pytest.raises(FFmpegOutputError):
         normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner)
 
-    assert [command.program for command in runner.commands] == [
-        "ffprobe",
-        "ffprobe",
-        "ffmpeg",
-        "ffprobe",
-    ]
+    programs = [command.program for command in runner.commands]
+    assert programs == ["ffprobe", "ffmpeg", "ffprobe", "ffmpeg", "ffprobe"]
 
 
 def test_missing_source_is_an_error(data_dir: Path, tmp_path: Path) -> None:
@@ -1036,10 +1076,87 @@ def test_normalize_rejects_a_truncated_source_instead_of_keeping_a_short_wav(
     truncated.write_bytes(tone.read_bytes()[: tone.stat().st_size // 2])
 
     # FFmpeg decodes about 4.9 s, reports the bad data and still exits with 0.
-    with pytest.raises(FFmpegOutputError, match="could not be decoded"):
+    with pytest.raises(FFmpegOutputError, match=r"says it lasts 10\.000 s"):
         normalize_audio(truncated, VIDEO_ID, data_dir=data_dir)
 
     assert list(normalized_audio_path(data_dir, VIDEO_ID).parent.iterdir()) == []
+
+
+def generate(output: Path, *args: str | Path) -> Path:
+    run_command(ffmpeg_command(*args, output), timeout_s=GENERATE_TIMEOUT_S)
+    return output
+
+
+def beep(at_s: float, duration_s: float) -> str:
+    """A lavfi source: silence with a 0.2 s beep at `at_s`."""
+    return (
+        f"aevalsrc=if(between(t\\,{at_s}\\,{at_s + 0.2})\\,0.5*sin(2*PI*440*t)\\,0)"
+        f":s=48000:d={duration_s}"
+    )
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("container", ["mp4", "mpegts"])
+def test_normalize_rejects_audio_damaged_inside_instead_of_padding_it_with_silence(
+    tmp_path: Path, data_dir: Path, container: str
+) -> None:
+    tone = generate(
+        tmp_path / "tone.mp4",
+        *("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=10"),
+        *("-c:a", "aac", "-movflags", "+faststart"),
+    )
+    entries = ("-select_streams", "a:0", "-show_entries", "packet=pts_time,pos,size")
+    listing = run_command(ffprobe_command(*entries, "-of", "json", tone), timeout_s=60).stdout
+    content = bytearray(tone.read_bytes())
+    for packet in json.loads(listing)["packets"]:
+        if 2 <= float(packet["pts_time"]) < 8:  # zero the audio data of seconds 2 to 8
+            start, size = int(packet["pos"]), int(packet["size"])
+            content[start : start + size] = bytes(size)
+    damaged = tmp_path / "damaged.mp4"
+    damaged.write_bytes(content)
+    if container == "mpegts":
+        damaged = generate(tmp_path / "damaged.ts", "-i", damaged, "-c:a", "copy")
+
+    # Without the error limit FFmpeg exits with 0 and the 6 s become silence; the WAV still has
+    # the right length.
+    with pytest.raises(FFmpegOutputError, match="could not be decoded"):
+        normalize_audio(damaged, VIDEO_ID, data_dir=data_dir)
+
+    assert list(normalized_audio_path(data_dir, VIDEO_ID).parent.iterdir()) == []
+
+
+@pytest.mark.ffmpeg
+def test_normalize_joins_mpegts_whose_timestamps_reset(tmp_path: Path, data_dir: Path) -> None:
+    # Like HLS segments across an EXT-X-DISCONTINUITY: two 4 s recordings, each with
+    # timestamps from the start, one after the other.
+    parts = [
+        generate(tmp_path / f"part{hz}.ts", "-f", "lavfi", "-i", f"sine={hz}:d=4", "-c:a", "aac")
+        for hz in (440, 880)
+    ]
+    joined = tmp_path / "joined.ts"
+    joined.write_bytes(b"".join(part.read_bytes() for part in parts))
+
+    audio = normalize_audio(joined, VIDEO_ID, data_dir=data_dir)
+
+    assert audio.duration_s == pytest.approx(8.0, abs=0.1)
+
+
+@pytest.mark.ffmpeg
+def test_long_gap_in_mpegts_is_kept_as_silence(tmp_path: Path, data_dir: Path) -> None:
+    # 24 s with a beep at 22.5 s; packets between 2 s and 22 s are dropped but the timestamps
+    # kept. By default FFmpeg joins MPEG-TS timestamp jumps of more than 10 s.
+    gap = generate(
+        tmp_path / "gap.ts",
+        *("-f", "lavfi", "-i", beep(22.5, 24), "-af", "aselect='not(between(t,2,22))'"),
+        *("-c:a", "aac"),
+    )
+    downloader = FakeDownloader("mp4", source=gap, duration_s=24.0)
+
+    path = download_audio(VIDEO_ID, data_dir=data_dir, downloader=downloader)
+    audio = normalize_audio(path, VIDEO_ID, data_dir=data_dir)
+
+    assert audio.duration_s == pytest.approx(24.0, abs=0.1)
+    assert first_loud_sample_s(audio.path) == pytest.approx(22.5, abs=0.05)
 
 
 def test_prepare_downloads_then_normalizes(
