@@ -70,7 +70,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D"]                # test names describe the behavior
 "scripts/**" = ["T20"]            # one-off scripts may print
-"notebooks/**" = ["D", "T20"]     # exploration only (§8)
+"notebooks/**" = ["ANN", "D", "T20"]  # exploration only (§8)
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -88,10 +88,10 @@ typeCheckingMode = "standard"
 [tool.pytest]
 minversion = "9.0"
 testpaths = ["tests"]
-# `-m "not live"` keeps live tests out of default runs and CI; a later `-m live` on the
-# command line replaces it. importlib mode lets test files mirror the package layout
-# (e.g. tests/ingest/test_chat.py and tests/features/test_chat.py) without __init__.py files.
-addopts = ["-ra", "--import-mode=importlib", "-m", "not live"]
+# Live tests are deselected by tests/conftest.py unless `-m` names `live`. importlib mode lets
+# test files mirror the package layout (e.g. tests/ingest/test_chat.py and
+# tests/features/test_chat.py) without __init__.py files.
+addopts = ["-ra", "--import-mode=importlib"]
 # Unknown markers, config keys and duplicate parametrize ids are errors; xfail is strict.
 strict = true
 markers = [

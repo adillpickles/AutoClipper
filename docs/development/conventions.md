@@ -35,7 +35,7 @@ Create directories only when a task needs them.
 ## 2. Python style
 
 - **Python 3.12.** Use modern syntax: `list[str]`, `X | None`, `match` where it clarifies.
-- **Formatting and linting:** Ruff (format + lint), line length **100**. Don't hand-format. Don't fight the formatter. The rule selection in `pyproject.toml` enforces the mechanical parts of this doc (type hints, docstrings, absolute imports, pathlib, aware datetimes, no `print`, logging style); the comment next to each rule set names the section it enforces, where there is one.
+- **Formatting and linting:** Ruff (format + lint), line length **100**. Don't hand-format. Don't fight the formatter. `ruff format` also formats ` ```python ` code blocks in Markdown files, so a docs-only change can fail the format check; run `uv run ruff format .` before committing docs with Python examples. The rule selection in `pyproject.toml` enforces the mechanical parts of this doc (type hints, docstrings, absolute imports, pathlib, aware datetimes, no `print`, logging style); the comment next to each rule set names the section it enforces, where there is one.
 - **Types:** type hints on every function signature and public attribute. Pyright in `standard` mode. `Any` needs a comment explaining why.
 - **Naming:** `snake_case` for modules, functions and variables. `PascalCase` for classes. `UPPER_SNAKE` for constants. Names say what, not how (`merge_clips_into_moments`, not `process`).
 - **Imports:** absolute (`from autoclipper.features import chat`). No wildcard imports. Ruff sorts them.
