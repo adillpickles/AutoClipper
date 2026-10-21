@@ -13,8 +13,8 @@
 | Python | 3.12 (pinned in `.python-version`) | Pipeline and ML | Nothing to install: `uv sync` uses an installed 3.12 or downloads one |
 | uv | latest (the lockfile was made with 0.13) | Python package/env manager | Windows: `winget install --id astral-sh.uv -e` · macOS: `brew install uv` · [all options](https://docs.astral.sh/uv/getting-started/installation/) |
 | FFmpeg | 6+ | Audio/video processing | Windows: `winget install Gyan.FFmpeg` · macOS: `brew install ffmpeg` · Linux: package manager |
-| yt-dlp | latest | VOD audio/segment download | Installed as a Python dependency via `uv`, so no global install is needed |
-| TwitchDownloaderCLI | latest release | Chat replay | Download a release binary from <https://github.com/lay295/TwitchDownloader/releases> and put it on `PATH` |
+| yt-dlp | Deferred to #19 | VOD audio download (unmerged draft) | Not installed by the current `uv sync`; follow #19 when it is ready to merge |
+| TwitchDownloaderCLI | 1.56.5 | Chat replay | Download the pinned release from <https://github.com/lay295/TwitchDownloader/releases/tag/1.56.5> and put it on `PATH` |
 | Node.js | 24 LTS (pinned in `web/.nvmrc`) | Web app in `web/` | <https://nodejs.org/> or a version manager (fnm, nvm, nvm-windows, Volta). npm comes with it. See [Frontend](#frontend-web). |
 | GitHub CLI | optional | Issues/PRs from the terminal | <https://cli.github.com/> |
 
