@@ -275,9 +275,12 @@ def test_covered_span_uses_measured_ends_even_past_the_container_duration() -> N
 
 
 class EndRunner:
-    """Answers packet reads with the packets (absolute pts, duration) at or after the read start."""
+    """Answers packet reads with the packets (absolute pts, duration) at or after the read start.
 
-    def __init__(self, packets: Sequence[tuple[int, float, float]]) -> None:
+    A packet whose duration is None is printed without ``duration_time``, as ffprobe does.
+    """
+
+    def __init__(self, packets: Sequence[tuple[int, float, float | None]]) -> None:
         self.packets = packets
         self.commands: list[FFmpegCommand] = []
 
@@ -285,11 +288,14 @@ class EndRunner:
         self.commands.append(command)
         interval = self.interval(command)
         low_s = -math.inf if interval is None else float(interval.removesuffix("%"))
-        packets = [
-            {"stream_index": index, "pts_time": f"{pts_s:.6f}", "duration_time": f"{dur_s:.6f}"}
-            for index, pts_s, dur_s in self.packets
-            if pts_s >= low_s
-        ]
+        packets: list[dict[str, object]] = []
+        for index, pts_s, dur_s in self.packets:
+            if pts_s < low_s:
+                continue
+            packet: dict[str, object] = {"stream_index": index, "pts_time": f"{pts_s:.6f}"}
+            if dur_s is not None:
+                packet["duration_time"] = f"{dur_s:.6f}"
+            packets.append(packet)
         return CommandResult(0, stdout=json.dumps({"packets": packets}).encode())
 
     @staticmethod
@@ -342,6 +348,54 @@ def test_stream_ends_with_a_wrong_hint_fall_back_to_reading_the_whole_file(sourc
 
     assert ends == {0: pytest.approx(8.0), 1: pytest.approx(8.0)}
     assert [EndRunner.interval(c) for c in runner.commands] == ["18.021000%", None]
+
+
+def test_a_last_packet_without_a_duration_lasts_the_median_frame_spacing(source: Path) -> None:
+    # A 5 fps Matroska video without DefaultDuration: no packet has a duration, and they are
+    # listed in decoding order, not in time order.
+    times_s = [2.0, 2.8, 2.4, 2.2, 2.6]
+    runner = EndRunner([(0, t, None) for t in times_s])
+
+    ends = probe_stream_ends(source, [0], container_start_s=0.0, duration_hint_s=3.0, runner=runner)
+
+    assert ends == {0: pytest.approx(3.0)}  # 2.8 s + 0.2 s, not 2.8 s
+
+
+def test_only_packets_without_a_duration_use_the_estimate(source: Path) -> None:
+    # The audio's last packet lacks a duration; the others say 21.333 ms.
+    frame_s = 1024 / 48_000
+    packets: list[tuple[int, float, float | None]] = [
+        (1, 9.0 + n * frame_s, frame_s) for n in range(5)
+    ]
+    packets.append((1, 9.0 + 5 * frame_s, None))
+    runner = EndRunner(packets)
+
+    ends = probe_stream_ends(source, [1], container_start_s=0.0, duration_hint_s=9.2, runner=runner)
+
+    assert ends == {1: pytest.approx(9.0 + 6 * frame_s)}
+
+
+def test_known_durations_are_used_as_they_are(source: Path) -> None:
+    # Durations shorter than the spacing (a 0.5 s frame every 1 s) are not replaced.
+    runner = EndRunner([(0, 0.0, 0.5), (0, 1.0, 0.5)])
+
+    ends = probe_stream_ends(source, [0], container_start_s=0.0, duration_hint_s=2.0, runner=runner)
+
+    assert ends == {0: pytest.approx(1.5)}
+
+
+def test_a_lone_packet_without_a_duration_leaves_its_stream_to_the_metadata(source: Path) -> None:
+    # One packet and no duration: its end can't be told, so the stream is left out ...
+    runner = EndRunner([(0, 2.8, None), (1, 2.9, 0.1)])
+
+    ends = probe_stream_ends(
+        source, [0, 1], container_start_s=0.0, duration_hint_s=3.0, runner=runner
+    )
+
+    assert ends == {1: pytest.approx(3.0)}
+    # ... and covered_span falls back to the stream's metadata for it.
+    times = spans(StreamSpan(0, "video", 0.0, 3.0), StreamSpan(1, "audio", 0.0, None))
+    assert covered_span(times, [0, 1], 3.0, ends) == (0.0, pytest.approx(3.0))
 
 
 def test_a_stream_without_packets_is_left_out(source: Path) -> None:

@@ -14,8 +14,10 @@ really ends from its last packets, and `covered_span` combines both into the spa
 use.
 """
 
+import itertools
 import json
 import math
+import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -136,10 +138,13 @@ def probe_stream_ends(
 ) -> dict[int, float]:
     """Read where each stream's last packet ends, in seconds from the container start.
 
-    A stream ends at the largest presentation time plus duration of its packets. The packets are
-    read from `END_SEARCH_WINDOW_S` before `duration_hint_s` to the end of the file; the window
-    widens backwards until every stream has packets in it, finally to the whole file. So the read
-    stays short on a multi-hour VOD, and a wrong hint only costs more reading.
+    A stream ends at the largest presentation time plus duration of its packets. A packet without
+    a duration (Matroska may leave durations out) lasts the stream's typical frame spacing, the
+    median gap between its consecutive distinct timestamps, never zero, which would drop the last
+    frame. The packets are read from `END_SEARCH_WINDOW_S` before `duration_hint_s` to the end of
+    the file; the window widens backwards until every stream has packets in it, finally to the
+    whole file. So the read stays short on a multi-hour VOD, and a wrong hint only costs more
+    reading.
 
     Args:
         source: The media file.
@@ -150,8 +155,9 @@ def probe_stream_ends(
         runner: Executes ffprobe. Defaults to `run_subprocess`; tests pass a fake.
 
     Returns:
-        The end of each stream that has packets. A stream without any is left out; callers fall
-        back to its metadata.
+        The end of each stream whose end can be determined. A stream without packets is left
+        out, and so is one whose last packet has no duration when the read holds fewer than two
+        distinct timestamps of it to estimate one from; callers fall back to its metadata.
 
     Raises:
         FFmpegError: ffprobe failed or printed something unexpected.
@@ -312,21 +318,52 @@ def _keyframe_times(stdout: bytes, source: Path) -> list[float]:
 
 
 def _packet_ends(stdout: bytes, source: Path) -> dict[int, float]:
-    """The largest pts + duration of the packets of each stream, in the file's own clock."""
+    """Where each stream's packets end, in the file's own clock.
+
+    A packet ends at its pts plus its duration, or plus the stream's median spacing between
+    consecutive distinct pts values when it has no (or a zero) duration. A stream is left out
+    when the packet that would end it has neither (fewer than two distinct pts values in the
+    read).
+    """
     packets = _json_object(stdout, source).get("packets", [])
     if not isinstance(packets, list):
         raise FFmpegOutputError(f"unexpected ffprobe output for {source}: no packet list")
-    ends: dict[int, float] = {}
+    by_stream: dict[int, list[tuple[float, float | None]]] = {}
     for packet in packets:
         if not isinstance(packet, dict) or not isinstance(packet.get("stream_index"), int):
             raise FFmpegOutputError(f"unexpected ffprobe output for {source}: packet {packet!r}")
         time_s = _optional_seconds(packet.get("pts_time"), source)
         if time_s is None:
             continue
-        duration_s = _optional_seconds(packet.get("duration_time"), source) or 0.0
+        duration_s = _optional_seconds(packet.get("duration_time"), source)
         index: int = packet["stream_index"]
-        ends[index] = max(ends.get(index, -math.inf), time_s + duration_s)
+        by_stream.setdefault(index, []).append((time_s, duration_s))
+    ends: dict[int, float] = {}
+    for index, stream_packets in by_stream.items():
+        end_s = _stream_end(stream_packets)
+        if end_s is not None:
+            ends[index] = end_s
     return ends
+
+
+def _stream_end(packets: list[tuple[float, float | None]]) -> float | None:
+    """The largest pts + duration of `(pts, duration or None)` packets, or None if unknown."""
+    # Packets come in decoding order; frame spacing is measured in presentation order.
+    times = sorted({time_s for time_s, _ in packets})
+    gaps = [later - earlier for earlier, later in itertools.pairwise(times)]
+    spacing_s = statistics.median(gaps) if gaps else None
+    known_end_s = -math.inf
+    latest_unknown_s = -math.inf  # pts of the latest packet whose end can't be determined
+    for time_s, duration_s in packets:
+        if duration_s is None or duration_s <= 0:
+            duration_s = spacing_s
+        if duration_s is None or duration_s <= 0:
+            latest_unknown_s = max(latest_unknown_s, time_s)
+        else:
+            known_end_s = max(known_end_s, time_s + duration_s)
+    if latest_unknown_s >= known_end_s:  # also when no end is known at all
+        return None
+    return known_end_s
 
 
 def _json_object(stdout: bytes, path: Path) -> dict[str, object]:

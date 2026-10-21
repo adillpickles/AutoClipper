@@ -1,5 +1,6 @@
 """Integration tests: real exports of generated test media with the installed FFmpeg."""
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -10,7 +11,13 @@ from autoclipper.export.cut import ContextPadding, Interval, IntervalTooShortErr
 from autoclipper.export.encode import EncodeSettings, ExportRequest, export_clip
 from autoclipper.export.reframe import CenterCrop, FixedRegion, Layout
 from autoclipper.export.seek import probe_stream_times
-from autoclipper.ffmpeg import FFmpegOutputError, ffmpeg_command, probe, run_command
+from autoclipper.ffmpeg import (
+    FFmpegOutputError,
+    ffmpeg_command,
+    ffprobe_command,
+    probe,
+    run_command,
+)
 
 pytestmark = pytest.mark.ffmpeg
 
@@ -317,6 +324,75 @@ def test_export_of_the_last_half_second_of_an_mpegts_uses_the_real_audio_end(
 
     assert result.end_s == pytest.approx(9.835, abs=0.01)
     assert_vertical_h264_aac(result.output, result.end_s - 9.3)
+
+
+# Matroska DefaultDuration element: ID 0x23E383, then a one-byte size (high bit set).
+_DEFAULT_DURATION_ID = bytes.fromhex("23e383")
+
+
+def make_mkv_without_frame_durations(path: Path) -> Path:
+    """A 3 s, 5 fps MKV whose packets carry no durations.
+
+    FFmpeg writes a DefaultDuration (the frame duration) into the track header. Here that element
+    is overwritten with an EBML Void element of the same size, so nothing else in the file moves.
+    MJPEG has no timing in its frames either, so the demuxer can't recover the durations. The
+    caller checks the result with ffprobe, so a patch that misses fails the test instead of
+    passing it.
+    """
+    original = path.with_name(f"{path.stem}-with-durations.mkv")
+    run_command(
+        ffmpeg_command(
+            "-n",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=5:duration=3",
+            "-c:v",
+            "mjpeg",
+            "-write_crc32",
+            "0",  # no EBML CRC-32 elements to invalidate
+            original,
+        ),
+        timeout_s=TIMEOUT_S,
+    )
+    data = bytearray(original.read_bytes())
+    position = data.index(_DEFAULT_DURATION_ID)
+    size_byte = data[position + len(_DEFAULT_DURATION_ID)]
+    assert size_byte & 0x80, "expected a one-byte element size"
+    element_size = len(_DEFAULT_DURATION_ID) + 1 + (size_byte & 0x7F)
+    # EBML Void: ID 0xEC, a one-byte size, then zeros, filling the same bytes.
+    data[position : position + element_size] = bytes([0xEC, 0x80 | (element_size - 2)]) + bytes(
+        element_size - 2
+    )
+    path.write_bytes(data)
+    original.unlink()
+    return path
+
+
+def last_packet(path: Path) -> dict[str, str]:
+    command = ffprobe_command(
+        "-print_format", "json", "-show_entries", "packet=pts_time,duration_time", path
+    )
+    packets = json.loads(run_command(command, timeout_s=TIMEOUT_S).stdout)["packets"]
+    return packets[-1]
+
+
+@pytest.mark.parametrize(
+    ("start_s", "end_s"), [(2.0, 3.0), (2.4, 2.9)], ids=["to_the_end", "last_half_second"]
+)
+def test_export_of_an_mkv_without_frame_durations_keeps_its_last_frame(
+    tmp_path: Path, start_s: float, end_s: float
+) -> None:
+    source = make_mkv_without_frame_durations(tmp_path / "vod.mkv")
+    # The patch took effect: the last frame starts at 2.8 s and states no duration.
+    assert last_packet(source).get("duration_time", "N/A") == "N/A"
+    assert probe(source).duration_s == pytest.approx(3.0)
+
+    result = export_clip(ExportRequest(source, Interval(start_s, end_s), tmp_path / "clip.mp4"))
+
+    # The last frame lasts until 3.0 s, so nothing is clamped away.
+    assert (result.start_s, result.end_s) == (start_s, pytest.approx(end_s))
+    assert_vertical_h264_aac(result.output, end_s - start_s)
 
 
 def test_export_of_an_mkv_whose_timestamps_start_at_10_s_ends_with_its_content(
