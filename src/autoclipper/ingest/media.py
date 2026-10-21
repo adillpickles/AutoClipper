@@ -49,6 +49,7 @@ from autoclipper.ffmpeg import (
     MediaInfo,
     Runner,
     ffmpeg_command,
+    ffprobe_command,
     probe,
     run_command,
 )
@@ -73,8 +74,9 @@ MAX_RETRY_SLEEP_S: Final = 30.0
 # adjust if real downloads trip it.
 DOWNLOAD_DURATION_TOLERANCE_S: Final = 2.0
 DOWNLOAD_DURATION_TOLERANCE_FRACTION: Final = 0.002
-# Measuring that reads the whole file without decoding it: seconds even for a long VOD.
-DOWNLOAD_CHECK_TIMEOUT_S: Final = 600.0
+# Checks that read a whole file without decoding it (how long it plays, its AAC packet sizes):
+# seconds even for a long VOD.
+READ_CHECK_TIMEOUT_S: Final = 600.0
 
 # The WAV may differ from its source's duration by the larger of these (encoder delay and frame
 # rounding are tens of milliseconds); more means part of the source wasn't converted.
@@ -88,12 +90,21 @@ NORMALIZED_DURATION_TOLERANCE_FRACTION: Final = 0.001
 # timestamp reset that jumps forward is also kept as silence.
 _TIMELINE_OPTIONS: Final = ("-dts_delta_threshold", "86400")
 
-# Normalizing fails (FFmpeg exits with `_MAX_ERROR_RATE_EXIT_CODE`) when more than this fraction
-# of the audio frames can't be decoded. Isolated damaged frames are tolerated (they become
-# silence), but 1 % of a 6-hour VOD is already about 3.6 minutes of lost audio, so more means a
-# damaged file, not glitches.
+# Normalizing fails when more than this fraction of the audio can't be decoded, measured two
+# ways: by frames (FFmpeg's -max_error_rate; it then exits with `_MAX_ERROR_RATE_EXIT_CODE`) and,
+# for AAC, by bytes (`_undecodable_aac_fraction`), because FFmpeg's ADTS parser lumps damaged
+# data without a frame header into one packet, which counts as a single failed frame however
+# much audio it held. Isolated damaged frames are tolerated (they become silence), but 1 % of a
+# 6-hour VOD is already about 3.6 minutes of lost audio, so more means a damaged file, not
+# glitches.
 MAX_DECODE_ERROR_RATE: Final = 0.01
 _MAX_ERROR_RATE_EXIT_CODE: Final = 69
+
+# ISO/IEC 14496-3 limits an AAC decoder's input buffer to 6144 bits per channel, so one AAC
+# frame (raw_data_block) holds at most 768 bytes per channel. An ADTS header adds 7 bytes, or 9
+# with its CRC. Packet bytes beyond 768 * channels + 9 can't be audio.
+_AAC_MAX_FRAME_BYTES_PER_CHANNEL: Final = 768
+_ADTS_MAX_HEADER_BYTES: Final = 9
 
 # What `normalize_audio` writes.
 SAMPLE_RATE_HZ: Final = 16_000
@@ -677,12 +688,32 @@ def _played_duration_s(path: Path, runner: Runner | None) -> float:
         *("-progress", "pipe:1", "-i", path, "-map", "0:a:0"),
         *("-c", "copy", "-f", "null", "-"),
     )
-    result = run_command(command, timeout_s=DOWNLOAD_CHECK_TIMEOUT_S, runner=runner)
+    result = run_command(command, timeout_s=READ_CHECK_TIMEOUT_S, runner=runner)
     # -progress prints key=value blocks; the last out_time_us is where the copy ended.
     times = re.findall(rb"^out_time_us=(\d+)\r?$", result.stdout, re.MULTILINE)
     if not times:
         raise FFmpegOutputError(f"ffmpeg reported no out_time_us while reading {path}")
     return int(times[-1]) / 1_000_000
+
+
+def _undecodable_aac_fraction(path: Path, channels: int, runner: Runner | None) -> float:
+    """Return the fraction of the first audio stream's bytes that can't be AAC frames.
+
+    These are the bytes of each packet beyond the largest valid AAC frame
+    (`_AAC_MAX_FRAME_BYTES_PER_CHANNEL` * `channels` + `_ADTS_MAX_HEADER_BYTES`), over all
+    packet bytes. Damaged data without an ADTS frame header ends up in one oversized packet, so
+    its bytes count here even though FFmpeg reports it as a single decode error.
+    """
+    command = ffprobe_command(
+        *("-select_streams", "a:0", "-show_entries", "packet=size"),
+        *("-of", "default=noprint_wrappers=1:nokey=1", path),
+    )
+    result = run_command(command, timeout_s=READ_CHECK_TIMEOUT_S, runner=runner)
+    sizes = [int(size) for size in re.findall(rb"^(\d+)\r?$", result.stdout, re.MULTILINE)]
+    max_frame_bytes = _AAC_MAX_FRAME_BYTES_PER_CHANNEL * channels + _ADTS_MAX_HEADER_BYTES
+    total = sum(sizes)
+    excess = sum(max(0, size - max_frame_bytes) for size in sizes)
+    return excess / total if total else 0.0
 
 
 def _container_extension(info: MediaInfo) -> str | None:
@@ -743,10 +774,11 @@ def normalize_audio(
     The WAV is 16 kHz, mono (channels mixed down), 16-bit PCM, and keeps the source's timeline:
     gaps in the audio's timestamps become silence, so a time in the WAV is the same time in the
     source, and timestamp resets (which jump back) are joined (`_TIMELINE_OPTIONS`). Conversion
-    fails if more than `MAX_DECODE_ERROR_RATE` of the audio can't be decoded; FFmpeg would
-    otherwise turn it into silence. The WAV is written to a temporary file, probed and checked
-    before it is renamed into place: the format must be right, and its duration must match the
-    source's, within `NORMALIZED_DURATION_TOLERANCE_S` or
+    fails if more than `MAX_DECODE_ERROR_RATE` of the audio can't be decoded, counted in frames
+    and, for AAC, in bytes that can't be AAC frames (checked before converting, and before an
+    existing WAV is reused); FFmpeg would otherwise turn it into silence. The WAV is written to a
+    temporary file, probed and checked before it is renamed into place: the format must be
+    right, and its duration must match the source's, within `NORMALIZED_DURATION_TOLERANCE_S` or
     `NORMALIZED_DURATION_TOLERANCE_FRACTION`, whichever is larger. The source's duration is how
     long FFmpeg reads it to be and, for containers with an index (not MPEG-TS), also the
     container's duration, which catches a truncated file. If the WAV exists already and passes
@@ -767,8 +799,10 @@ def normalize_audio(
         InvalidVideoIdError: `video_id` is not a Twitch video ID.
         FileNotFoundError: `source` is not an existing file.
         FFmpegError: FFmpeg or FFprobe failed (as for `autoclipper.ffmpeg.run_command` and
-            `probe`); `FFmpegOutputError` if `source` has no audio stream, too much of it can't
-            be decoded, or the WAV has the wrong format or duration (it is not kept).
+            `probe`); `FFmpegOutputError` if `source` has no audio stream, more than
+            `MAX_DECODE_ERROR_RATE` of it can't be decoded (frames FFmpeg fails to decode, or
+            AAC bytes that can't be frames), or the WAV has the wrong format or duration. No
+            WAV is written or returned then.
     """
     output = normalized_audio_path(data_dir, video_id)
     if not source.is_file():
@@ -777,6 +811,16 @@ def normalize_audio(
     if not source_info.audio_streams:
         raise FFmpegOutputError(f"{source} has no audio stream")
     played_s = _played_duration_s(source, runner)
+    # Only AAC's largest frame is known (and Twitch's audio is AAC); other codecs rely on the
+    # frame count from -max_error_rate alone.
+    stream = source_info.audio_streams[0]
+    if stream.codec_name == "aac":
+        undecodable = _undecodable_aac_fraction(source, stream.channels, runner)
+        if undecodable > MAX_DECODE_ERROR_RATE:
+            raise FFmpegOutputError(
+                f"more than {MAX_DECODE_ERROR_RATE:.0%} of the audio in {source} could not be "
+                f"decoded (damaged file): {undecodable:.1%} of its bytes are not valid AAC frames"
+            )
     if output.exists() and not force:
         try:
             info = _check_normalized(probe(output, runner=runner), source_info, played_s)
