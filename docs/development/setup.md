@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Binding for the Python setup. Tested from a fresh clone on Windows 11 in PowerShell and Git Bash; CI runs the same commands on Ubuntu and Windows. Not yet tried on a macOS or Linux machine. Prerequisites follow [ADR-0002](../decisions/0002-language-and-tooling.md) (*Accepted*). Frontend steps arrive with the Next.js scaffold (#6). |
+| **Status** | Binding for the Python and frontend setup. Tested on Windows 11 in PowerShell and Git Bash; CI runs Python on Ubuntu/Windows and frontend checks on Ubuntu. macOS is not yet tested. Prerequisites follow [ADR-0002](../decisions/0002-language-and-tooling.md) (*Accepted*). |
 | **Last updated** | 2026-10-19 |
 
 ## Prerequisites
@@ -151,7 +151,6 @@ If OQ-9 approves persisted hash-based joins across machines, use the same privat
 | ``The lockfile at `uv.lock` needs to be updated, but `--locked` was provided`` (CI or locally) | `pyproject.toml` changed without a new lock. Run `uv lock` and commit `uv.lock` with `pyproject.toml`. |
 | uv warns `Failed to hardlink files; falling back to full copy` | Harmless. The clone and uv's cache are on different drives. Set the environment variable `UV_LINK_MODE=copy` to silence it. |
 | `uv run pytest -m live` reports `no tests ran` (exit code 5) | No live tests exist yet; there's nothing to select. |
-
 | `npm warn EBADENGINE` in `web/` | You're not on Node 24. Switch versions (see [Frontend](#frontend-web)). |
 | npm warns that `unrs-resolver` install scripts were blocked (seen with npm 11.19 and 12.2) | Harmless. Its native binary comes from an optional dependency; the blocked script is only a fallback. Don't approve it unless something breaks. |
 | `npm audit` reports high-severity `braces` advisories in `web/` | Comes from the lint toolchain (`eslint-config-next` → `fast-glob`), not from app code, and has no fixed version yet. Don't run `npm audit fix --force`: it downgrades `eslint-config-next` to v14. |
