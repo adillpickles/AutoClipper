@@ -73,15 +73,45 @@ Checked 2026-10-13: [Twitch's VOD policy](https://help.twitch.tv/s/article/video
 ## 2. Chat replay: TwitchDownloader (unofficial)
 
 - **Repo:** <https://github.com/lay295/TwitchDownloader>. We use the **CLI** (`TwitchDownloaderCLI`), not the GUI.
-- Typical usage (check `--help` for the installed version):
+- **Pinned version:** release **1.56.5** (tag `1.56.5`, commit `f8335ca`), which writes chat JSON format **1.4.0** ([`ChatRootInfo.cs` L16][td-info]). `autoclipper.ingest.chat` rejects other format versions with `ChatDownloadError` and logs a warning for other tool versions. It reads the tool version from the banner the CLI prints first on stdout, `TwitchDownloaderCLI 1.56.5 Copyright (c) …` ([`Program.cs` L79–L94][td-banner]). Per the source, `TwitchDownloaderCLI --version` prints the name and version to stderr and exits with code 1.
+- The wrapper runs ([`ChatDownloadArgs.cs`][td-args], [`IFileCollisionArgs.cs`][td-collision]):
 
   ```bash
-  TwitchDownloaderCLI chatdownload --id <video_id> -o data/raw/chat/<video_id>.json
+  TwitchDownloaderCLI chatdownload --id <video_id> --output data/raw/chat/<video_id>.json --collision Overwrite
   ```
 
-- Output: JSON with per-comment `content_offset_seconds`, commenter info, message fragments and emote IDs.
+  Optional `--embed-images` also embeds the BTTV/FFZ/7TV emote lists (with images), the only way the file reveals third-party emotes.
+- **Fields we read** (all from [`ChatRoot.cs`][td-root] unless noted; how the downloader fills them: [`ChatDownloader.cs`][td-dl]):
+
+  | JSON field | Becomes | Source |
+  |---|---|---|
+  | `FileInfo.Version` `{Major, Minor, Patch}` | format check | [`ChatRootInfo.cs` L5][td-info] |
+  | `video.id` | file must match the requested VOD | L203; [downloader L456][td-dl-vid] |
+  | `comments[].content_id` | per-message VOD check | L163; [downloader L170][td-dl-comment] |
+  | `comments[].content_offset_seconds` | `offset_s` | L164 |
+  | `comments[].commenter._id` | `user_hash` (the stable user ID; `name` is the login, `display_name` the display name) | L23–L25; [downloader L172–L177][td-dl-comment]; [GQL `commenter.id`][td-gql] |
+  | `commenter.name`, `commenter.display_name` | only used to redact names from text | L23, L25 |
+  | `message.body` | `text`, redacted (concatenated fragment texts) | L105; [downloader L248][td-dl-body] |
+  | `message.fragments[].text` / `.emoticon.emoticon_id` | `emote_ids`, `n_emotes` | L49, L55–L56, L107 |
+  | `message.user_badges[]._id` | `is_subscriber` (`subscriber` or `founder`), `is_moderator` (`moderator`) | L71, L108 |
+  | `message.bits_spent` | `bits` (0 if absent). The downloader takes the first cheer amount in the body ([`TwitchRegex.cs` L10][td-bits]), so later cheers in the same message aren't added. | L106; [downloader L250–L254][td-dl-body] |
+  | `embeddedData.thirdParty[].name` | third-party emotes in `n_emotes`: whitespace-separated tokens of non-emote fragments that equal a name | L231, L263; [downloader L561–L576][td-dl-embed] |
+
 - **Risks:** relies on Twitch's undocumented internal API and can break without warning. Pin the version in the catalog (`tool` column) and fail loudly on schema surprises.
-- **Privacy:** raw output contains usernames. Parse transiently, apply the approved OQ-9 minimization/redaction policy and delete raw files after validation. No raw sharing; git-ignored storage is not a retention authorization.
+- **Privacy:** raw output contains usernames. Parse transiently, apply the approved OQ-9 minimization/redaction policy and delete raw files after validation. No raw sharing; git-ignored storage is not a retention authorization. The parser hashes `commenter._id`, deletes the raw file after a successful parse and redacts text: `@` mentions become `@user`, and any word equal to a commenter's login or display name, or a viewer named in a gift-sub notice, becomes `user`. Its module docstring states the exact rules and what they miss.
+
+[td-root]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/TwitchObjects/ChatRoot.cs
+[td-info]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/TwitchObjects/ChatRootInfo.cs#L5-L16
+[td-banner]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCLI/Program.cs#L79-L94
+[td-args]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCLI/Modes/Arguments/ChatDownloadArgs.cs#L7-L26
+[td-collision]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCLI/Modes/Arguments/IFileCollisionArgs.cs#L8
+[td-dl]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/ChatDownloader.cs
+[td-dl-vid]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/ChatDownloader.cs#L456
+[td-dl-comment]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/ChatDownloader.cs#L164-L177
+[td-dl-body]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/ChatDownloader.cs#L196-L254
+[td-dl-embed]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/ChatDownloader.cs#L561-L576
+[td-gql]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/TwitchObjects/Gql/GqlCommentResponse.cs#L8-L13
+[td-bits]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/Tools/TwitchRegex.cs#L10-L11
 
 ## 3. VOD media: yt-dlp (unofficial)
 
