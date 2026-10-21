@@ -18,10 +18,13 @@ Encoding decisions (docs/architecture/overview.md §4.6):
   default), so every clip has a fixed frame rate whatever the source's rate. It rounds
   timestamps down, so the first source frame lands on output frame 0, and it doesn't invent
   frames before the first decoded one: a late start shows up in the output check instead.
+- **Media bounds.** The interval is clamped to the span that the video stream and the audio
+  stream used both cover, not just to the container duration: at the end of a VOD the audio
+  often stops a fraction of a second before the video, and the clip then ends with the audio
+  (`CutPlan.clamped_end`) instead of failing.
 - **Coverage.** The output and each of its streams must start at 0 and last the planned interval
   within `EncodeSettings.duration_tolerance_s` (one output frame plus one AAC frame);
-  `export_clip` fails if not, for example when the source's video or audio stream ends inside
-  the interval.
+  `export_clip` fails if not, for example when decoding didn't start at the requested frame.
 - **Audio.** The first audio stream is encoded as stereo AAC. A source without audio gets a
   silent AAC track, so every export has the same H.264/AAC shape; `ExportResult.silent_audio`
   says so.
@@ -54,7 +57,13 @@ from autoclipper.export.reframe import (
     ReframePlan,
     plan_reframe,
 )
-from autoclipper.export.seek import StreamTimes, find_keyframe, probe_stream_times, seek_point
+from autoclipper.export.seek import (
+    StreamTimes,
+    covered_span,
+    find_keyframe,
+    probe_stream_times,
+    seek_point,
+)
 from autoclipper.ffmpeg import (
     AudioStream,
     FFmpegCommand,
@@ -337,12 +346,12 @@ def export_clip(
         FileNotFoundError: The source file doesn't exist.
         FileExistsError: `request.output` exists and `request.overwrite` is False.
         UnsupportedSourceError: The source has no video stream, or is the output path.
-        IntervalTooShortError: Too little of the interval lies inside the media.
+        IntervalTooShortError: Too little of the interval lies inside the media, that is,
+            inside the span that the video and the audio stream used both cover.
         KeyframeNotFoundError: The video has no keyframe at or before the start.
         InvalidLayoutError: The layout's region is too small for the source.
         FFmpegError: FFmpeg or FFprobe failed (`FFmpegExitError`, `FFmpegTimeoutError`, ...),
-            or the output didn't match (`FFmpegOutputError`), for example because a source
-            stream ends inside the interval. The output path is left as it was.
+            or the output didn't match (`FFmpegOutputError`). The output path is left as it was.
         ExportError: The output can't be moved into place without replacing (see
             `ExportRequest.overwrite`) because its file system has no hard links.
     """
@@ -355,9 +364,17 @@ def export_clip(
 
     info = probe(request.source, runner=runner)
     video, audio = _pick_streams(info)
-    cut = plan_cut(request.interval, info.duration_s, padding=request.padding)
-    reframe = plan_reframe(request.layout, video.width, video.height)
     source_times = probe_stream_times(request.source, runner=runner)
+    used_streams = [video.index] if audio is None else [video.index, audio.index]
+    media_start_s, media_end_s = covered_span(source_times, used_streams, info.duration_s)
+    if media_end_s <= media_start_s:
+        raise UnsupportedSourceError(
+            f"the video and audio streams of {request.source} don't overlap in time"
+        )
+    cut = plan_cut(
+        request.interval, media_end_s, media_start_s=media_start_s, padding=request.padding
+    )
+    reframe = plan_reframe(request.layout, video.width, video.height)
     keyframe_s = find_keyframe(
         request.source,
         video.index,

@@ -382,6 +382,62 @@ def test_export_clamps_the_interval_to_the_probed_duration(source: Path) -> None
     assert result.cut.clamped_end
 
 
+def test_export_ends_where_the_shorter_source_stream_ends(source: Path) -> None:
+    # The end of a VOD: the container and the video last 10.0 s, the audio only 9.8 s.
+    runner = FakeRunner(
+        source=media_json(10.0, VIDEO, {**AUDIO, "duration": "9.800000"}),
+        output=output_for(4.8),
+    )
+
+    result = export_clip(request(source, 5.0, 10.0), runner=runner)
+
+    (command,) = runner.ffmpeg_commands
+    assert exported_interval(command) == (5.0, 9.8)
+    assert (result.start_s, result.end_s) == (5.0, 9.8)
+    assert result.cut.clamped_end
+    assert result.cut.requested == Interval(5.0, 10.0)
+
+
+def test_export_starts_where_the_later_source_stream_starts(source: Path) -> None:
+    runner = FakeRunner(
+        source=media_json(10.0, {**VIDEO, "start_time": "0.500000", "duration": "9.500000"}, AUDIO),
+        output=output_for(4.5),
+    )
+
+    result = export_clip(request(source, 0.0, 5.0), runner=runner)
+
+    (command,) = runner.ffmpeg_commands
+    assert exported_interval(command) == (0.5, 5.0)
+    assert result.cut.clamped_start
+
+
+def test_export_without_source_audio_is_bounded_by_the_video_only(source: Path) -> None:
+    # A data stream that stops early doesn't limit the clip; only the streams it uses do.
+    data = {"index": 1, "codec_type": "data", "duration": "2.000000"}
+    runner = FakeRunner(source=media_json(10.0, VIDEO, data), output=output_for(5.0))
+
+    result = export_clip(request(source, 5.0, 10.0), runner=runner)
+
+    assert result.silent_audio
+    assert result.end_s == 10.0
+    assert not result.cut.clamped_end
+
+
+def test_export_of_streams_that_do_not_overlap_fails_before_running_ffmpeg(source: Path) -> None:
+    runner = FakeRunner(
+        source=media_json(
+            10.0,
+            {**VIDEO, "duration": "4.000000"},
+            {**AUDIO, "start_time": "5.000000", "duration": "5.000000"},
+        )
+    )
+
+    with pytest.raises(UnsupportedSourceError, match="don't overlap"):
+        export_clip(request(source, 0.0, 10.0), runner=runner)
+
+    assert runner.ffmpeg_commands == []
+
+
 def test_export_seeks_before_the_last_keyframe_at_or_before_the_start(source: Path) -> None:
     # Keyframes 10 s apart: decoding must begin at the one at 20 s, not after it.
     runner = FakeRunner(output=output_for(1.0), keyframes_s=(0.0, 10.0, 20.0, 30.0))

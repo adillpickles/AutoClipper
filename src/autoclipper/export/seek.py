@@ -13,6 +13,7 @@ encoder uses it to confirm that every output stream covers the whole clip.
 
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -75,6 +76,36 @@ class StreamTimes:
 
     container_start_s: float
     streams: tuple[StreamSpan, ...]
+
+
+def covered_span(
+    times: StreamTimes, stream_indexes: Sequence[int], container_duration_s: float
+) -> tuple[float, float]:
+    """The span, in seconds from the container start, that all the given streams cover.
+
+    Starts where the last of them starts and ends where the first of them ends, never after
+    `container_duration_s`. A stream that doesn't report its start counts as starting at 0, one
+    that doesn't report its duration as lasting until `container_duration_s`.
+
+    Args:
+        times: From `probe_stream_times`.
+        stream_indexes: The streams an export uses (its video and, if any, its audio stream).
+        container_duration_s: The container duration (`autoclipper.ffmpeg.MediaInfo.duration_s`).
+
+    Returns:
+        ``(start_s, end_s)``; `end_s` may not be after `start_s` if the streams don't overlap.
+    """
+    spans = {span.index: span for span in times.streams}
+    start_s, end_s = 0.0, container_duration_s
+    for index in stream_indexes:
+        span = spans.get(index)
+        if span is None:
+            continue
+        stream_start_s = 0.0 if span.start_s is None else span.start_s
+        start_s = max(start_s, stream_start_s)
+        if span.duration_s is not None:
+            end_s = min(end_s, stream_start_s + span.duration_s)
+    return start_s, end_s
 
 
 def probe_stream_times(

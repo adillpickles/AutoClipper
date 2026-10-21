@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from autoclipper.export import encode
-from autoclipper.export.cut import ContextPadding, Interval
+from autoclipper.export.cut import ContextPadding, Interval, IntervalTooShortError
 from autoclipper.export.encode import EncodeSettings, ExportRequest, export_clip
 from autoclipper.export.reframe import CenterCrop, FixedRegion, Layout
 from autoclipper.export.seek import probe_stream_times
@@ -234,15 +234,8 @@ def test_export_of_an_odd_sized_portrait_source(tmp_path: Path, layout: Layout) 
     assert_vertical_h264_aac(result.output, 2.0)
 
 
-@pytest.mark.parametrize(
-    ("video_s", "audio_s", "short_stream"),
-    [(2.0, 5.0, "video"), (5.0, 2.0, "audio")],
-    ids=["video_ends_early", "audio_ends_early"],
-)
-def test_export_fails_when_a_source_stream_ends_inside_the_interval(
-    tmp_path: Path, video_s: float, audio_s: float, short_stream: str
-) -> None:
-    source = tmp_path / "uneven.mp4"
+def make_uneven_media(path: Path, *, video_s: float, audio_s: float) -> Path:
+    """An MP4 whose video and audio streams have different lengths."""
     run_command(
         ffmpeg_command(
             "-n",
@@ -258,14 +251,48 @@ def test_export_fails_when_a_source_stream_ends_inside_the_interval(
             "libx264",
             "-preset",
             "ultrafast",
-            source,
+            path,
         ),
         timeout_s=TIMEOUT_S,
     )
+    return path
 
-    # The container lasts 5 s, so the interval is inside the media, but one stream stops at 2 s.
-    with pytest.raises(FFmpegOutputError, match=f"{short_stream} covers 0.000-1.0"):
-        export_clip(ExportRequest(source, Interval(1.0, 4.0), tmp_path / "clip.mp4"))
+
+def test_export_at_the_end_of_a_vod_whose_audio_stops_first_ends_with_the_audio(
+    tmp_path: Path,
+) -> None:
+    source = make_uneven_media(tmp_path / "vod.mp4", video_s=10.0, audio_s=9.8)
+
+    result = export_clip(ExportRequest(source, Interval(5.0, 10.0), tmp_path / "clip.mp4"))
+
+    assert result.end_s == pytest.approx(9.8, abs=0.03)
+    assert result.cut.clamped_end
+    assert_vertical_h264_aac(result.output, result.end_s - 5.0)
+
+
+@pytest.mark.parametrize(
+    ("video_s", "audio_s"),
+    [(2.0, 5.0), (5.0, 2.0)],
+    ids=["video_ends_early", "audio_ends_early"],
+)
+def test_export_is_clamped_to_where_both_source_streams_have_content(
+    tmp_path: Path, video_s: float, audio_s: float
+) -> None:
+    # The container lasts 5 s, but one stream stops at 2 s: the clip ends there.
+    source = make_uneven_media(tmp_path / "uneven.mp4", video_s=video_s, audio_s=audio_s)
+
+    result = export_clip(ExportRequest(source, Interval(1.0, 4.0), tmp_path / "clip.mp4"))
+
+    assert (result.start_s, result.end_s) == (1.0, pytest.approx(2.0, abs=0.03))
+    assert result.cut.clamped_end
+    assert_vertical_h264_aac(result.output, 1.0)
+
+
+def test_export_entirely_after_the_shorter_stream_ends_is_too_short(tmp_path: Path) -> None:
+    source = make_uneven_media(tmp_path / "uneven.mp4", video_s=5.0, audio_s=2.0)
+
+    with pytest.raises(IntervalTooShortError):
+        export_clip(ExportRequest(source, Interval(3.0, 4.0), tmp_path / "clip.mp4"))
 
     assert sorted(p.name for p in tmp_path.iterdir()) == ["uneven.mp4"]
 
@@ -281,4 +308,7 @@ def test_export_from_the_very_start_of_an_mpegts_whose_audio_starts_first(
 
     result = export_clip(ExportRequest(source, Interval(0.0, 2.0), tmp_path / "clip.mp4"))
 
-    assert_vertical_h264_aac(result.output, 2.0)
+    # The clip starts with the video, the later of the two streams.
+    assert result.start_s == pytest.approx(video.start_s)
+    assert result.cut.clamped_start
+    assert_vertical_h264_aac(result.output, 2.0 - video.start_s)

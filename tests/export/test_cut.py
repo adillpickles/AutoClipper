@@ -137,7 +137,27 @@ def test_minimum_duration_is_a_parameter() -> None:
     assert plan.actual == Interval(10.0, 10.2)
 
 
-@pytest.mark.parametrize("duration_s", [0.0, -1.0, math.nan, math.inf])
-def test_invalid_media_duration_raises(duration_s: float) -> None:
-    with pytest.raises(InvalidIntervalError, match="media duration"):
-        plan_cut(Interval(0.0, 1.0), duration_s)
+@pytest.mark.parametrize(
+    ("media_start_s", "media_end_s"),
+    [(0.0, 0.0), (0.0, -1.0), (0.0, math.nan), (0.0, math.inf), (-1.0, 10.0), (5.0, 5.0)],
+)
+def test_invalid_media_bounds_raise(media_start_s: float, media_end_s: float) -> None:
+    with pytest.raises(InvalidIntervalError, match="media bounds"):
+        plan_cut(Interval(0.0, 1.0), media_end_s, media_start_s=media_start_s)
+
+
+def test_interval_before_a_later_media_start_is_clamped_to_it() -> None:
+    # E.g. the video starts 0.5 s into the file: nothing before it can be exported.
+    plan = plan_cut(Interval(0.0, 5.0), 60.0, media_start_s=0.5)
+
+    assert plan.actual == Interval(0.5, 5.0)
+    assert plan.clamped_start
+    assert not plan.clamped_end
+
+
+def test_interval_inside_the_media_bounds_is_not_clamped() -> None:
+    plan = plan_cut(Interval(1.0, 5.0), 9.8, media_start_s=0.5)
+
+    assert plan.actual == Interval(1.0, 5.0)
+    assert not plan.clamped_start
+    assert not plan.clamped_end

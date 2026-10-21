@@ -14,6 +14,8 @@ from autoclipper.export.seek import (
     SEEK_MARGIN_S,
     KeyframeNotFoundError,
     StreamSpan,
+    StreamTimes,
+    covered_span,
     find_keyframe,
     probe_stream_times,
     seek_point,
@@ -202,3 +204,49 @@ def test_stream_times_without_a_container_start_count_from_0(source: Path) -> No
 def test_unexpected_stream_times_output_raises(source: Path, stdout: bytes) -> None:
     with pytest.raises(FFmpegOutputError):
         probe_stream_times(source, runner=answer(stdout))
+
+
+# --- covered_span --------------------------------------------------------------------------------
+
+
+def spans(*streams: StreamSpan) -> StreamTimes:
+    return StreamTimes(container_start_s=0.0, streams=streams)
+
+
+def test_covered_span_ends_where_the_first_used_stream_ends() -> None:
+    # The end of a VOD: video 10.0 s, audio 9.8 s.
+    times = spans(StreamSpan(0, "video", 0.0, 10.0), StreamSpan(1, "audio", 0.0, 9.8))
+
+    assert covered_span(times, [0, 1], 10.0) == (0.0, 9.8)
+    assert covered_span(times, [0], 10.0) == (0.0, 10.0)  # a silent track replaces the audio
+
+
+def test_covered_span_starts_where_the_last_used_stream_starts() -> None:
+    times = spans(StreamSpan(0, "video", 0.023, 4.977), StreamSpan(1, "audio", 0.0, 5.0))
+
+    assert covered_span(times, [0, 1], 5.0) == (0.023, 5.0)
+
+
+def test_covered_span_ignores_streams_the_export_does_not_use() -> None:
+    times = spans(
+        StreamSpan(0, "video", 0.0, 10.0),
+        StreamSpan(1, "audio", 0.0, 9.8),
+        StreamSpan(2, "audio", 0.0, 3.0),
+    )
+
+    assert covered_span(times, [0, 1], 10.0) == (0.0, 9.8)
+
+
+def test_covered_span_falls_back_to_the_container_for_missing_times() -> None:
+    # MKV streams report no duration; a stream may report no start; a negative start (audio
+    # priming) counts as 0.
+    times = spans(StreamSpan(0, "video", None, None), StreamSpan(1, "audio", -0.021, None))
+
+    assert covered_span(times, [0, 1], 12.5) == (0.0, 12.5)
+    assert covered_span(spans(), [0, 1], 12.5) == (0.0, 12.5)
+
+
+def test_covered_span_never_ends_after_the_container() -> None:
+    times = spans(StreamSpan(0, "video", 0.0, 10.2))
+
+    assert covered_span(times, [0], 10.0) == (0.0, 10.0)
