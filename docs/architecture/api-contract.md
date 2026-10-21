@@ -20,11 +20,11 @@ It deliberately does **not** decide candidate generation rules (#27, ADR-0009), 
 - **Job, export and media IDs are random and never reused**, including across server restarts: a short prefix plus at least 64 bits from a cryptographic random source (e.g. `"job_" + secrets.token_hex(8)`), never a counter or anything derived from the VOD. So a stale ID kept in a page URL from before a restart gets a `404`, never another VOD's job (§ 8.3). `candidate_id` only has to be unique within its result, because it's always used together with a `job_id`.
 - **Returned URLs are root-relative** (`PreviewMedia.url`, `Export.download_url`, `Location`), e.g. `/api/v1/exports/{export_id}/file`, so the server never needs to know its public address. Clients resolve them against the API origin they're configured with (e.g. `new URL(url, apiOrigin)`, § 8.4) and otherwise use them as given. If a later media route returns an absolute URL, the same resolution leaves it unchanged.
 - **Every field is always present.** An optional value is `null`, never omitted; an empty list is `[]`. Numbers are finite (no `NaN` or `Infinity`).
-- **Requests are strict, responses are tolerant.** The server rejects unknown request fields and invalid values (`422 invalid_request`). Clients ignore unknown response fields and give *open* enums a default branch (§ 9).
+- **Requests are strict, responses are tolerant.** The server rejects unknown request fields and invalid values (`422 invalid_request`). Request models use Pydantic strict mode with unknown fields forbidden (`ConfigDict(strict=True, extra="forbid")`): default (lax) mode would accept `"yes"` or `1` for a boolean and `"115.5"` for a number. Strict mode still accepts a JSON integer for a float field, so `115` is a valid `start_s`. Clients ignore unknown response fields and give *open* enums a default branch (§ 9).
 - **Messages are for people.** `message` fields are short English sentences that are safe to show in the UI: no secrets, tokens, file paths or chat usernames. Clients branch on `code`, never on `message`.
 - **No auth, no pagination, no push.** It's a single-user local app ([PRD non-goals](../product/prd.md#non-goals-for-the-course-project)); clients poll (§ 8). Hosting (OQ-18) may revisit this.
 
-**Model mapping.** Response models live in one FastAPI-free module (e.g. `autoclipper.schemas`) so the CLI can use them too (ADR-0007: Pydantic models are shared with the CLI output schema). TypeScript types are hand-written from this page or generated from FastAPI's OpenAPI document; #29 picks.
+**Model mapping.** Response models live in one FastAPI-free module (e.g. `autoclipper.schemas`) so the CLI can use them too (ADR-0007: Pydantic models are shared with the CLI output schema). TypeScript types are hand-written from this page, in one module the screens share (e.g. `web/src/lib/api/types.ts`), so #29–#31 don't wait for a backend. Generating them from FastAPI's OpenAPI document is an option once #28 exists; the hand-written types must then match it.
 
 | JSON | Pydantic (Python 3.12) | TypeScript |
 |---|---|---|
@@ -163,7 +163,7 @@ A job **fails** only when it can't produce a meaningful result. `Job.error.code`
 **Precedence.** Every step first retries transient errors (network, rate limits, `5xx`; [overview § 6](overview.md#6-cross-cutting-concerns)). What remains is classified like this:
 
 1. **Resolving the VOD is required.** Twitch says the video doesn't exist or isn't viewable → `vod_unavailable`; it isn't an archive → `vod_unsupported`; Twitch or the network keeps failing → `upstream_unavailable`.
-2. **A per-input step never fails the job on its own.** If viewer clips, chat or audio still can't be obtained, whatever the cause (the VOD has none, TwitchDownloader or yt-dlp broke, the network dropped), the job records `viewer_clips_missing`, `chat_missing` or `audio_missing` and carries on. The warning's `message` says whether analyzing again later may help; there's no machine-readable retry flag in v1 (D1).
+2. **A per-input step never fails the job on its own.** If viewer clips, chat or audio still can't be obtained, whatever the cause (the VOD has no chat or audio, TwitchDownloader or yt-dlp broke, the network dropped), the job records `viewer_clips_missing`, `chat_missing` or `audio_missing` and carries on. The warning's `message` says whether analyzing again later may help; there's no machine-readable retry flag in v1 (D1). A clip list that was fetched and is empty isn't missing: that's the zero-clips case above, with no warning.
 3. **Nothing to rank fails the job** once all inputs have been tried: `upstream_unavailable` if any missing input failed transiently (tool and network errors count as transient; when unsure, treat as transient), otherwise `no_usable_signals`.
 4. Anything unexpected is `internal_error`.
 
@@ -540,7 +540,7 @@ The app gets something playable without knowing which route OQ-17 will allow. Wh
 
 ### 5.1 Media files
 
-`GET /api/v1/media/{media_id}` serves the file behind a `video_file` URL. `media_id` is opaque and random (§ 1); the server looks it up in its own records. It returns `200`, or `206 Partial Content` for a `Range` request, with `Content-Type: video/mp4` and `Accept-Ranges: bytes`. An unknown or no longer available media ID gives `404 media_not_found`. This route and the export file route (§ 6.4) resolve IDs only through server records and never join request text into a filesystem path.
+`GET /api/v1/media/{media_id}` serves the file behind a `video_file` URL. `media_id` is opaque and random (§ 1); the server looks it up in its own records. It returns `200`, or `206 Partial Content` for a `Range` request, with `Content-Type: video/mp4` and `Accept-Ranges: bytes`. An unknown or no longer available media ID gives `404 media_not_found`. This route and the export file route (§ 6.4) resolve IDs only through server records and never join request text into a filesystem path. On both file routes, a `Range` header that can't be satisfied gets `416` and a malformed one `400`, as plain responses from the file server (Starlette's `FileResponse` builds them inside the response, where error handlers can't wrap them); these are the only non-2xx responses without an `ErrorResponse` body (§ 7). Clients treat them as a failed load.
 
 ### 5.2 Examples
 
@@ -638,7 +638,7 @@ Further layouts (e.g. facecam stacked over gameplay, optional polish) would be a
 
 **Exact trim.** The export covers exactly `[start_s, end_s)` of the source as sent, to within one video frame. The server adds **no chat-lag shift and no padding**; a user who wants context trims wider ([overview § 4.6](overview.md#46-export), [labeling § 5](../data/labeling.md#5-chat-lag)). The interval may extend beyond the candidate's own bounds but must satisfy `export.min_start_s ≤ start_s < end_s ≤ export.max_end_s` and `end_s - start_s ≤ export.max_duration_s` (otherwise `422 invalid_export_bounds`). Output is always an MP4, H.264/AAC, 1080×1920 ([PRD § Export](../product/prd.md#export)).
 
-**Responses.** `201 Created` with the new `Export` (`queued`) and `Location: /api/v1/exports/{export_id}`. If an export with the same six request fields is `queued` or `running`, it comes back with `200 OK` instead. Errors: `404 job_not_found` or `candidate_not_found`, `409 job_not_done`, `409 media_unavailable` (export isn't available now; `details.reason` holds the `MediaUnavailableReason`), `422 invalid_request` (including a layout not in `export.layouts`) or `invalid_export_bounds`.
+**Responses.** `201 Created` with the new `Export` (`queued`) and `Location: /api/v1/exports/{export_id}`. If an export with the same six request fields is `queued` or `running`, it comes back with `200 OK` instead. Errors: `404 job_not_found` or `candidate_not_found`, `409 job_not_done`, `409 media_unavailable` (export isn't available now; `details.reason` holds the `MediaUnavailableReason`), `422 invalid_request` (including a layout not in `export.layouts`) or `invalid_export_bounds`. Checks run in this order and the first failure is returned: the body's shape and types (`422 invalid_request`), the job (`404 job_not_found`, then `409 job_not_done`), the candidate (`404 candidate_not_found`), export availability (`409 media_unavailable`), the layout (`422 invalid_request`), then the bounds (`422 invalid_export_bounds`). So when export is unavailable, an empty `export.layouts` and null bounds never produce a `422`.
 
 ### 6.2 The `Export` resource
 
@@ -784,7 +784,7 @@ HTTP errors for exports:
 
 ## 7. Errors
 
-Every non-2xx response has the same body, `ErrorResponse`. `Job.error` and `Export.error` use the same inner `ApiError`.
+Every non-2xx response has the same body, `ErrorResponse`, except `Range` errors on the file routes (§ 5.1). `Job.error` and `Export.error` use the same inner `ApiError`.
 
 ```json
 {
@@ -928,6 +928,7 @@ Each row needs an explicit yes, or a chosen alternative, before adoption.
 | D11 | File routes and URLs | Media at `GET /api/v1/media/{media_id}` with range support; file routes resolve IDs only through server records; every returned URL is root-relative and resolved by the client against its API origin (§ 1, § 5.1, § 8.4) | Absolute URLs built from a configured public base URL; keep the media path server-private |
 | D12 | CLI exit codes | `1` input can't be analyzed (incl. `no_usable_signals`), `2` `upstream_unavailable`, a new `3` for `internal_error` (§ 4.6) | `internal_error` exits `1` (Python's default for an unhandled exception) and conventions § 7 stays as is |
 | D13 | Mock data and fixtures | Fixed synthetic VOD IDs per state (§ 10); #28 generates its own sample video, at least as long as the longest mock VOD, covering `[0, duration_s]` (§ 5); each scenario's values are fixed by § 10 and its examples, so fixture mode matches the mock on everything except volatile IDs, URLs and server timestamps (§ 10) | Reuse #15's video and take mock durations from its length, making these examples illustrative |
+| D14 | Result envelope | One `AnalysisResult` with `schema_version`, `generated_at`, a `vod` summary, `scorer`, `n_viewer_clips_total` (null when clips couldn't be fetched), `warnings` and ranked `candidates`; the same model is the CLI's output (§ 4.1, § 4.6). ADR-0009 requires settling this output shape before app integration | The earlier shape: top-level `video_id` and `model_run_id` with candidates only ([data model § candidates](data-model.md#candidates-apicli-output-json)) |
 
 **To adopt:** settle each row in review, then change this doc's status to "Adopted (date)" in the same PR or a follow-up, update the [ADR-0009 note](../decisions/0009-analysis-and-evaluation-contract-repair.md#api-contract-proposal-13) and the [data model § candidates](data-model.md#candidates-apicli-output-json) status, add any exit code chosen in D12 to [conventions § 7](../development/conventions.md#7-cli), and re-check #27–#33 (later #44–#46) for swapping `needs-decision` to `agent-ready`.
 
