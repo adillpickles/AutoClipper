@@ -6,6 +6,7 @@ Subcommands are verbs (``ingest``, ``export``, ...) registered on `app` with ``@
 """
 
 from enum import IntEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
@@ -18,8 +19,15 @@ from typer._click.exceptions import UsageError
 from typer.core import TyperGroup
 
 from autoclipper import __version__
-from autoclipper.config import ConfigError
+from autoclipper.config import ConfigError, get_settings
+from autoclipper.ffmpeg import FFmpegError
 from autoclipper.logging import configure_logging
+from autoclipper.synthetic import (
+    OutputDirError,
+    VideoOptions,
+    default_output_dir,
+    generate_dataset,
+)
 
 if TYPE_CHECKING:
     # Only needed to match the signatures overridden in _RootGroup.
@@ -108,3 +116,38 @@ def root(
     except ConfigError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
+
+
+@app.command()
+def synth(
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Directory to create. Default: <data dir>/synthetic/seed-<seed>.",
+            show_default=False,
+        ),
+    ] = None,
+    seed: Annotated[int, typer.Option(min=0, help="The same seed gives the same data.")] = 0,
+    video: Annotated[
+        bool, typer.Option(help="Generate a test-pattern video per VOD (needs FFmpeg).")
+    ] = True,
+    video_duration: Annotated[
+        float | None,
+        typer.Option(min=0.1, help="Video length in seconds. Default: each VOD's duration."),
+    ] = None,
+    force: Annotated[
+        bool, typer.Option(help="Replace a synthetic dataset already in the directory.")
+    ] = False,
+) -> None:
+    """Generate a deterministic synthetic dataset of fake VODs, clips, chat, audio and video."""
+    out_dir = out if out is not None else default_output_dir(get_settings().data_dir, seed)
+    options = VideoOptions(duration_s=video_duration) if video else None
+    try:
+        dataset = generate_dataset(out_dir, seed=seed, video=options, force=force)
+    except OutputDirError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    except FFmpegError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+    typer.echo(f"Wrote {len(dataset.files)} files to {dataset.out_dir}")

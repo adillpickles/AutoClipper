@@ -9,7 +9,7 @@
 
 ## Summary
 
-Scope, architecture and team workflow are documented, and the core tech stack is decided. The Python package scaffold (an `autoclipper` CLI with no subcommands yet, lint/type/test tooling, pre-commit hooks and CI) exists. The Next.js frontend scaffold has a placeholder page. **There is no pipeline, backend, dataset or model yet.** No results exist.
+Scope, architecture and team workflow are documented, and the core tech stack is decided. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, lint/type/test tooling and CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
 
 ## What exists
 
@@ -25,6 +25,7 @@ Scope, architecture and team workflow are documented, and the core tech stack is
 | Config and logging | ✅ In place (#14) | `autoclipper.config` (pydantic-settings: environment, then `.env` in the working directory; cached `get_settings()`; secrets as `SecretStr`), key=value UTC log lines on stderr set up by the CLI (`autoclipper.logging`), and `autoclipper.privacy.pseudonymize` (salted HMAC-SHA256). Usage: [conventions § 4 and § 6](../development/conventions.md#4-configuration) |
 | CI | ✅ In place (#5) | GitHub Actions `ci.yml`: `uv sync --locked`, Ruff, Pyright and pytest on Ubuntu and Windows for every PR and push to `main`. Not a required check yet (#3) |
 | FFmpeg runner | ✅ In place (#51) | `autoclipper.ffmpeg`: FFmpeg/FFprobe commands as argument lists, an injectable runner with timeouts and typed errors, `probe` (duration, streams) and the version string. CI installs FFmpeg (apt on Ubuntu, a pinned, checksum-verified build on Windows); FFmpeg tests skip locally without it but fail in CI ([testing](../development/testing.md#ffmpeg-tests)) |
+| Synthetic dataset | ✅ In place (#15) | `autoclipper synth --seed <n>` writes 3 fake VODs (Parquet tables in the proposed data-model schemas, chat, 16 kHz WAVs, test-pattern videos and a SHA-256 manifest) to `data/synthetic/seed-<n>/`; same seed, same bytes. Details: [testing § Synthetic dataset](../development/testing.md#synthetic-dataset) |
 | Twitch developer app | ❌ Not registered | OQ-8 |
 | Data collection | ❌ Not started | Needs channel list (OQ-4) and source/privacy decisions (OQ-9/OQ-17) before real data |
 | Labels / features / models / eval | ❌ Not started | Training target is OQ-1 |
@@ -68,3 +69,4 @@ Work through the [backlog](backlog.md) in wave order. Startable now: the Wave 0 
 - 2026-10-19: job, candidate, media and export API contract drafted for #13 (proposed, not adopted).
 - 2026-10-20: config module, logging setup and pseudonymization helper added (#14).
 - 2026-10-20: shared FFmpeg runner and media probe added, FFmpeg installed in CI (#51).
+- 2026-10-21: deterministic synthetic dataset generator and `autoclipper synth` added (#15).

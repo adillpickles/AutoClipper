@@ -1,7 +1,7 @@
 """Tests that the CLI's root callback sets up logging and reports invalid settings.
 
-The app has no subcommands yet, and the root callback only runs before one, so these tests
-register a throwaway ``probe`` subcommand on the real app for the duration of a test.
+The root callback only runs before a subcommand, so these tests register a throwaway ``probe``
+subcommand on the real app for the duration of a test.
 """
 
 import logging
