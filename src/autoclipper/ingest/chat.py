@@ -9,16 +9,19 @@ Privacy (docs/data/data-governance.md §2): the output never contains a commente
 or display name. Each message's author becomes ``user_hash``, the salted HMAC of the commenter's
 stable Twitch user ID (``commenter._id``). Message text is redacted in three steps:
 
-1. Gift-sub notices that name another viewer ("gifted a Tier 1 sub to <name>!", "the Gift Sub
-   they got from <name>!", "Gift Subs to <name>'s gift!") have that name replaced with ``user``.
+1. Gift-sub notices that name another viewer ("gifted a Tier 1 sub to <name>!", "gifted 3
+   months of Tier 1 to <name>.", "the Gift Sub they got from <name>!", "Gift Subs to <name>'s
+   gift!") have that name replaced with ``user``.
 2. Every ``@`` followed by one or more characters that are neither whitespace nor ASCII
    punctuation (``_`` excepted) becomes ``@user``. This covers Twitch logins (letters, digits,
    ``_``, any case) and localized display names, wherever the ``@`` appears: inside an e-mail
    address (``name@example.com`` becomes ``name@user.com``) or a URL (``site.tv/@name``) too.
    Over-redacting is preferred to leaking a login typed without a space.
-3. Any run of word characters (Unicode letters, digits and ``_``) that equals, ignoring case, the
-   login or display name of any commenter in the file becomes ``user``. This removes names typed
-   without ``@`` and the author's own name at the start of subscription notices.
+3. Any run of word characters (Unicode letters, digits, ``_`` and combining marks) that equals
+   the login or display name of any commenter in the file becomes ``user``. The comparison
+   ignores case and Unicode normalization form (canonical caseless matching), so ``JOSÉ`` with a
+   precomposed or a combining accent both match ``josé``. This removes names typed without ``@``
+   and the author's own name at the start of subscription notices.
 
 Names typed without ``@`` by people who never chat in the VOD, and names glued to other letters
 (e.g. CJK text without spaces), can still remain: text stays potentially identifying, and whether
@@ -34,9 +37,11 @@ import math
 import re
 import shutil
 import subprocess
+import unicodedata
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
+from itertools import groupby
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final, Literal, TypeGuard
@@ -65,15 +70,20 @@ _MODERATOR_BADGE: Final = "moderator"
 # Release builds strip the "+<git hash>" suffix; debug builds keep it.
 _BANNER_VERSION = re.compile(rf"\b{TOOL_NAME} (\d+\.\d+\.\d+)(?:\+[0-9a-f]+)?\b")
 _VIDEO_ID = re.compile(r"[0-9]+")
-# "@" + characters other than whitespace and ASCII punctuation; "_" (0x5F) stays allowed.
-_MENTION = re.compile(r"@[^\s!-/:-@\[-^`{-~]+")
+# A login or localized display name: characters other than whitespace and ASCII punctuation;
+# "_" (0x5F) stays allowed.
+_NAME = r"[^\s!-/:-@\[-^`{-~]+"
+_MENTION = re.compile("@" + _NAME)
 _WORD = re.compile(r"\w+")
 # Viewer names in gift-sub notices, as TwitchDownloader's own tests show them
-# (TwitchDownloaderCore.Tests/ToolTests/HighlightIconsTests.cs at 1.56.5).
+# (TwitchDownloaderCore.Tests/ToolTests/HighlightIconsTests.cs at 1.56.5), plus Twitch's
+# multi-month gift notice ("<gifter> gifted 3 months of Tier 1 to <name>. ...").
 _GIFT_NOTICE_NAME = re.compile(
-    r"(?<=\bsub to )\w+(?=!)"
-    r"|(?<=\bthey got from )\w+(?=!| to )"
-    r"|(?<=\bGift Subs to )\w+(?='s gift!)"
+    rf"(?<=\bsub to ){_NAME}(?=!)"
+    rf"|(?<=\bthey got from ){_NAME}(?=!| to )"
+    rf"|(?<=\bGift Subs to ){_NAME}(?='s gift!)"
+    rf"|(?<=\bmonths of Tier \d to ){_NAME}(?=\.)"
+    rf"|(?<=\bmonth of Tier \d to ){_NAME}(?=\.)"
 )
 
 
@@ -389,16 +399,31 @@ class _Redactor:
     """Applies the three text-redaction rules from the module docstring."""
 
     def __init__(self, known_names: Collection[str]) -> None:
-        self._known_names = frozenset(known_names)
+        self._known_keys = frozenset(_name_key(name) for name in known_names)
 
     def __call__(self, text: str) -> str:
         text = _GIFT_NOTICE_NAME.sub("user", text)
         text = redact_mentions(text)
-        return _WORD.sub(self._replace_known_name, text)
+        if text.isascii():  # no combining marks possible: the fast regex path
+            return _WORD.sub(lambda match: self._redact_word(match.group()), text)
+        return "".join(
+            self._redact_word(run) if is_word else run
+            for is_word, chars in groupby(text, key=_is_word_char)
+            for run in ("".join(chars),)
+        )
 
-    def _replace_known_name(self, match: re.Match[str]) -> str:
-        word = match.group()
-        return "user" if word.casefold() in self._known_names else word
+    def _redact_word(self, word: str) -> str:
+        return "user" if _name_key(word) in self._known_keys else word
+
+
+def _is_word_char(char: str) -> bool:
+    """A letter, digit, ``_`` or combining mark (regex word classes leave marks out)."""
+    return char == "_" or char.isalnum() or unicodedata.category(char).startswith("M")
+
+
+def _name_key(name: str) -> str:
+    """Unicode canonical caseless form: NFD(casefold(NFD(name)))."""
+    return unicodedata.normalize("NFD", unicodedata.normalize("NFD", name).casefold())
 
 
 def _check_video_id(video_id: str) -> None:
@@ -473,7 +498,7 @@ def _third_party_emote_names(embedded: object) -> frozenset[str] | None:
 
 
 def _commenter_names(comments: list[object]) -> set[str]:
-    """Case-folded logins and display names of every commenter, malformed comments included."""
+    """Logins and display names of every commenter, malformed comments included."""
     names: set[str] = set()
     for comment in comments:
         commenter = comment.get("commenter") if isinstance(comment, dict) else None
@@ -481,7 +506,7 @@ def _commenter_names(comments: list[object]) -> set[str]:
             for key in ("name", "display_name"):
                 value = commenter.get(key)
                 if isinstance(value, str) and value.strip():
-                    names.add(value.strip().casefold())
+                    names.add(value.strip())
     return names
 
 

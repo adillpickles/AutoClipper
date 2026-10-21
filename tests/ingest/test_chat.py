@@ -241,6 +241,28 @@ def test_redact_mentions(text: str, expected: str) -> None:
     assert redact_mentions(text) == expected
 
 
+@pytest.mark.parametrize(
+    ("display_name", "body"),
+    [
+        # Arabic with a combining damma (U+064F), which \\w doesn't match.
+        (
+            "\u0645\u064f\u062e\u062a\u0628\u0631",
+            "\u0645\u064f\u062e\u062a\u0628\u0631 subscribed at Tier 1.",
+        ),
+        # Precomposed name, decomposed and upper-cased in the text.
+        ("Jos\u00e9", "JOSE\u0301 subscribed at Tier 1."),
+        # Decomposed name, precomposed in the text.
+        ("Jose\u0301", "jos\u00e9 subscribed at Tier 1."),
+    ],
+)
+def test_known_names_with_combining_marks_are_redacted(display_name: str, body: str) -> None:
+    root = _fixture()
+    root["comments"][0]["commenter"]["display_name"] = display_name
+    root["comments"][0]["message"]["body"] = body
+
+    assert _parse(root).messages[0].text == "user subscribed at Tier 1."
+
+
 def test_known_names_are_redacted_as_whole_words_only() -> None:
     root = _fixture()
     root["comments"][0]["message"]["body"] = "USER_002 and user_0022 and xuser_002 and User_002!"
@@ -259,6 +281,16 @@ def test_known_names_are_redacted_as_whole_words_only() -> None:
         ),
         ("We added 1 Gift Subs to viewer_042's gift! ", "We added 1 Gift Subs to user's gift! "),
         ("they got from an anonymous user!", "they got from an anonymous user!"),
+        (
+            "x gifted 3 months of Tier 1 to viewer_042. They've gifted 9 months in the channel!",
+            "x gifted 3 months of Tier 1 to user. They've gifted 9 months in the channel!",
+        ),
+        ("x gifted 1 month of Tier 2 to viewer_042.", "x gifted 1 month of Tier 2 to user."),
+        # A localized recipient name with a combining mark (Arabic damma).
+        (
+            "x gifted a Tier 1 sub to \u0645\u064f\u062e\u062a\u0628\u0631!",
+            "x gifted a Tier 1 sub to user!",
+        ),
     ],
 )
 def test_redacts_viewer_names_in_gift_notices(body: str, expected: str) -> None:
