@@ -55,11 +55,16 @@ These rules prevent the most common silent bugs in this project:
 | Never store or compare naive datetimes | `datetime.now(tz=UTC)` |
 | Twitch IDs are `str`. Never cast them to `int`. | `video_id: str` |
 | Sample rates and other units appear in names or docstrings | `sample_rate_hz` |
-| Pseudonymized identifiers end with `_hash` | `user_hash` |
+| Pseudonymized identifiers end with `_hash` and come from `autoclipper.privacy.pseudonymize` | `user_hash` |
 
 ## 4. Configuration
 
-- All settings come from `autoclipper.config` (Pydantic Settings reading env vars / `.env`). **Never read `os.environ` elsewhere.**
+- All settings come from `autoclipper.config` (Pydantic Settings reading env vars / `.env`). **Never read `os.environ` elsewhere.** `tests/test_config.py` fails if another module does.
+- Entry points (CLI commands, the API app) call `get_settings()`, which returns one cached, immutable `Settings`. Library functions take what they need (`settings.data_dir`, credentials, the salt) as parameters instead of calling `get_settings()` themselves, so tests can pass values directly.
+- Environment variables win over `.env`, which is read from the current working directory only (no parent search). Empty values count as unset. `data_dir` and `artifacts_dir` are absolute `Path`s: relative values and the defaults (`data`, `artifacts`) resolve against the working directory when settings load. [Setup § Configuration](setup.md#configuration) has the user-facing rules.
+- Secrets (`TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `AUTOCLIPPER_CHAT_HASH_SALT`) are `SecretStr`, which prints as `**********`. Call `.get_secret_value()` only where the value is sent or used.
+- Get optional settings an operation needs through `settings.require_twitch_credentials()` or `settings.require_chat_hash_salt()`. They raise `MissingSettingError` naming the missing variables. Invalid values, or a `.env` that can't be read or parsed, make `get_settings()` raise `ConfigError` (the base class), and the CLI reports those with exit code 1 before any command runs. A command that calls a `require_*` method maps `MissingSettingError` to `ExitCode.USER_ERROR`. Error messages name variables but never show their values.
+- A new setting is a `Settings` field with `validation_alias` set to its variable name, plus a line in `.env.example`, in the same PR. `tests/test_config.py` checks that the two match.
 - No hard-coded paths, credentials or channel names in library code. Channels live in `configs/channels.yaml`.
 - Algorithm parameters (window size, gap thresholds) are named constants or config values, documented where they're defined, and match [labeling](../data/labeling.md).
 
@@ -77,6 +82,8 @@ These rules prevent the most common silent bugs in this project:
 - Don't catch broad `Exception` except at the top level (CLI/API) or to add context and re-raise.
 - Retry **only** network operations, with exponential backoff and a cap.
 - Use `logging.getLogger(__name__)` with key=value messages: `log.info("fetched clips video_id=%s n=%d", vid, n)`.
+- Only entry points configure logging, by calling `autoclipper.logging.configure_logging()` once. The CLI's root callback does it for every subcommand. Library modules never call `basicConfig` or add handlers (`tests/test_logging.py` checks it).
+- Each record is one line on stderr: `ts=2026-10-19T16:29:01.123Z level=INFO logger=autoclipper.ingest fetched clips video_id=123 n=5` (UTC, milliseconds). `AUTOCLIPPER_LOG_LEVEL` sets the level of the `autoclipper` loggers. Other libraries keep Python's default of WARNING.
 - **Never log** secrets, tokens or raw usernames.
 
 ## 7. CLI

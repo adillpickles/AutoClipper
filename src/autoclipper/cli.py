@@ -18,6 +18,8 @@ from typer._click.exceptions import UsageError
 from typer.core import TyperGroup
 
 from autoclipper import __version__
+from autoclipper.config import ConfigError
+from autoclipper.logging import configure_logging
 
 if TYPE_CHECKING:
     # Only needed to match the signatures overridden in _RootGroup.
@@ -99,3 +101,10 @@ def root(
     ] = False,
 ) -> None:
     """Find, rank and export the highlights of a long Twitch VOD."""
+    # Runs before every subcommand (not for --help or --version), so all commands log the same
+    # way. Invalid settings are a user error: report them without a traceback.
+    try:
+        configure_logging()
+    except ConfigError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None

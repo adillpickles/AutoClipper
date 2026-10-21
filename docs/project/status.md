@@ -22,6 +22,7 @@ Scope, architecture and team workflow are documented, and the core tech stack is
 | Team access | ⚠️ Owner only | Teammates still need to be added as collaborators (OQ-11) |
 | Issue backlog | ✅ Published | Waves 0–6 are issues #3–#50 (numbers in the [backlog](backlog.md) index); optional drafts not published yet |
 | Python scaffold | ✅ In place (#5) | uv project (Python 3.12, `src/` layout, `uv.lock`), `autoclipper` CLI shell with `--help`/`--version`, Ruff, Pyright (`standard`), pytest (live tests deselected by default) and pre-commit hooks. Commands: [`AGENTS.md` § 5](../../AGENTS.md#5-commands) |
+| Config and logging | ✅ In place (#14) | `autoclipper.config` (pydantic-settings: environment, then `.env` in the working directory; cached `get_settings()`; secrets as `SecretStr`), key=value UTC log lines on stderr set up by the CLI (`autoclipper.logging`), and `autoclipper.privacy.pseudonymize` (salted HMAC-SHA256). Usage: [conventions § 4 and § 6](../development/conventions.md#4-configuration) |
 | CI | ✅ In place (#5) | GitHub Actions `ci.yml`: `uv sync --locked`, Ruff, Pyright and pytest on Ubuntu and Windows for every PR and push to `main`. Not a required check yet (#3) |
 | Twitch developer app | ❌ Not registered | OQ-8 |
 | Data collection | ❌ Not started | Needs channel list (OQ-4) and source/privacy decisions (OQ-9/OQ-17) before real data |
@@ -64,3 +65,4 @@ Work through the [backlog](backlog.md) in wave order. Startable now: the Wave 0 
 
 - 2026-10-19: Next.js frontend scaffolded in `web/` with lint, typecheck, format and build CI (#6).
 - 2026-10-19: job, candidate, media and export API contract drafted for #13 (proposed, not adopted).
+- 2026-10-20: config module, logging setup and pseudonymization helper added (#14).
