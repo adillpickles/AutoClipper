@@ -147,7 +147,7 @@ data/
 ├── raw/                         # exactly as downloaded; never edited
 │   ├── api/<endpoint>/<date>/…json
 │   ├── chat/<video_id>.json     # TwitchDownloader output (contains usernames, local only)
-│   └── audio/<video_id>.<ext>  # yt-dlp best audio-only format (mp4 for Twitch)
+│   └── audio/<video_id>.<ext>  # best audio-only format as served (.ts for Twitch)
 ├── interim/                     # parsed, pseudonymized, per-VOD
 │   ├── chat/<video_id>.parquet # only if message retention is approved (OQ-9)
 │   └── audio/<video_id>.wav     # 16 kHz mono, for feature extraction

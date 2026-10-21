@@ -116,13 +116,15 @@ Checked 2026-10-13: [Twitch's VOD policy](https://help.twitch.tv/s/article/video
 ## 3. VOD media: yt-dlp (unofficial)
 
 - **Repo:** <https://github.com/yt-dlp/yt-dlp>
-- **Audio only** for feature extraction. Twitch VODs usually expose an audio-only format. `autoclipper.ingest.media` downloads it through yt-dlp's Python API with the selector `bestaudio/worst` (the lowest-quality format with both video and audio when there is no audio-only one), to `data/raw/audio/<video_id>.<ext>`. A comparable CLI call:
+- **Audio only** for feature extraction. Twitch VODs usually expose an audio-only format. `autoclipper.ingest.media` downloads it through yt-dlp's Python API with the selector `bestaudio` to `data/raw/audio/<video_id>.<ext>`. There is no fallback to formats with video: a VOD without an audio-only format fails with `NoAudioOnlyFormatError`. A comparable CLI call:
 
   ```bash
-  yt-dlp -f "bestaudio/worst" -o "data/raw/audio/<video_id>.%(ext)s" https://www.twitch.tv/videos/<video_id>
+  yt-dlp -f "bestaudio" --downloader native --fixup never -o "data/raw/audio/<video_id>.%(ext)s" https://www.twitch.tv/videos/<video_id>
   ```
 
-  Don't use `%(id)s` in the file name: for Twitch VODs yt-dlp's `id` is `v<video_id>` (`yt_dlp/extractor/twitch.py`, checked for yt-dlp 2026.08.19), and the extension it reports for Twitch's HLS formats is `mp4`, not `m4a`.
+  Don't use `%(id)s` in the file name: for Twitch VODs yt-dlp's `id` is `v<video_id>` (`yt_dlp/extractor/twitch.py`, checked for yt-dlp 2026.08.19).
+- **No FFmpeg inside yt-dlp.** yt-dlp would otherwise run FFmpeg/FFprobe itself (an availability check, a remux of HLS downloads), outside `autoclipper.ffmpeg` and without a timeout. The download uses yt-dlp's native HLS downloader with fix-ups off, so the raw file is the HLS segments as served: MPEG-TS for Twitch, which yt-dlp still calls `mp4`. The file is renamed by the container ffprobe finds (`.ts`).
+- **Resuming and checks.** yt-dlp resumes an HLS download from its `.ytdl` file; a `.part` file without a readable `.ytdl` is deleted first, because yt-dlp 2026.08.19 would restart and append to it, duplicating audio. A finished download must play for the duration the source reports (within the larger of 2 s and 0.2 %), measured by reading the stream with FFmpeg rather than from ffprobe's container duration (which for MPEG-TS comes from the first and last timestamps and misses repeated segments); otherwise it is deleted.
 
 - **Segments** for preview/export can reduce download cost, subject to source authorization and a pilot verifying tool behavior:
 
@@ -130,8 +132,8 @@ Checked 2026-10-13: [Twitch's VOD policy](https://help.twitch.tv/s/article/video
   yt-dlp --download-sections "*<start>-<end>" -f "best[height<=1080]" -o "…" https://www.twitch.tv/videos/<video_id>
   ```
 
-- Audio is then normalized with FFmpeg to 16 kHz mono 16-bit PCM WAV (`data/interim/audio/<video_id>.wav`) for analysis.
-- **Errors:** yt-dlp has no error codes. `autoclipper.ingest.media.classify_download_error` sorts its failures into unavailable VOD, subscriber-only/login, network and other tool errors by exception type and message wording, which can change between yt-dlp versions. Recheck those patterns when upgrading.
+- Audio is then normalized with FFmpeg to 16 kHz mono 16-bit PCM WAV (`data/interim/audio/<video_id>.wav`) for analysis. Gaps in the audio's timestamps become silence (`aresample=async=1:first_pts=0`), so WAV time is VOD time, and a WAV whose duration differs from the source's (undecodable or repeated audio) is rejected.
+- **Errors:** yt-dlp has no error codes. `autoclipper.ingest.media.classify_download_error` sorts its failures into unavailable VOD, subscriber-only/login, no audio-only format, network and other tool errors by exception type and message wording, which can change between yt-dlp versions. Recheck those patterns when upgrading.
 - **Risks:** unofficial and may conflict with platform terms (see [governance](data-governance.md)). Keep yt-dlp up to date, because Twitch changes break old versions.
 
 ## 4. Live chat: official Twitch chat (backup and live mode)
