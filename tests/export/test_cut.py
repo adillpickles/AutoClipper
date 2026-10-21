@@ -113,6 +113,24 @@ def test_minimum_duration_is_exactly_allowed() -> None:
     assert plan.actual.duration_s == MIN_CLIP_DURATION_S
 
 
+@pytest.mark.parametrize(
+    ("start_s", "end_s"),
+    [(3.6, 4.1), (15.9, 16.4), (0.2, 0.7), (2047.7, 2048.2)],
+)
+def test_minimum_duration_tolerates_float_rounding_of_decimal_bounds(
+    start_s: float, end_s: float
+) -> None:
+    # In binary floating point, each of these differences is just under 0.5.
+    plan = plan_cut(Interval(start_s, end_s), 3600.0)
+
+    assert plan.actual == Interval(start_s, end_s)
+
+
+def test_an_interval_measurably_shorter_than_the_minimum_still_fails() -> None:
+    with pytest.raises(IntervalTooShortError):
+        plan_cut(Interval(3.6, 4.0999), 60.0)
+
+
 def test_minimum_duration_is_a_parameter() -> None:
     plan = plan_cut(Interval(10.0, 10.2), 60.0, min_duration_s=0.1)
 

@@ -18,6 +18,10 @@ from autoclipper.export.errors import ExportError
 # the wrong unit), so it fails with `IntervalTooShortError` instead of producing a few frames.
 MIN_CLIP_DURATION_S = 0.5
 
+# Slack for comparing durations computed from float bounds: 4.1 - 3.6 is just under 0.5.
+# One microsecond, FFmpeg's internal time base, so nothing FFmpeg can tell apart is lost.
+DURATION_EPSILON_S = 1e-6
+
 
 class InvalidIntervalError(ExportError, ValueError):
     """An interval or padding value is not finite, negative, or ends before it starts."""
@@ -126,7 +130,8 @@ def plan_cut(
         requested: The trimmed interval in source time.
         media_duration_s: Duration of the source media in seconds (from `autoclipper.ffmpeg.probe`).
         padding: Context to add on each side before clamping. None means no padding.
-        min_duration_s: The shortest interval that may remain after clamping.
+        min_duration_s: The shortest interval that may remain after clamping, compared with
+            `DURATION_EPSILON_S` of slack.
 
     Returns:
         The requested, padding and actual intervals.
@@ -151,7 +156,7 @@ def plan_cut(
         )
     start_s = max(0.0, padded_start_s)
     end_s = min(media_duration_s, padded_end_s)
-    if end_s - start_s < min_duration_s:
+    if end_s - start_s < min_duration_s - DURATION_EPSILON_S:
         raise IntervalTooShortError(
             f"the interval {requested.start_s:g}-{requested.end_s:g} s (padded "
             f"{padded_start_s:g}-{padded_end_s:g} s) leaves {max(0.0, end_s - start_s):g} s inside "
