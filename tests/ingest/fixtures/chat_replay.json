@@ -1,0 +1,564 @@
+{
+  "FileInfo": {
+    "Version": {
+      "Major": 1,
+      "Minor": 4,
+      "Patch": 0
+    },
+    "CreatedAt": "2026-10-02T09:00:00.0000000+00:00",
+    "UpdatedAt": "0001-01-01T00:00:00"
+  },
+  "streamer": {
+    "name": "Streamer_000",
+    "login": "streamer_000",
+    "id": 9000000000
+  },
+  "clipper": null,
+  "video": {
+    "title": "Synthetic test stream",
+    "description": null,
+    "id": "9000000100",
+    "created_at": "2026-10-01T18:00:00Z",
+    "start": 0,
+    "end": 3600,
+    "length": 3600,
+    "viewCount": 10,
+    "game": "Just Chatting",
+    "chapters": []
+  },
+  "comments": [
+    {
+      "_id": "00000000-0000-4000-8000-000000000001",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 1.5,
+      "commenter": {
+        "display_name": "User_001",
+        "_id": "9000000001",
+        "name": "user_001",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "hello chat Kappa",
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "hello chat ",
+            "emoticon": null
+          },
+          {
+            "text": "Kappa",
+            "emoticon": {
+              "emoticon_id": "25"
+            }
+          }
+        ],
+        "user_badges": [
+          {
+            "_id": "subscriber",
+            "version": "12"
+          }
+        ],
+        "user_color": "#1E90FF",
+        "emoticons": [
+          {
+            "_id": "25",
+            "begin": 11,
+            "end": 17
+          }
+        ]
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000002",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 3.25,
+      "commenter": {
+        "display_name": "User_002",
+        "_id": "9000000002",
+        "name": "user_002",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "@user_001 welcome! @User_003, gg",
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "@user_001 welcome! @User_003, gg",
+            "emoticon": null
+          }
+        ],
+        "user_badges": [
+          {
+            "_id": "moderator",
+            "version": "1"
+          }
+        ],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000003",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 5,
+      "commenter": {
+        "display_name": "User_003",
+        "_id": "9000000003",
+        "name": "user_003",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "Cheer100 nice play OMEGALUL",
+        "bits_spent": 100,
+        "fragments": [
+          {
+            "text": "Cheer100 nice play OMEGALUL",
+            "emoticon": null
+          }
+        ],
+        "user_badges": [
+          {
+            "_id": "founder",
+            "version": "0"
+          },
+          {
+            "_id": "bits",
+            "version": "100"
+          }
+        ],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000004",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 7.0,
+      "commenter": {
+        "display_name": "User_001",
+        "_id": "9000000001",
+        "name": "user_001",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "User_001 subscribed at Tier 1. They've subscribed for 3 months! hype",
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "User_001 subscribed at Tier 1. They've subscribed for 3 months! hype",
+            "emoticon": null
+          }
+        ],
+        "user_badges": [
+          {
+            "_id": "subscriber",
+            "version": "12"
+          }
+        ],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000005",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 8.5,
+      "commenter": {
+        "display_name": "User_004",
+        "_id": "9000000004",
+        "name": "user_004",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "User_004 gifted a Tier 1 sub to user_005! ",
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "User_004 gifted a Tier 1 sub to user_005! ",
+            "emoticon": null
+          }
+        ],
+        "user_badges": [],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000006",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 10.0,
+      "commenter": {
+        "display_name": "User_002",
+        "_id": "9000000002",
+        "name": "user_002",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "user_003 is right, mail someone@example.com or see example.tv/@user_005",
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "user_003 is right, mail someone@example.com or see example.tv/@user_005",
+            "emoticon": null
+          }
+        ],
+        "user_badges": [
+          {
+            "_id": "moderator",
+            "version": "1"
+          }
+        ],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000007",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 12.0,
+      "commenter": {
+        "display_name": "テスト六",
+        "_id": "9000000006",
+        "name": "user_006",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "LUL LUL pepeLaugh",
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "LUL",
+            "emoticon": {
+              "emoticon_id": "425618"
+            }
+          },
+          {
+            "text": " ",
+            "emoticon": null
+          },
+          {
+            "text": "LUL",
+            "emoticon": {
+              "emoticon_id": "425618"
+            }
+          },
+          {
+            "text": " pepeLaugh",
+            "emoticon": null
+          }
+        ],
+        "user_badges": null,
+        "user_color": "#1E90FF",
+        "emoticons": [
+          {
+            "_id": "425618",
+            "begin": 0,
+            "end": 4
+          },
+          {
+            "_id": "425618",
+            "begin": 4,
+            "end": 8
+          }
+        ]
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000008",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 13.0,
+      "commenter": {
+        "display_name": "User_001",
+        "_id": "9000000001",
+        "name": "user_001",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "@テスト六 こんにちは テスト六",
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "@テスト六 こんにちは テスト六",
+            "emoticon": null
+          }
+        ],
+        "user_badges": [
+          {
+            "_id": "subscriber",
+            "version": "12"
+          }
+        ],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000009",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 14.0,
+      "commenter": {
+        "display_name": "User_007",
+        "name": "user_007",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "user_007 here",
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "user_007 here",
+            "emoticon": null
+          }
+        ],
+        "user_badges": [],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000010",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": "abc",
+      "commenter": {
+        "display_name": "User_001",
+        "_id": "9000000001",
+        "name": "user_001",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "offset is text",
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "offset is text",
+            "emoticon": null
+          }
+        ],
+        "user_badges": [
+          {
+            "_id": "subscriber",
+            "version": "12"
+          }
+        ],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000011",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 15.0,
+      "commenter": {
+        "display_name": "User_008",
+        "_id": "9000000008",
+        "name": "user_008",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": null,
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "x",
+            "emoticon": null
+          }
+        ],
+        "user_badges": [],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    },
+    "user_009 said hi",
+    {
+      "_id": "00000000-0000-4000-8000-000000000012",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000999",
+      "content_offset_seconds": 16.0,
+      "commenter": {
+        "display_name": "User_002",
+        "_id": "9000000002",
+        "name": "user_002",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "other video",
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "other video",
+            "emoticon": null
+          }
+        ],
+        "user_badges": [],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000013",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 17.0,
+      "commenter": {
+        "display_name": "User_003",
+        "_id": "9000000003",
+        "name": "user_003",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "Cheer5 negative",
+        "bits_spent": -5,
+        "fragments": [
+          {
+            "text": "Cheer5 negative",
+            "emoticon": null
+          }
+        ],
+        "user_badges": [],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000014",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 18.0,
+      "commenter": {
+        "display_name": "User_004",
+        "_id": "9000000004",
+        "name": "user_004",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "Kappa",
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "Kappa",
+            "emoticon": {}
+          }
+        ],
+        "user_badges": [],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    },
+    {
+      "_id": "00000000-0000-4000-8000-000000000015",
+      "created_at": "2026-10-01T18:00:00Z",
+      "channel_id": "9000000000",
+      "content_type": "video",
+      "content_id": "9000000100",
+      "content_offset_seconds": 19.0,
+      "commenter": {
+        "display_name": "User_008",
+        "_id": "9000000008",
+        "name": "user_008",
+        "bio": null,
+        "created_at": "2020-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "logo": null
+      },
+      "message": {
+        "body": "bad badge",
+        "bits_spent": 0,
+        "fragments": [
+          {
+            "text": "bad badge",
+            "emoticon": null
+          }
+        ],
+        "user_badges": [
+          {
+            "version": "1"
+          }
+        ],
+        "user_color": "#1E90FF",
+        "emoticons": []
+      }
+    }
+  ],
+  "embeddedData": null
+}
