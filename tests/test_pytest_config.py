@@ -76,6 +76,40 @@ def test_marker_expression_naming_live_is_used_as_given(
     assert _passed_test_names(recorder) == expected
 
 
+LIVE_AND_OFFLINE_SETTINGS_TESTS = """
+import os
+
+import pytest
+
+from autoclipper.config import get_settings
+
+
+@pytest.mark.live
+def test_live_test_keeps_local_settings():
+    assert os.environ["TWITCH_CLIENT_ID"] == "fake-client-id"
+    assert get_settings().require_chat_hash_salt().get_secret_value() == "fake-salt"
+
+
+def test_offline_test_is_isolated():
+    assert "TWITCH_CLIENT_ID" not in os.environ
+    assert get_settings().chat_hash_salt is None
+"""
+
+
+def test_live_tests_keep_the_developers_env_and_dotenv(
+    project: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TWITCH_CLIENT_ID", "fake-client-id")
+    (project.path / ".env").write_text("AUTOCLIPPER_CHAT_HASH_SALT=fake-salt\n", encoding="utf-8")
+    (project.path / "tests" / "test_settings.py").write_text(
+        LIVE_AND_OFFLINE_SETTINGS_TESTS, encoding="utf-8"
+    )
+
+    recorder = project.inline_run("-m", "live or not live", "tests/test_settings.py")
+
+    recorder.assertoutcome(passed=2)
+
+
 def test_unregistered_markers_are_errors(project: pytest.Pytester) -> None:
     project.makepyfile(
         test_typo="""

@@ -39,7 +39,9 @@ SETTINGS_ENV_VARS = frozenset(
 
 
 @pytest.fixture(autouse=True)
-def _isolate_from_local_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _isolate_from_local_setup(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
     """Keep every test away from the developer's .env, environment, data and logging setup.
 
     Each test runs with its own empty ``tmp_path`` as the working directory, so `get_settings`
@@ -47,12 +49,17 @@ def _isolate_from_local_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     directories point inside it. The variables behind AutoClipper's settings are removed from
     the environment, the settings cache is cleared before and after the test, and any logging
     setup is undone afterwards.
+
+    `live` tests are the exception: they call real services with the developer's credentials,
+    so they keep the working directory (and its ``.env``) and the environment. The settings
+    cache and logging are still reset around them.
     """
-    monkeypatch.chdir(tmp_path)
-    for name in list(os.environ):
-        # Settings match variable names case-insensitively, so remove every spelling.
-        if name.upper() in SETTINGS_ENV_VARS:
-            monkeypatch.delenv(name)
+    if request.node.get_closest_marker("live") is None:
+        monkeypatch.chdir(tmp_path)
+        for name in list(os.environ):
+            # Settings match variable names case-insensitively, so remove every spelling.
+            if name.upper() in SETTINGS_ENV_VARS:
+                monkeypatch.delenv(name)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

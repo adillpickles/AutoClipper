@@ -36,7 +36,7 @@ Tests protect the parts where bugs are **silent**: a label shifted by 10 seconds
 - Live in `tests/fixtures/`. **Synthetic only**: fake usernames (`user_001`), invented messages, generated audio (sine bursts, noise).
 - Keep them tiny (KB). Generate larger ones on the fly in a fixture function.
 - Recorded API responses (for client tests) must be **scrubbed**: replace usernames and IDs with fakes.
-- **Isolation from your machine:** an autouse fixture in `tests/conftest.py` runs every test with its own empty `tmp_path` as the working directory. It removes the environment variables behind AutoClipper's settings, clears the `get_settings()` cache before and after the test, and undoes `configure_logging()` afterwards. Tests therefore never read your `.env`, and the default data and artifacts dirs point into `tmp_path`. Set a value with `monkeypatch.setenv(...)` or by writing `tmp_path / ".env"`. Find fixture files relative to `__file__`, not the working directory.
+- **Isolation from your machine:** an autouse fixture in `tests/conftest.py` runs every test with its own empty `tmp_path` as the working directory. It removes the environment variables behind AutoClipper's settings, clears the `get_settings()` cache before and after the test, and undoes `configure_logging()` afterwards. Tests therefore never read your `.env`, and the default data and artifacts dirs point into `tmp_path`. Set a value with `monkeypatch.setenv(...)` or by writing `tmp_path / ".env"`. Find fixture files relative to `__file__`, not the working directory. Explicitly selected `live` tests are the exception: they keep your working directory, `.env` and environment so they can use real credentials (the settings cache and logging are still reset).
 
 ## Conventions
 
