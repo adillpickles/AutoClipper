@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Proposal. Binding once the scaffold lands. |
-| **Last updated** | 2026-10-09 |
+| **Status** | Binding. pytest is configured in `pyproject.toml` (`[tool.pytest]`). The coverage target below is still a proposal. |
+| **Last updated** | 2026-10-19 |
 
 ## Goals
 
@@ -45,14 +45,26 @@ Tests protect the parts where bugs are **silent**: a label shifted by 10 seconds
 - No sleeps, no network, no reliance on wall-clock time in unit tests. Inject clocks and HTTP clients.
 - Test **behavior, not implementation**. A refactor that keeps behavior shouldn't break tests.
 - Bug fixes come with a regression test that fails before the fix.
-- The scaffold must configure default pytest selection to exclude live tests (a marker alone does not exclude them). Explicit live runs need the appropriate credentials/authorization and never run in ordinary CI.
+- Live tests are deselected by default: a hook in `tests/conftest.py` adds `and not live` to every `-m` expression that doesn't name `live` (a marker alone doesn't exclude anything, and an `addopts` default would be replaced by any `-m` on the command line). So `-m "not slow"` still skips them; only an expression that names `live`, such as `-m live`, can select them. `tests/test_pytest_config.py` checks this. Explicit live runs need the appropriate credentials/authorization and never run in ordinary CI.
 
-## Commands (planned)
+## Configuration
+
+Set in `[tool.pytest]` in `pyproject.toml` (pytest 9 native TOML config):
+
+- `testpaths = ["tests"]`, so a bare `uv run pytest` runs the whole suite.
+- `--import-mode=importlib`: test folders need no `__init__.py`, and files in different folders may share a name (`tests/ingest/test_chat.py`, `tests/features/test_chat.py`).
+- `strict = true`: an unregistered marker is an error, so a typo like `@pytest.mark.lvie` can't slip a live test into CI. Register new markers under `markers`. `xfail` is strict too: an unexpected pass fails.
+- `filterwarnings = ["error"]`: warnings fail the test. If a third-party library warns and you can't fix the cause, add a targeted `ignore:` entry with a comment saying why.
+
+## Commands
 
 ```bash
-uv run pytest                    # unit + contract + integration
-uv run pytest -m live            # live API tests (needs .env); never in CI
-uv run pytest --cov=autoclipper  # coverage report
+uv run pytest                       # unit + contract + integration; live tests are deselected
+uv run pytest tests/test_cli.py     # one file (or a folder, or file::test_name)
+uv run pytest -m live               # only live tests (needs .env and source authorization); never in CI
+uv run pytest --cov=autoclipper     # with a coverage report (branch coverage, missing lines)
 ```
+
+`uv run pytest -m live` exits with code 5 ("no tests ran") while no live tests exist.
 
 Coverage target (proposal): ≥ 80% for `labels/`, `features/` and `eval/`. No hard target elsewhere. Meaningful tests beat a coverage number.

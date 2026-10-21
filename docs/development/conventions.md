@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Binding ([ADR-0002](../decisions/0002-language-and-tooling.md) and [ADR-0003](../decisions/0003-repository-layout.md) are accepted). Tool config in `pyproject.toml` (once it exists) is authoritative for anything automated. |
-| **Last updated** | 2026-10-16 |
+| **Status** | Binding ([ADR-0002](../decisions/0002-language-and-tooling.md) and [ADR-0003](../decisions/0003-repository-layout.md) are accepted). Tool config in `pyproject.toml` is authoritative for anything automated. |
+| **Last updated** | 2026-10-19 |
 
 These conventions exist so that code written by different people and different agents looks like it was written by one careful person. **When in doubt, match the surrounding code.** If the surrounding code contradicts this doc, flag it.
 
@@ -35,7 +35,7 @@ Create directories only when a task needs them.
 ## 2. Python style
 
 - **Python 3.12.** Use modern syntax: `list[str]`, `X | None`, `match` where it clarifies.
-- **Formatting and linting:** Ruff (format + lint), line length **100**. Don't hand-format. Don't fight the formatter.
+- **Formatting and linting:** Ruff (format + lint), line length **100**. Don't hand-format. Don't fight the formatter. `ruff format` also formats ` ```python ` code blocks in Markdown files, so a docs-only change can fail the format check; run `uv run ruff format .` before committing docs with Python examples. The rule selection in `pyproject.toml` enforces the mechanical parts of this doc (type hints, docstrings, absolute imports, pathlib, aware datetimes, no `print`, logging style); the comment next to each rule set names the section it enforces, where there is one.
 - **Types:** type hints on every function signature and public attribute. Pyright in `standard` mode. `Any` needs a comment explaining why.
 - **Naming:** `snake_case` for modules, functions and variables. `PascalCase` for classes. `UPPER_SNAKE` for constants. Names say what, not how (`merge_clips_into_moments`, not `process`).
 - **Imports:** absolute (`from autoclipper.features import chat`). No wildcard imports. Ruff sorts them.
@@ -84,13 +84,13 @@ These rules prevent the most common silent bugs in this project:
 - Typer app in `cli.py`. Each subcommand is a thin call into a library function.
 - Subcommands are verbs: `ingest`, `collect`, `build-dataset`, `features`, `train`, `eval`, `analyze`, `export`.
 - Long-running commands show progress (`rich` progress bars) and are resumable/idempotent. `--force` re-runs.
-- Exit codes: 0 success, 1 user/input error, 2 external failure (network/tool).
+- Exit codes: 0 success, 1 user/input error, 2 external failure (network/tool). Use `autoclipper.cli.ExitCode`. Command-line usage errors (unknown option or command, bad value) already exit with 1.
 
 ## 8. Notebooks
 
 - Notebooks are for **exploration and visualization**, not for producing reported results or holding logic that matters.
 - Name them `notebooks/YYYY-MM-DD-<author-initials>-<topic>.ipynb`.
-- **Clear outputs before committing** (outputs can contain chat text or large images). A pre-commit hook will enforce this.
+- **Clear outputs before committing** (outputs can contain chat text or large images). The `nbstripout` pre-commit hook strips them.
 - When logic in a notebook proves useful, move it into `src/autoclipper/` with tests.
 
 ## 9. Dependencies

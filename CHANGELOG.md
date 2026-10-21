@@ -15,3 +15,4 @@ PRs that change user-visible behavior, data schemas, label definitions or evalua
 - Repository configuration: `.gitignore` (synthetic fixtures allowed without exposing secrets), `.gitattributes`, `.editorconfig`, `.env.example`.
 - Implementation backlog (`docs/project/backlog.md`): copy-ready issue drafts for the semester MVP in dependency order, plus optional polish.
 - Category-first label policy without priority or size labels (`docs/project/labels.md`).
+- Python package scaffold: uv project for Python 3.12 (`src/` layout, committed `uv.lock`), an `autoclipper` CLI with `--help` and `--version`, Ruff, Pyright and pytest configuration (live tests deselected by default), pre-commit hooks, and a GitHub Actions CI workflow on Ubuntu and Windows.

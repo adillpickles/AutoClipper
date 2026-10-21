@@ -1,0 +1,31 @@
+# Git hooks. Install once per clone with `uv run pre-commit install`; run them on every file
+# with `uv run pre-commit run --all-files`. Hook versions are pinned; keep the ruff-pre-commit
+# `rev` equal to the ruff version in uv.lock so the hook and CI lint with the same Ruff.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # Data, media and model files never belong in git (AGENTS.md §6 rule 1).
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: detect-private-key
+      # The team works on Windows and macOS, whose default file systems are case-insensitive.
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      - id: ruff-check
+        args: ["--fix"]
+      - id: ruff-format
+
+  # Notebook outputs can contain chat text or large images (conventions §8).
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.9.1
+    hooks:
+      - id: nbstripout

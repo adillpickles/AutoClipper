@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# The workflow only reads the repository.
+permissions:
+  contents: read
+
+# A new push to a pull request cancels that pull request's older runs. Each push to main gets
+# its own group (keyed by run ID): a group holds only one pending run and a newer one replaces
+# it, so a shared group would skip commits that land while main is busy.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  python:
+    name: Python (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      # Report both platforms even when one of them fails.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      # Actions are pinned to full commit SHAs; the comment names the release.
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      # Installs Python 3.12 (from .python-version) and the locked dependencies. Fails if
+      # uv.lock does not match pyproject.toml.
+      - name: Install the project
+        run: uv sync --locked
+
+      - name: Lint (Ruff)
+        run: uv run ruff check .
+
+      - name: Check formatting (Ruff)
+        run: uv run ruff format --check .
+
+      - name: Type check (Pyright)
+        run: uv run pyright
+
+      # Live tests are deselected by the pytest config in pyproject.toml.
+      - name: Test (pytest)
+        run: uv run pytest
