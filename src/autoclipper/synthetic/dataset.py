@@ -22,6 +22,7 @@ import logging
 import platform
 import shutil
 import tempfile
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -84,12 +85,14 @@ def generate_dataset(
     """Generate the synthetic dataset for `seed` into `out_dir`.
 
     Everything is written to a temporary sibling directory first and moved into place at the
-    end, so a failure leaves no partial dataset behind.
+    end, so a failure leaves no partial dataset behind. An earlier dataset being replaced is
+    moved aside first and deleted only once the new one is in place; if the swap fails, it is
+    put back.
 
     Args:
         out_dir: Directory to create. It may exist only if it is empty, or with `force` if it
-            holds an earlier synthetic dataset (it then is replaced). Any other content is
-            never deleted, so a mistaken path can't clobber real data.
+            holds an earlier synthetic dataset and nothing else (only files its manifest lists).
+            Any other content is never deleted, so a mistaken path can't clobber real data.
         seed: Non-negative seed; the same seed gives the same data.
         video: Generate a video per VOD with FFmpeg using these options; None for no video.
         force: Replace an earlier synthetic dataset in `out_dir`.
@@ -100,7 +103,8 @@ def generate_dataset(
 
     Raises:
         ValueError: `seed` is negative.
-        OutputDirError: `out_dir` is a file, or holds files and `force` doesn't apply.
+        OutputDirError: `out_dir` is a file, or holds files and `force` doesn't apply, or the
+            earlier dataset couldn't be swapped out (it is then left as it was).
         FFmpegError: Generating a video failed (only with `video`).
     """
     out_dir = out_dir.absolute()
@@ -113,10 +117,7 @@ def generate_dataset(
     try:
         files = _write_all(scenario, staging, video, runner)
         _check_output_dir(out_dir, force=force)
-        if out_dir.exists():
-            # `_check_output_dir` passed: it is empty, or `force` replaces an earlier dataset.
-            shutil.rmtree(out_dir)
-        staging.rename(out_dir)
+        _publish(staging, out_dir)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -133,8 +134,8 @@ def _check_output_dir(out_dir: Path, *, force: bool) -> None:
         return
     if not _is_synthetic_dataset(out_dir):
         raise OutputDirError(
-            f"{out_dir} is not empty and holds no synthetic dataset; choose an empty or new "
-            "directory (it is never overwritten, even with --force)"
+            f"{out_dir} is not empty and holds files that aren't part of a synthetic dataset; "
+            "choose an empty or new directory (it is never overwritten, even with --force)"
         )
     if not force:
         raise OutputDirError(
@@ -143,11 +144,68 @@ def _check_output_dir(out_dir: Path, *, force: bool) -> None:
 
 
 def _is_synthetic_dataset(directory: Path) -> bool:
+    """True if `directory` holds only a dataset this generator wrote: its manifest and files.
+
+    Files the manifest lists may be missing, but any other file (or a link) means the directory
+    holds something else too, and `--force` must not delete it.
+    """
     try:
         manifest = json.loads((directory / MANIFEST).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(manifest, dict) and manifest.get("generator") == GENERATOR
+    if not isinstance(manifest, dict) or manifest.get("generator") != GENERATOR:
+        return False
+    entries = manifest.get("files")
+    if not isinstance(entries, list):
+        return False
+    listed = {MANIFEST}
+    for entry in entries:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(path, str):
+            return False
+        listed.add(path)
+    for path in directory.rglob("*"):
+        if path.is_symlink() or (
+            path.is_file() and path.relative_to(directory).as_posix() not in listed
+        ):
+            return False
+    return True
+
+
+def _publish(staging: Path, out_dir: Path) -> None:
+    """Move `staging` to `out_dir`, replacing an earlier dataset there without risking it.
+
+    The earlier dataset is renamed aside first (on Windows that fails while one of its files is
+    open, before anything changed), the new one is renamed into place, and only then is the
+    earlier one deleted. If the second rename fails, the earlier dataset is renamed back.
+    """
+    if out_dir.exists() and not any(out_dir.iterdir()):
+        out_dir.rmdir()
+    if not out_dir.exists():
+        staging.rename(out_dir)
+        return
+    backup = out_dir.with_name(f".{out_dir.name}-{uuid.uuid4().hex}.old")
+    try:
+        out_dir.rename(backup)
+    except OSError as exc:
+        raise OutputDirError(
+            f"can't replace the dataset in {out_dir}: moving it aside failed ({exc}); close "
+            "programs using its files and try again. Nothing was changed."
+        ) from exc
+    try:
+        staging.rename(out_dir)
+    except BaseException as exc:
+        backup.rename(out_dir)
+        if isinstance(exc, OSError):
+            raise OutputDirError(
+                f"can't move the new dataset into {out_dir} ({exc}); the earlier dataset was "
+                "put back"
+            ) from exc
+        raise
+    try:
+        shutil.rmtree(backup)
+    except OSError as exc:
+        log.warning("could not delete the replaced synthetic dataset path=%s error=%s", backup, exc)
 
 
 def _write_all(

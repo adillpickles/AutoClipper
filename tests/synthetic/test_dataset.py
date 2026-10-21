@@ -3,6 +3,7 @@
 import itertools
 import json
 import re
+import sys
 import wave
 from pathlib import Path
 from typing import Any, cast
@@ -372,6 +373,63 @@ def test_replaces_an_earlier_dataset_only_with_force(tmp_path: Path) -> None:
     generate_dataset(tmp_path / "out", seed=2, force=True)
 
     assert json.loads((tmp_path / "out" / "manifest.json").read_text("utf-8"))["seed"] == 2
+
+
+def test_force_keeps_a_dataset_directory_that_also_holds_other_files(tmp_path: Path) -> None:
+    out = generate_dataset(tmp_path / "out", seed=1).out_dir
+    (out / "notes.txt").write_text("my annotations", encoding="utf-8")
+    before = _file_bytes(out)
+
+    with pytest.raises(OutputDirError, match="aren't part of a synthetic dataset"):
+        generate_dataset(out, seed=2, force=True)
+
+    assert _file_bytes(out) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out"]
+
+
+def test_force_replaces_a_dataset_with_some_of_its_files_deleted(tmp_path: Path) -> None:
+    out = generate_dataset(tmp_path / "out", seed=1).out_dir
+    (out / "catalog.parquet").unlink()
+
+    generate_dataset(out, seed=2, force=True)
+
+    assert json.loads((out / "manifest.json").read_text("utf-8"))["seed"] == 2
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out"]
+
+
+def test_failed_swap_puts_the_earlier_dataset_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = generate_dataset(tmp_path / "out", seed=1).out_dir
+    before = _file_bytes(out)
+    real_rename = Path.rename
+
+    def rename(self: Path, target: Path) -> Path:
+        if self.name.endswith(".partial"):
+            raise PermissionError("simulated sharing violation")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    with pytest.raises(OutputDirError, match="earlier dataset was put back"):
+        generate_dataset(out, seed=2, force=True)
+
+    assert _file_bytes(out) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows refuses to move an open file")
+def test_replacing_a_dataset_with_an_open_file_changes_nothing(tmp_path: Path) -> None:
+    out = generate_dataset(tmp_path / "out", seed=1).out_dir
+    before = _file_bytes(out)
+
+    with (
+        (out / "processed" / "vods.parquet").open("rb"),
+        pytest.raises(OutputDirError, match="Nothing was changed"),
+    ):
+        generate_dataset(out, seed=2, force=True)
+
+    assert _file_bytes(out) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["out"]
 
 
 def test_fills_an_existing_empty_directory(tmp_path: Path) -> None:
