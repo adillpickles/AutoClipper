@@ -25,6 +25,7 @@ An ADR records one significant decision: the context, the choice, and its conseq
 | [0008](0008-trunk-based-development-squash-merge.md) | Trunk-based development, reviewed PRs, squash merge | Accepted |
 | [0009](0009-analysis-and-evaluation-contract-repair.md) | Proposed analysis/evaluation contracts | Proposed |
 | [0010](0010-agent-review-and-publication-workflow.md) | Agent workflow, publishing and optional second-opinion review | Accepted |
+| [0011](0011-real-data-permissions-and-chat-retention.md) | Real-data permissions and chat retention (decision brief for #7) | Proposed |
 
 ## Writing a new ADR
 
