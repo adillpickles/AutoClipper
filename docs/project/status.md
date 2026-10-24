@@ -2,14 +2,14 @@
 
 > **The living "what exists right now" document.** Every agent session reads it first. Update it **in the same PR** that changes the state. Don't mark anything done unless it's merged to `main` and tested.
 
-**Last updated:** 2026-10-21
+**Last updated:** 2026-10-24
 **Current phase:** M0 Foundations
 **Next milestone:** M1 Data collection ([roadmap](../product/roadmap.md))
 **Key dates:** Demo of Demos Fri Dec 4, 2026 · Final presentations and demo night Fri Dec 11, 2026
 
 ## Summary
 
-Scope, architecture and team workflow are documented, and the core tech stack is decided. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client and a pseudonymizing chat replay parser. Python and frontend tooling run in CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
+Scope, architecture and team workflow are documented, and the core tech stack is decided. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client, a pseudonymizing chat replay parser and VOD audio download with 16 kHz mono normalization. Python and frontend tooling run in CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
 
 ## What exists
 
@@ -28,10 +28,11 @@ Scope, architecture and team workflow are documented, and the core tech stack is
 | CI | ✅ In place (#5/#6) | Python: locked uv install, Ruff, Pyright and pytest on Ubuntu and Windows. Frontend: npm install, lint, typecheck, format and build on Ubuntu for web changes. Not required checks yet (#3) |
 | FFmpeg runner | ✅ In place (#51) | `autoclipper.ffmpeg`: FFmpeg/FFprobe commands as argument lists, an injectable runner with timeouts and typed errors, `probe` (duration, streams) and the version string. CI installs FFmpeg (apt on Ubuntu, a pinned, checksum-verified build on Windows); FFmpeg tests skip locally without it but fail in CI ([testing](../development/testing.md#ffmpeg-tests)) |
 | Synthetic dataset | ✅ In place (#15) | `autoclipper synth --seed <n>` writes 3 fake VODs (Parquet tables in the proposed data-model schemas, chat, 16 kHz WAVs, test-pattern videos and a SHA-256 manifest) to `data/synthetic/seed-<n>/`; same seed, same bytes. Details: [testing § Synthetic dataset](../development/testing.md#synthetic-dataset) |
+| Audio download | ✅ In place (#19) | `autoclipper.ingest.media`: audio-only VOD download with yt-dlp to `data/raw/audio/<video_id>.<ext>` (resumable, checked for damaged bytes and against the reported duration, no FFmpeg run by yt-dlp, typed errors for unavailable, subscriber-only, no audio-only format, network and tool failures), then FFmpeg normalization to 16 kHz mono WAV in `data/interim/audio/` that keeps the VOD timeline, rejects sources with more than 1 % undecodable audio and is checked against the source's duration. Tested with fakes and generated tones only: no real download has been run, and real downloads wait for source authorization (OQ-17) |
 | Twitch developer app | ❌ Not registered | OQ-8 |
 | Data collection | ❌ Not started | Needs channel list (OQ-4) and source/privacy decisions (OQ-9/OQ-17) before real data |
 | Labels / features / models / eval | ❌ Not started | Training target is OQ-1 |
-| Audio download / export | 🟡 Drafts only (#19/#20) | PR #59 (audio) and PR #60 (vertical export) remain unmerged with unresolved review findings. Their code is not on `main`. |
+| Export | 🟡 Draft only (#20) | PR #60 is unmerged; its code is not on `main`. |
 | Web app | 🟡 Scaffold only (#6) | Next.js + TypeScript (strict) + Tailwind in `web/` with ESLint, Prettier and its own CI workflow (`web.yml`); one placeholder page. No screens (#29–#31), API client (#33) or FastAPI backend (#28) yet. |
 
 ## Decisions pending
@@ -47,7 +48,7 @@ See [open questions](open-questions.md). Each one has a draft in Wave 0 (team ac
 
 ## Suggested next tasks
 
-Work through the [backlog](backlog.md) in dependency order. Next implementation work includes viewer clips (#17) and fixes to the unmerged audio/export drafts (#19/#20). Team access (#3), the Twitch app (#4), and the pending source, dataset, feature and evaluation decisions (#7–#12) still need attention. The API proposal from #13 is available for adoption before backend/screens build against it; merging the proposal did not adopt its decision points.
+Work through the [backlog](backlog.md) in dependency order. Next implementation work includes viewer clips (#17) and the unmerged vertical export (#20). Team access (#3), the Twitch app (#4), and the pending source, dataset, feature and evaluation decisions (#7–#12) still need attention. The API proposal from #13 is available for adoption before backend/screens build against it; merging the proposal did not adopt its decision points.
 
 ## Known issues / caveats
 
@@ -74,3 +75,4 @@ Work through the [backlog](backlog.md) in dependency order. Next implementation 
 - 2026-10-21: deterministic synthetic dataset generator and `autoclipper synth` added (#15).
 - 2026-10-21: Twitch Helix client for app auth, Get Users and Get Videos added (#16).
 - 2026-10-21: chat replay wrapper and pseudonymizing parser added (#18).
+- 2026-10-24: VOD audio download (yt-dlp) and 16 kHz mono normalization added (#19).

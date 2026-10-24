@@ -116,11 +116,15 @@ Checked 2026-10-13: [Twitch's VOD policy](https://help.twitch.tv/s/article/video
 ## 3. VOD media: yt-dlp (unofficial)
 
 - **Repo:** <https://github.com/yt-dlp/yt-dlp>
-- **Audio only** for feature extraction. Twitch VODs usually expose an audio-only format:
+- **Audio only** for feature extraction. Twitch VODs usually expose an audio-only format. `autoclipper.ingest.media` downloads it through yt-dlp's Python API with the selector `bestaudio` to `data/raw/audio/<video_id>.<ext>`. There is no fallback to formats with video: a VOD without an audio-only format fails with `NoAudioOnlyFormatError`. A comparable CLI call:
 
   ```bash
-  yt-dlp -f "bestaudio" -o "data/raw/audio/%(id)s.%(ext)s" https://www.twitch.tv/videos/<video_id>
+  yt-dlp -f "bestaudio" --downloader native --fixup never -o "data/raw/audio/<video_id>.%(ext)s" https://www.twitch.tv/videos/<video_id>
   ```
+
+  Don't use `%(id)s` in the file name: for Twitch VODs yt-dlp's `id` is `v<video_id>` (`yt_dlp/extractor/twitch.py`, checked for yt-dlp 2026.08.19).
+- **No FFmpeg inside yt-dlp.** yt-dlp would otherwise run FFmpeg/FFprobe itself (an availability check, a remux of HLS downloads), outside `autoclipper.ffmpeg` and without a timeout. The download uses yt-dlp's native HLS downloader with fix-ups off, so the raw file is the HLS segments as served: MPEG-TS for Twitch, which yt-dlp still calls `mp4`. The file is renamed by the container ffprobe finds (`.ts`).
+- **Resuming and checks.** yt-dlp resumes an HLS download from its `.ytdl` file; a `.part` file without a readable `.ytdl` is deleted first, because yt-dlp 2026.08.19 would restart and append to it, duplicating audio. A finished download must play for the duration the source reports (within the larger of 2 s and 0.2 %), measured by reading the stream with FFmpeg rather than from ffprobe's container duration (which for MPEG-TS comes from the first and last timestamps and misses repeated segments); otherwise it is deleted.
 
 - **Segments** for preview/export can reduce download cost, subject to source authorization and a pilot verifying tool behavior:
 
@@ -128,7 +132,8 @@ Checked 2026-10-13: [Twitch's VOD policy](https://help.twitch.tv/s/article/video
   yt-dlp --download-sections "*<start>-<end>" -f "best[height<=1080]" -o "…" https://www.twitch.tv/videos/<video_id>
   ```
 
-- Audio is then normalized with FFmpeg to 16 kHz mono WAV for analysis.
+- Audio is then normalized with FFmpeg to 16 kHz mono 16-bit PCM WAV (`data/interim/audio/<video_id>.wav`) for analysis. Gaps in the audio's timestamps become silence (`aresample=async=1:first_pts=0`, and `-dts_delta_threshold 86400` so FFmpeg doesn't close MPEG-TS gaps over 10 s), so WAV time is VOD time; timestamp resets, which jump back (HLS `EXT-X-DISCONTINUITY`), are joined. Normalization fails if more than 1 % of the audio can't be decoded (FFmpeg would turn it into silence) or the WAV's duration differs from how long the source plays (and, for MP4, from its index). Undecodable audio is counted in frames (`-max_error_rate 0.01`) and, in MPEG-TS and raw ADTS files, in damaged bytes: bytes outside intact MPEG-TS packets, and bytes of the AAC stream outside intact ADTS frames (a frame is intact when the next frame's header follows where its length says it ends). FFmpeg skips the first and lumps the second into one packet, which counts as a single failed frame, and in both cases fills the gap with silence. The download check applies the same byte limit, so a damaged download is deleted and fetched again. Not verified on real VODs: a reset that jumps forward would be kept as silence and then fail the download check.
+- **Errors:** yt-dlp has no error codes. `autoclipper.ingest.media.classify_download_error` sorts its failures into unavailable VOD, subscriber-only/login, no audio-only format, network and other tool errors by exception type and message wording, which can change between yt-dlp versions. Recheck those patterns when upgrading.
 - **Risks:** unofficial and may conflict with platform terms (see [governance](data-governance.md)). Keep yt-dlp up to date, because Twitch changes break old versions.
 
 ## 4. Live chat: official Twitch chat (backup and live mode)
