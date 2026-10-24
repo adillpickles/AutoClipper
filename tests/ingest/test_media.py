@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import wave
 from array import array
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -44,6 +44,7 @@ from autoclipper.ingest.media import (
     AUDIO_FORMAT_SELECTOR,
     MAX_RETRY_SLEEP_S,
     AudioDownloadError,
+    ByteDamage,
     DownloadedMedia,
     DownloadIntegrityError,
     DownloadNetworkError,
@@ -59,6 +60,8 @@ from autoclipper.ingest.media import (
     normalized_audio_path,
     prepare_vod_audio,
     raw_audio_dir,
+    scan_adts,
+    scan_mpegts,
     validate_video_id,
     vod_url,
     ytdlp_options,
@@ -114,6 +117,10 @@ def test_vod_url_and_paths_are_built_from_the_id(data_dir: Path) -> None:
 
 # --- Fake FFmpeg -------------------------------------------------------------------------------
 
+# Stand-in content for media files that fake FFmpeg probes: MPEG-TS null packets, so the check for
+# damaged bytes, which reads MPEG-TS files itself, finds intact packets (and no audio to check).
+NULL_TS = (bytes([0x47, 0x1F, 0xFF, 0x10]) + b"\xff" * 184) * 4
+
 
 def probe_output(
     *,
@@ -144,9 +151,8 @@ class FakeFFmpeg:
 
     ffprobe returns `output_probe` for WAVs (``.wav`` or ``.wav.part``) and `source_probe` for
     anything else. ffmpeg with ``-progress`` (measuring how long a file plays) reports
-    `played_s`, by default the source's probed duration; ffprobe listing ``packet=size``
-    returns `packet_sizes`; any other ffmpeg command writes its output file and exits with
-    `ffmpeg_returncode`.
+    `played_s`, by default the source's probed duration; any other ffmpeg command writes its
+    output file and exits with `ffmpeg_returncode`.
     """
 
     def __init__(
@@ -155,19 +161,15 @@ class FakeFFmpeg:
         source_probe: bytes | None = None,
         ffmpeg_returncode: int = 0,
         played_s: float | None = None,
-        packet_sizes: Sequence[int] = (),
     ) -> None:
         self.output_probe = output_probe
         self.source_probe = output_probe if source_probe is None else source_probe
         self.ffmpeg_returncode = ffmpeg_returncode
         self.played_s = played_s
-        self.packet_sizes = packet_sizes
         self.commands: list[FFmpegCommand] = []
 
     def __call__(self, command: FFmpegCommand, /, *, timeout_s: float) -> CommandResult:
         self.commands.append(command)
-        if command.program == "ffprobe" and "packet=size" in command.args:
-            return CommandResult(0, stdout=b"".join(b"%d\n" % size for size in self.packet_sizes))
         if command.program == "ffprobe":
             is_wav = command.args[-1].endswith((".wav", ".wav.part"))
             return CommandResult(0, stdout=self.output_probe if is_wav else self.source_probe)
@@ -212,7 +214,7 @@ class FakeDownloader:
         self.requests.append(request)
         path = request.output_dir / f"{request.stem}.{self.extension}"
         if self.source is None:
-            path.write_bytes(b"audio")
+            path.write_bytes(NULL_TS)
         else:
             shutil.copyfile(self.source, path)
         return DownloadedMedia(path, self.duration_s)
@@ -230,7 +232,7 @@ def test_download_requests_the_vod_url_into_the_raw_audio_dir(data_dir: Path) ->
     ]
     # MPEG-TS is named .ts, whatever extension yt-dlp gave it.
     assert path == raw_audio_dir(data_dir) / f"{VIDEO_ID}.ts"
-    assert path.read_bytes() == b"audio"
+    assert path.read_bytes() == NULL_TS
     assert sorted(p.name for p in path.parent.iterdir()) == [f"{VIDEO_ID}.ts"]
 
 
@@ -384,6 +386,21 @@ def test_download_within_the_duration_tolerance_is_kept(
     assert path.is_file()
     played_checks = [command for command in runner.commands if "-progress" in command.args]
     assert len(played_checks) == (0 if reported_s is None else 1)
+
+
+def test_damaged_mpegts_download_is_deleted(tmp_path: Path, data_dir: Path) -> None:
+    damaged = tmp_path / "damaged.ts"
+    damaged.write_bytes(NULL_TS + bytes(188) + NULL_TS)  # one packet's bytes zeroed
+
+    with pytest.raises(DownloadIntegrityError, match="not intact MPEG-TS packets"):
+        download_audio(
+            VIDEO_ID,
+            data_dir=data_dir,
+            downloader=FakeDownloader(source=damaged),
+            runner=downloaded_probe(),
+        )
+
+    assert list(raw_audio_dir(data_dir).iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -872,7 +889,7 @@ def test_hls_download_starts_no_ffmpeg_and_keeps_mpegts_for_normalization(
 @pytest.fixture
 def source(tmp_path: Path) -> Path:
     path = tmp_path / "source.mp4"
-    path.write_bytes(b"media")
+    path.write_bytes(NULL_TS)
     return path
 
 
@@ -967,33 +984,16 @@ def normalized_files(data_dir: Path) -> list[str]:
     return sorted(path.name for path in directory.iterdir()) if directory.exists() else []
 
 
-# Stereo AAC: the largest valid packet is 768 * 2 + 9 = 1545 bytes. `aac_packets` makes one
-# packet `excess` bytes over that, 63 at it and a short one: 99000 + `excess` bytes in all.
-_STEREO_AAC = probe_output(
+_AAC_IN_MPEGTS = probe_output(
     format_name="mpegts", codec_name="aac", sample_rate_hz=48_000, channels=2
 )
 
 
-def aac_packets(excess: int) -> list[int]:
-    return [1545 + excess, *[1545] * 63, 120]
+def test_damaged_mpegts_bytes_fail_before_converting(source: Path, data_dir: Path) -> None:
+    source.write_bytes(NULL_TS + bytes(188) + NULL_TS)
+    runner = FakeFFmpeg(source_probe=_AAC_IN_MPEGTS)
 
-
-def test_aac_bytes_outside_frames_up_to_the_limit_are_tolerated(
-    source: Path, data_dir: Path
-) -> None:
-    runner = FakeFFmpeg(source_probe=_STEREO_AAC, packet_sizes=aac_packets(1000))  # exactly 1 %
-
-    audio = normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner)
-
-    assert audio.path.is_file()
-
-
-def test_aac_bytes_outside_frames_over_the_limit_fail_before_converting(
-    source: Path, data_dir: Path
-) -> None:
-    runner = FakeFFmpeg(source_probe=_STEREO_AAC, packet_sizes=aac_packets(1001))  # 1001/100001
-
-    with pytest.raises(FFmpegOutputError, match=r"1\.0% of its bytes are not valid AAC frames"):
+    with pytest.raises(FFmpegOutputError, match=r"11\.1% of its bytes are not intact MPEG-TS"):
         normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner)
 
     assert [
@@ -1002,16 +1002,28 @@ def test_aac_bytes_outside_frames_over_the_limit_fail_before_converting(
     assert normalized_files(data_dir) == []
 
 
-def test_existing_wav_is_not_returned_for_a_source_with_bytes_outside_aac_frames(
+def test_existing_wav_is_not_returned_for_a_source_with_damaged_bytes(
     source: Path, data_dir: Path
 ) -> None:
     normalize_audio(
-        source, VIDEO_ID, data_dir=data_dir, runner=FakeFFmpeg(source_probe=_STEREO_AAC)
+        source, VIDEO_ID, data_dir=data_dir, runner=FakeFFmpeg(source_probe=_AAC_IN_MPEGTS)
     )
-    runner = FakeFFmpeg(source_probe=_STEREO_AAC, packet_sizes=aac_packets(5000))
+    source.write_bytes(NULL_TS + bytes(188) + NULL_TS)
 
-    with pytest.raises(FFmpegOutputError, match="not valid AAC frames"):
-        normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner)
+    with pytest.raises(FFmpegOutputError, match="not intact MPEG-TS packets"):
+        normalize_audio(
+            source, VIDEO_ID, data_dir=data_dir, runner=FakeFFmpeg(source_probe=_AAC_IN_MPEGTS)
+        )
+
+
+def test_containers_with_a_frame_index_are_not_scanned_for_damaged_bytes(
+    source: Path, data_dir: Path
+) -> None:
+    # MP4 indexes every frame, so FFmpeg counts damage there as failed frames.
+    source.write_bytes(b"not MPEG-TS")
+    runner = FakeFFmpeg(source_probe=probe_output(format_name="mov,mp4,m4a,3gp,3g2,mj2"))
+
+    assert normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner).path.is_file()
 
 
 def test_source_without_audio_is_an_error_before_converting(source: Path, data_dir: Path) -> None:
@@ -1061,6 +1073,166 @@ def test_existing_output_that_fails_the_checks_is_converted_again(
 def test_missing_source_is_an_error(data_dir: Path, tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         normalize_audio(tmp_path / "missing.mp4", VIDEO_ID, data_dir=data_dir, runner=FakeFFmpeg())
+
+
+# --- Damaged bytes -----------------------------------------------------------------------------
+
+AUDIO_PID = 0x100
+PMT_PID = 0x1000
+
+
+def adts_frame(payload_bytes: int = 40, *, blocks: int = 1, crc: bool = False) -> bytes:
+    """An ADTS frame (stereo AAC LC, 48 kHz) of `blocks` raw data blocks, with filler as audio."""
+    header_bytes = 9 if crc else 7
+    length = header_bytes + payload_bytes
+    header = [
+        0xFF,
+        0xF0 if crc else 0xF1,  # MPEG-4, layer 0, protection_absent unless there is a CRC
+        0x4C,  # AAC LC, 48 kHz
+        0x80 | length >> 11,  # 2 channels
+        length >> 3 & 0xFF,
+        (length & 0x07) << 5 | 0x1F,
+        0xFC | (blocks - 1),
+    ]
+    return bytes(header) + bytes(header_bytes - 7) + b"\x21" * payload_bytes
+
+
+def ts_packet(pid: int, payload: bytes, *, unit_start: bool = False) -> bytes:
+    """A 188-byte MPEG-TS packet; a short payload is padded with an adaptation field."""
+    stuffing = 184 - len(payload)
+    if stuffing == 0:
+        flags, adaptation = 0x10, b""
+    else:
+        flags, adaptation = 0x30, bytes([stuffing - 1]) + b"\x00\xff\xff"[: stuffing - 1]
+        adaptation += b"\xff" * (stuffing - len(adaptation))
+    first = (0x40 if unit_start else 0) | pid >> 8
+    return bytes([0x47, first, pid & 0xFF, flags]) + adaptation + payload
+
+
+def psi(table_id: int, body: bytes) -> bytes:
+    """A TS payload holding a PSI section: pointer field, header, `body` and a (zero) CRC."""
+    length = 5 + len(body) + 4  # the bytes after the length field
+    return (
+        bytes([0, table_id, 0xB0 | length >> 8, length & 0xFF, 0, 1, 0xC1, 0, 0]) + body + bytes(4)
+    )
+
+
+def mpegts(*pes_payloads: bytes) -> bytes:
+    """MPEG-TS with a PAT, a PMT listing an ADTS AAC stream, then one PES packet per payload."""
+    pat = psi(0x00, bytes([0, 1, 0xE0 | PMT_PID >> 8, PMT_PID & 0xFF]))
+    pid = bytes([0xE0 | AUDIO_PID >> 8, AUDIO_PID & 0xFF])
+    pmt = psi(0x02, pid + b"\xf0\x00" + b"\x0f" + pid + b"\xf0\x00")
+    packets = [ts_packet(0, pat, unit_start=True), ts_packet(PMT_PID, pmt, unit_start=True)]
+    for payload in pes_payloads:
+        # PES header: start code, audio stream ID, length, flags and a 5-byte PTS.
+        pes = b"\0\0\1\xc0" + (8 + len(payload)).to_bytes(2) + b"\x80\x80\x05\x21\0\1\0\1"
+        pes += payload
+        for offset in range(0, len(pes), 184):
+            chunk = pes[offset : offset + 184]
+            packets.append(ts_packet(AUDIO_PID, chunk, unit_start=offset == 0))
+    return b"".join(packets)
+
+
+def written(tmp_path: Path, name: str, content: bytes) -> Path:
+    path = tmp_path / name
+    path.write_bytes(content)
+    return path
+
+
+FRAME = adts_frame(40)  # 47 bytes
+
+
+def test_intact_adts_frames_are_not_damaged(tmp_path: Path) -> None:
+    # Frames holding one to four raw data blocks, with and without a CRC; the length field
+    # covers all of them.
+    frames = FRAME + adts_frame(900, blocks=4) + adts_frame(300, blocks=2, crc=True) + FRAME
+    path = written(tmp_path, "intact.aac", frames * 100)  # more than one scan batch
+
+    assert scan_adts(path) == ByteDamage(0.0, 0.0)
+
+
+def test_bytes_between_adts_frames_are_damaged_with_the_frame_before_them(
+    tmp_path: Path,
+) -> None:
+    garbage = bytes(500)
+    path = written(tmp_path, "damaged.aac", FRAME * 50 + garbage + FRAME * 50)
+
+    damage = scan_adts(path)
+
+    # The frame before the garbage isn't followed by a frame header, so it counts too.
+    assert damage.frames == pytest.approx((len(FRAME) + 500) / (100 * len(FRAME) + 500))
+    assert damage.transport == 0.0
+
+
+def test_a_sync_word_in_damaged_bytes_is_not_trusted(tmp_path: Path) -> None:
+    # A valid-looking header whose length (128 bytes) doesn't lead to another frame.
+    fake = b"\xff\xf1\x4c\x80\x10\x1f\xfc" + bytes(200)
+    path = written(tmp_path, "fake-sync.aac", FRAME * 10 + fake + FRAME * 10)
+
+    assert scan_adts(path).frames == pytest.approx(len(fake) / (20 * len(FRAME) + len(fake)))
+
+
+def test_a_cut_off_last_adts_frame_is_damaged(tmp_path: Path) -> None:
+    path = written(tmp_path, "truncated.aac", FRAME * 10 + FRAME[:20])
+
+    assert scan_adts(path).frames == pytest.approx(20 / (10 * len(FRAME) + 20))
+
+
+def test_intact_mpegts_is_not_damaged(tmp_path: Path) -> None:
+    path = written(tmp_path, "intact.ts", mpegts(FRAME * 8, FRAME * 8, FRAME * 8))
+
+    assert scan_mpegts(path) == ByteDamage(0.0, 0.0)
+
+
+def test_mpegts_with_timestamps_before_its_packets_is_not_damaged(tmp_path: Path) -> None:
+    # M2TS: a 4-byte timestamp before each 188-byte packet.
+    plain = mpegts(FRAME * 8, FRAME * 8)
+    m2ts = b"".join(b"\0\0\0\0" + plain[i : i + 188] for i in range(0, len(plain), 188))
+
+    assert scan_mpegts(written(tmp_path, "intact.m2ts", m2ts)) == ByteDamage(0.0, 0.0)
+
+
+def test_mpegts_bytes_without_packets_are_damaged(tmp_path: Path) -> None:
+    content = bytearray(mpegts(*[FRAME * 8] * 6))
+    content[188 * 4 : 188 * 6] = bytes(188 * 2)  # two audio packets, headers and all
+
+    damage = scan_mpegts(written(tmp_path, "damaged.ts", bytes(content)))
+
+    assert damage.transport == pytest.approx(2 * 188 / len(content))
+    assert damage.frames > 0  # their audio is missing from the stream, which breaks a frame
+
+
+def test_mpegts_packets_flagged_with_a_transport_error_are_damaged(tmp_path: Path) -> None:
+    content = bytearray(mpegts(*[FRAME * 8] * 4))
+    content[188 * 3 + 1] |= 0x80  # transport_error_indicator
+
+    damage = scan_mpegts(written(tmp_path, "flagged.ts", bytes(content)))
+
+    assert damage == ByteDamage(188 / len(content), 0.0)  # FFmpeg still uses its payload
+
+
+def test_mpegts_pes_packet_with_a_damaged_header_is_lost_whole(tmp_path: Path) -> None:
+    payloads = [FRAME * 8] * 3
+    content = bytearray(mpegts(*payloads))
+    second_pes = content.index(b"\0\0\1\xc0", 188 * 3)
+    content[second_pes : second_pes + 3] = b"\xff\xff\xff"  # no start code
+
+    damage = scan_mpegts(written(tmp_path, "pes.ts", bytes(content)))
+
+    # The PES (header and frames) is lost; the frames around it still follow each other.
+    pes_bytes = 14 + len(payloads[1])
+    total = 2 * len(payloads[0]) + pes_bytes
+    assert damage.transport == 0.0
+    assert damage.frames == pytest.approx(pes_bytes / total)
+
+
+def test_mpegts_frames_are_not_checked_when_asked_not_to(tmp_path: Path) -> None:
+    content = mpegts(FRAME * 8 + bytes(100) + FRAME * 8)
+
+    path = written(tmp_path, "aac-garbage.ts", content)
+
+    assert scan_mpegts(path, check_frames=False) == ByteDamage(0.0, 0.0)
+    assert scan_mpegts(path).frames > 0
 
 
 @pytest.mark.parametrize(
@@ -1212,10 +1384,127 @@ def test_normalize_rejects_aac_damaged_inside_the_final_mpegts(
 
     # FFmpeg's parser lumps the zeroed bytes into one packet: one decode error out of ~190
     # frames, which -max_error_rate allows, and 6 s of silence in a WAV of the right length.
-    with pytest.raises(FFmpegOutputError, match="of its bytes are not valid AAC frames"):
+    with pytest.raises(FFmpegOutputError, match="of its audio bytes are not intact AAC frames"):
         normalize_audio(ts, VIDEO_ID, data_dir=data_dir)
 
     assert normalized_files(data_dir) == []
+
+
+@pytest.mark.ffmpeg
+def test_normalize_rejects_a_short_burst_of_damaged_aac_at_a_low_bitrate(
+    tmp_path: Path, data_dir: Path
+) -> None:
+    # At 16 kbit/s a few hundred zeroed bytes hold several percent of the audio, though no
+    # packet FFmpeg makes of them is larger than a valid AAC frame.
+    sine = "sine=frequency=440:sample_rate=48000:d=10"
+    ts = generate(
+        tmp_path / "tone.ts", "-f", "lavfi", "-i", sine, "-ac", "2", "-c:a", "aac", "-b:a", "16k"
+    )
+    assert zero_aac_payload(ts, 3.0, 3.5) > 0
+
+    with pytest.raises(FFmpegOutputError, match="of its audio bytes are not intact AAC frames"):
+        normalize_audio(ts, VIDEO_ID, data_dir=data_dir)
+
+
+def zero_ts_bytes(ts: Path, from_s: float, to_s: float) -> int:
+    """Zero every byte of `ts` from its audio at `from_s` to `to_s`, packet headers included.
+
+    Returns how many bytes were zeroed.
+    """
+    entries = ("-select_streams", "a:0", "-show_entries", "packet=pts_time,pos")
+    listing = json.loads(
+        run_command(ffprobe_command(*entries, "-of", "json", ts), timeout_s=60).stdout
+    )
+    packets = [(float(p["pts_time"]), int(p["pos"])) for p in listing["packets"] if "pos" in p]
+    first_s = packets[0][0]
+    start = min(pos for pts_s, pos in packets if pts_s >= first_s + from_s)
+    end = min(pos for pts_s, pos in packets if pts_s >= first_s + to_s)
+    content = bytearray(ts.read_bytes())
+    content[start:end] = bytes(end - start)
+    ts.write_bytes(content)
+    return end - start
+
+
+@pytest.mark.ffmpeg
+def test_mpegts_without_packets_for_seconds_is_rejected_not_padded_with_silence(
+    tmp_path: Path, data_dir: Path
+) -> None:
+    # The demuxer skips the bytes until packets start again: FFmpeg decodes every frame it gets,
+    # without an error, and the 6 s gap after them would become silence.
+    sine = "sine=frequency=440:sample_rate=48000:d=10"
+    ts = generate(tmp_path / "tone.ts", "-f", "lavfi", "-i", sine, "-c:a", "aac")
+    assert zero_ts_bytes(ts, 2.0, 8.0) > 0
+
+    with pytest.raises(FFmpegOutputError, match="of its bytes are not intact MPEG-TS packets"):
+        normalize_audio(ts, VIDEO_ID, data_dir=data_dir)
+    assert normalized_files(data_dir) == []
+
+    downloader = FakeDownloader("mp4", source=ts, duration_s=10.0)
+    with pytest.raises(DownloadIntegrityError, match="not intact MPEG-TS packets"):
+        download_audio(VIDEO_ID, data_dir=data_dir, downloader=downloader)
+    assert list(raw_audio_dir(data_dir).iterdir()) == []
+
+
+def group_adts_frames(adts: bytes, blocks: int) -> bytes:
+    """Rewrite ADTS frames so that each holds `blocks` raw data blocks behind one header."""
+    frames: list[bytes] = []
+    position = 0
+    while position < len(adts):
+        length = (adts[position + 3] & 0x03) << 11 | adts[position + 4] << 3
+        length |= adts[position + 5] >> 5
+        frames.append(adts[position : position + length])
+        position += length
+    grouped = bytearray()
+    for i in range(0, len(frames), blocks):
+        group = frames[i : i + blocks]
+        assert all(frame[1] & 0x01 for frame in group)  # 7-byte headers, no CRC
+        payload = b"".join(frame[7:] for frame in group)
+        length = 7 + len(payload)
+        header = bytearray(group[0][:7])
+        header[3] = (header[3] & 0xFC) | length >> 11
+        header[4] = length >> 3 & 0xFF
+        header[5] = (header[5] & 0x1F) | (length & 0x07) << 5
+        header[6] = (header[6] & 0xFC) | (len(group) - 1)
+        grouped += header + payload
+    return bytes(grouped)
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("blocks", [2, 4])
+def test_normalize_accepts_adts_frames_holding_several_aac_blocks(
+    tmp_path: Path, blocks: int
+) -> None:
+    noise = "anoisesrc=r=48000:d=10:seed=19"
+    adts = generate(tmp_path / "noise.aac", "-f", "lavfi", "-i", noise, "-b:a", "256k")
+    grouped = tmp_path / f"blocks-{blocks}.aac"
+    grouped.write_bytes(group_adts_frames(adts.read_bytes(), blocks))
+    wavs = []
+    for source, scale in [(adts, 1), (grouped, blocks)]:
+        # Each grouped frame lasts `blocks` frames, which -itsscale tells the muxer.
+        ts = generate(
+            source.with_suffix(".ts"),
+            *("-itsscale", str(scale), "-i", source, "-c:a", "copy", "-muxdelay", "0"),
+        )
+        assert scan_mpegts(ts) == ByteDamage(0.0, 0.0)
+        audio = normalize_audio(ts, VIDEO_ID, data_dir=tmp_path / f"data-{scale}")
+        assert audio.duration_s == pytest.approx(10.0, abs=0.1)
+        wavs.append(audio.path.read_bytes())
+
+    assert wavs[0] == wavs[1]  # decoded alike
+
+
+@pytest.mark.ffmpeg
+def test_normalize_accepts_m2ts(tmp_path: Path, data_dir: Path) -> None:
+    # A 4-byte timestamp before each 188-byte packet.
+    sine = "sine=frequency=440:sample_rate=48000:d=10"
+    m2ts = generate(
+        tmp_path / "tone.m2ts",
+        *("-f", "lavfi", "-i", sine, "-c:a", "aac", "-f", "mpegts", "-mpegts_m2ts_mode", "1"),
+    )
+
+    audio = normalize_audio(m2ts, VIDEO_ID, data_dir=data_dir)
+
+    assert audio.duration_s == pytest.approx(10.0, abs=0.1)
 
 
 @pytest.mark.ffmpeg

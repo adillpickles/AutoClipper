@@ -18,10 +18,10 @@ off, so every FFmpeg and FFprobe run goes through `autoclipper.ffmpeg`, with a t
 
 Resuming: yt-dlp downloads to ``<video_id>.download.<ext>`` (with ``.part`` and ``.ytdl`` files
 while in progress, which it resumes on the next run). A partial download that can't be resumed
-safely is deleted first (`YtDlpDownloader`). A finished download is probed and checked against
-the duration the source reports, and only then renamed to ``<video_id>.<ext>``. A file with that
-name is therefore a complete, checked download, and it is never fetched again. Delete it to
-download again.
+safely is deleted first (`YtDlpDownloader`). A finished download is probed, checked for damaged
+bytes and against the duration the source reports, and only then renamed to
+``<video_id>.<ext>``. A file with that name is therefore a complete, checked download, and it is
+never fetched again. Delete it to download again.
 
 Download failures raise a subclass of `AudioDownloadError`, so the CLI can map them to exit codes
 (docs/development/conventions.md §7). yt-dlp has no error codes, so `classify_download_error`
@@ -34,6 +34,7 @@ import io
 import json
 import logging
 import math
+import mmap
 import os
 import re
 import traceback
@@ -49,7 +50,6 @@ from autoclipper.ffmpeg import (
     MediaInfo,
     Runner,
     ffmpeg_command,
-    ffprobe_command,
     probe,
     run_command,
 )
@@ -74,8 +74,8 @@ MAX_RETRY_SLEEP_S: Final = 30.0
 # adjust if real downloads trip it.
 DOWNLOAD_DURATION_TOLERANCE_S: Final = 2.0
 DOWNLOAD_DURATION_TOLERANCE_FRACTION: Final = 0.002
-# Checks that read a whole file without decoding it (how long it plays, its AAC packet sizes):
-# seconds even for a long VOD.
+# FFmpeg reading a whole file without decoding it (to measure how long it plays): seconds even
+# for a long VOD.
 READ_CHECK_TIMEOUT_S: Final = 600.0
 
 # The WAV may differ from its source's duration by the larger of these (encoder delay and frame
@@ -90,21 +90,32 @@ NORMALIZED_DURATION_TOLERANCE_FRACTION: Final = 0.001
 # timestamp reset that jumps forward is also kept as silence.
 _TIMELINE_OPTIONS: Final = ("-dts_delta_threshold", "86400")
 
-# Normalizing fails when more than this fraction of the audio can't be decoded, measured two
-# ways: by frames (FFmpeg's -max_error_rate; it then exits with `_MAX_ERROR_RATE_EXIT_CODE`) and,
-# for AAC, by bytes (`_undecodable_aac_fraction`), because FFmpeg's ADTS parser lumps damaged
-# data without a frame header into one packet, which counts as a single failed frame however
-# much audio it held. Isolated damaged frames are tolerated (they become silence), but 1 % of a
-# 6-hour VOD is already about 3.6 minutes of lost audio, so more means a damaged file, not
-# glitches.
+# A download is rejected, and normalizing fails, when more than this fraction of the audio is
+# damaged, measured two ways: by frames FFmpeg fails to decode (-max_error_rate; it then exits
+# with `_MAX_ERROR_RATE_EXIT_CODE`), and, in MPEG-TS and raw ADTS files, by damaged bytes
+# (`_byte_damage`), which FFmpeg drops or lumps together without counting them as failed frames.
+# Isolated damaged frames are tolerated (they become silence), but 1 % of a 6-hour VOD is
+# already about 3.6 minutes of lost audio, so more means a damaged file, not glitches.
 MAX_DECODE_ERROR_RATE: Final = 0.01
 _MAX_ERROR_RATE_EXIT_CODE: Final = 69
 
-# ISO/IEC 14496-3 limits an AAC decoder's input buffer to 6144 bits per channel, so one AAC
-# frame (raw_data_block) holds at most 768 bytes per channel. An ADTS header adds 7 bytes, or 9
-# with its CRC. Packet bytes beyond 768 * channels + 9 can't be audio.
-_AAC_MAX_FRAME_BYTES_PER_CHANNEL: Final = 768
-_ADTS_MAX_HEADER_BYTES: Final = 9
+# MPEG-TS (ISO/IEC 13818-1) is a run of 188-byte packets, each starting with a sync byte. Some
+# variants put a 4-byte timestamp before each packet (M2TS) or 16 parity bytes after it, so the
+# layouts are (bytes per packet, where the 188 bytes start in them). A sync byte starts packets
+# only if `_TS_SYNC_CONFIRMATIONS` more follow at the same spacing.
+_TS_PACKET_BYTES: Final = 188
+_TS_LAYOUTS: Final = ((188, 0), (192, 4), (204, 0))
+_TS_SYNC: Final = 0x47
+_TS_SYNC_CONFIRMATIONS: Final = 3
+_PAT_PID: Final = 0
+_PES_START: Final = b"\x00\x00\x01"
+_ADTS_STREAM_TYPE: Final = 0x0F  # AAC in ADTS frames, in a PMT (ISO/IEC 13818-1 table 2-34)
+
+# ADTS (ISO/IEC 13818-7): each AAC frame starts with a 7-byte header (9 with a CRC) holding a
+# 12-bit sync word and the frame's length in bytes, header and all its raw data blocks included.
+_ADTS_HEADER_BYTES: Final = 7
+# The ADTS check works through its input in pieces of this size.
+_ADTS_SCAN_BATCH_BYTES: Final = 1 << 16
 
 # What `normalize_audio` writes.
 SAMPLE_RATE_HZ: Final = 16_000
@@ -586,10 +597,11 @@ def download_audio(
     """Download a VOD's audio to ``<data_dir>/raw/audio/<video_id>.<ext>``, resuming if needed.
 
     Returns at once if a complete download exists (see the module docstring for how partial and
-    complete downloads are told apart). A new download is checked with FFmpeg before it is kept:
-    it must have an audio stream and, when the source reports a duration, play for that long
-    within `DOWNLOAD_DURATION_TOLERANCE_S` or `DOWNLOAD_DURATION_TOLERANCE_FRACTION`, whichever
-    is larger.
+    complete downloads are told apart). A new download is checked before it is kept: it must
+    have an audio stream, no more than `MAX_DECODE_ERROR_RATE` of damaged bytes (`_byte_damage`)
+    and, when the source reports a duration, play for that long within
+    `DOWNLOAD_DURATION_TOLERANCE_S` or `DOWNLOAD_DURATION_TOLERANCE_FRACTION`, whichever is
+    larger.
 
     Args:
         video_id: The Twitch video ID, digits only.
@@ -658,6 +670,9 @@ def _download_problem(
 ) -> str | None:
     if not info.audio_streams:
         return f"{info.path.name} has no audio stream"
+    damage = _byte_damage(info)
+    if damage is not None and damage.fraction > MAX_DECODE_ERROR_RATE:
+        return f"{info.path.name} is damaged: {damage}"
     if expected_duration_s is None:
         return None
     played_s = _played_duration_s(info.path, runner)
@@ -696,26 +711,6 @@ def _played_duration_s(path: Path, runner: Runner | None) -> float:
     return int(times[-1]) / 1_000_000
 
 
-def _undecodable_aac_fraction(path: Path, channels: int, runner: Runner | None) -> float:
-    """Return the fraction of the first audio stream's bytes that can't be AAC frames.
-
-    These are the bytes of each packet beyond the largest valid AAC frame
-    (`_AAC_MAX_FRAME_BYTES_PER_CHANNEL` * `channels` + `_ADTS_MAX_HEADER_BYTES`), over all
-    packet bytes. Damaged data without an ADTS frame header ends up in one oversized packet, so
-    its bytes count here even though FFmpeg reports it as a single decode error.
-    """
-    command = ffprobe_command(
-        *("-select_streams", "a:0", "-show_entries", "packet=size"),
-        *("-of", "default=noprint_wrappers=1:nokey=1", path),
-    )
-    result = run_command(command, timeout_s=READ_CHECK_TIMEOUT_S, runner=runner)
-    sizes = [int(size) for size in re.findall(rb"^(\d+)\r?$", result.stdout, re.MULTILINE)]
-    max_frame_bytes = _AAC_MAX_FRAME_BYTES_PER_CHANNEL * channels + _ADTS_MAX_HEADER_BYTES
-    total = sum(sizes)
-    excess = sum(max(0, size - max_frame_bytes) for size in sizes)
-    return excess / total if total else 0.0
-
-
 def _container_extension(info: MediaInfo) -> str | None:
     # ffprobe's format_name can list several names, e.g. "mov,mp4,m4a,3gp,3g2,mj2".
     names = info.format_name.split(",")
@@ -742,6 +737,253 @@ def _staged_extension(staged: Path, audio_dir: Path, stem: str) -> str | None:
     prefix = f"{stem}."
     extension = staged.name[len(prefix) :] if staged.name.startswith(prefix) else ""
     return extension if _EXTENSION.fullmatch(extension) else None
+
+
+# --- Damaged bytes -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ByteDamage:
+    """How much of a file's audio data is damaged, as fractions of bytes.
+
+    Attributes:
+        transport: Of the file's bytes, those outside intact MPEG-TS packets (0 for other
+            containers).
+        frames: Of the first audio stream's ADTS data, the bytes outside intact AAC frames (0
+            when the stream isn't ADTS).
+    """
+
+    transport: float
+    frames: float
+
+    @property
+    def fraction(self) -> float:
+        """Both together: about the fraction of the audio that damaged bytes held."""
+        return self.transport + self.frames
+
+    def __str__(self) -> str:
+        parts = []
+        if self.transport:
+            parts.append(f"{self.transport:.1%} of its bytes are not intact MPEG-TS packets")
+        if self.frames:
+            parts.append(f"{self.frames:.1%} of its audio bytes are not intact AAC frames")
+        return " and ".join(parts) or "no damaged bytes"
+
+
+def _byte_damage(info: MediaInfo) -> ByteDamage | None:
+    """Check the bytes of `info.path` for damage, or return None for containers not checked.
+
+    FFmpeg turns audio lost to damaged bytes into silence without counting it as failed frames
+    (which -max_error_rate limits): the MPEG-TS demuxer skips bytes until packets start again,
+    and the ADTS parser lumps bytes without a frame header into one packet, which fails as a
+    single frame however much audio it held. The timestamps after the damage then leave a gap,
+    which normalizing fills with silence like a real gap in the audio. So the bytes are checked
+    instead: an MPEG-TS file (Twitch's HLS segments) for intact packets and, when its first audio
+    stream is AAC, intact ADTS frames in that stream (`scan_mpegts`); a raw ADTS file for intact
+    frames (`scan_adts`). Other containers (MP4) index every frame, so FFmpeg counts damage there
+    as failed frames.
+    """
+    names = info.format_name.split(",")
+    is_aac = bool(info.audio_streams) and info.audio_streams[0].codec_name == "aac"
+    if "mpegts" in names:
+        return scan_mpegts(info.path, check_frames=is_aac)
+    if "aac" in names:
+        return scan_adts(info.path)
+    return None
+
+
+def scan_mpegts(path: Path, *, check_frames: bool = True) -> ByteDamage:
+    """Measure the damaged bytes of an MPEG-TS file.
+
+    Bytes outside intact packets are damaged: where a packet should start but its sync byte is
+    missing, up to where packets start again (`_ts_resync`), a packet that ends past the end of
+    the file, and packets flagged with a transport error (whose payload FFmpeg still uses). If
+    `check_frames`, the packets of the first ADTS AAC stream in the first program are put back
+    together (`_AdtsScan`); a PES packet whose header is damaged is lost whole, as FFmpeg skips
+    it. The file is memory-mapped, not read into memory: a multi-hour VOD is hundreds of
+    megabytes.
+    """
+    frames = _AdtsScan()
+    with path.open("rb") as file:
+        size = os.fstat(file.fileno()).st_size
+        if size == 0:
+            return ByteDamage(0.0, 0.0)
+        with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            pmt_pid: int | None = None
+            audio_pid: int | None = None
+            position, (stride, offset) = _ts_resync(data, 0)
+            damaged = position
+            while position < size:
+                end = position + offset + _TS_PACKET_BYTES
+                if end > size or data[position + offset] != _TS_SYNC:
+                    resumed, (stride, offset) = _ts_resync(data, position + 1)
+                    damaged += resumed - position
+                    position = resumed
+                    continue
+                packet = data[end - _TS_PACKET_BYTES : end]
+                position += stride
+                if packet[1] & 0x80:  # transport_error_indicator
+                    damaged += stride
+                pid = (packet[1] & 0x1F) << 8 | packet[2]
+                if pid not in (_PAT_PID, pmt_pid, audio_pid) or not packet[3] & 0x10:
+                    continue  # another stream, or no payload
+                start = 5 + packet[4] if packet[3] & 0x20 else 4  # after an adaptation field
+                if start > _TS_PACKET_BYTES:
+                    damaged += stride
+                    continue
+                payload, unit_start = packet[start:], bool(packet[1] & 0x40)
+                if pid == audio_pid:
+                    if check_frames:
+                        frames.feed_pes(payload, unit_start=unit_start)
+                elif unit_start and pid == _PAT_PID and pmt_pid is None:
+                    pmt_pid = _first_program_pid(payload)
+                elif unit_start and pid == pmt_pid and audio_pid is None:
+                    audio_pid = _adts_stream_pid(payload)
+    return ByteDamage(damaged / size, frames.finish() if check_frames else 0.0)
+
+
+def scan_adts(path: Path) -> ByteDamage:
+    """Measure the damaged bytes of a raw ADTS file (``.aac``), read in pieces."""
+    frames = _AdtsScan()
+    with path.open("rb") as file:
+        while chunk := file.read(_ADTS_SCAN_BATCH_BYTES):
+            frames.feed(chunk)
+    return ByteDamage(0.0, frames.finish())
+
+
+def _ts_resync(data: mmap.mmap, start: int) -> tuple[int, tuple[int, int]]:
+    """Where MPEG-TS packets start, at or after `start`, and their layout (`_TS_LAYOUTS`).
+
+    That is at the first sync byte followed by `_TS_SYNC_CONFIRMATIONS` more (or the end of the
+    file) at one of the layouts' spacings. ``len(data)`` if packets don't start again.
+    """
+    size = len(data)
+    sync = data.find(bytes([_TS_SYNC]), start)
+    while sync != -1:
+        for stride, offset in _TS_LAYOUTS:
+            last = min(size, sync + stride * (_TS_SYNC_CONFIRMATIONS + 1))
+            following = range(sync + stride, last, stride)
+            if sync - offset >= start and all(data[p] == _TS_SYNC for p in following):
+                return sync - offset, (stride, offset)
+        sync = data.find(bytes([_TS_SYNC]), sync + 1)
+    return size, _TS_LAYOUTS[0]
+
+
+def _psi_section(payload: bytes, table_id: int) -> bytes:
+    """The PSI section starting in `payload`, without its CRC, or b"" if it isn't `table_id`.
+
+    Only what is in this packet: a section continued in the next packet is cut short.
+    """
+    if not payload:
+        return b""
+    section = payload[1 + payload[0] :]  # after the pointer field
+    if len(section) < 3 or section[0] != table_id:
+        return b""
+    length = (section[1] & 0x0F) << 8 | section[2]
+    return section[: max(0, 3 + length - 4)]
+
+
+def _first_program_pid(payload: bytes) -> int | None:
+    """The PMT PID of the first program in the PAT section starting in `payload`."""
+    section = _psi_section(payload, table_id=0x00)
+    for offset in range(8, len(section) - 3, 4):  # 4-byte entries after the 8-byte header
+        if section[offset] << 8 | section[offset + 1]:  # program 0 is the network PID
+            return (section[offset + 2] & 0x1F) << 8 | section[offset + 3]
+    return None
+
+
+def _adts_stream_pid(payload: bytes) -> int | None:
+    """The PID of the first ADTS AAC stream in the PMT section starting in `payload`."""
+    section = _psi_section(payload, table_id=0x02)
+    if len(section) < 12:
+        return None
+    offset = 12 + ((section[10] & 0x0F) << 8 | section[11])  # after the program descriptors
+    while offset + 5 <= len(section):
+        if section[offset] == _ADTS_STREAM_TYPE:
+            return (section[offset + 1] & 0x1F) << 8 | section[offset + 2]
+        offset += 5 + ((section[offset + 3] & 0x0F) << 8 | section[offset + 4])
+    return None
+
+
+class _AdtsScan:
+    """Counts the bytes of an ADTS stream, fed piece by piece, that aren't in intact frames.
+
+    A frame is intact when its header is valid and the next frame's header follows right after
+    it (or the stream ends there), so neither a sync word that happens to occur in damaged bytes
+    nor a frame length read from them is trusted on its own. Bytes from a frame that isn't intact
+    to the next sync word count as damaged, so the frame just before damaged bytes counts too. A
+    frame's length covers all its raw data blocks, so frames holding several are intact too.
+    """
+
+    def __init__(self) -> None:
+        self._pending = bytearray()
+        self._total = 0
+        self._damaged = 0
+        self._skipping_pes = True  # until the first PES packet starts
+
+    def feed(self, data: bytes) -> None:
+        """Add bytes of the stream."""
+        self._total += len(data)
+        self._pending += data
+        if len(self._pending) >= _ADTS_SCAN_BATCH_BYTES:
+            self._scan(final=False)
+
+    def feed_pes(self, payload: bytes, *, unit_start: bool) -> None:
+        """Add an MPEG-TS packet's payload of the stream's PES packets."""
+        if unit_start:
+            self._skipping_pes = len(payload) < 9 or payload[:3] != _PES_START
+            if not self._skipping_pes:
+                payload = payload[9 + payload[8] :]  # after the PES header
+        if self._skipping_pes:
+            self._total += len(payload)
+            self._damaged += len(payload)
+        else:
+            self.feed(payload)
+
+    def finish(self) -> float:
+        """Check the rest of the stream; return the fraction of its bytes that are damaged."""
+        self._scan(final=True)
+        return self._damaged / self._total if self._total else 0.0
+
+    def _scan(self, *, final: bool) -> None:
+        data = self._pending
+        end = len(data)
+        position = 0
+        while position < end:
+            if not final and end - position < _ADTS_HEADER_BYTES:
+                break  # wait for the rest of the header
+            length = _adts_frame_length(data, position)
+            if length is not None:
+                after = position + length
+                if after + _ADTS_HEADER_BYTES <= end:
+                    intact = _adts_frame_length(data, after) is not None
+                elif not final:
+                    break  # wait for the next frame's header
+                else:
+                    intact = after <= end  # the last frame
+                if intact:
+                    position = after
+                    continue
+            next_sync = data.find(b"\xff", position + 1)
+            resumed = end if next_sync == -1 else next_sync
+            self._damaged += resumed - position
+            position = resumed
+        del data[:position]
+
+
+def _adts_frame_length(data: bytearray, position: int) -> int | None:
+    """The length of the ADTS frame whose header starts at `position`, or None if none does."""
+    header = data[position : position + _ADTS_HEADER_BYTES]
+    if (
+        len(header) < _ADTS_HEADER_BYTES
+        or header[0] != 0xFF
+        or header[1] & 0xF6 != 0xF0  # the rest of the sync word, and layer 0
+        or (header[2] >> 2) & 0x0F > 12  # sampling frequency indexes 13-15 are reserved
+    ):
+        return None
+    length = (header[3] & 0x03) << 11 | header[4] << 3 | header[5] >> 5
+    header_bytes = _ADTS_HEADER_BYTES if header[1] & 0x01 else _ADTS_HEADER_BYTES + 2  # CRC
+    return length if length > header_bytes else None
 
 
 # --- Normalizing -------------------------------------------------------------------------------
@@ -775,14 +1017,15 @@ def normalize_audio(
     gaps in the audio's timestamps become silence, so a time in the WAV is the same time in the
     source, and timestamp resets (which jump back) are joined (`_TIMELINE_OPTIONS`). Conversion
     fails if more than `MAX_DECODE_ERROR_RATE` of the audio can't be decoded, counted in frames
-    and, for AAC, in bytes that can't be AAC frames (checked before converting, and before an
-    existing WAV is reused); FFmpeg would otherwise turn it into silence. The WAV is written to a
-    temporary file, probed and checked before it is renamed into place: the format must be
-    right, and its duration must match the source's, within `NORMALIZED_DURATION_TOLERANCE_S` or
-    `NORMALIZED_DURATION_TOLERANCE_FRACTION`, whichever is larger. The source's duration is how
-    long FFmpeg reads it to be and, for containers with an index (not MPEG-TS), also the
-    container's duration, which catches a truncated file. If the WAV exists already and passes
-    the same checks, it is returned (pass `force` to convert again).
+    and, for MPEG-TS and raw ADTS, in damaged bytes (`_byte_damage`, checked before converting,
+    and before an existing WAV is reused); FFmpeg would otherwise turn it into silence. The WAV
+    is written to a temporary file, probed and checked before it is renamed into place: the
+    format must be right, and its duration must match the source's, within
+    `NORMALIZED_DURATION_TOLERANCE_S` or `NORMALIZED_DURATION_TOLERANCE_FRACTION`, whichever is
+    larger. The source's duration is how long FFmpeg reads it to be and, for containers with an
+    index (not MPEG-TS), also the container's duration, which catches a truncated file. If the
+    WAV exists already and passes the same checks, it is returned (pass `force` to convert
+    again).
 
     Args:
         source: The downloaded media file; any container FFmpeg reads, with or without video.
@@ -801,8 +1044,8 @@ def normalize_audio(
         FFmpegError: FFmpeg or FFprobe failed (as for `autoclipper.ffmpeg.run_command` and
             `probe`); `FFmpegOutputError` if `source` has no audio stream, more than
             `MAX_DECODE_ERROR_RATE` of it can't be decoded (frames FFmpeg fails to decode, or
-            AAC bytes that can't be frames), or the WAV has the wrong format or duration. No
-            WAV is written or returned then.
+            damaged bytes), or the WAV has the wrong format or duration. No WAV is written or
+            returned then.
     """
     output = normalized_audio_path(data_dir, video_id)
     if not source.is_file():
@@ -811,16 +1054,12 @@ def normalize_audio(
     if not source_info.audio_streams:
         raise FFmpegOutputError(f"{source} has no audio stream")
     played_s = _played_duration_s(source, runner)
-    # Only AAC's largest frame is known (and Twitch's audio is AAC); other codecs rely on the
-    # frame count from -max_error_rate alone.
-    stream = source_info.audio_streams[0]
-    if stream.codec_name == "aac":
-        undecodable = _undecodable_aac_fraction(source, stream.channels, runner)
-        if undecodable > MAX_DECODE_ERROR_RATE:
-            raise FFmpegOutputError(
-                f"more than {MAX_DECODE_ERROR_RATE:.0%} of the audio in {source} could not be "
-                f"decoded (damaged file): {undecodable:.1%} of its bytes are not valid AAC frames"
-            )
+    damage = _byte_damage(source_info)
+    if damage is not None and damage.fraction > MAX_DECODE_ERROR_RATE:
+        raise FFmpegOutputError(
+            f"more than {MAX_DECODE_ERROR_RATE:.0%} of the audio in {source} could not be "
+            f"decoded (damaged file): {damage}"
+        )
     if output.exists() and not force:
         try:
             info = _check_normalized(probe(output, runner=runner), source_info, played_s)
