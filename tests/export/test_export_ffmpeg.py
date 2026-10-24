@@ -1,7 +1,7 @@
 """Integration tests: real exports of generated test media with the installed FFmpeg."""
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -329,6 +329,129 @@ def test_export_of_the_last_half_second_of_an_mpegts_uses_the_real_audio_end(
 # Matroska DefaultDuration element: ID 0x23E383, then a one-byte size (high bit set).
 _DEFAULT_DURATION_ID = bytes.fromhex("23e383")
 
+# Matroska element IDs (https://www.matroska.org/technical/elements.html).
+_SEGMENT_ID = 0x18538067
+_INFO_ID = 0x1549A966
+_TRACKS_ID = 0x1654AE6B
+_TAGS_ID = 0x1254C367
+_CLUSTER_ID = 0x1F43B675
+_CLUSTER_TIMESTAMP_ID = 0xE7
+_SIMPLE_BLOCK_ID = 0xA3
+_BLOCK_GROUP_ID = 0xA0
+_BLOCK_ID = 0xA1
+_BLOCK_DURATION_ID = 0x9B
+
+
+def void_default_duration(data: bytearray) -> None:
+    """Overwrite the first DefaultDuration element with an EBML Void element of the same size."""
+    position = data.index(_DEFAULT_DURATION_ID)
+    size_byte = data[position + len(_DEFAULT_DURATION_ID)]
+    assert size_byte & 0x80, "expected a one-byte element size"
+    element_size = len(_DEFAULT_DURATION_ID) + 1 + (size_byte & 0x7F)
+    # EBML Void: ID 0xEC, a one-byte size, then zeros, filling the same bytes.
+    data[position : position + element_size] = bytes([0xEC, 0x80 | (element_size - 2)]) + bytes(
+        element_size - 2
+    )
+
+
+def ebml_elements(data: bytes) -> Iterator[tuple[int, bytes, bytes]]:
+    """Each EBML element in `data`, in order: its ID, its payload and the whole element."""
+    position = 0
+    while position < len(data):
+        start = position
+        id_length = 9 - data[position].bit_length()
+        element_id = int.from_bytes(data[position : position + id_length])
+        position += id_length
+        size_length = 9 - data[position].bit_length()
+        unknown_size = (1 << (7 * size_length)) - 1
+        size = int.from_bytes(data[position : position + size_length]) & unknown_size
+        position += size_length
+        if size == unknown_size:  # runs to the end of its parent
+            size = len(data) - position
+        yield element_id, data[position : position + size], data[start : position + size]
+        position += size
+
+
+def ebml_element(element_id: int, payload: bytes) -> bytes:
+    size_length = next(n for n in range(1, 9) if len(payload) < (1 << (7 * n)) - 1)
+    size = (len(payload) | (1 << (7 * size_length))).to_bytes(size_length)
+    return element_id.to_bytes((element_id.bit_length() + 7) // 8) + size + payload
+
+
+def make_mkv_where_only_the_last_frame_has_a_duration(path: Path) -> Path:
+    """An MJPEG MKV with frames at 0, 1, 2, 2.8 and 2.9 s; only the last one states a duration.
+
+    Its DefaultDuration is voided as in `make_mkv_without_frame_durations`, and the last frame is
+    rewritten from a SimpleBlock into a BlockGroup with a 100 ms BlockDuration, so the file ends at
+    3.0 s. That changes sizes, so the segment and clusters are rebuilt, and the seek head and cues,
+    whose byte offsets would be stale, are left out. The caller checks the result with ffprobe.
+    """
+    original = path.with_name(f"{path.stem}-original.mkv")
+    run_command(
+        ffmpeg_command(
+            "-n",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=10:duration=3",
+            "-vf",
+            "settb=1/1000,setpts=if(lt(N\\,3)\\,N*1000\\,2800+(N-3)*100)",
+            "-fps_mode",
+            "vfr",
+            "-enc_time_base",
+            "1/1000",
+            "-frames:v",
+            "5",
+            "-c:v",
+            "mjpeg",
+            "-write_crc32",
+            "0",  # no EBML CRC-32 elements to invalidate
+            original,
+        ),
+        timeout_s=TIMEOUT_S,
+    )
+    rebuilt: list[bytes] = []
+    for element_id, payload, whole in ebml_elements(original.read_bytes()):
+        if element_id != _SEGMENT_ID:
+            rebuilt.append(whole)
+            continue
+        children: list[bytes] = []
+        for child_id, child_payload, child in ebml_elements(payload):
+            if child_id in (_INFO_ID, _TAGS_ID):
+                children.append(child)
+            elif child_id == _TRACKS_ID:
+                tracks = bytearray(child_payload)
+                void_default_duration(tracks)
+                children.append(ebml_element(child_id, bytes(tracks)))
+            elif child_id == _CLUSTER_ID:
+                children.append(ebml_element(child_id, _with_last_frame_duration(child_payload)))
+        rebuilt.append(ebml_element(element_id, b"".join(children)))
+    path.write_bytes(b"".join(rebuilt))
+    original.unlink()
+    return path
+
+
+def _with_last_frame_duration(cluster: bytes) -> bytes:
+    """The cluster, with the frame at 2.9 s given an explicit 100 ms duration."""
+    cluster_ms = 0
+    blocks: list[bytes] = []
+    for element_id, payload, whole in ebml_elements(cluster):
+        if element_id == _CLUSTER_TIMESTAMP_ID:
+            cluster_ms = int.from_bytes(payload)
+        if element_id == _SIMPLE_BLOCK_ID:
+            track_length = 9 - payload[0].bit_length()
+            relative_ms = int.from_bytes(payload[track_length : track_length + 2], signed=True)
+            if cluster_ms + relative_ms == 2900:
+                block = bytearray(payload)
+                block[track_length + 2] = 0  # a Block has no keyframe flag
+                group = ebml_element(_BLOCK_ID, bytes(block)) + ebml_element(
+                    _BLOCK_DURATION_ID, (100).to_bytes(1)
+                )
+                blocks.append(ebml_element(_BLOCK_GROUP_ID, group))
+                continue
+        blocks.append(whole)
+    return b"".join(blocks)
+
 
 def make_mkv_without_frame_durations(path: Path) -> Path:
     """A 3 s, 5 fps MKV whose packets carry no durations.
@@ -356,25 +479,21 @@ def make_mkv_without_frame_durations(path: Path) -> Path:
         timeout_s=TIMEOUT_S,
     )
     data = bytearray(original.read_bytes())
-    position = data.index(_DEFAULT_DURATION_ID)
-    size_byte = data[position + len(_DEFAULT_DURATION_ID)]
-    assert size_byte & 0x80, "expected a one-byte element size"
-    element_size = len(_DEFAULT_DURATION_ID) + 1 + (size_byte & 0x7F)
-    # EBML Void: ID 0xEC, a one-byte size, then zeros, filling the same bytes.
-    data[position : position + element_size] = bytes([0xEC, 0x80 | (element_size - 2)]) + bytes(
-        element_size - 2
-    )
+    void_default_duration(data)
     path.write_bytes(data)
     original.unlink()
     return path
 
 
-def last_packet(path: Path) -> dict[str, str]:
+def packet_list(path: Path) -> list[dict[str, str]]:
     command = ffprobe_command(
         "-print_format", "json", "-show_entries", "packet=pts_time,duration_time", path
     )
-    packets = json.loads(run_command(command, timeout_s=TIMEOUT_S).stdout)["packets"]
-    return packets[-1]
+    return json.loads(run_command(command, timeout_s=TIMEOUT_S).stdout)["packets"]
+
+
+def last_packet(path: Path) -> dict[str, str]:
+    return packet_list(path)[-1]
 
 
 @pytest.mark.parametrize(
@@ -393,6 +512,37 @@ def test_export_of_an_mkv_without_frame_durations_keeps_its_last_frame(
     # The last frame lasts until 3.0 s, so nothing is clamped away.
     assert (result.start_s, result.end_s) == (start_s, pytest.approx(end_s))
     assert_vertical_h264_aac(result.output, end_s - start_s)
+
+
+@pytest.mark.parametrize(
+    ("end_s", "padding_after_s"),
+    [(4.0, 0.0), (3.0, 1.0)],
+    ids=["past_the_end", "padding_past_the_end"],
+)
+def test_export_of_an_mkv_with_only_a_last_frame_duration_is_clamped_to_its_end(
+    tmp_path: Path, end_s: float, padding_after_s: float
+) -> None:
+    source = make_mkv_where_only_the_last_frame_has_a_duration(tmp_path / "vod.mkv")
+    # The rewrite took effect: the inner frames state no duration, the last one 0.1 s.
+    packets = packet_list(source)
+    assert [float(packet["pts_time"]) for packet in packets] == [0.0, 1.0, 2.0, 2.8, 2.9]
+    assert all("duration_time" not in packet for packet in packets[1:-1])
+    assert float(packets[-1]["duration_time"]) == pytest.approx(0.1)
+    assert probe(source).duration_s == pytest.approx(3.0)
+
+    result = export_clip(
+        ExportRequest(
+            source,
+            Interval(2.0, end_s),
+            tmp_path / "clip.mp4",
+            padding=ContextPadding(after_s=padding_after_s),
+        )
+    )
+
+    # The frame at 2.8 s lasts until the next frame, not the median gap (0.9 s) past it.
+    assert (result.start_s, result.end_s) == (2.0, pytest.approx(3.0))
+    assert result.cut.clamped_end
+    assert_vertical_h264_aac(result.output, 1.0)
 
 
 def test_export_of_an_mkv_whose_timestamps_start_at_10_s_ends_with_its_content(

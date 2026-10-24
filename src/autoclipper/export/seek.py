@@ -139,12 +139,13 @@ def probe_stream_ends(
     """Read where each stream's last packet ends, in seconds from the container start.
 
     A stream ends at the largest presentation time plus duration of its packets. A packet without
-    a duration (Matroska may leave durations out) lasts the stream's typical frame spacing, the
-    median gap between its consecutive distinct timestamps, never zero, which would drop the last
-    frame. The packets are read from `END_SEARCH_WINDOW_S` before `duration_hint_s` to the end of
-    the file; the window widens backwards until every stream has packets in it, finally to the
-    whole file. So the read stays short on a multi-hour VOD, and a wrong hint only costs more
-    reading.
+    a duration (Matroska may leave durations out) lasts until the stream's next timestamp, as
+    Matroska defines it; only one with no later timestamp is given the stream's typical frame
+    spacing, the median gap between its consecutive distinct timestamps, never zero, which would
+    drop the last frame. The packets are read from `END_SEARCH_WINDOW_S` before `duration_hint_s`
+    to the end of the file; the window widens backwards until every stream has packets in it,
+    finally to the whole file. So the read stays short on a multi-hour VOD, and a wrong hint only
+    costs more reading.
 
     Args:
         source: The media file.
@@ -320,10 +321,10 @@ def _keyframe_times(stdout: bytes, source: Path) -> list[float]:
 def _packet_ends(stdout: bytes, source: Path) -> dict[int, float]:
     """Where each stream's packets end, in the file's own clock.
 
-    A packet ends at its pts plus its duration, or plus the stream's median spacing between
-    consecutive distinct pts values when it has no (or a zero) duration. A stream is left out
-    when the packet that would end it has neither (fewer than two distinct pts values in the
-    read).
+    A packet ends at its pts plus its duration. Without one (or with a zero one) it ends at the
+    stream's next distinct pts, or, at the last pts, after the stream's median spacing between
+    consecutive distinct pts values. A stream is left out when the packet that would end it has
+    neither (fewer than two distinct pts values in the read).
     """
     packets = _json_object(stdout, source).get("packets", [])
     if not isinstance(packets, list):
@@ -348,15 +349,18 @@ def _packet_ends(stdout: bytes, source: Path) -> dict[int, float]:
 
 def _stream_end(packets: list[tuple[float, float | None]]) -> float | None:
     """The largest pts + duration of `(pts, duration or None)` packets, or None if unknown."""
-    # Packets come in decoding order; frame spacing is measured in presentation order.
+    # Packets come in decoding order; the next pts and frame spacing are in presentation order.
     times = sorted({time_s for time_s, _ in packets})
+    next_time_s = dict(itertools.pairwise(times))
     gaps = [later - earlier for earlier, later in itertools.pairwise(times)]
     spacing_s = statistics.median(gaps) if gaps else None
     known_end_s = -math.inf
     latest_unknown_s = -math.inf  # pts of the latest packet whose end can't be determined
     for time_s, duration_s in packets:
         if duration_s is None or duration_s <= 0:
-            duration_s = spacing_s
+            # Bounded by the next frame: a median estimate there could overrun a known final end.
+            following_s = next_time_s.get(time_s)
+            duration_s = spacing_s if following_s is None else following_s - time_s
         if duration_s is None or duration_s <= 0:
             latest_unknown_s = max(latest_unknown_s, time_s)
         else:

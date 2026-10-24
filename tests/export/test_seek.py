@@ -375,6 +375,19 @@ def test_only_packets_without_a_duration_use_the_estimate(source: Path) -> None:
     assert ends == {1: pytest.approx(9.0 + 6 * frame_s)}
 
 
+def test_an_earlier_packet_without_a_duration_lasts_until_the_next_one(source: Path) -> None:
+    # Irregular frames, in decoding order: the inner ones lack durations, the last says 0.1 s.
+    # The median gap is 0.9 s; giving it to the frame at 2.8 s would end the stream at 3.7 s,
+    # past the known end of the last frame.
+    runner = EndRunner(
+        [(0, 0.0, 0.1), (0, 2.0, None), (0, 1.0, None), (0, 2.9, 0.1), (0, 2.8, None)]
+    )
+
+    ends = probe_stream_ends(source, [0], container_start_s=0.0, duration_hint_s=3.0, runner=runner)
+
+    assert ends == {0: pytest.approx(3.0)}
+
+
 def test_known_durations_are_used_as_they_are(source: Path) -> None:
     # Durations shorter than the spacing (a 0.5 s frame every 1 s) are not replaced.
     runner = EndRunner([(0, 0.0, 0.5), (0, 1.0, 0.5)])
