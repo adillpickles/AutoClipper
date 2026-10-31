@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Current. Pilot scope from [data sources and local-first delivery](../decisions/0011-data-sources-and-local-delivery.md); snapshot rules from the [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md). |
+| **Status** | Current. Pilot scope from [data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md); snapshot rules from the [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md). |
 | **Last updated** | 2026-10-31 |
 
 ## Why collection is urgent
@@ -11,7 +11,7 @@ Twitch VODs expire ([data sources](data-sources.md#vod-retention)), and pilot VO
 
 ## What we collect per VOD
 
-Everything is collected in one `autoclipper ingest` run per VOD (#34).
+Everything is collected in one `autoclipper ingest` run per VOD (#34). Run it on a suitable team machine or worker and share the completed media and tables. Teammates can reuse those outputs without downloading the same VOD again.
 
 | Item | Source | When | Approx. size (6 h VOD) |
 |---|---|---|---|
@@ -19,7 +19,7 @@ Everything is collected in one `autoclipper ingest` run per VOD (#34).
 | Viewer-clip snapshot | Get Clips | At ingest, once; the VOD must be at least 7 days old ([labeling § 7](labeling.md#7-view-count-maturity)); record the capture time | KB–MB |
 | Chat replay | TwitchDownloader | At ingest | ~10–200 MB JSON, depending on chat volume (deleted after parsing) |
 | Audio | yt-dlp or TwitchDownloader (audio only) | At ingest | ~100–400 MB |
-| Video | yt-dlp or TwitchDownloader | On demand for preview/export; keep the demo and evaluation set locally | Measure in pilot |
+| Video | yt-dlp or TwitchDownloader | On demand for preview/export; retain the demo and evaluation set in the chosen storage | Measure in pilot |
 
 These are rough planning estimates; measure them in the pilot. Each clip snapshot is immutable and records capture times, query ranges, coverage and dataset lineage ([data model](../architecture/data-model.md#clips)). Later-created clips and pagination limits affect which clips a snapshot contains. A VOD younger than 7 days at capture is flagged and left out of view-weighted labels and metrics.
 
@@ -41,7 +41,7 @@ The pilot channels are listed in [`configs/channels.yaml`](../../configs/channel
 | Pilot dataset (baselines and first models) | ~25 | ~5 per channel in `configs/channels.yaml` |
 | Scale-up | Based on the pilot | Add VODs or channels if results and disk/download costs justify it |
 
-Measure disk, download and feature costs before scaling. Keep compressed audio in `data/raw/`; WAV is transient. Features alone can't support preview or export after a VOD expires, so keep the media needed for the demo and evaluation locally.
+Measure disk, download and feature costs before scaling. Keep compressed audio in `data/raw/`; WAV is transient. Features alone can't support preview or export after a VOD expires, so retain the media needed for the demo and evaluation in the chosen storage.
 
 ## Ingest
 
@@ -60,4 +60,4 @@ There is no scheduled collector in the MVP. Watching channels for new VODs autom
 
 ## Data sharing within the team
 
-Raw data **never goes in git**. Teammates share downloaded media and processed tables privately, through a shared team drive (versioned `processed/` snapshots) or by direct copy. Chat is shared as the pseudonymized message tables and per-window features; the raw replay file is deleted after parsing ([data handling](data-governance.md)).
+Raw data **never goes in git**. Use a shared directory, direct copy or hosted storage to make completed media and versioned tables available to the team. Point `AUTOCLIPPER_DATA_DIR` at a shared directory when possible; for object storage, synchronize the same versioned layout to the machine running a stage. Use one writer per shared catalog or dataset output to avoid collisions. Chat is shared as the pseudonymized message tables and per-window features; the raw replay file is deleted after parsing ([data handling](data-governance.md)).

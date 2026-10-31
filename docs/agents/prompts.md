@@ -10,18 +10,20 @@ Prompts for the optional audit → verify loop are in [review-loop.md](review-lo
 Work on issue #<N> in this repo.
 
 1. Read AGENTS.md, docs/project/status.md and the issue (gh issue view <N>).
-2. Check the issue's "Depends on" list. If anything there isn't merged, stop and tell me.
+2. Check the issue's "Depends on" list. Work on independent parts while prerequisites are
+   pending; report any dependency that prevents completing or merging the task.
 3. Read the docs the issue links and the code you'll touch.
 4. If the task is large, write a short plan (files, approach, tests) and then build it.
    Make the engineering decisions yourself and explain them in the PR.
 5. Implement on branch <type>/<N>-<slug>. Add tests, update affected docs and status.md.
 6. Run lint, type check and tests. Read your full diff against main.
-7. Commit with short Conventional Commit messages, push the branch and open a PR against
-   main using .github/pull_request_template.md ("Closes #<N>", the issue's labels). Don't merge.
+7. Commit with short Conventional Commit messages. Push or open/update a PR only when
+   publication is requested; a request to update an existing PR includes pushing its commits.
+   Use .github/pull_request_template.md ("Closes #<N>", the issue's labels). Don't merge.
 8. Tell me what changed, how you verified it, which decisions you made and what's uncertain.
 ```
 
-## Open the PR (if you told the agent to wait)
+## Push and open the PR
 
 ```text
 Push this branch and open a PR against main using .github/pull_request_template.md.

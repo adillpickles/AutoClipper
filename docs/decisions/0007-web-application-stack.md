@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Accepted (2026-10-16). The app runs locally; there is no hosted backend ([data sources and local-first delivery](0011-data-sources-and-local-delivery.md)). |
+| **Status** | Accepted (2026-10-16). The initial setup runs locally; deployment can evolve with the product ([delivery defaults](0011-data-sources-and-local-delivery.md)). |
 | **Date** | 2026-10-09 |
 | **Related** | [Architecture § Interfaces](../architecture/overview.md#47-interfaces), [PRD § Interface](../product/prd.md#interface) |
 
@@ -12,12 +12,12 @@ The demo needs a polished, visual flow: paste a VOD link, watch progress, browse
 
 ## Decision
 
-- **Local web app.** `autoclipper serve` starts the backend on the user's machine and the Next.js app runs in their browser. A packaged desktop download is a stretch goal.
+- **Initial web app setup.** `autoclipper serve` starts the backend and the Next.js app runs in a browser. A packaged download and hosted deployment are options as the product develops.
 - **Backend:** FastAPI in `src/autoclipper/api/`, wrapping the same library functions the CLI uses. Processing a VOD takes minutes, so long jobs run in a background worker, never inside the HTTP request. Pydantic models are shared with the CLI output schema.
 - **Frontend:** Next.js + TypeScript (strict) + Tailwind in `web/`, talking to the API through one typed client. The highlight timeline is a custom component (canvas/SVG heat strip with markers).
-- **Video preview:** the backend serves locally downloaded media and rendered clips; the browser plays local files. Full VOD playback is optional.
+- **Video preview:** the backend serves downloaded media and rendered clips through the API; the browser uses the returned URLs. Full VOD playback is optional.
 - **Build early:** start the UI with synthetic (fake) candidates while the pipeline and model are being built. Don't wait for ML.
-- **No hosting.** No hosted backend, accounts or cloud storage ([data sources and local-first delivery](0011-data-sources-and-local-delivery.md)). Stretch: a static project website with the code, docs and the app download.
+- **Delivery options.** Start with the laptop setup. A project website can offer the app download and link to a hosted instance; worker execution, storage and API extensions are chosen as needed ([delivery defaults](0011-data-sources-and-local-delivery.md)).
 
 ## Options considered
 

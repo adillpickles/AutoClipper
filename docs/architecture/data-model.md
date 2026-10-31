@@ -5,7 +5,7 @@
 | **Status** | Current. Schemas follow the [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md) and [local Parquet storage](../decisions/0005-local-storage-parquet-duckdb.md). |
 | **Last updated** | 2026-10-31 |
 
-These are the tables that pipeline stages exchange. **Any schema change, including adding a nullable column, requires an ADR or ADR update in the same PR** (see [AGENTS.md § Hard rules](../../AGENTS.md#6-hard-rules)), because it can break downstream stages and invalidate past results. Document the change here too.
+These are the tables that pipeline stages exchange. Update this document with schema changes and version any change that affects existing datasets or results. Explain the rationale in the PR; significant changes also update the relevant decision record. Make those updates with the implementation ([AGENTS.md § Hard rules](../../AGENTS.md#6-hard-rules)).
 
 ## Conventions
 

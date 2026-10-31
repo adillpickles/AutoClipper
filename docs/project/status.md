@@ -9,7 +9,7 @@
 
 ## Summary
 
-Scope, architecture and the plan are documented, and everything needed for the MVP is decided. The app has two outputs: ranked, captioned 9:16 clips and a 16:9 highlights video, and runs locally. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client and a pseudonymizing chat replay parser. Python and frontend tooling run in CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
+Scope, architecture and the plan are documented, with concrete defaults for building the MVP. The planned app has two outputs: ranked, captioned 9:16 clips and a 16:9 highlights video. The initial setup targets a laptop; collection/storage can be shared and hosted deployment remains an option. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client and a pseudonymizing chat replay parser. Python and frontend tooling run in CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
 
 ## What exists
 
@@ -29,7 +29,7 @@ Scope, architecture and the plan are documented, and everything needed for the M
 | FFmpeg runner | ✅ In place (#51) | `autoclipper.ffmpeg`: FFmpeg/FFprobe commands as argument lists, an injectable runner with timeouts and typed errors, `probe` (duration, streams) and the version string. CI installs FFmpeg (apt on Ubuntu, a pinned, checksum-verified build on Windows); FFmpeg tests skip locally without it but fail in CI ([testing](../development/testing.md#ffmpeg-tests)) |
 | Synthetic dataset | ✅ In place (#15) | `autoclipper synth --seed <n>` writes 3 fake VODs (Parquet tables in the data-model schemas, chat, 16 kHz WAVs, test-pattern videos and a SHA-256 manifest) to `data/synthetic/seed-<n>/`; same seed, same bytes. Details: [testing § Synthetic dataset](../development/testing.md#synthetic-dataset) |
 | Twitch developer app | ✅ Registered (#4) | One shared team app; credentials shared privately and kept in each member's `.env` |
-| Data collection | ❌ Not started | Five pilot channels in [`configs/channels.yaml`](../../configs/channels.yaml); VOD links collected in `configs/pilot_vods.txt` (#35) and downloaded locally by each team member ([data sources and delivery](../decisions/0011-data-sources-and-local-delivery.md)) |
+| Data collection | ❌ Not started | Five pilot channels in [`configs/channels.yaml`](../../configs/channels.yaml); collect the VODs in `configs/pilot_vods.txt` (#35) once on a suitable machine or worker and reuse the outputs through shared storage ([data sources and delivery](../decisions/0011-data-sources-and-local-delivery.md)) |
 | Labels / features / models / eval | ❌ Not started | Approach decided: [modeling plan § 0](../ml/modeling-plan.md#0-the-plan-in-plain-english) |
 | Audio download / export | 🟡 Drafts only (#19/#20) | PR #59 (audio) and PR #60 (vertical export) are unmerged. Each has open review findings (listed in #19 and #20) and fails only the Ubuntu CI job, on FFmpeg-version-dependent tests. Their code is not on `main`. |
 | License | ✅ MIT | [`LICENSE`](../../LICENSE), [ADR-0006](../decisions/0006-license.md) |
@@ -71,4 +71,5 @@ Follow the week of Nov 2 in the [roadmap](../product/roadmap.md): fix and merge 
 - 2026-10-30: API contract adopted (#13).
 - 2026-10-30: data sources, chat handling, training target, experiment tracking and hosting decided; analysis rules (ADR-0009) accepted; the `needs-decision` label removed.
 - 2026-10-31: product experience updated (ranked, ready-made clips), roadmap replanned by week, agent rules simplified, data handling rewritten in plain English, issues rewritten in a standard format; Twitch app registered (#4).
-- 2026-10-31: second output added (16:9 highlights video for viewers; #71, #72); local-first delivery with a website + download as the distribution path; permission gates and the open-questions list removed; API contract cleaned of decision points and extended with highlights and local video files; MIT license; `decision` label removed.
+- 2026-10-31: second output added (16:9 highlights video for viewers; #71, #72); website and app-download plan documented; obsolete planning gates and the open-questions list removed; API contract extended with highlights and local video files; MIT license; `decision` label removed.
+- 2026-10-31: delivery and storage clarified as adaptable implementation defaults; collection outputs can be shared and hosted deployment is optional. Routine engineering choices proceed within the task, with pushing and PR publication performed when requested. Setup examples and live-test guidance aligned with these defaults.

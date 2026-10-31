@@ -39,7 +39,7 @@ Viewer-made clips help, but they're duplicated, incomplete, missing for smaller 
 
 ## What we're building
 
-**The MVP:** paste a VOD link (or drop in a VOD you already downloaded) → the pipeline pulls viewer clips, chat and audio → chat and audio signals plus a trained model rank moments across the whole VOD (even when nobody clipped anything) → the app shows the top 10 as ranked, captioned 9:16 clips → nudge start/end and download them, or join them into one 16:9 highlights video.
+**The MVP:** paste a VOD link (and optionally the path to a VOD you already downloaded) → the pipeline pulls viewer clips, chat and audio → chat and audio signals plus a trained model rank moments across the whole VOD (even when nobody clipped anything) → the app shows the top 10 as ranked, captioned 9:16 clips → nudge start/end and download them, or join them into one 16:9 highlights video.
 
 The full scope, including what's explicitly out (live clipping, auto-posting, TikTok view prediction), is in the [PRD scope table](docs/product/prd.md#scope-at-a-glance).
 
@@ -62,14 +62,14 @@ Viewer clips double as **noisy training labels**: roughly, a stretch of the VOD 
 
 | Layer | Choice | Why | Decision |
 |---|---|---|---|
-| Pipeline and ML | Python 3.12, uv, pandas/Polars, scikit-learn, LightGBM | All the ML is Python. uv gives one-command, reproducible setup. LightGBM is a strong tabular model with a built-in ranking mode. | [ADR-0002](docs/decisions/0002-language-and-tooling.md) |
+| Pipeline and ML | Python 3.12, uv, pandas/Polars, scikit-learn, LightGBM | All the ML is Python. uv gives one-command, reproducible setup. LightGBM learns combinations of tabular signals. | [ADR-0002](docs/decisions/0002-language-and-tooling.md) |
 | Signals | Twitch Helix API, TwitchDownloader (chat), yt-dlp + librosa (audio) | Chat and audio are cheap per-second signals that run on a laptop. Video is only downloaded for clips we export. | [ADR-0004](docs/decisions/0004-staged-scope-chat-and-audio-first.md) |
 | Data storage | Parquet files + DuckDB | Fast analytics on a laptop with no database server to run | [ADR-0005](docs/decisions/0005-local-storage-parquet-duckdb.md) |
 | Export | FFmpeg, faster-whisper | Standard tool for cutting, cropping and burning in captions; Whisper captions run on CPU | [Architecture § Export](docs/architecture/overview.md#46-export) |
 | Backend | FastAPI + background worker | Same language as the ML. Processing a VOD takes minutes, so jobs run outside the request. | [ADR-0007](docs/decisions/0007-web-application-stack.md) |
 | Frontend | Next.js + TypeScript + Tailwind | The team knows it; supports a polished UI with a custom highlight timeline | [ADR-0007](docs/decisions/0007-web-application-stack.md) |
 | Quality | Ruff, Pyright, pytest, pre-commit, GitHub Actions | Fast, deterministic feedback for humans and agents. Actions is free for this public repo. | [ADR-0002](docs/decisions/0002-language-and-tooling.md) |
-| Delivery | Runs locally; static website + download (stretch) | No servers or storage to pay for: downloads, analysis and rendering run on the user's machine. | [ADR-0011](docs/decisions/0011-data-sources-and-local-delivery.md) |
+| Delivery | Local setup first; website + download (stretch) | A laptop is enough to start. Shared collection/storage and hosted deployment are options as the product develops. | [ADR-0011](docs/decisions/0011-data-sources-and-local-delivery.md) |
 
 ## Documentation
 
@@ -97,7 +97,7 @@ Follow [data handling](docs/data/data-governance.md): hash chatter names, and ke
 
 ## Background
 
-AutoClipper is built by a four-person team (4 FPS) in the [CUNY Tech Prep](https://cunytechprep.org/) Data Science track, Fall 2026. The project is not affiliated with or endorsed by Twitch, TikTok or any streamer.
+AutoClipper is built by a four-person team (4 FPS) in the [CUNY Tech Prep](https://cunytechprep.org/) Data Science track, Fall 2026.
 
 ## License
 

@@ -2,9 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Proposed / Accepted / Superseded by ADR-NNNN / Rejected |
+| **Status** | Accepted / Superseded by ADR-NNNN / Rejected |
 | **Date** | YYYY-MM-DD |
-| **Deciders** | <roles or GitHub handles> |
 | **Related** | <issues, PRs, other ADRs, spikes> |
 
 ## Context
@@ -13,7 +12,7 @@ What problem or force makes this decision necessary? What constraints apply (tea
 
 ## Decision
 
-What we will do, stated plainly: "We will …"
+The selected implementation, stated plainly: "We will …" Make the engineering call and record it with the change; a separate approval step isn't needed.
 
 ## Options considered
 

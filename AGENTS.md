@@ -14,7 +14,7 @@ Three users, one app: **clippers** and **small streamers** want the vertical cli
 
 How it finds moments: chat explodes and the streamer gets loud right after something happens. We measure those signals for every few seconds of the VOD, use the clips viewers already made as examples of "good moments", and train a model (logistic regression, then LightGBM) to score every moment. Simple rules (biggest chat spike, loudest moment) are the baselines the model has to beat.
 
-**Context:** AutoClipper is a student data-science project for the CUNY Tech Prep (CTP) fellowship. The app runs locally: `autoclipper serve` plus the web app in a browser, with downloads, analysis and rendering on the user's machine. A static project website with a download of the app is the distribution path (stretch). See [data sources and local-first delivery](docs/decisions/0011-data-sources-and-local-delivery.md).
+**Context:** AutoClipper is a student data-science project for the CUNY Tech Prep (CTP) fellowship. The initial setup uses `autoclipper serve` plus the web app in a browser. Collection and storage can be shared, and hosted deployment is an option when useful. A project website and downloadable app are planned distribution options (stretch). See [data sources and delivery defaults](docs/decisions/0011-data-sources-and-local-delivery.md).
 
 Full scope (must / should / could / won't): [`docs/product/prd.md`](docs/product/prd.md#scope-at-a-glance). Plan and dates: [`docs/product/roadmap.md`](docs/product/roadmap.md).
 
@@ -24,7 +24,7 @@ Full scope (must / should / could / won't): [`docs/product/prd.md`](docs/product
 - **Built:** Python tooling and CI, config/logging, a shared FFmpeg runner, the `autoclipper synth` fake-data generator, the Twitch API client and the chat replay parser. The Next.js app is a placeholder. Audio download (#19) and vertical export (#20) are in draft PRs #59 and #60.
 - **Not built yet:** the analysis pipeline, the backend, the app screens, a trained model and a real dataset.
 - **Work items** are GitHub issues. Pick any open issue whose **Depends on** items are merged.
-- **Decided:** everything needed to build the MVP. Stack and layout are in [`docs/decisions/`](docs/decisions/README.md); data sources, pilot channels, chat handling, the model target and delivery are in [data sources and local-first delivery](docs/decisions/0011-data-sources-and-local-delivery.md); the backend/frontend API, including the highlights video, is in [`docs/architecture/api-contract.md`](docs/architecture/api-contract.md). There is no list of open questions: when something isn't specified, make the engineering call (§ 10).
+- **Decided:** everything needed to build the MVP. Stack and layout are in [`docs/decisions/`](docs/decisions/README.md); data sources, pilot channels, chat handling, the model target and delivery are in [data sources and delivery defaults](docs/decisions/0011-data-sources-and-local-delivery.md); the backend/frontend API, including the highlights video, is in [`docs/architecture/api-contract.md`](docs/architecture/api-contract.md). There is no list of open questions: when something isn't specified, make the engineering call (§ 10).
 
 ## 3. What to read for which task
 
@@ -98,7 +98,7 @@ CI runs `uv sync --locked`, Ruff, Pyright and pytest on Ubuntu and Windows. Add 
 5. **Update docs** in the same change, including `docs/project/status.md` when project state changes.
 6. **Check your work:** lint, format, type check and tests pass; read your full diff.
 7. **Commit** with short [Conventional Commits](https://www.conventionalcommits.org/) messages, e.g. `feat(features): add chat message rate`.
-8. **Push and open the PR** with [the template](.github/pull_request_template.md): what changed, the decisions you made, how you verified it, what's uncertain. Your human merges it once CI is green.
+8. **Publish when requested.** Implement, test and commit autonomously. Push branches or open/update PRs when the user requests publication; a request to update an existing PR includes pushing the needed commits. Use [the template](.github/pull_request_template.md): what changed, the decisions you made, how you verified it, what's uncertain. Your human handles merging.
 
 **Optional second-opinion review** for large or risky changes: [docs/agents/review-loop.md](docs/agents/review-loop.md).
 
@@ -126,6 +126,8 @@ Full detail in `docs/development/conventions.md`.
 
 ## 10. When you're unsure
 
+- **Build from the documented defaults.** They make the first implementation concrete and can evolve with the product. Shared collection, shared storage and hosted deployment are valid options; choose the arrangement that fits the task and resources. Update affected contracts in the same change.
+- **Keep work moving.** Resolve routine uncertainty with the docs, tests or a small prototype. Ask only for essential missing inputs or actions outside the requested scope. Don't add speculative policy reviews or team-approval checkpoints to implementation tasks.
 - **Ambiguous requirement:** pick the option that best serves the product in §1, note the assumption in the PR, and keep going.
 - **Technical choice the docs don't cover** (a library, a threshold, a file layout, model parameters): make the call yourself, explain it in the PR, and update the doc if it changes a documented contract. Don't stop to ask, and don't open "needs a decision" issues.
 - **Doc is wrong or stale:** fix it in your PR.

@@ -24,8 +24,9 @@ stable Twitch user ID (``commenter._id``). Message text is redacted in three ste
    and the author's own name at the start of subscription notices.
 
 Names typed without ``@`` by people who never chat in the VOD, and names glued to other letters
-(e.g. CJK text without spaces), can still remain: text stays potentially identifying, and whether
-it may be kept at all is OQ-9. Messages live in memory only; nothing here writes them to disk.
+(e.g. CJK text without spaces), can still remain; these are limits of the text-redaction rules.
+The parser returns messages in memory. The ingest command (#34) will save the pseudonymized table
+under ``data/interim/chat/`` for feature recomputation; this module doesn't write parsed rows.
 
 Logs and exception messages carry counts, reasons, IDs of videos and version numbers, never chat
 content or tool output (which may contain chat content).
@@ -96,10 +97,10 @@ class ChatDownloadError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class ChatMessage:
-    """One chat message, shaped like a row of the proposed ``chat_messages`` table.
+    """One chat message, shaped like a row of the ``chat_messages`` table.
 
-    See docs/architecture/data-model.md § ``chat_messages``. That table is still a proposal and a
-    transient parsing representation (OQ-9); these records are not meant to be stored as is.
+    See docs/architecture/data-model.md § ``chat_messages``. The parser returns these records
+    for the ingest command (#34) to serialize to the pseudonymized message table.
 
     Attributes:
         video_id: The Twitch video ID the chat belongs to.

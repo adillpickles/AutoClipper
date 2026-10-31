@@ -20,7 +20,7 @@ One repository containing:
 - `experiments/`, `configs/`, `notebooks/`, `scripts/`, `docs/`.
 - Git-ignored `data/` and `artifacts/`.
 
-AutoClipper is a **standalone** project. It doesn't depend on any team member's private or personal codebase. Reusing outside code requires a compatible license and a note in the PR.
+AutoClipper is a **standalone** project. Its setup and dependencies are documented here so a teammate can build it from this checkout.
 
 ## Options considered
 

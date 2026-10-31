@@ -8,7 +8,7 @@
 
 ## Context
 
-Data volumes are moderate: hundreds of VODs, millions of chat messages, ~10⁵–10⁶ windows. The pipeline runs on laptops. Stages should be independently runnable and inspectable, and agents need simple, predictable I/O.
+Data volumes are moderate: hundreds of VODs, millions of chat messages, ~10⁵–10⁶ windows. The initial pipeline runs on laptops, and the same stages can run on a worker. Stages should be independently runnable and inspectable, and agents need simple, predictable I/O.
 
 ## Decision
 
@@ -16,7 +16,7 @@ Data volumes are moderate: hundreds of VODs, millions of chat messages, ~10⁵�
 - Store media (audio) as files under `data/raw/`.
 - Track collection state in a `catalog.parquet` table.
 - Version datasets via `data/splits/<dataset_version>.json` (see [data model § Dataset versioning](../architecture/data-model.md#dataset-versioning)).
-- No database server. The local app keeps job records in memory and writes results and exports as files under `artifacts/` ([API contract](../architecture/api-contract.md)); there is no hosted backend or cloud storage ([data sources and local-first delivery](0011-data-sources-and-local-delivery.md)).
+- The initial API keeps job records in memory and writes results and exports as files under `artifacts/` ([API contract](../architecture/api-contract.md)). A database server is unnecessary for that setup; add persistence or hosted storage with the feature or deployment that needs it ([delivery defaults](0011-data-sources-and-local-delivery.md)).
 
 ## Options considered
 
@@ -31,7 +31,7 @@ Data volumes are moderate: hundreds of VODs, millions of chat messages, ~10⁵�
 ## Consequences
 
 - **Positive:** simple, fast, portable. Each stage reads and writes files.
-- **Negative:** teammates share data outside git (a private team drive or direct copy), and concurrent writes need care (one collector process).
+- **Negative:** shared files need coordinated writes (one collector process per catalog/output), whether the storage is local, on a team drive or synchronized from an object store.
 - **Follow-ups:** consider DVC if dataset sharing becomes painful.
 
 ## Revisit when

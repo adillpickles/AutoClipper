@@ -12,7 +12,7 @@ Reviewed at each milestone. Likelihood and impact: **H**igh / **M**edium / **L**
 | R7 | **Model doesn't beat simple heuristics** | M | M | It's still a finding. Report it honestly. Lean on ablations and the small-streamer simulation. | M2 baselines already very strong |
 | R8 | **Scope creep** (video ML, live mode, auto-posting) | H | H | [Staged scope](../decisions/0004-staged-scope-chat-and-audio-first.md): Should/Could items (`stretch` label) wait until the MVP runs end to end. | Stretch work starts before M4 |
 | R9 | **Leakage inflates results** | M | H | Saved grouped splits, train-only fitted preprocessing, versioned chat filter, cutoff snapshots and clip-free discovery evaluation; per-input offline normalization is allowed. | Suspiciously high validation scores |
-| R10 | **Storage/compute exceeds laptops** | M | M | Audio only, compressed raw, delete WAVs after features, split the pilot across team machines | Disk use > 70% on a team machine |
+| R10 | **Storage/compute exceeds the initial machine** | M | M | Audio only, compressed raw, delete WAVs after features; use shared storage or a collection worker when useful | Disk use > 70% on the collection machine |
 | R11 | **Agent-generated code drifts from conventions** | M | M | AGENTS.md, contracts, review checklist, docs-gap feedback loop | Repeated review comments of the same kind |
 | R12 | **Team availability** | M | M | Small issues anyone can pick up, approvals optional, weekly sync to rebalance | An issue in progress > 5 days |
 | R13 | **Demo fails live** (network, Twitch outage) | M | H | Pre-processed demo VODs cached locally. Recorded fallback video. | — (always prepare) |

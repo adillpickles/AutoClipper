@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Current. One window scorer; model progression: baselines → logistic regression → LightGBM. Training target: independent discovery/scoring ([data sources and local-first delivery](../decisions/0011-data-sources-and-local-delivery.md)). Evaluation rules: [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md). |
+| **Status** | Current. One window scorer; model progression: baselines → logistic regression → LightGBM. Training target: independent discovery/scoring ([data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md)). Evaluation rules: [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md). |
 | **Last updated** | 2026-10-31 |
 | **Related** | [Features](features.md) · [Evaluation](evaluation.md) · [Experiments](experiments.md) · [Labeling](../data/labeling.md) |
 

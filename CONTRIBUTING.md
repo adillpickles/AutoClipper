@@ -44,7 +44,7 @@ How work moves from an issue to a merged pull request. It applies to everyone, w
    - It doesn't have the `blocked` label.
    - It won't edit the same files as someone else's open PR (check its scope / likely files).
 3. **Claim it.** Assign yourself: issue page → right sidebar → **Assignees** → yourself. Or run `gh issue edit <N> --add-assignee @me`. If you can't assign, comment "taking this".
-4. **Unclear?** Ask in a comment on the issue before you start, not halfway through.
+4. **Unclear?** Read the relevant docs, choose a sensible default and explain it in the PR. Ask only when essential inputs are missing or the action is outside the requested scope.
 
 ## 3. Create a branch
 
@@ -71,7 +71,7 @@ Example: `feat/14-audio-loudness-features`.
 
 - Set up your environment with [setup](docs/development/setup.md).
 - Follow [conventions](docs/development/conventions.md) and add tests ([testing](docs/development/testing.md)).
-- Keep it small: aim for **under ~400 changed lines**. If it's growing past that, split the issue.
+- Keep changes focused and reviewable. Split unrelated work; include the wiring, dependencies and doc updates needed to finish the task in the same PR.
 - Before pushing, run the checks (CI runs the same ones):
 
   ```bash
@@ -180,7 +180,7 @@ Most of this project is built with AI coding agents. The basics:
 
 - **Hand the agent the issue.** Starter prompts are in [prompts](docs/agents/prompts.md). The agent reads `AGENTS.md` automatically and finds the rest from there.
 - **Verify, don't trust.** Run the code. Check that the tests actually test the change. Agents are confidently wrong about APIs, file formats and metrics.
-- **The agent opens the PR; you merge it.** When the task is done the agent pushes its branch and opens the PR (unless you tell it to wait). You check the result and merge once CI is green.
+- **Agents build autonomously; publication follows the request.** Agents make technical calls, implement, test and commit. They push branches or open/update PRs when asked; a request to update an existing PR includes pushing its commits. You check the result and handle merging.
 - **Fix the docs when the agent was misled.** If an agent made a mistake because a doc was missing or unclear, fix the doc in the same PR.
 - **Optional second opinion.** For big or risky changes, consider having a different model audit the branch before you open the PR. That workflow is in [review loop](docs/agents/review-loop.md). It's a recommendation, not a requirement.
 

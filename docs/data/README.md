@@ -16,4 +16,4 @@ How AutoClipper gets, labels and handles data. Read in this order:
 - Inside the pipeline, time is **seconds from VOD start** (`*_s`).
 - Chat usernames are **pseudonymized at ingestion**.
 - Data lives in git-ignored `data/` and is **never committed**.
-- VODs expire, so download the pilot VODs early ([data sources and local-first delivery](../decisions/0011-data-sources-and-local-delivery.md)).
+- VODs expire, so download the pilot VODs early ([data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md)).

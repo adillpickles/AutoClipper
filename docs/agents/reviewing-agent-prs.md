@@ -21,7 +21,7 @@ If they haven't, send it back. Don't spend review time on unchecked output.
 | **Swallowed errors** | `except Exception: pass`, returning empty frames on failure | A chat download failure leading to a VOD with "no chat" |
 | **Tests that test the implementation** | Tests re-compute the expected value with the same code, or mock everything | Asserting `compute_z(x) == compute_z(x)` |
 | **Leakage** | Fitting preprocessing on pooled held-out data, random window splits, hidden clip metadata used in discovery | `StandardScaler().fit(all_windows)`; per-input offline normalization is allowed |
-| **Scope creep** | Changes to files the issue didn't mention, "while I was here" refactors | Renaming feature columns across the codebase |
+| **Scope creep** | Unrelated changes that don't help meet the task's acceptance criteria; required wiring, dependencies and doc updates belong with the feature | Renaming unrelated feature columns across the codebase |
 | **Contract drift** | Column names that don't match [data model](../architecture/data-model.md) / [features](../ml/features.md) | `chat_rate` instead of `chat_msg_rate` |
 | **Fabricated numbers** | Metrics or sizes in docs or comments with no linked run | "Achieves 0.82 NDCG" in a docstring |
 | **Unjustified dependencies** | New entries in `pyproject.toml` | Pulling in a whole framework for one helper |

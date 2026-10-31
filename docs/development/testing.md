@@ -65,7 +65,7 @@ uv run autoclipper synth --seed 1 --no-video       # without FFmpeg (tables and 
 - No sleeps, no network, no reliance on wall-clock time in unit tests. Inject clocks and HTTP clients.
 - Test **behavior, not implementation**. A refactor that keeps behavior shouldn't break tests.
 - Bug fixes come with a regression test that fails before the fix.
-- Live tests are deselected by default: a hook in `tests/conftest.py` adds `and not live` to every `-m` expression that doesn't name `live` (a marker alone doesn't exclude anything, and an `addopts` default would be replaced by any `-m` on the command line). So `-m "not slow"` still skips them; only an expression that names `live`, such as `-m live`, can select them. `tests/test_pytest_config.py` checks this. Explicit live runs need the appropriate credentials/authorization and never run in ordinary CI.
+- Live tests are deselected by default: a hook in `tests/conftest.py` adds `and not live` to every `-m` expression that doesn't name `live` (a marker alone doesn't exclude anything, and an `addopts` default would be replaced by any `-m` on the command line). So `-m "not slow"` still skips them; only an expression that names `live`, such as `-m live`, can select them. `tests/test_pytest_config.py` checks this. Explicit live runs need configured credentials and tools and never run in ordinary CI.
 
 ## Configuration
 

@@ -2,15 +2,15 @@
 
 | | |
 |---|---|
-| **Status** | Current. Background: [data sources and local-first delivery](../decisions/0011-data-sources-and-local-delivery.md). |
+| **Status** | Current. Background: [data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md). |
 | **Last updated** | 2026-10-31 |
 
-AutoClipper works on Twitch VODs downloaded with TwitchDownloader and yt-dlp on the team's own machines. These are the house rules for that data: they keep the repo small, keep secrets safe and keep chatter names out of everything we write.
+AutoClipper uses TwitchDownloader and yt-dlp for VOD media and chat. These storage and processing conventions make inputs reusable, keep the repo small and keep credentials and chatter names out of committed files.
 
 ## 1. Where data lives
 
-- **On team machines,** under the git-ignored `data/` and `artifacts/` folders ([storage layout](../architecture/overview.md#5-storage-layout)).
-- Teammates can copy VODs, audio, chat files and processed tables to each other (shared drive or direct copy).
+- **Default layout:** git-ignored `data/` and `artifacts/` folders ([storage layout](../architecture/overview.md#5-storage-layout)). `AUTOCLIPPER_DATA_DIR` and `AUTOCLIPPER_ARTIFACTS_DIR` can point to local or shared directories; hosted storage can be integrated with deployment work.
+- Collect a VOD once and reuse its media, pseudonymized chat and processed tables through the team's chosen storage. Collection can run on a team machine or worker; each teammate does not need to run the downloaders.
 - **Nothing heavy in git, issues or PRs:** no video, audio, chat dumps, processed data or model weights. Test fixtures are small and synthetic. Screenshots of the app are fine.
 - Secrets (`.env`, Twitch credentials, API keys) are never committed. Share them with teammates privately.
 

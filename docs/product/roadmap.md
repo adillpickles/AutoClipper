@@ -42,7 +42,7 @@ The app is built against fake data from day one, so it never waits for the model
 
 | Milestone | Done when |
 |---|---|
-| **M1 Data** | Pilot VODs downloaded on team machines; chat, audio and viewer clips parsed for each |
+| **M1 Data** | Pilot VODs collected and reusable through the team's chosen storage; chat, audio and viewer clips parsed for each |
 | **M2 Baselines** | Baseline hit rate@10 on a held-out streamer, reproducible from one command |
 | **M3 Model + export** | A trained model compared with the baselines; any interval exports as a captioned 9:16 MP4, and a list of moments as a 16:9 highlights video |
 | **M4 App end to end** | A real VOD goes in, 10 ranked clips and a highlights video come out in the app |
@@ -51,9 +51,10 @@ The app is built against fake data from day one, so it never waits for the model
 ## Stretch, after the MVP works
 
 - **Channel tracking (#37):** pick channels in the app; when a new VOD appears (the Twitch API client can already list a channel's VODs), download and analyze it automatically.
-- **Desktop download + website (#70):** a static project page with a demo video, the repo link and a packaged download of the local app. The app keeps running on the user's machine, so nothing needs paid hosting.
+- **Desktop download + website (#70):** a project page with a demo video, the repo link and a packaged app download. A static page is enough initially; it can also link to a hosted app.
+- **Hosted deployment:** an optional delivery improvement when useful and affordable. The local setup remains a working development and demo target.
 - Facecam-over-gameplay layout (#68), video signals, thumbs up/down feedback, Docker.
 
 ## Out of scope this semester
 
-Live clipping, predicting TikTok/Reels views, auto-posting, non-Twitch input, hosted analysis, accounts and payments, mobile app.
+Live clipping, predicting TikTok/Reels views, auto-posting, non-Twitch input, accounts and payments, mobile app.

@@ -20,7 +20,7 @@ Terms are used with exactly these meanings across docs, code and issues.
 | **Ablation** | An experiment that removes or adds one signal family to measure its contribution. |
 | **Shortlist** | The top 50 candidates per VOD (configurable). The top 10 are rendered and evaluated; the stretch Whisper features and LLM rerank work on the shortlist. |
 | **Zero-clip mode** | Scoring a VOD with its viewer clips hidden from the scorer, as the app does for a VOD nobody clipped. Measures dependence on clips; it doesn't reproduce a small channel's quieter chat. |
-| **Muted segment** | A span of a VOD whose audio Twitch muted (usually for copyrighted music). Audio features are unreliable there. |
+| **Muted segment** | A span of a VOD whose audio Twitch muted. Audio features are unreliable there. |
 | **Pseudonymization** | Replacing usernames/IDs with a salted HMAC hash at ingestion. |
 | **Dataset version** | A frozen combination of VOD set, label rules, feature versions and split. See [data model](../architecture/data-model.md#dataset-versioning). |
 | **Reframe** | Converting 16:9 footage to 9:16 vertical by cropping and/or stacking regions (e.g. facecam over gameplay). |

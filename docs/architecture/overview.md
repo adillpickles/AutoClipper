@@ -12,7 +12,7 @@
 
 1. **A pipeline of idempotent stages.** Each stage reads files and writes files. Re-running a stage with the same inputs produces the same outputs and skips work that's already done. This makes the system debuggable, cacheable and agent-friendly: every stage can be built and tested on its own.
 2. **Files are the interface.** Stages communicate through versioned Parquet/JSON artifacts with documented schemas ([data model](data-model.md)), not through in-memory coupling. Any stage can be swapped as long as it honors the contract.
-3. **Reusable processing, parallel interface development.** Pipeline logic lives in the `autoclipper` Python package; CLI/app adapters call it. Build UI and export prototypes with synthetic candidates while processing/ML develops. The finished semester product is a local app, not a CLI demonstration.
+3. **Reusable processing, parallel interface development.** Pipeline logic lives in the `autoclipper` Python package; CLI/app adapters call it. Build UI and export prototypes with synthetic candidates while processing/ML develops. The product includes the complete app flow, initially runnable on a laptop and adaptable to hosted deployment.
 4. **Cheap signals first.** Chat and audio are per-second numbers that are cheap to compute and strong. Video is expensive and optional ([ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md)).
 5. **Laptop scale.** No GPU, cluster or cloud dependency. Audio-only downloads keep data small.
 6. **One time base.** Inside the pipeline, every position is **seconds from VOD start** (`*_s`). Wall-clock time is only used for metadata.
@@ -21,7 +21,7 @@
 
 ```mermaid
 flowchart LR
-    user([Clipper / small streamer / viewer]) -->|VOD link or file| app[AutoClipper, running locally]
+    user([Clipper / small streamer / viewer]) -->|VOD link or file| app[AutoClipper app]
     app -->|Helix API: videos, clips, users| twitch[(Twitch API)]
     app -->|chat replay - unofficial| tdl[TwitchDownloader CLI]
     app -->|audio/video download - unofficial| ytdlp[yt-dlp]
@@ -150,7 +150,7 @@ Analytical results stay usable when video is unavailable (VOD deleted, subscribe
 - **CLI** (`autoclipper …`) is the primary interface for development and data work. Planned subcommands: `ingest`, `build-dataset`, `features`, `train`, `evaluate`, `analyze`, `export`, `highlights`, `serve`.
 - **Web API** (FastAPI, [web stack](../decisions/0007-web-application-stack.md)), versioned under `/api/v1` and started by `autoclipper serve` on localhost: jobs, results, per-candidate media, clip exports and the highlights video, as specified in the [API contract](api-contract.md). Long-running work runs in an in-process background worker with bounded concurrency and explicit failure states; that's enough for a local single-user app.
 - **Web app** (Next.js + TypeScript + Tailwind): start → progress → ranked clip cards → preview and trim → download, plus "Make highlights video". Built early against mock data; preview plays local files.
-- **Distribution** (stretch, #70): a static project website with a packaged download of the local app. No hosted backend.
+- **Distribution** (stretch, #70): a project website with a packaged app download, and a link to a hosted app if deployed. Local execution is the first supported setup; hosting can extend it as needed.
 
 ## 5. Storage layout
 
@@ -193,9 +193,11 @@ artifacts/
 | Privacy | Chatter names hashed and redacted at parse time, raw chat deleted after parsing; features are per-window aggregates. See [data handling](../data/data-governance.md). |
 | Testing | Unit tests on pure functions with synthetic fixtures. No network in unit tests. See [testing](../development/testing.md). |
 
-## 7. What's deliberately not in the architecture
+## 7. Initial infrastructure defaults
 
-- No database server. Parquet + DuckDB is enough for pipeline data; the local API keeps job records in memory and results and exports as files.
-- No distributed processing or message broker.
-- No cloud deployment. The app runs on the user's laptop; the project website is static.
-- No model serving infrastructure beyond loading a pickled/ONNX model in the API process.
+- Parquet + DuckDB for pipeline data; in-memory API job records and files for results and exports.
+- An in-process worker for analysis and rendering; a separate worker or queue can be added when needed.
+- A laptop for the first development and demo setup. Shared collection, shared storage and hosted deployment are valid options.
+- Load the trained model in the API process initially; add serving infrastructure only when it solves a measured need.
+
+These defaults keep the first implementation small. Adapt them in the same change as the feature or deployment that needs something different, keeping the API and data contracts current.

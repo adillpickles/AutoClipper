@@ -12,8 +12,9 @@ Every teammate builds with AI coding agents, using different tools. Earlier draf
 
 ## Decision
 
-- **One task loop for all agents** (AGENTS.md §7): read → plan when the task is large → branch → implement and test → update docs → self-check → commit → push and open the PR (unless the human says to wait) → the human merges once CI is green.
+- **One task loop for all agents** (AGENTS.md §7): read → plan when useful → branch → implement and test → update docs → self-check → commit. Push or open/update a PR when the user requests publication; updating an existing PR includes pushing the needed commits. The human handles merging.
 - **Agents make the engineering calls.** When an issue leaves a technical choice open, the agent picks the option that best serves the product and explains it in the PR instead of stopping to ask.
+- **Implementation defaults can evolve.** Local execution, file storage and the initial worker are starting points. Shared collection/storage and hosted deployment are valid choices when they serve the task. Update the relevant contracts in the same change and keep working.
 - **The human running the agent owns the PR.** They decide when it merges; an approving review from a teammate is welcome but not required ([ADR-0008](0008-trunk-based-development-squash-merge.md)).
 - **A second-opinion AI review is optional.** For large or risky changes, contributors are encouraged to have a different model audit the branch and to verify each finding in a fresh session before opening the PR ([review loop](../agents/review-loop.md)). It's a recommendation, not a merge requirement.
 - **No AI attribution** in commits, PRs or files. No AI-assistance disclosure is required in PRs: everyone uses AI, and the author owns what they merge regardless.

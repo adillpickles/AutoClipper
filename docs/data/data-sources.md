@@ -60,7 +60,7 @@
 
 ### Clip media
 
-The official [Get Clips Download](https://dev.twitch.tv/docs/api/reference/#get-clips-download) endpoint only works for a channel's own broadcaster or editors, and only covers existing clips, not the surrounding VOD footage. We download VOD media with TwitchDownloader or yt-dlp instead ([data sources and local-first delivery](../decisions/0011-data-sources-and-local-delivery.md)).
+The official [Get Clips Download](https://dev.twitch.tv/docs/api/reference/#get-clips-download) endpoint only works for a channel's own broadcaster or editors, and only covers existing clips, not the surrounding VOD footage. We download VOD media with TwitchDownloader or yt-dlp instead ([data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md)).
 
 ### Get Users: <https://dev.twitch.tv/docs/api/reference/#get-users>
 
@@ -157,4 +157,4 @@ To predict performance **on short-form platforms** rather than on Twitch, we'd n
 
 ## 7. Related public datasets (for context, not required)
 
-- *Video Highlight Prediction Using Audience Chat Reactions* (Fu et al., EMNLP 2017) studied highlight prediction from live-stream chat and video for esports broadcasts. It's useful as related work and as a sanity check that chat signals work. Check its dataset license before using any data.
+- *Video Highlight Prediction Using Audience Chat Reactions* (Fu et al., EMNLP 2017) studied highlight prediction from live-stream chat and video for esports broadcasts. Use it as related work and a reference for chat-based signals.

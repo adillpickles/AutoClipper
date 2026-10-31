@@ -11,8 +11,13 @@ PRs that change user-visible behavior, data schemas, label definitions or evalua
 ### Added
 
 - Initial project documentation: README, agent and contributor guides, product requirements with scope table, roadmap, architecture, data, ML and development docs, and GitHub issue/PR templates.
-- ADRs: core stack accepted (Python/uv tooling, `src/` layout, chat + audio first, Parquet + DuckDB, FastAPI + Next.js); proposed analysis/evaluation contracts (ADR-0009); agent workflow with an optional second-opinion review loop (ADR-0010).
+- ADRs: core stack accepted (Python/uv tooling, `src/` layout, chat + audio first, Parquet + DuckDB, FastAPI + Next.js); analysis/evaluation contracts; agent workflow with an optional second-opinion review loop.
 - Repository configuration: `.gitignore` (synthetic fixtures allowed without exposing secrets), `.gitattributes`, `.editorconfig`, `.env.example`.
-- Implementation backlog (`docs/project/backlog.md`): copy-ready issue drafts for the semester MVP in dependency order, plus optional polish.
+- Implementation backlog: GitHub issues for the MVP and optional polish, linked from `docs/project/backlog.md` and ordered in the roadmap.
 - Category-first label policy without priority or size labels (`docs/project/labels.md`).
 - Python package scaffold: uv project for Python 3.12 (`src/` layout, committed `uv.lock`), an `autoclipper` CLI with `--help` and `--version`, Ruff, Pyright and pytest configuration (live tests deselected by default), pre-commit hooks, and a GitHub Actions CI workflow on Ubuntu and Windows.
+
+### Changed
+
+- Product docs describe vertical clips and a highlights video, with shared collection/storage and optional hosted deployment. Local execution is the initial setup.
+- Agent guidance supports autonomous implementation decisions and publishes branches/PRs when requested.

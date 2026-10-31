@@ -12,10 +12,10 @@ The project is built by a small team using AI coding agents heavily. Agents star
 
 ## Decision
 
-We record significant decisions as Architecture Decision Records in `docs/decisions/`, using the template in `0000-template.md` and the lifecycle in the [index](README.md). Decisions about schemas, label rules, evaluation metrics, core technologies and project-wide conventions require an ADR.
+We record significant decisions about schemas, label rules, evaluation metrics, core technologies and project-wide conventions in `docs/decisions/`, using the template in `0000-template.md` and the lifecycle in the [index](README.md). Include the record with the implementation. Smaller changes need an explanation in the PR and updates to affected contracts, without a separate decision process.
 
 ## Consequences
 
-- **Positive:** a durable "why" for agents and newcomers. Fewer re-litigated debates. A clear signal (Proposed vs. Accepted) of what's safe to depend on.
+- **Positive:** a durable "why" for agents and newcomers. Current choices and later replacements stay understandable without reopening the same questions.
 - **Negative:** a small amount of writing overhead per significant decision.
 - **Follow-ups:** `AGENTS.md` and `CONTRIBUTING.md` reference ADRs as the source of truth for decisions.

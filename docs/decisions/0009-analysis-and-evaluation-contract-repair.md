@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Accepted (2026-10-30). Numeric parameters (window size, gaps, lengths, budgets, tolerances) stay tunable in experiments. |
 | **Date** | 2026-10-13 |
-| **Related** | [Data model](../architecture/data-model.md), [API contract](../architecture/api-contract.md) (#13), [Labeling](../data/labeling.md), [Features](../ml/features.md), [Modeling plan](../ml/modeling-plan.md), [Evaluation](../ml/evaluation.md), [data sources and local-first delivery](0011-data-sources-and-local-delivery.md) |
+| **Related** | [Data model](../architecture/data-model.md), [API contract](../architecture/api-contract.md) (#13), [Labeling](../data/labeling.md), [Features](../ml/features.md), [Modeling plan](../ml/modeling-plan.md), [Evaluation](../ml/evaluation.md), [data sources and delivery defaults](0011-data-sources-and-local-delivery.md) |
 
 ## Context
 

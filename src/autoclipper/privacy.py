@@ -5,9 +5,10 @@ docs/architecture/data-model.md (``creator_hash`` in ``clips``, ``user_hash`` in
 ``chat_messages``): an HMAC-SHA256 keyed with the secret salt, as a lowercase hex digest. Ingestion
 code gets the salt from ``get_settings().require_chat_hash_salt()`` and passes it in.
 
-This module only provides the primitive. Whether hashes may be kept, shared or joined across
-tables and machines is open question OQ-9 (docs/project/open-questions.md). Note that with one
-salt, the same user ID gets the same hash in every table that uses it.
+This module provides the hashing primitive. The storage contract retains pseudonymized message
+tables for feature recomputation and reuse (ingest command, #34). Unique-chatter counts need
+consistent hashes within a VOD. With one salt, the same user ID gets the same hash in every table
+using it.
 """
 
 import hashlib

@@ -4,11 +4,11 @@
 |---|---|
 | **Status** | **Adopted (2026-10-30, #13).** Highlights video and local video files added 2026-10-31. Nothing here is implemented yet. Changes follow [§ 10](#10-versioning) and need a note in [ADR-0009](../decisions/0009-analysis-and-evaluation-contract-repair.md). |
 | **Last updated** | 2026-10-31 |
-| **Related** | [ADR-0007](../decisions/0007-web-application-stack.md) · [ADR-0009](../decisions/0009-analysis-and-evaluation-contract-repair.md) · [Data sources and local-first delivery](../decisions/0011-data-sources-and-local-delivery.md) · [Data model § candidates](data-model.md#candidates-apicli-output-json) · [Overview § 4.6–4.7](overview.md#46-export) |
+| **Related** | [ADR-0007](../decisions/0007-web-application-stack.md) · [ADR-0009](../decisions/0009-analysis-and-evaluation-contract-repair.md) · [Data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md) · [Data model § candidates](data-model.md#candidates-apicli-output-json) · [Overview § 4.6–4.7](overview.md#46-export) |
 
 The shared contract between the FastAPI backend (`src/autoclipper/api/`) and the Next.js app (`web/`), and the JSON that `autoclipper analyze` writes. It lets the mock job API (#28), the screens (#29–#31), the export endpoint (#32), the highlights video (#71, #72) and the integration (#33) be built in parallel from this page alone, and gives real analysis and media (#44–#46) a fixed target.
 
-The backend is a local server: `autoclipper serve` runs it on the user's machine and the app runs in their browser ([local-first delivery](../decisions/0011-data-sources-and-local-delivery.md)). How candidates are generated and which scorer ships are defined elsewhere (§ 12); this page defines the shapes, states and codes every scorer and media source produces.
+The initial setup uses `autoclipper serve` on a development machine and the app in a browser ([delivery defaults](../decisions/0011-data-sources-and-local-delivery.md)). Shared collection/storage and hosted deployment can reuse the pipeline; deployment work extends authentication, persistence and media inputs as needed. How candidates are generated and which scorer ships are defined elsewhere (§ 12); this page defines the shapes, states and codes every scorer and media source produces.
 
 ## 1. Conventions
 
@@ -22,7 +22,7 @@ The backend is a local server: `autoclipper serve` runs it on the user's machine
 - **Every field is always present.** An optional value is `null`, never omitted; an empty list is `[]`. Numbers are finite (no `NaN` or `Infinity`).
 - **Requests are strict, responses are tolerant.** The server rejects unknown request fields and invalid values (`422 invalid_request`). Request models use Pydantic strict mode with unknown fields forbidden (`ConfigDict(strict=True, extra="forbid")`): default (lax) mode would accept `"yes"` or `1` for a boolean and `"115.5"` for a number. Strict mode still accepts a JSON integer for a float field, so `115` is a valid `start_s`. Request enums are `Literal[...]`: FastAPI validates the parsed body as Python data, where strict mode rejects a plain string for a `StrEnum` field, so `"center_crop"` would fail. A request field with a default (e.g. `CreateJobRequest.video_path`, `CreateHighlightsRequest.count`) may be omitted. Clients ignore unknown response fields and give *open* enums a default branch (§ 10).
 - **Messages are for people.** `message` fields are short English sentences that are safe to show in the UI: no secrets, tokens, file paths or chat usernames. Clients branch on `code`, never on `message`.
-- **No auth, no pagination, no push.** It's a single-user local app ([PRD § Delivery](../product/prd.md#5-delivery)); clients poll (§ 9).
+- **Initial API scope:** single-user operation, polling (§ 9), no authentication or pagination. Deployment work can extend this setup ([PRD § Delivery](../product/prd.md#5-delivery)).
 
 **Model mapping.** Response models live in one FastAPI-free module (e.g. `autoclipper.schemas`) so the CLI can use them too (ADR-0007: Pydantic models are shared with the CLI output schema). TypeScript types are hand-written from this page, in one module the screens share (e.g. `web/src/lib/api/types.ts`), so #29–#31 don't wait for a backend. Generating them from FastAPI's OpenAPI document is an option once #28 exists; the hand-written types must then match it.
 
@@ -1019,7 +1019,7 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 
 - The API allows cross-origin requests from a configured list of origins, by default the local Next.js dev server (`http://localhost:3000` and `http://127.0.0.1:3000`): methods `GET` and `POST`, request header `Content-Type`, no credentials. It exposes the `Location` and `Content-Disposition` headers. Ports in this doc are examples; #28 and #33 set the real ones.
 - The frontend reads the API origin (scheme, host and port, no path) from an environment variable (#33) and resolves every returned URL against it (§ 1). A Next.js rewrite of `/api/v1/*` to the API is an acceptable alternative: the API origin is then the app's own origin, and returned URLs still work because they're root-relative.
-- With no auth, the server binds to `127.0.0.1` by default. There's no hosted backend ([local-first delivery](../decisions/0011-data-sources-and-local-delivery.md)).
+- The initial unauthenticated server binds to `127.0.0.1` by default. Hosted deployment can add authentication, configured origins and an upload or media-reference route for remote inputs ([delivery defaults](../decisions/0011-data-sources-and-local-delivery.md)); a browser's local path is not a path on a remote server.
 
 ### 9.5 Health
 
@@ -1063,4 +1063,4 @@ Each mock job should take a few seconds so `queued` and `running` are visible, a
 - **Candidate generation:** budget, smoothing and peaks, padding, deduplication, and how viewer clips and discovered candidates share one score scale are in the [modeling plan § 3](../ml/modeling-plan.md#3-candidate-generation) (#27).
 - **Shipped scorer:** chosen by evaluation against the baselines (#47); `scorer` reports which one produced a result.
 - **Media:** fetched with TwitchDownloader or yt-dlp, or read from the job's `video_path` (#46, § 5).
-- **Out of scope for v1:** persistence across restarts, auth and multi-user operation. The server is a local, single-user process (§ 9.3, § 9.4).
+- **Initial defaults:** in-memory records and a single-user server (§ 9.3, § 9.4). Persistence, authentication and multi-user operation can be added with the deployment or feature that needs them, following § 10 versioning.

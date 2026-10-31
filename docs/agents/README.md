@@ -24,7 +24,7 @@ flowchart LR
     A --> W[Plan, build, test,<br/>commit locally]
     W -.->|optional| RL[Second-opinion<br/>review loop]
     RL -.-> W
-    W --> PR[Agent opens the PR]
+    W --> PR[Publish PR when requested]
     PR --> R[You check it;<br/>CI green]
     R --> M[Squash merge to main]
     R -->|"docs gap found"| D
@@ -38,7 +38,7 @@ The last arrow matters most. **When an agent makes a mistake because the docs we
 2. **Hand it to your agent** with the [start-a-task prompt](prompts.md#start-a-task). The agent reads `AGENTS.md`, the issue and the relevant docs, makes the engineering calls the issue leaves open, then builds, tests and commits on a branch.
 3. **Check the result yourself.** Run it, read the diff, make sure you can explain it.
 4. **Optional:** for big or risky changes, run the [second-opinion review loop](review-loop.md).
-5. **Open the PR and merge it** once CI is green ([CONTRIBUTING § 6–8](../../CONTRIBUTING.md#6-open-a-pull-request)).
+5. **Publish when requested.** The agent can push or open/update the PR as requested; you review the result and handle merging once CI is green ([CONTRIBUTING § 6–8](../../CONTRIBUTING.md#6-open-a-pull-request)).
 
 You own what you merge: be able to explain it.
 
@@ -57,5 +57,5 @@ You own what you merge: be able to explain it.
 
 - **Branch protection:** everything reaches `main` through a PR with green CI.
 - **Hard rules** in AGENTS.md: no data or secrets in git, no invented results, docs kept true.
-- **ADRs** stop agents from "helpfully" swapping a technology choice.
+- **ADRs** explain existing choices. When a task needs a different choice, document the reason and update the affected contracts in the same change.
 - **Contracts** in the [data model](../architecture/data-model.md) and [features](../ml/features.md) keep names, units and time handling consistent across agents.

@@ -15,7 +15,7 @@
 | **Must (MVP)** | VOD in (Twitch link, or an already-downloaded VOD plus its link) · download chat and audio with TwitchDownloader · viewer-clip list from the Twitch API · chat and audio features for every few seconds of the VOD · baselines (random, biggest chat spike, loudest moment, chat + loudness) and a trained model (logistic regression, then LightGBM) tested on a streamer it never saw · top 10 clips auto-rendered as 9:16 MP4s with burned-in captions · results screen: ranked clip cards with preview, score and a one-line reason · trim and re-export · download · **highlights video**: the top moments joined into one 16:9 video |
 | **Should (polish)** | Laughter/scream/cheer detection with a pretrained audio model · speech (Whisper) signals for the shortlist · an LLM rerank of the top ~30 moments that also writes the reason and a title · clip start/end snapped to natural speech pauses · a whole-VOD timeline/heatmap view · signal-by-signal comparison · blind taste test with classmates · caching analyzed VODs |
 | **Could (stretch)** | Facecam stacked over gameplay (smart crop) · track channels and auto-analyze each new VOD · desktop app download plus a project website · video signals (scene cuts, motion) · thumbs up/down feedback · Docker |
-| **Won't (this semester)** | Clipping live streams in real time · auto-posting to TikTok, Reels or Shorts · training video models from scratch · predicting TikTok/Reels views · YouTube or Kick input · hosted analysis, accounts and payments · mobile app |
+| **Won't (this semester)** | Clipping live streams in real time · auto-posting to TikTok, Reels or Shorts · training video models from scratch · predicting TikTok/Reels views · YouTube or Kick input · accounts and payments · mobile app |
 
 **Editing stays small:** trim, a 9:16 crop, captions on/off, and picking which moments go into the highlights video. No timeline editor or effects.
 
@@ -68,9 +68,10 @@ A whole-stream timeline with the top moments highlighted is a Should, as a secon
 
 ## 5. Delivery
 
-- **MVP: runs locally.** `autoclipper serve` starts the backend on the user's machine and the app opens in the browser. Downloads, analysis and rendering all happen locally, so there are no servers, storage or accounts to pay for. The demo runs on a team laptop.
-- **Distribution (Could):** a static project website (GitHub Pages or Vercel) that explains the project, shows a demo video, links the repo and offers a packaged download of the local app (#70).
-- **Hosted analysis** (cloud jobs, storage, accounts) is out of scope this semester: it needs paid compute and storage. The local design keeps it possible later, because the app already talks to the backend only through the [API contract](../architecture/api-contract.md).
+- **Initial setup.** `autoclipper serve` starts the backend and the app opens in the browser. A team laptop is the first demo target; the core flow needs no hosting service.
+- **Collection and storage.** Download a VOD once and reuse its media and processed tables. A team machine, shared drive, collection worker or hosted storage can supply the same versioned inputs. No teammate needs to repeat another person's completed downloads.
+- **Distribution (Could):** a project website that explains the project, shows a demo video, links the repo and offers a packaged download (#70). It can also link to a hosted app when one is available.
+- **Hosted deployment is an option.** Choose it when it improves access or the demo and fits available resources. Extend the [API contract](../architecture/api-contract.md), job persistence and media-input handling as the deployment needs; these are implementation choices within the project.
 
 ## 6. Goals and non-goals
 
@@ -82,7 +83,7 @@ A whole-stream timeline with the top moments highlighted is a Should, as a secon
 | G4 | Be easy to use | A classmate goes from VOD to downloaded clip and highlights video without help |
 | G5 | Credible data science | Reproducible evaluation; which signals matter |
 
-**Non-goals:** auto-publishing, other platforms as input, end-to-end video models, live clipping, predicting short-form views, hosted analysis, accounts and billing.
+**Non-goals:** auto-publishing, other platforms as input, end-to-end video models, live clipping, predicting short-form views, accounts and billing.
 
 ## 7. Functional requirements
 
