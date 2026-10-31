@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Binding ([ADR-0002](../decisions/0002-language-and-tooling.md) and [ADR-0003](../decisions/0003-repository-layout.md) are accepted). Tool config in `pyproject.toml` is authoritative for anything automated. |
+| **Status** | Current conventions. Background: [language and tooling](../decisions/0002-language-and-tooling.md). Tool config in `pyproject.toml` is authoritative for anything automated. |
 | **Last updated** | 2026-10-21 |
 
 These conventions exist so that code written by different people and different agents looks like it was written by one careful person. **When in doubt, match the surrounding code.** If the surrounding code contradicts this doc, flag it.

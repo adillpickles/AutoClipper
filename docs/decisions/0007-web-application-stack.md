@@ -32,7 +32,7 @@ The demo needs a polished, visual flow: paste a VOD link, watch progress, browse
 
 - **Positive:** the best demo quality, and reusable API endpoints.
 - **Negative:** Node tooling, plus a second set of conventions to maintain.
-- **Follow-ups:** frontend conventions doc and a CI job for `web/` when the frontend is scaffolded.
+- Frontend setup and CI commands are in [web/README.md](../../web/README.md); implementation progress is in [status](../project/status.md).
 
 ## Revisit when
 

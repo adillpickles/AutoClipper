@@ -1,16 +1,12 @@
-# Reviewing Agent-Written PRs
+# Reviewing Changes
 
-Agent-written code usually *looks* right. Review checks whether it *is* right. Use this alongside the reviewer checklist in [CONTRIBUTING § 7](../../CONTRIBUTING.md#7-review). To have an agent audit a branch *before* the PR is opened, see the optional [review loop](review-loop.md).
+Use this checklist when a second opinion would help. [CONTRIBUTING § 7](../../CONTRIBUTING.md#7-review) covers the PR workflow.
 
-## Before review (the author's job)
+## Verification context
 
-The person who opened the PR must have:
+The PR should describe how the change was checked and what remains unverified. Checks performed by a coding agent count; the human author doesn't need to repeat them personally.
 
-- run the code and the tests themselves
-- read the whole diff
-- said in the description how they checked it, and added screenshots for UI changes
-
-If they haven't, send it back. Don't spend review time on unchecked output.
+If useful checks are missing, run them or identify the gap in the review. A request to open or update a PR can proceed with outstanding checks documented.
 
 ## Common agent failure modes in this project
 
@@ -33,7 +29,7 @@ If they haven't, send it back. Don't spend review time on unchecked output.
 1. **Read the issue first**, then the PR description, then the diff.
 2. **Check the contract:** names, types and units against the docs.
 3. **Read the tests before the code.** Do they cover the acceptance criteria and edge cases? Would they fail if the logic were wrong?
-4. **Run it** if the change is non-trivial: `gh pr checkout <n> && uv run pytest`.
+4. **Run relevant checks** when they would resolve uncertainty; use the author's recorded results where sufficient.
 5. **Look for what's missing:** error handling, logging of dropped rows, doc updates.
 6. **Comment precisely:** mark **blocking** vs. **nit**, and quote the doc section that applies.
 

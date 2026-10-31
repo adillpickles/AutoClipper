@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Binding for the Python and frontend setup. Tested on Windows 11 in PowerShell and Git Bash; CI runs Python on Ubuntu/Windows and frontend checks on Ubuntu. macOS is not yet tested. Prerequisites follow [ADR-0002](../decisions/0002-language-and-tooling.md) (*Accepted*). |
-| **Last updated** | 2026-10-19 |
+| **Status** | Current Python and frontend setup. Tested on Windows 11 in PowerShell and Git Bash; CI runs Python on Ubuntu/Windows and frontend checks on Ubuntu. macOS is not yet tested. Background: [tooling](../decisions/0002-language-and-tooling.md). |
+| **Last updated** | 2026-10-31 |
 
 ## Prerequisites
 
@@ -111,6 +111,8 @@ npm run lint; npm run typecheck; npm run format:check; npm run build
 
 `autoclipper` reads its settings once per run, from environment variables and from the `.env` file in the directory you run it in. Run it from the repository root, where you copied `.env.example`; parent directories are not searched. A variable set in the environment wins over the same variable in `.env`. Every variable is described in `.env.example`, and the code is `src/autoclipper/config.py`.
 
+An untracked `.env` is convenient for local development. A shared worker or hosted deployment can supply the same variable names through its process environment or deployment secret configuration; no `.env` file is needed when those values are supplied. Keep Twitch credentials on the backend, rather than in browser-delivered frontend variables.
+
 - An empty value (`TWITCH_CLIENT_ID=`) means unset. The Twitch credentials and the chat hash salt are only needed by the commands that use them; those stop with an error naming the missing variable.
 - Relative paths in `AUTOCLIPPER_DATA_DIR` and `AUTOCLIPPER_ARTIFACTS_DIR`, and their defaults `./data` and `./artifacts`, are relative to the directory you run from. Use an absolute path to share one data folder between worktrees. `~` means your home directory.
 - **Windows paths:** write them without quotes, even with spaces (`AUTOCLIPPER_DATA_DIR=D:\AutoClipper Data`), or with forward slashes. A network share works either way: `\\server\share\data` unquoted, or `//server/share/data`. Inside quotes python-dotenv decodes backslash escapes: in double quotes `"C:\new"` would contain a newline, and in single or double quotes `\\server` becomes `\server`, a folder on the current drive. AutoClipper rejects both instead of using them, and on Windows rejects any path that starts with a slash or backslash but has no drive letter.
@@ -121,14 +123,14 @@ npm run lint; npm run typecheck; npm run format:check; npm run build
 
 1. Log in at <https://dev.twitch.tv/console> (two-factor auth must be enabled on the account).
 2. **Register Your Application.** Name: anything unique. OAuth redirect URL: `http://localhost`. Category: *Analytics Tool*. Client type: *Confidential*.
-3. Copy the **Client ID** and generate a **Client Secret** into `.env`.
-4. The team shares one registered app (already done, #4): ask a teammate for the credentials privately and put them in your `.env`. Never paste them in a public channel or commit them.
+3. Copy the **Client ID** and generate a **Client Secret**. Supply `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` through `.env` or the environment.
+4. The team shares one registered app (already done, #4). Reuse its credentials on development machines and collection workers, sharing them privately and keeping them out of git and logs. Hosted instances can use deployment-managed environment variables.
 
 ## Chat hash salt
 
 The chat parser replaces every chatter's username and user ID with a salted hash, and the pseudonymized messages are kept in `data/interim/chat/` ([data handling](../data/data-governance.md#2-chat)). Hashes only need to be consistent within one VOD (for unique-chatter counts), so each machine can use its own salt. Use the same salt for all of your own ingests, and never commit it.
 
-To make a salt, generate a long random value and put it in `.env`:
+To make a salt, generate a long random value and set `AUTOCLIPPER_CHAT_HASH_SALT` in `.env` or the environment:
 
 ```bash
 uv run python -c "import secrets; print(secrets.token_hex(32))"
@@ -153,7 +155,7 @@ Code that pseudonymizes gets the salt with `get_settings().require_chat_hash_sal
 
 - **Claude Code:** reads `CLAUDE.md` (which imports `AGENTS.md`) automatically. Run it from the repo root.
 - **Codex and others:** read `AGENTS.md`.
-- See [docs/agents/](../agents/README.md) for the workflow.
+- Task workflow: [AGENTS.md](../../AGENTS.md); publication and review: [CONTRIBUTING](../../CONTRIBUTING.md).
 
 ## Troubleshooting
 

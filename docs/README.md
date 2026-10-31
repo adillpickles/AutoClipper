@@ -1,33 +1,16 @@
 # AutoClipper Documentation
 
-Start with the [project README](../README.md) for the overview, and [AGENTS.md](../AGENTS.md) for the rules every contributor (human or AI) follows.
+Start with [AGENTS.md](../AGENTS.md) and [project status](project/status.md), then read the docs relevant to your task.
 
-## Map
+| Area | Docs |
+|---|---|
+| Product | [PRD](product/prd.md) · [Roadmap](product/roadmap.md) |
+| Architecture | [Overview](architecture/overview.md) · [Data model](architecture/data-model.md) · [API contract](architecture/api-contract.md) |
+| Data | [Handling and storage](data/data-governance.md) · [Sources](data/data-sources.md) · [Collection](data/collection-plan.md) · [Labeling](data/labeling.md) |
+| Models | [Modeling plan](ml/modeling-plan.md) · [Features](ml/features.md) · [Evaluation](ml/evaluation.md) · [Experiments](ml/experiments.md) |
+| Development | [Setup](development/setup.md) · [Conventions](development/conventions.md) · [Testing](development/testing.md) · [Git workflow](development/git-workflow.md) |
+| Collaboration | [Contributing](../CONTRIBUTING.md) · [Writing issues](agents/writing-tasks.md) · [Reviewing changes](agents/reviewing-agent-prs.md) · [Parallel work](agents/parallel-work.md) |
+| Background | [Technical choices](decisions/README.md) · [Glossary](project/glossary.md) |
+| Current work | [Status](project/status.md) · [GitHub issues](https://github.com/adillpickles/AutoClipper/issues) · [Labels](project/labels.md) |
 
-| Section | Docs | Answers |
-|---|---|---|
-| **Product** | [PRD](product/prd.md) · [Roadmap](product/roadmap.md) | What are we building, for whom, and in what order? |
-| **Architecture** | [Overview](architecture/overview.md) · [Data model](architecture/data-model.md) · [API contract](architecture/api-contract.md) (adopted) | How does the system fit together? What are the contracts between stages? |
-| **Data** | [Index](data/README.md) · [Governance](data/data-governance.md) · [Sources](data/data-sources.md) · [Collection plan](data/collection-plan.md) · [Labeling](data/labeling.md) | Where does data come from, how is it labeled, and what are the rules? |
-| **ML** | [Index](ml/README.md) · [Modeling plan](ml/modeling-plan.md) · [Features](ml/features.md) · [Evaluation](ml/evaluation.md) · [Experiments](ml/experiments.md) | What do we model, and how do we know it works? |
-| **Development** | [Setup](development/setup.md) · [Conventions](development/conventions.md) · [Testing](development/testing.md) · [Git workflow](development/git-workflow.md) | How do I set up, write code, test it and ship it? |
-| **Agents** | [Overview](agents/README.md) · [Prompts](agents/prompts.md) · [Writing tasks](agents/writing-tasks.md) · [Reviewing agent PRs](agents/reviewing-agent-prs.md) · [Optional review loop](agents/review-loop.md) · [Parallel work](agents/parallel-work.md) | How do we build this with AI agents without losing consistency? |
-| **Decisions** | [ADR index](decisions/README.md) | Why are things the way they are? |
-| **Project** | [Status](project/status.md) · [Backlog](project/backlog.md) · [Risks](project/risks.md) · [Team process](project/team-process.md) · [Labels](project/labels.md) · [Glossary](project/glossary.md) | What's the current state, what's next, and how do we work? |
-
-## Reading paths
-
-**New contributor (human):** README → [AGENTS.md](../AGENTS.md) → [PRD scope](product/prd.md#scope-at-a-glance) → [Architecture](architecture/overview.md) → [Setup](development/setup.md) → [CONTRIBUTING](../CONTRIBUTING.md) → [Status](project/status.md)
-
-**AI agent starting a task:** [AGENTS.md](../AGENTS.md) → [Status](project/status.md) → the issue → the docs listed in AGENTS.md § 3 for that task type
-
-**Working on the models:** [Labeling](data/labeling.md) → [Features](ml/features.md) → [Modeling plan](ml/modeling-plan.md) → [Evaluation](ml/evaluation.md) → [Experiments](ml/experiments.md)
-
-**Reviewing a PR:** [CONTRIBUTING § Review](../CONTRIBUTING.md#7-review) → [Reviewing agent PRs](agents/reviewing-agent-prs.md)
-
-## Doc conventions
-
-- Every doc starts with a status line (**Current**, **Binding**, **Reference** or **Living**) plus a last-updated date. Current and Binding docs are the plan of record: follow them, and fix them in your PR when they're wrong.
-- ⚠️ marks a fact that still needs verification.
-- No invented results. Metrics appear only with a link to an experiment.
-- Diagrams use Mermaid. Links are relative.
+Update the document that describes the behavior when the implementation changes. Keep examples concrete and link measured results to their experiment.

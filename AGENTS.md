@@ -81,7 +81,7 @@ uv run autoclipper synth --seed 1   # fake dev dataset in data/synthetic/seed-1
 
 CI runs `uv sync --locked`, Ruff, Pyright and pytest on Ubuntu and Windows. Add dependencies with `uv add <pkg>` (dev tools: `uv add --dev <pkg>`) and commit `pyproject.toml` and `uv.lock` together. Use `uv run …` for everything.
 
-## 6. Hard rules
+## 6. Engineering basics
 
 1. **Nothing heavy or private in git.** No video/audio files, VOD or chat dumps, model weights, `.env`, tokens or keys. `data/` and `artifacts/` are git-ignored. Small synthetic test fixtures under `tests/fixtures/` are fine.
 2. **No chatter usernames or user IDs in git, issues, PRs or logs.** The chat parser pseudonymizes them; keep it that way.
@@ -96,20 +96,20 @@ CI runs `uv sync --locked`, Ruff, Pyright and pytest on Ubuntu and Windows. Add 
 3. **Branch:** `<type>/<issue#>-<short-slug>`, e.g. `feat/24-audio-features`.
 4. **Implement and test.** Follow [conventions](docs/development/conventions.md). Test the changed behavior; bug fixes get a regression test.
 5. **Update docs** in the same change, including `docs/project/status.md` when project state changes.
-6. **Check your work:** lint, format, type check and tests pass; read your full diff.
+6. **Check your work:** run checks relevant to the change and read your full diff. Record results and checks that could not run. Agent-run checks count; the human author doesn't need to repeat them. When asked to publish before checks finish, open or update the PR with the outstanding checks stated.
 7. **Commit** with short [Conventional Commits](https://www.conventionalcommits.org/) messages, e.g. `feat(features): add chat message rate`.
 8. **Publish when requested.** Implement, test and commit autonomously. Push branches or open/update PRs when the user requests publication; a request to update an existing PR includes pushing the needed commits. Use [the template](.github/pull_request_template.md): what changed, the decisions you made, how you verified it, what's uncertain. Your human handles merging.
 
-**Optional second-opinion review** for large or risky changes: [docs/agents/review-loop.md](docs/agents/review-loop.md).
+For substantial changes, an optional second opinion can help. See the [review guide](docs/agents/reviewing-agent-prs.md) for project-specific checks.
 
 ## 8. Definition of done
 
 - [ ] The issue's "Done when" list is met (or the PR says why not).
-- [ ] Lint, format, type check and tests pass.
+- [ ] Relevant checks pass, or the PR states what remains unverified.
 - [ ] New logic has tests.
 - [ ] Docs affected by the change are updated.
 - [ ] No media, data, secrets or chatter usernames in the diff.
-- [ ] UI changes include a screenshot.
+- [ ] UI changes include a screenshot when available.
 
 ## 9. Conventions at a glance
 

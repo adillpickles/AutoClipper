@@ -15,7 +15,7 @@ Scope, architecture and the plan are documented, with concrete defaults for buil
 
 | Area | State | Notes |
 |---|---|---|
-| Documentation | ✅ Initial set (PR #2) | Product scope, architecture, data, ML, development and agent workflow docs, ADRs |
+| Documentation | ✅ Initial set (PR #2) | Product scope, architecture, data, ML and development guidance; shared task workflow |
 | Repo config | ✅ Initial set (PR #2) | `.gitignore`, `.gitattributes`, `.editorconfig`, `.env.example`, issue/PR templates |
 | GitHub settings | ✅ Configured | `main` requires a PR and squash merge, with no second-person approval required. Direct pushes, force pushes and deletion stay blocked; admin bypass is PR-only. |
 | Labels | ✅ Live | Per [labels](labels.md) |
@@ -28,16 +28,16 @@ Scope, architecture and the plan are documented, with concrete defaults for buil
 | CI | ✅ In place (#5/#6) | Python: locked uv install, Ruff, Pyright and pytest on Ubuntu and Windows. Frontend: npm install, lint, typecheck, format and build on Ubuntu for web changes. Not required checks yet (#3) |
 | FFmpeg runner | ✅ In place (#51) | `autoclipper.ffmpeg`: FFmpeg/FFprobe commands as argument lists, an injectable runner with timeouts and typed errors, `probe` (duration, streams) and the version string. CI installs FFmpeg (apt on Ubuntu, a pinned, checksum-verified build on Windows); FFmpeg tests skip locally without it but fail in CI ([testing](../development/testing.md#ffmpeg-tests)) |
 | Synthetic dataset | ✅ In place (#15) | `autoclipper synth --seed <n>` writes 3 fake VODs (Parquet tables in the data-model schemas, chat, 16 kHz WAVs, test-pattern videos and a SHA-256 manifest) to `data/synthetic/seed-<n>/`; same seed, same bytes. Details: [testing § Synthetic dataset](../development/testing.md#synthetic-dataset) |
-| Twitch developer app | ✅ Registered (#4) | One shared team app; credentials shared privately and kept in each member's `.env` |
+| Twitch developer app | ✅ Registered (#4) | One shared team app; credentials supplied through untracked `.env` files or worker/deployment environment variables |
 | Data collection | ❌ Not started | Five pilot channels in [`configs/channels.yaml`](../../configs/channels.yaml); collect the VODs in `configs/pilot_vods.txt` (#35) once on a suitable machine or worker and reuse the outputs through shared storage ([data sources and delivery](../decisions/0011-data-sources-and-local-delivery.md)) |
 | Labels / features / models / eval | ❌ Not started | Approach decided: [modeling plan § 0](../ml/modeling-plan.md#0-the-plan-in-plain-english) |
 | Audio download / export | 🟡 Drafts only (#19/#20) | PR #59 (audio) and PR #60 (vertical export) are unmerged. Each has open review findings (listed in #19 and #20) and fails only the Ubuntu CI job, on FFmpeg-version-dependent tests. Their code is not on `main`. |
-| License | ✅ MIT | [`LICENSE`](../../LICENSE), [ADR-0006](../decisions/0006-license.md) |
+| License | ✅ MIT | [`LICENSE`](../../LICENSE) |
 | Web app | 🟡 Scaffold only (#6) | Next.js + TypeScript (strict) + Tailwind in `web/` with ESLint, Prettier and its own CI workflow (`web.yml`); one placeholder page. No screens (#29–#31), API client (#33) or FastAPI backend (#28) yet. |
 
 ## Decisions
 
-Everything needed for the MVP has a documented default: data sources, pilot channels, the model target and delivery options ([data sources and delivery](../decisions/0011-data-sources-and-local-delivery.md)), the [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md), the backend/frontend API including the highlights video ([API contract](../architecture/api-contract.md)) and the app experience ([PRD § 4](../product/prd.md#4-the-app-experience)). There is no open-questions list: technical choices the docs don't cover are made by whoever builds the issue and explained in the PR ([AGENTS.md § 10](../../AGENTS.md#10-when-youre-unsure)).
+Everything needed for the MVP has a documented default: data sources, pilot channels, the model target and delivery options ([data sources and delivery](../decisions/0011-data-sources-and-local-delivery.md)), [labeling](../data/labeling.md) and [evaluation](../ml/evaluation.md), the backend/frontend API including the highlights video ([API contract](../architecture/api-contract.md)) and the app experience ([PRD § 4](../product/prd.md#4-the-app-experience)). There is no open-questions list: technical choices the docs don't cover are made by whoever builds the issue and explained in the PR ([AGENTS.md § 10](../../AGENTS.md#10-when-youre-unsure)).
 
 ## Suggested next tasks
 
@@ -49,27 +49,3 @@ Follow the week of Nov 2 in the [roadmap](../product/roadmap.md): fix and merge 
 - Chat replay and VOD download rely on unofficial tools ([data sources](../data/data-sources.md)).
 - Clip coverage, chat lag and alignment still need to be measured in a pilot.
 - The original design-doc schedule slipped; the [roadmap](../product/roadmap.md) was replanned on 2026-10-31.
-
-## Changelog of this file
-
-- 2026-10-21: made second-person PR approval optional; retained PR-only squash merges and protection against direct pushes to `main`.
-
-- 2026-10-09: initial documentation drafted and GitHub settings configured.
-- 2026-10-13: contract and workflow repairs after the first audit.
-- 2026-10-16: core ADRs accepted, scope table added to the PRD, contributor workflow simplified, optional review loop documented.
-- 2026-10-16: implementation backlog drafted; label policy simplified.
-- 2026-10-17: simplified labels applied on GitHub; backlog Waves 0–6 published as issues #3–#50.
-- 2026-10-19: Python package scaffold, tooling and CI added (#5).
-
-- 2026-10-19: Next.js frontend scaffolded in `web/` with lint, typecheck, format and build CI (#6).
-- 2026-10-19: job, candidate, media and export API contract drafted for #13.
-- 2026-10-20: config module, logging setup and pseudonymization helper added (#14).
-- 2026-10-20: shared FFmpeg runner and media probe added, FFmpeg installed in CI (#51).
-- 2026-10-21: deterministic synthetic dataset generator and `autoclipper synth` added (#15).
-- 2026-10-21: Twitch Helix client for app auth, Get Users and Get Videos added (#16).
-- 2026-10-21: chat replay wrapper and pseudonymizing parser added (#18).
-- 2026-10-30: API contract adopted (#13).
-- 2026-10-30: data sources, chat handling, training target, experiment tracking and hosting decided; analysis rules (ADR-0009) accepted; the `needs-decision` label removed.
-- 2026-10-31: product experience updated (ranked, ready-made clips), roadmap replanned by week, agent rules simplified, data handling rewritten in plain English, issues rewritten in a standard format; Twitch app registered (#4).
-- 2026-10-31: second output added (16:9 highlights video for viewers; #71, #72); website and app-download plan documented; obsolete planning gates and the open-questions list removed; API contract extended with highlights and local video files; MIT license; `decision` label removed.
-- 2026-10-31: delivery and storage clarified as adaptable implementation defaults; collection outputs can be shared and hosted deployment is optional. Routine engineering choices proceed within the task, with pushing and PR publication performed when requested. Setup examples and live-test guidance aligned with these defaults.

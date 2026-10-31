@@ -21,7 +21,7 @@ Closes #
 
 ## Checklist
 
-- [ ] Tested: tests pass locally, or I explained above how I checked it
+- [ ] Verification results recorded, including checks that could not run (agent-run checks count)
 - [ ] Docs updated if behavior, commands, schemas or project status changed
 - [ ] No data, media, secrets or real chat usernames in the diff
 - [ ] New dependencies explained above (or none added)

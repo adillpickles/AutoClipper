@@ -11,7 +11,7 @@ The pipeline is split into modules with file-based contracts ([architecture](../
 | `ingest/twitch_api.py`, `labels/moments.py`, `eval/metrics.py` | Two tasks both editing `features/chat.py` |
 | Chat features + audio features (separate files) | "Add logging everywhere" + any feature task |
 
-Before starting parallel work, check each issue's "Likely files touched" section for overlap.
+Before starting parallel work, check the likely files listed under each issue's "What to build" for overlap.
 
 ## 2. One worktree per agent
 
@@ -26,7 +26,7 @@ git worktree add ../AutoClipper-14 -b feat/14-audio-features origin/main
 git worktree remove ../AutoClipper-12
 ```
 
-Each worktree needs its own `.venv` (`uv sync`) and a copy of `.env`. `data/` can be shared by pointing `AUTOCLIPPER_DATA_DIR` at a common absolute path.
+Each worktree needs its own `.venv` (`uv sync`). Supply settings through environment variables or an untracked `.env`. `data/` can be shared by pointing `AUTOCLIPPER_DATA_DIR` at a common absolute path.
 
 ## 3. Coordinate shared files
 

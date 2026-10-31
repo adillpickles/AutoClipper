@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Current. Pilot scope from [data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md); snapshot rules from the [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md). |
+| **Status** | Current. Pilot scope from [data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md); snapshot rules in [labeling](labeling.md). |
 | **Last updated** | 2026-10-31 |
 
 ## Why collection is urgent

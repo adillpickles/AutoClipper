@@ -14,16 +14,14 @@
 
 ## Start here (humans and AI agents)
 
-**Before working on anything, read these in order:**
+Start with the task guide and current state, then read what's relevant:
 
-1. [`AGENTS.md`](AGENTS.md): the rules and step-by-step task process for everyone. AI agents load it automatically; humans should read it once.
-2. [`docs/project/status.md`](docs/project/status.md): what exists right now and what's blocked.
+1. [`AGENTS.md`](AGENTS.md): task workflow and pointers to the docs for your area.
+2. [`docs/project/status.md`](docs/project/status.md): what exists right now and what's next.
 3. [`docs/product/prd.md` § Scope at a glance](docs/product/prd.md#scope-at-a-glance): what we're building (must / should / could / won't).
 4. [`docs/architecture/overview.md`](docs/architecture/overview.md): how the system fits together.
 5. [`CONTRIBUTING.md`](CONTRIBUTING.md): how to pick up an issue, open a PR and get it merged.
 6. The issue you're working on ([GitHub issues](https://github.com/adillpickles/AutoClipper/issues), ordered by week in the [roadmap](docs/product/roadmap.md)), plus the docs [`AGENTS.md` § 3](AGENTS.md#3-what-to-read-for-which-task) lists for that kind of task.
-
-> **AI agents:** if you were pointed at this README, read `AGENTS.md` next and follow it. Don't start changing files until you've read items 1–3 and your issue.
 
 ## The problem
 
@@ -77,14 +75,14 @@ Viewer clips double as **noisy training labels**: roughly, a stretch of the VOD 
 |---|---|
 | Know what we're building and why | [PRD](docs/product/prd.md) |
 | See the plan, milestones and dates | [Roadmap](docs/product/roadmap.md) |
-| Find something to work on | [Implementation backlog](docs/project/backlog.md) (planned issues in dependency order, with their GitHub issue numbers) |
+| Find something to work on | [GitHub issues](https://github.com/adillpickles/AutoClipper/issues), ordered by week in the [roadmap](docs/product/roadmap.md) |
 | Understand the system design | [Architecture](docs/architecture/overview.md) · [Data model](docs/architecture/data-model.md) |
-| Work with the data | [`docs/data/`](docs/data/README.md) |
-| Work on the models | [`docs/ml/`](docs/ml/README.md) |
+| Work with the data | [Sources](docs/data/data-sources.md) · [Collection](docs/data/collection-plan.md) · [Labeling](docs/data/labeling.md) |
+| Work on the models | [Modeling plan](docs/ml/modeling-plan.md) · [Evaluation](docs/ml/evaluation.md) |
 | Set up a dev environment | [Setup](docs/development/setup.md) |
 | Contribute a change | [CONTRIBUTING](CONTRIBUTING.md) |
-| Work with AI coding agents | [AGENTS.md](AGENTS.md) · [`docs/agents/`](docs/agents/README.md) |
-| Understand why a choice was made | [Decisions (ADRs)](docs/decisions/README.md) |
+| Work with AI coding agents | [AGENTS.md](AGENTS.md) · [Parallel work](docs/agents/parallel-work.md) |
+| Understand why a choice was made | [Technical choices](docs/decisions/README.md) |
 | See every doc | [`docs/README.md`](docs/README.md) |
 
 ## Contributing
@@ -101,4 +99,4 @@ AutoClipper is built by a four-person team (4 FPS) in the [CUNY Tech Prep](https
 
 ## License
 
-[MIT](LICENSE). See [ADR-0006](docs/decisions/0006-license.md).
+[MIT](LICENSE).

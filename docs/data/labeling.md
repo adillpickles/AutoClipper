@@ -105,7 +105,7 @@ Adjacent windows are highly correlated, so **random window-level splits leak**. 
 
 ## 9. Label rules versioning
 
-All parameters above are bundled as `label_rules_version` (currently `v0`). Changing any of them means a new version, a new dataset version, and a note in the [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md) or a focused ADR.
+All parameters above are bundled as `label_rules_version` (currently `v0`). When a change affects labels or existing results, increment the label and dataset versions and update this document with the implementation. Explain the change in the PR so earlier runs remain reproducible.
 
 ## 10. Quality checks (run on every dataset build)
 

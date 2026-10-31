@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Accepted (2026-10-16). Sets implementation order and initial signals, not a reduced semester MVP. |
 | **Date** | 2026-10-09 |
-| **Related** | [Roadmap](../product/roadmap.md), [Modeling plan](../ml/modeling-plan.md), [Risks](../project/risks.md) |
+| **Related** | [Roadmap](../product/roadmap.md), [Modeling plan](../ml/modeling-plan.md), [Evaluation](../ml/evaluation.md) |
 
 ## Context
 
@@ -24,7 +24,7 @@ Meanwhile:
 
 ## Decision
 
-The product is the full flow in the [PRD](../product/prd.md#scope-at-a-glance): discovery across the whole VOD (including VODs with no viewer clips), ranked vertical clips and a highlights video, previewed and exported in a local app. This ADR sets the build order and the initial signals; it doesn't reduce those goals.
+The product is the full flow in the [PRD](../product/prd.md#scope-at-a-glance): discovery across the whole VOD (including VODs with no viewer clips), ranked vertical clips and a highlights video, previewed and exported through the app. This note sets the build order and the initial signals; delivery can evolve with the product.
 
 Build in stages, with interface and export work proceeding alongside analysis:
 

@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Status** | Current. Schemas follow the [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md) and [local Parquet storage](../decisions/0005-local-storage-parquet-duckdb.md). |
+| **Status** | Current. Schemas support the [labeling rules](../data/labeling.md) and [Parquet storage](../decisions/0005-local-storage-parquet-duckdb.md). |
 | **Last updated** | 2026-10-31 |
 
-These are the tables that pipeline stages exchange. Update this document with schema changes and version any change that affects existing datasets or results. Explain the rationale in the PR; significant changes also update the relevant decision record. Make those updates with the implementation ([AGENTS.md § Hard rules](../../AGENTS.md#6-hard-rules)).
+These are the tables that pipeline stages exchange. Update this document with schema changes and version any change that affects existing datasets or results. Explain the rationale in the PR and make the doc updates with the implementation ([AGENTS.md § Engineering basics](../../AGENTS.md#6-engineering-basics)).
 
 ## Conventions
 
@@ -88,7 +88,7 @@ Source: Helix **Get Clips**. Immutable snapshot files: one row per `clip_id` **w
 
 ## `chat_messages`
 
-Source: TwitchDownloader chat replay or live chat. The parser returns these rows in memory; the ingest command (#34) saves them as `data/interim/chat/<video_id>.parquet`. Usernames are hashed and names redacted at parse time, and the raw replay file is deleted after a successful parse ([data sources § 2](../data/data-sources.md#2-chat-replay-twitchdownloader-unofficial)), so no chatter name ever reaches disk. Keeping the pseudonymized table means chat features ([features](../ml/features.md)) can be changed and recomputed after the VOD expires. Hashes exist for counts such as unique chatters, never to analyze individuals.
+Source: TwitchDownloader chat replay or live chat. The parser returns these rows in memory; the ingest command (#34) saves them as `data/interim/chat/<video_id>.parquet`. Author identifiers become hashes, and mentions and known names are redacted from message text at parse time. The raw replay is a temporary download deleted after a successful parse ([data sources § 2](../data/data-sources.md#2-chat-replay-twitchdownloader-unofficial)). Keeping the pseudonymized table means chat features ([features](../ml/features.md)) can be changed and recomputed after the VOD expires. Hashes support counts such as unique chatters.
 
 | Column | Type | Notes |
 |---|---|---|

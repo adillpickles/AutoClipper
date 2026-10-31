@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | The plan of record. Ingest, config, the FFmpeg runner and the synthetic dataset exist ([status](../project/status.md)); the rest is being built. |
 | **Last updated** | 2026-10-31 |
-| **Related** | [Data model](data-model.md) · [API contract](api-contract.md) · ADR [0002](../decisions/0002-language-and-tooling.md), [0003](../decisions/0003-repository-layout.md), [0005](../decisions/0005-local-storage-parquet-duckdb.md), [0007](../decisions/0007-web-application-stack.md) |
+| **Related** | [Data model](data-model.md) · [API contract](api-contract.md) · [Conventions](../development/conventions.md) · [Tooling](../decisions/0002-language-and-tooling.md) · [Storage](../decisions/0005-local-storage-parquet-duckdb.md) · [Application stack](../decisions/0007-web-application-stack.md) |
 
 ---
 
@@ -14,7 +14,7 @@
 2. **Files are the interface.** Stages communicate through versioned Parquet/JSON artifacts with documented schemas ([data model](data-model.md)), not through in-memory coupling. Any stage can be swapped as long as it honors the contract.
 3. **Reusable processing, parallel interface development.** Pipeline logic lives in the `autoclipper` Python package; CLI/app adapters call it. Build UI and export prototypes with synthetic candidates while processing/ML develops. The product includes the complete app flow, initially runnable on a laptop and adaptable to hosted deployment.
 4. **Cheap signals first.** Chat and audio are per-second numbers that are cheap to compute and strong. Video is expensive and optional ([ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md)).
-5. **Laptop scale.** No GPU, cluster or cloud dependency. Audio-only downloads keep data small.
+5. **Practical compute.** Start with laptop-scale chat/audio analysis. Shared workers, storage and hosted deployment can be added for the workload; the initial setup needs no cloud services.
 6. **One time base.** Inside the pipeline, every position is **seconds from VOD start** (`*_s`). Wall-clock time is only used for metadata.
 
 ## 2. System context
@@ -104,7 +104,7 @@ flowchart TD
 ### 4.2 Moments and labels
 
 - **Moments:** overlapping viewer clips for the same VOD are clustered into one *moment* with aggregate stats (clip count, total views, earliest creation). This removes duplicate-clip noise.
-- **Windows:** 10 s slices cover the VOD independently of labels. Training/evaluation annotations come from pinned moments in a separate table; inference windows need no labels or split. Window size stays tunable in experiments ([labeling](../data/labeling.md), [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md)).
+- **Windows:** 10 s slices cover the VOD independently of labels. Training/evaluation annotations come from pinned moments in a separate table; inference windows need no labels or split. Window size stays tunable in experiments ([labeling](../data/labeling.md)).
 
 ### 4.3 Features
 

@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | **Adopted (2026-10-30, #13).** Highlights video and local video files added 2026-10-31. Nothing here is implemented yet. Changes follow [§ 10](#10-versioning) and need a note in [ADR-0009](../decisions/0009-analysis-and-evaluation-contract-repair.md). |
+| **Status** | Current (2026-10-31). Nothing here is implemented yet. Update this contract and its examples alongside implementation changes; see [§ 10](#10-versioning). |
 | **Last updated** | 2026-10-31 |
-| **Related** | [ADR-0007](../decisions/0007-web-application-stack.md) · [ADR-0009](../decisions/0009-analysis-and-evaluation-contract-repair.md) · [Data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md) · [Data model § candidates](data-model.md#candidates-apicli-output-json) · [Overview § 4.6–4.7](overview.md#46-export) |
+| **Related** | [Application stack](../decisions/0007-web-application-stack.md) · [Modeling plan](../ml/modeling-plan.md) · [Data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md) · [Data model § candidates](data-model.md#candidates-apicli-output-json) · [Overview § 4.6–4.7](overview.md#46-export) |
 
 The shared contract between the FastAPI backend (`src/autoclipper/api/`) and the Next.js app (`web/`), and the JSON that `autoclipper analyze` writes. It lets the mock job API (#28), the screens (#29–#31), the export endpoint (#32), the highlights video (#71, #72) and the integration (#33) be built in parallel from this page alone, and gives real analysis and media (#44–#46) a fixed target.
 
@@ -1037,7 +1037,7 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 - **Minor change** (same path, `1.x`): a new endpoint, a new response field, an optional request field with a default, or a new value in an **open** enum. Clients must already ignore unknown fields and handle unknown open-enum values with a default branch.
 - **Major change** (`/api/v2`): anything else, such as renaming or removing a field, changing a type, unit or meaning, adding a required request field, or adding a value to a **closed** enum.
 - **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, and layouts listed in `export.layouts`. **Closed enums:** job, export and highlights `state`, `source`, `preview.status`, `export.status`, `scorer.kind`, highlights `order`. A request's `layout` must be one the server lists.
-- Any change updates this doc, its examples and [data model § candidates](data-model.md#candidates-apicli-output-json), with an ADR-0009 note or a focused ADR in the same PR ([AGENTS.md § 6](../../AGENTS.md#6-hard-rules), rule 5).
+- Update this doc, its examples and [data model § candidates](data-model.md#candidates-apicli-output-json) with the implementation in the same PR ([AGENTS.md § 6](../../AGENTS.md#6-engineering-basics), rule 5).
 
 ## 11. Mock scenarios (#28)
 

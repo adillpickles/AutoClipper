@@ -143,13 +143,13 @@ See [evaluation](../ml/evaluation.md). In short, starting simple:
 ## 10. Constraints
 
 - **Team:** four students, part time, building with AI coding agents.
-- **Compute:** laptops; free tiers only.
+- **Compute:** start with laptops and available free resources; choose shared workers or hosting to fit the workload and budget.
 - **Data:** Twitch API for metadata and viewer clips; TwitchDownloader and yt-dlp for chat, audio and video ([data sources and delivery](../decisions/0011-data-sources-and-local-delivery.md)). These tools are unofficial and can break when Twitch changes things.
 - **VOD expiry:** Twitch deletes VODs after 7–60 days, so download the pilot VODs early.
 
 ## 11. Risks
 
-Full register: [risks](../project/risks.md). Top three:
+Main implementation challenges:
 
 1. **Downloader tools break** → pin versions, download early, keep local copies.
 2. **Noisy labels** (duplicate clips, clips that start late) → merge clips into moments, generous time matching.

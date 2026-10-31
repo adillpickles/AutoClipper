@@ -1,10 +1,10 @@
 # Writing Issues
 
-Every issue uses the same plain-English format, so anyone (a teammate or an AI agent) can pick it up cold and finish it from the issue plus the repo. No internal codes in the text: say what you mean ("the chat features", not "feature set v0 under ADR-0009").
+Use the same plain-English format for tasks, so a teammate or coding agent can finish one from the issue plus the repo. Name the actual work and link the relevant docs directly.
 
 ## Title
 
-A short action in plain words: **"Compute chat features for each time window"**, not "Implement chat-v0 per ADR-0009".
+A short action in plain words: **"Compute chat features for each time window"**.
 
 ## Body template
 

@@ -26,7 +26,7 @@
 
 - **Reference:** <https://dev.twitch.tv/docs/api/reference>. The details below were checked against it and the [API guide](https://dev.twitch.tv/docs/api/guide) on 2026-10-21; `autoclipper.ingest.twitch_api` implements them.
 - **Base URL:** `https://api.twitch.tv/helix`
-- **Auth:** the team shares one app registered at <https://dev.twitch.tv/console> (credentials in each member's `.env`, never in git). Use the [**client-credentials** grant](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#client-credentials-grant-flow) to get an *app access token*. The parameters go in an `x-www-form-urlencoded` body, not the URL:
+- **Auth:** the team shares one app registered at <https://dev.twitch.tv/console>. Supply its credentials through an untracked `.env` or the worker/deployment environment ([setup](../development/setup.md#configuration)). Use the [**client-credentials** grant](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#client-credentials-grant-flow) to get an *app access token*. The parameters go in an `x-www-form-urlencoded` body, not the URL:
 
   ```http
   POST https://id.twitch.tv/oauth2/token

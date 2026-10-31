@@ -16,15 +16,15 @@ AutoClipper uses TwitchDownloader and yt-dlp for VOD media and chat. These stora
 
 ## 2. Chat
 
-- The chat parser replaces usernames and user IDs with salted hashes and redacts `@mentions`. Keep it that way: no chatter names in files, logs, screenshots or slides.
+- The chat parser replaces usernames and user IDs with salted hashes and redacts `@mentions`. Reuse its output for features; keep raw chat and chatter names out of committed files and logs.
 - The raw chat download is deleted after parsing. The pseudonymized messages are kept in `data/interim/chat/` so features can be recomputed after the VOD expires.
 - Features are per-window totals (message rate, emotes, unique chatters). Nothing needs individual chatters.
 
 ## 3. Downloading
 
 - Use TwitchDownloader (chat, audio, video) and yt-dlp (audio, video). The pilot channels are in [`configs/channels.yaml`](../../configs/channels.yaml).
-- Subscriber-only VODs can't be downloaded without a subscriber login; skip them.
-- Respect Twitch API rate limits (the API client already backs off).
+- Subscriber-only VODs need a subscriber login; the initial pilot uses VODs the collector can download with its configured tools.
+- The Twitch API client backs off on rate limits; collection uses its retry behavior.
 - Download the pilot early: VODs expire after 7–60 days.
 
 ## 4. Disk space
