@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Current. Updated 2026-10-31: two outputs (vertical clips and a highlights video), local-first delivery. |
+| **Status** | Current. Updated 2026-10-31: two outputs (vertical clips and a highlights video), flexible collection, storage and delivery defaults. |
 | **Last updated** | 2026-10-31 |
 | **Related** | [Roadmap](roadmap.md) · [Architecture](../architecture/overview.md) · [API contract](../architecture/api-contract.md) · [Modeling plan](../ml/modeling-plan.md) · [Evaluation](../ml/evaluation.md) |
 

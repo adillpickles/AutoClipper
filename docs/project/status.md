@@ -37,7 +37,7 @@ Scope, architecture and the plan are documented, with concrete defaults for buil
 
 ## Decisions
 
-Everything needed for the MVP is decided: data sources, pilot channels, the model target and local-first delivery ([data sources and delivery](../decisions/0011-data-sources-and-local-delivery.md)), the [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md), the backend/frontend API including the highlights video ([API contract](../architecture/api-contract.md)) and the app experience ([PRD § 4](../product/prd.md#4-the-app-experience)). There is no open-questions list: technical choices the docs don't cover are made by whoever builds the issue and explained in the PR ([AGENTS.md § 10](../../AGENTS.md#10-when-youre-unsure)).
+Everything needed for the MVP has a documented default: data sources, pilot channels, the model target and delivery options ([data sources and delivery](../decisions/0011-data-sources-and-local-delivery.md)), the [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md), the backend/frontend API including the highlights video ([API contract](../architecture/api-contract.md)) and the app experience ([PRD § 4](../product/prd.md#4-the-app-experience)). There is no open-questions list: technical choices the docs don't cover are made by whoever builds the issue and explained in the PR ([AGENTS.md § 10](../../AGENTS.md#10-when-youre-unsure)).
 
 ## Suggested next tasks
 
