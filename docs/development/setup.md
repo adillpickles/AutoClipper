@@ -122,11 +122,11 @@ npm run lint; npm run typecheck; npm run format:check; npm run build
 1. Log in at <https://dev.twitch.tv/console> (two-factor auth must be enabled on the account).
 2. **Register Your Application.** Name: anything unique. OAuth redirect URL: `http://localhost`. Category: *Analytics Tool*. Client type: *Confidential*.
 3. Copy the **Client ID** and generate a **Client Secret** into `.env`.
-4. **Proposal:** the team shares one app's credentials privately, never in chat history that might go public and never in git, or each member registers their own app.
+4. The team shares one registered app (already done, #4): ask a teammate for the credentials privately and put them in your `.env`. Never paste them in a public channel or commit them.
 
 ## Chat hash salt
 
-If OQ-9 approves persisted hash-based joins across machines, use the same privately shared `AUTOCLIPPER_CHAT_HASH_SALT` for that dataset. Aggregate-only retention may need hashes only transiently for unique-chatter counts. Decide linkage scope before real ingestion; never commit the salt.
+The chat parser replaces every chatter's username and user ID with a salted hash, and the pseudonymized messages are kept in `data/interim/chat/` ([data handling](../data/data-governance.md#2-chat)). Hashes only need to be consistent within one VOD (for unique-chatter counts), so each machine can use its own salt. Use the same salt for all of your own ingests, and never commit it.
 
 To make a salt, generate a long random value and put it in `.env`:
 

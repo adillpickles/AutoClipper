@@ -29,4 +29,4 @@ If you commit a secret (Twitch client secret, OAuth token, API key, etc.), even 
 - Downloaded media is treated as untrusted input. It's processed with FFmpeg and media libraries, never executed, and stays out of the repository.
 - New dependencies are justified in PRs and kept to well-maintained packages.
 
-Secret scanning and push protection are enabled (verified 2026-10-13). Vulnerability alerts and private reporting remain OQ-12 follow-ups (see [`docs/project/open-questions.md`](docs/project/open-questions.md)); no security setting is changed by this repair.
+Secret scanning and push protection are enabled (verified 2026-10-13). Dependabot alerts and private vulnerability reporting are being turned on in #3.

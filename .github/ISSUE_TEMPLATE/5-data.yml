@@ -1,6 +1,5 @@
 name: Data task
 description: Data collection, labeling, or dataset definition changes.
-title: "Data: <short summary>"
 labels: ["data"]
 body:
   - type: markdown
@@ -36,17 +35,17 @@ body:
       label: Does this change a schema or label definition?
       options:
         - "No"
-        - "Yes (an ADR or ADR update is required in the same PR)"
+        - "Yes (update data-model.md or labeling.md in the same PR)"
     validations:
       required: true
   - type: checkboxes
     id: governance
     attributes:
-      label: Governance checklist
+      label: Data handling checklist
       options:
         - label: Usernames are pseudonymized at ingestion
           required: true
         - label: Raw data stays out of git (stored under the ignored data/ directory)
           required: true
-        - label: Collection respects documented rate limits and platform terms
+        - label: Collection respects the Twitch API rate limits
           required: true

@@ -4,8 +4,8 @@ How the team plans, tracks and communicates. Lightweight on purpose: four part-t
 
 | | |
 |---|---|
-| **Status** | Living. Based on the team's project design doc; adjust it to what the team actually does. |
-| **Last updated** | 2026-10-16 |
+| **Status** | Living. Adjust it to what the team actually does. |
+| **Last updated** | 2026-10-31 |
 
 ## Channels
 
@@ -28,26 +28,26 @@ Roles are loose starting points; everyone works across areas and owns at least o
 | Role | Responsibilities |
 |---|---|
 | **Team manager** (course requirement) | Point of contact with program staff. Keeps the roadmap, status and issue backlog current. Runs triage. Repo admin (GitHub settings, labels, rulesets). |
-| **Area owners** | One go-to person per area (ingestion, data/labels, modeling/eval, export, app) who reviews or delegates PRs in that area. Not a gate: any teammate can approve. |
-| **Reviewer** | Everyone. Reviews are shared; aim for a first review within two days. |
+| **Area owners** | One go-to person per area (ingestion, data/labels, modeling/eval, export, app) who knows that code best. Not a gate. |
+| **Reviewer** | Optional. Ask for a review on large or risky PRs; approvals aren't required to merge. |
 
 ## Tracking
 
 - **Issues** are the unit of work: one issue → one PR. Every issue has an owner (assignee) once someone starts it.
-- **Planned issues** are drafted in the [backlog](backlog.md) in dependency order. Once a draft is published, the GitHub issue is the live record.
-- **Project board** (GitHub Projects): *Backlog → Ready (`agent-ready`) → In progress → In review → Done*.
-- Work is grouped by **milestone** ([roadmap](../product/roadmap.md)). No priority or size labels; the backlog's wave order and **Depends on** lists set the sequence.
-- At each milestone boundary: update [status](status.md), review [risks](risks.md) and [open questions](open-questions.md).
+- **Pick an issue** whose **Depends on** items are merged, in an area you're comfortable with (the category labels: `frontend`, `backend`, `ingestion`, `data`, `modeling`, `export`, `tooling`). Leave `stretch` issues until the MVP works.
+- **Project board** (GitHub Projects): *Backlog → Ready → In progress → In review → Done*.
+- Work is grouped by **milestone** ([roadmap](../product/roadmap.md)). No priority or size labels; the roadmap's weeks and each issue's **Depends on** list set the sequence.
+- At each milestone boundary: update [status](status.md) and review [risks](risks.md).
 
 ## Norms
 
 - **One owner per task.**
-- **AI tools are fine, but you own what you merge.** You can explain every line of your PR, and a teammate reviews it before merge.
+- **Vibe coding is fine; you own what you merge.** Let your agent make the engineering calls, check that CI is green and that the PR says what changed and why.
 - **Ask the "dumb" questions early.** We're at different ML starting points, and that's the point.
 - **Scope creep:** nothing from the PRD's Should/Could rows until the MVP runs end to end.
-- **Write decisions down.** Decisions made in chat go into an ADR, [open questions](open-questions.md) (Resolved) or the issue.
+- **Write decisions down.** A technical choice goes in the PR description; one that changes how the project works goes in an [ADR](../decisions/README.md).
 - **Conflicts:** talk it out as a team first, then go to a TA. See the [Code of Conduct](../../CODE_OF_CONDUCT.md).
 
 ## Course deliverables
 
-The course's project design doc is the source for the [PRD](../product/prd.md); keep the two in sync. Key dates are in the [roadmap](../product/roadmap.md).
+The [PRD](../product/prd.md) is the source of truth for scope; when it changes, update the course's project design doc from it. Key dates are in the [roadmap](../product/roadmap.md).

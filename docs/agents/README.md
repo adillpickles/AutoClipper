@@ -24,8 +24,8 @@ flowchart LR
     A --> W[Plan, build, test,<br/>commit locally]
     W -.->|optional| RL[Second-opinion<br/>review loop]
     RL -.-> W
-    W --> PR[You open the PR]
-    PR --> R[Teammate review]
+    W --> PR[Agent opens the PR]
+    PR --> R[You check it;<br/>CI green]
     R --> M[Squash merge to main]
     R -->|"docs gap found"| D
 ```
@@ -35,27 +35,27 @@ The last arrow matters most. **When an agent makes a mistake because the docs we
 ## The workflow
 
 1. **Pick an issue** and claim it ([CONTRIBUTING § 2](../../CONTRIBUTING.md#2-pick-up-an-issue)).
-2. **Hand it to your agent** with the [start-a-task prompt](prompts.md#start-a-task). The agent reads `AGENTS.md`, the issue and the relevant docs, plans if the task is non-trivial, then builds, tests and commits on a branch.
+2. **Hand it to your agent** with the [start-a-task prompt](prompts.md#start-a-task). The agent reads `AGENTS.md`, the issue and the relevant docs, makes the engineering calls the issue leaves open, then builds, tests and commits on a branch.
 3. **Check the result yourself.** Run it, read the diff, make sure you can explain it.
 4. **Optional:** for big or risky changes, run the [second-opinion review loop](review-loop.md).
-5. **Open the PR** and get one teammate approval ([CONTRIBUTING § 6–8](../../CONTRIBUTING.md#6-open-a-pull-request)).
+5. **Open the PR and merge it** once CI is green ([CONTRIBUTING § 6–8](../../CONTRIBUTING.md#6-open-a-pull-request)).
 
-Agents don't push, open PRs or merge unless you tell them to. You own what you merge.
+You own what you merge: be able to explain it.
 
 ## What agents are good and bad at here
 
 | Good at | Needs a human |
 |---|---|
-| Implementing a well-specified stage (parser, feature function, metric) | Deciding product behavior or what "clip-worthy" means |
-| Writing tests for documented edge cases | Choosing between proposals in open questions |
+| Implementing a well-specified stage (parser, feature function, metric) | Judging whether a clip is actually good |
+| Writing tests for documented edge cases | Watching the exported clips |
 | Boilerplate: CLI wiring, config, FastAPI routes, React components | Judging label quality by watching clips |
-| Refactors with a clear target | Anything touching platform terms, credentials or publishing |
+| Refactors with a clear target | Handling credentials |
 | Drafting docs from code | Interpreting experiment results honestly |
 | FFmpeg command construction | Debugging audio/video output by ear and eye |
 
 ## Guardrails
 
-- **Branch protection:** nothing reaches `main` without a teammate's approval.
-- **Hard rules** in AGENTS.md: no data or secrets in git, no invented results, no silent schema changes, no publishing without being asked.
+- **Branch protection:** everything reaches `main` through a PR with green CI.
+- **Hard rules** in AGENTS.md: no data or secrets in git, no invented results, docs kept true.
 - **ADRs** stop agents from "helpfully" swapping a technology choice.
 - **Contracts** in the [data model](../architecture/data-model.md) and [features](../ml/features.md) keep names, units and time handling consistent across agents.

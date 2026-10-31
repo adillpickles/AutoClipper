@@ -22,7 +22,7 @@ body:
       label: Steps to reproduce
       description: Minimal commands and inputs. Use a VOD/clip ID if relevant. **Don't paste chat logs with real usernames.**
       placeholder: |
-        1. uv run autoclipper ingest --video-id 1234567890
+        1. uv run autoclipper ingest https://www.twitch.tv/videos/1234567890
         2. ...
     validations:
       required: true

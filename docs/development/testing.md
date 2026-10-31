@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Binding. pytest is configured in `pyproject.toml` (`[tool.pytest]`). The coverage target below is still a proposal. |
+| **Status** | Binding. pytest is configured in `pyproject.toml` (`[tool.pytest]`). Coverage target below. |
 | **Last updated** | 2026-10-21 |
 
 ## Goals
@@ -16,7 +16,7 @@ Tests protect the parts where bugs are **silent**: a label shifted by 10 seconds
 | **Unit** | Pure functions: parsing, moment merging, windowing, features, metrics | `tests/<module>/` | ❌ never | ✅ always |
 | **Contract** | A stage's output matches [data model](../architecture/data-model.md) (columns, dtypes, keys) | `tests/contracts/` | ❌ | ✅ |
 | **Integration** | Several stages chained on a tiny synthetic VOD (generated audio + fake chat + fake clips) | `tests/integration/` | ❌ | ✅ |
-| **Live API** | Authorized real Twitch API / tool calls | `tests/live/`, marked `@pytest.mark.live` and excluded by default | ✅ | ❌ (manual, needs `.env` and source authorization) |
+| **Live API** | Real Twitch API / tool calls | `tests/live/`, marked `@pytest.mark.live` and excluded by default | ✅ | ❌ (manual, needs `.env`) |
 | **Metric checks** | Eval metrics match hand-computed values on toy inputs | `tests/eval/` | ❌ | ✅ |
 
 ## Must-have tests (by area)
@@ -28,7 +28,7 @@ Tests protect the parts where bugs are **silent**: a label shifted by 10 seconds
 - **Features:** empty chat window → raw counts/rates 0 not NaN (its z-score still follows the formula), zero-variance VOD → z-score 0, lead/lag at VOD edges.
 - **Pseudonymization:** the same name + salt gives the same hash, a different salt gives a different hash, and the raw name never appears in output.
 - **Splits:** no broadcaster appears in two splits. Deterministic given the seed.
-- **Metrics:** NDCG, recall@k, IoU matching and bootstrap on tiny hand-worked examples.
+- **Metrics:** hit rate@10, recall@k, NDCG, the ±15 s one-to-one matching and bootstrap on tiny hand-worked examples.
 - **Export:** FFmpeg command construction (as data, without running FFmpeg in unit tests). One integration test on a generated 5-second clip ([FFmpeg tests](#ffmpeg-tests)).
 
 ## Fixtures
@@ -51,7 +51,7 @@ uv run autoclipper synth --seed 1 --no-video       # without FFmpeg (tables and 
 
 - **Contents:** 3 fake VODs of 3–5 minutes from 2 fake broadcasters (`user_001`, `user_002`; IDs like `9000000001`). Viewer clips that overlap, touch end to start, nearly touch (3 s gap) and stand alone; one clip with a null `vod_offset_s` and one with a null `video_id`; one VOD without clips. Chat with a burst 3–8 s after every planted highlight, a quiet stretch per VOD, native and third-party emotes, and one message linking a clip. A 16 kHz mono WAV per VOD, loud at each highlight and digitally silent in the one muted segment (listed in that VOD's `muted_segments`). A `testsrc2` test-pattern MP4 per VOD carrying the same audio, as long as the VOD by default (`--video-duration` changes it).
 - **Layout** mirrors the data dir: `processed/{broadcasters,vods}.parquet`, `processed/clips/synthetic-seed-<seed>.parquet`, `interim/chat/<video_id>.parquet`, `interim/audio/<video_id>.wav`, `raw/video/<video_id>.mp4`, `catalog.parquet` and `manifest.json`.
-- **Schemas** follow the **proposed** tables in [data model](../architecture/data-model.md) for prototype use; they are not adopted contracts (ADR-0009). Chatters and clip creators appear only as `*_hash` values, computed with `autoclipper.privacy.pseudonymize` and a public synthetic salt (not `AUTOCLIPPER_CHAT_HASH_SALT`).
+- **Schemas** follow the tables in [data model](../architecture/data-model.md). Chatters and clip creators appear only as `*_hash` values, computed with `autoclipper.privacy.pseudonymize` and a public synthetic salt (not `AUTOCLIPPER_CHAT_HASH_SALT`).
 - **Manifest:** seed, generator version, library versions, every file's SHA-256, and the planted highlights (`planted_events`: highlight time, audio and chat burst windows, clip IDs), quiet stretches and muted segments, so tests can check signals against where they were planted.
 - **Determinism:** the same seed gives byte-identical Parquet files, WAVs and manifest with the locked dependencies (Parquet embeds the pyarrow version, so other library versions give other bytes). Videos were byte-identical across runs with one FFmpeg build, but that is not guaranteed. Different seeds jitter positions, durations, text and IDs; the edge cases stay the same.
 - **Safety:** the command refuses a directory that isn't empty. `--force` replaces only an earlier synthetic dataset, and only if its directory holds nothing but the files its `manifest.json` lists; any other file makes it refuse. The earlier dataset is deleted only after the new one is in place, and is put back if the swap fails (e.g. one of its files is open on Windows). A failed run leaves nothing behind.
@@ -109,11 +109,11 @@ Keyword arguments: `duration_s`, `video_size` (`(width, height)`, or `None` for 
 ```bash
 uv run pytest                       # unit + contract + integration; live tests are deselected
 uv run pytest tests/test_cli.py     # one file (or a folder, or file::test_name)
-uv run pytest -m live               # only live tests (needs .env and source authorization); never in CI
+uv run pytest -m live               # only live tests (needs .env); never in CI
 uv run pytest -m "not live and not ffmpeg"   # also leave out tests that run the real FFmpeg
 uv run pytest --cov=autoclipper     # with a coverage report (branch coverage, missing lines)
 ```
 
 `uv run pytest -m live` exits with code 5 ("no tests ran") while no live tests exist.
 
-Coverage target (proposal): ≥ 80% for `labels/`, `features/` and `eval/`. No hard target elsewhere. Meaningful tests beat a coverage number.
+Coverage target: ≥ 80% for `labels/`, `features/` and `eval/`. No hard target elsewhere. Meaningful tests beat a coverage number.

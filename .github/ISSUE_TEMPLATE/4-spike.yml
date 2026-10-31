@@ -15,7 +15,7 @@ body:
     id: why
     attributes:
       label: Why it matters
-      description: Which decision or task is blocked on the answer?
+      description: Which task needs the answer?
     validations:
       required: true
   - type: input
@@ -32,4 +32,4 @@ body:
       description: Where the finding will be written down.
       value: |
         - [ ] Findings summarized in a comment on this issue
-        - [ ] Relevant doc updated (or a new ADR proposed) if the answer changes a plan
+        - [ ] Relevant doc updated (or a new ADR) if the answer changes a plan

@@ -7,13 +7,13 @@ Start with the [project README](../README.md) for the overview, and [AGENTS.md](
 | Section | Docs | Answers |
 |---|---|---|
 | **Product** | [PRD](product/prd.md) · [Roadmap](product/roadmap.md) | What are we building, for whom, and in what order? |
-| **Architecture** | [Overview](architecture/overview.md) · [Data model](architecture/data-model.md) · [API contract](architecture/api-contract.md) (proposed) | How does the system fit together? What are the contracts between stages? |
+| **Architecture** | [Overview](architecture/overview.md) · [Data model](architecture/data-model.md) · [API contract](architecture/api-contract.md) (adopted) | How does the system fit together? What are the contracts between stages? |
 | **Data** | [Index](data/README.md) · [Governance](data/data-governance.md) · [Sources](data/data-sources.md) · [Collection plan](data/collection-plan.md) · [Labeling](data/labeling.md) | Where does data come from, how is it labeled, and what are the rules? |
 | **ML** | [Index](ml/README.md) · [Modeling plan](ml/modeling-plan.md) · [Features](ml/features.md) · [Evaluation](ml/evaluation.md) · [Experiments](ml/experiments.md) | What do we model, and how do we know it works? |
 | **Development** | [Setup](development/setup.md) · [Conventions](development/conventions.md) · [Testing](development/testing.md) · [Git workflow](development/git-workflow.md) | How do I set up, write code, test it and ship it? |
 | **Agents** | [Overview](agents/README.md) · [Prompts](agents/prompts.md) · [Writing tasks](agents/writing-tasks.md) · [Reviewing agent PRs](agents/reviewing-agent-prs.md) · [Optional review loop](agents/review-loop.md) · [Parallel work](agents/parallel-work.md) | How do we build this with AI agents without losing consistency? |
 | **Decisions** | [ADR index](decisions/README.md) | Why are things the way they are? |
-| **Project** | [Status](project/status.md) · [Backlog](project/backlog.md) · [Open questions](project/open-questions.md) · [Risks](project/risks.md) · [Team process](project/team-process.md) · [Labels](project/labels.md) · [Glossary](project/glossary.md) | What's the current state, what's next, what's undecided, and how do we work? |
+| **Project** | [Status](project/status.md) · [Backlog](project/backlog.md) · [Risks](project/risks.md) · [Team process](project/team-process.md) · [Labels](project/labels.md) · [Glossary](project/glossary.md) | What's the current state, what's next, and how do we work? |
 
 ## Reading paths
 
@@ -27,8 +27,7 @@ Start with the [project README](../README.md) for the overview, and [AGENTS.md](
 
 ## Doc conventions
 
-- Every doc starts with a status line: **Proposal**, **Binding**, **Reference** or **Living**, plus a last-updated date.
-- "Proposal" means a recommendation, not yet agreed. "Accepted" or "Binding" means follow it.
+- Every doc starts with a status line (**Current**, **Binding**, **Reference** or **Living**) plus a last-updated date. Current and Binding docs are the plan of record: follow them, and fix them in your PR when they're wrong.
 - ⚠️ marks a fact that still needs verification.
 - No invented results. Metrics appear only with a link to an experiment.
 - Diagrams use Mermaid. Links are relative.

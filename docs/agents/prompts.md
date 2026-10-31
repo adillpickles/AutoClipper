@@ -12,16 +12,16 @@ Work on issue #<N> in this repo.
 1. Read AGENTS.md, docs/project/status.md and the issue (gh issue view <N>).
 2. Check the issue's "Depends on" list. If anything there isn't merged, stop and tell me.
 3. Read the docs the issue links and the code you'll touch.
-4. If the task is more than a small, well-specified change, give me a short plan
-   (files, approach, tests, open questions) and wait for my OK.
+4. If the task is large, write a short plan (files, approach, tests) and then build it.
+   Make the engineering decisions yourself and explain them in the PR.
 5. Implement on branch <type>/<N>-<slug>. Add tests, update affected docs and status.md.
 6. Run lint, type check and tests. Read your full diff against main.
-7. Commit locally with short Conventional Commit messages. Don't push.
-8. Tell me what changed, how you verified it and what's uncertain, and draft the PR
-   description using .github/pull_request_template.md.
+7. Commit with short Conventional Commit messages, push the branch and open a PR against
+   main using .github/pull_request_template.md ("Closes #<N>", the issue's labels). Don't merge.
+8. Tell me what changed, how you verified it, which decisions you made and what's uncertain.
 ```
 
-## Open the PR (after you've checked the work)
+## Open the PR (if you told the agent to wait)
 
 ```text
 Push this branch and open a PR against main using .github/pull_request_template.md.
@@ -39,26 +39,15 @@ locally, and summarize what you changed and what you pushed back on. If a commen
 a docs gap, fix the doc too. Draft replies for me; don't post them.
 ```
 
-## Add issue drafts to the backlog
+## Write new issues
 
 ```text
-Read docs/project/backlog.md (format and existing drafts), docs/agents/writing-tasks.md and
-the docs relevant to <new work>. Add drafts for it in the same format: exact title, labels from
-docs/project/labels.md, goal, scope, docs, acceptance criteria, "Depends on" (exact existing
-titles or None), parallel work and verification. Place them after their dependencies, keep each
-to one reviewable PR, and mark anything waiting on a decision `needs-decision`. Don't create
-GitHub issues.
+Read docs/agents/writing-tasks.md and the docs relevant to <new work>. Draft GitHub issues for it
+in that plain-English format (Goal, What to build, Done when, Depends on, Not included, How to
+check, Background reading), with labels from docs/project/labels.md. Keep each to one PR, then
+create them with `gh issue create`.
 ```
 
-## Publish backlog drafts as GitHub issues (owner)
-
-```text
-Create GitHub issues for the backlog drafts in docs/project/backlog.md, in index order,
-from <first title> through <last title>. Use each heading as the exact title and the matching
-issue template's fields; replace each "Depends on" title with the created issue's #number.
-Apply the suggested labels (they must already exist on GitHub). List what you created; don't
-create anything else.
-```
 
 ## Review someone's PR
 

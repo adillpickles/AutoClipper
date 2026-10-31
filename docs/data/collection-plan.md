@@ -2,84 +2,62 @@
 
 | | |
 |---|---|
-| **Status** | Proposal. Real collection requires source authorization, privacy and snapshot decisions (OQ-4/OQ-9/OQ-17, ADR-0009). |
-| **Last updated** | 2026-10-13 |
+| **Status** | Current. Pilot scope from [data sources and local-first delivery](../decisions/0011-data-sources-and-local-delivery.md); snapshot rules from the [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md). |
+| **Last updated** | 2026-10-31 |
 
 ## Why collection is urgent
 
-Twitch VODs expire ([data sources](data-sources.md#vod-retention)), so start a small **authorized** pilot promptly after the necessary decisions. API, synthetic UI/export and evaluation work can proceed alongside permission/source investigation; urgency does not authorize downloading or retaining public content.
+Twitch VODs expire ([data sources](data-sources.md#vod-retention)), and pilot VODs must also be at least 7 days old before they're ingested ([labeling § 7](labeling.md#7-view-count-maturity)). That leaves a limited window per VOD, so start the pilot promptly. App, export and evaluation work proceeds alongside it.
 
 ## What we collect per VOD
 
+Everything is collected in one `autoclipper ingest` run per VOD (#34).
+
 | Item | Source | When | Approx. size (6 h VOD) |
 |---|---|---|---|
-| VOD metadata | Get Videos | Discovery (daily) | KB |
-| Initial clips snapshot | Get Clips | Record actual capture time; ~day 1 is a proposal, not a stream-end observation | KB–MB |
-| Later clips snapshot (possible outcomes) | Get Clips | ~day 7, subject to adopted target/retention policy | KB–MB |
-| Chat replay | TwitchDownloader | Within retention window | ~10–200 MB JSON, depending on chat volume |
-| Audio | yt-dlp (audio only) | Within retention window | ~100–400 MB |
-| Video | Approved source | Usually on demand; retain a small permitted demo/evaluation set while available | Measure in pilot |
+| VOD metadata | Get Videos | At ingest | KB |
+| Viewer-clip snapshot | Get Clips | At ingest, once; the VOD must be at least 7 days old ([labeling § 7](labeling.md#7-view-count-maturity)); record the capture time | KB–MB |
+| Chat replay | TwitchDownloader | At ingest | ~10–200 MB JSON, depending on chat volume (deleted after parsing) |
+| Audio | yt-dlp or TwitchDownloader (audio only) | At ingest | ~100–400 MB |
+| Video | yt-dlp or TwitchDownloader | On demand for preview/export; keep the demo and evaluation set locally | Measure in pilot |
 
-These are rough planning estimates, not observed costs. Measure in the pilot. Preserve snapshots immutably with capture times, query ranges/horizon, coverage and dataset lineage ([data model](../architecture/data-model.md#clips)). Later-created clips and pagination limits affect membership. Early ranking additionally needs a real inference-cutoff observation; never infer it retrospectively from day-one/day-seven counts.
+These are rough planning estimates; measure them in the pilot. Each clip snapshot is immutable and records capture times, query ranges, coverage and dataset lineage ([data model](../architecture/data-model.md#clips)). Later-created clips and pagination limits affect which clips a snapshot contains. A VOD younger than 7 days at capture is flagged and left out of view-weighted labels and metrics.
 
-## Channel selection (proposal)
+## Channels and VODs
 
-Agree a small pilot first, then choose an achievable channel mix based on authorization, resource use and grouped-split coverage. The earlier **20–40-channel** estimate is not a required scale. Prefer channels that:
+The pilot channels are listed in [`configs/channels.yaml`](../../configs/channels.yaml): five large channels, each with a `login` and a short `reason`. Collect **~5 VODs per channel** that are at least 7 days old and still available, then scale up if the pilot shows it's worth it (resource use, label density, coverage of held-out-streamer evaluation). The chosen VODs are collected in `configs/pilot_vods.txt` (public VOD links only), created by the pilot download (#35). Changes to either list go through PRs. Channels were picked because they:
 
 1. **Have an active clip culture:** many viewer clips per stream, so labels are dense.
-2. **Are in English** for v1, to keep captions and text features simple.
+2. **Stream in English**, to keep captions and text features simple.
 3. **Mix content types:** "Just Chatting"/IRL, FPS, variety. The model shouldn't learn one game's quirks only.
-4. **Span sizes:** mostly large and mid-size channels for dense labels, plus a few small ones to test the "few clips" regime.
-5. **Have VOD history enabled** with retention long enough to collect.
-6. **Preferably allow clipping or reposting**, so the online experiment remains possible later (see [governance](data-governance.md)).
+4. **Are large:** dense viewer clips give dense labels. Evaluation hides or subsamples a held-out VOD's clips to measure how much the scorer depends on clips ([evaluation § 6](../ml/evaluation.md#small-streamer-simulation)). That covers the "few or no clips" half of the small-streamer case, not a small channel's quieter chat; small channels can be added after the pilot if time allows.
+5. **Have public VOD history** with retention long enough to collect. Subscriber-only VODs are skipped ([data sources](data-sources.md#subscriber-only-vods)).
 
-The concrete list lives in a config file in the repo (planned: `configs/channels.yaml`) with `login` and a short `reason` per channel. Changes go through PRs.
-
-## Targets (proposal)
+## Targets
 
 | Milestone | VODs with clips + chat + audio | Notes |
 |---|---|---|
 | Pipeline smoke test | 5 | From 2–3 channels |
-| Baselines (M2) | Team-agreed after pilot | Diverse channels and usable coverage matter; no count guarantees generalization |
-| Models (M3–M4) | Scale based on evidence and budget | Earlier 150/400-VOD estimates are not milestone gates |
+| Pilot dataset (baselines and first models) | ~25 | ~5 per channel in `configs/channels.yaml` |
+| Scale-up | Based on the pilot | Add VODs or channels if results and disk/download costs justify it |
 
-Measure disk/download/feature costs before scaling. Proposed: compressed audio in `raw/`, WAV only transiently, and derived features under approved retention. Features alone cannot support video review/export after expiry; retain authorized media needed for demo and human evaluation. Shared storage is OQ-5 and must respect OQ-17 permissions.
+Measure disk, download and feature costs before scaling. Keep compressed audio in `data/raw/`; WAV is transient. Features alone can't support preview or export after a VOD expires, so keep the media needed for the demo and evaluation locally.
 
-## Collector design
+## Ingest
 
-```mermaid
-sequenceDiagram
-    participant S as Scheduler (daily)
-    participant C as Collector
-    participant H as Helix API
-    participant T as TwitchDownloader
-    participant Y as yt-dlp
-    participant K as Catalog
-    S->>C: run
-    C->>H: Get Videos (type=archive) per channel
-    C->>K: new video_ids?
-    loop each new VOD
-        C->>T: chat replay
-        C->>Y: audio only
-        C->>K: record status/tool versions
-    end
-    loop VODs aged ~1 and ~7 days
-        C->>H: Get Clips (chunked by time range)
-        C->>K: record snapshot
-    end
-```
+The pilot runs `autoclipper ingest` (#34) once for each VOD in `configs/pilot_vods.txt` (#35). For one VOD it:
 
-- **Idempotent and resumable:** the catalog records what's done. Re-runs pick up failures.
+1. Fetches the VOD metadata (Helix Get Videos) and checks the VOD's age.
+2. Takes the viewer-clip snapshot (Helix Get Clips, chunked by time range) and records its capture time and coverage.
+3. Downloads and parses the chat replay (TwitchDownloader), then deletes the raw file.
+4. Downloads the audio (yt-dlp or TwitchDownloader).
+5. Records each step's status and tool versions in the catalog.
+
+- **Idempotent and resumable:** the catalog records what's done. Re-runs pick up failures. Deleted and subscriber-only VODs are recorded as `unavailable`.
 - **Polite:** respect rate limits, run downloads sequentially (or with low concurrency), and add a random delay between media downloads.
-- **Scheduling:** proposed is a daily run on whichever team machine is always on, or a cheap VM. A GitHub Actions cron isn't suitable because of media size and runtime limits. See OQ-5.
-- **Observability:** a daily summary line (new VODs, failures, disk used) written to a log and, optionally, posted to the team chat.
+
+There is no scheduled collector in the MVP. Watching channels for new VODs automatically is the stretch channel-tracking issue (#37).
 
 ## Data sharing within the team
 
-Raw data **never goes in git**. Options for sharing processed datasets (OQ-5):
-
-1. A shared cloud drive folder with versioned `processed/` snapshots, which is simplest.
-2. An object store bucket (S3/R2) with versioned prefixes.
-3. Each member collects their own subset, and only processed tables are shared.
-
-Whatever is chosen, sharing must be authorized. The source design retains aggregate chat statistics; pseudonymized message retention is an alternative awaiting OQ-9, not the default by implication. No raw chat is shared, and neither hashes nor aggregate features automatically remove source restrictions.
+Raw data **never goes in git**. Teammates share downloaded media and processed tables privately, through a shared team drive (versioned `processed/` snapshots) or by direct copy. Chat is shared as the pseudonymized message tables and per-window features; the raw replay file is deleted after parsing ([data handling](data-governance.md)).

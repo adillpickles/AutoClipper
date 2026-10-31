@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | Accepted for pipeline and dataset storage (2026-10-16). The app's job/result store and hosting are deferred to OQ-18. |
+| **Status** | Accepted (2026-10-16). |
 | **Date** | 2026-10-09 |
-| **Related** | [Data model](../architecture/data-model.md), [Architecture § Storage](../architecture/overview.md#5-storage-layout-proposal) |
+| **Related** | [Data model](../architecture/data-model.md), [Architecture § Storage](../architecture/overview.md#5-storage-layout) |
 
 ## Context
 
@@ -16,7 +16,7 @@ Data volumes are moderate: hundreds of VODs, millions of chat messages, ~10⁵�
 - Store media (audio) as files under `data/raw/`.
 - Track collection state in a `catalog.parquet` table.
 - Version datasets via `data/splits/<dataset_version>.json` (see [data model § Dataset versioning](../architecture/data-model.md#dataset-versioning)).
-- The data pipeline needs no database server. Where the web app keeps job state and results (local files/SQLite or hosted Postgres such as Supabase, as in the project design doc) is decided together with hosting under OQ-18.
+- No database server. The local app keeps job records in memory and writes results and exports as files under `artifacts/` ([API contract](../architecture/api-contract.md)); there is no hosted backend or cloud storage ([data sources and local-first delivery](0011-data-sources-and-local-delivery.md)).
 
 ## Options considered
 
@@ -31,8 +31,8 @@ Data volumes are moderate: hundreds of VODs, millions of chat messages, ~10⁵�
 ## Consequences
 
 - **Positive:** simple, fast, portable. Each stage reads and writes files.
-- **Negative:** the team must share data out-of-band (OQ-5), and concurrent writes need care (one collector process).
-- **Follow-ups:** decide the shared storage location (OQ-5). Consider DVC if dataset sharing becomes painful.
+- **Negative:** teammates share data outside git (a private team drive or direct copy), and concurrent writes need care (one collector process).
+- **Follow-ups:** consider DVC if dataset sharing becomes painful.
 
 ## Revisit when
 

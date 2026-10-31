@@ -34,7 +34,7 @@ gitGraph
 | Conversation resolution | All review threads must be resolved |
 | Merge method | **Squash only** |
 | History | Linear. No force pushes, no deletion of `main`. |
-| Status checks | None required yet. The `CI` workflow (`Python (ubuntu-latest)`, `Python (windows-latest)`) runs on every PR; the owner makes its checks required once it's green on `main` (#3). |
+| Status checks | None required yet. The `CI` workflow (`Python (ubuntu-latest)`, `Python (windows-latest)`) runs on every PR; #3 makes its checks required. |
 
 The repo is also set to **squash merge only** and **delete branches after merge**. The squash commit title defaults to the PR title.
 
@@ -42,7 +42,7 @@ Repository admins have a pull-request-only bypass. It does not permit direct pus
 
 ## Day-to-day
 
-The commands below are the normal contributor workflow; [CONTRIBUTING](../../CONTRIBUTING.md) walks through each step. AI agents run the push and PR commands only when their human asks.
+The commands below are the normal contributor workflow; [CONTRIBUTING](../../CONTRIBUTING.md) walks through each step. AI agents push and open the PR when their task is done (unless their human says to wait); the human merges.
 
 ```bash
 # start
@@ -89,4 +89,4 @@ Agents resolving conflicts must **not** discard another contributor's changes to
 
 ## Releases and tags (later)
 
-No releases yet. Proposal: tag milestones (`m3-v1-ranker`) so results can be reproduced from a tag, and graduate to SemVer if the tool is ever distributed.
+No releases yet. Tag milestones (`m3-model-export`) so results can be reproduced from a tag. The packaged download (#70) uses SemVer tags (`v0.1.0`).

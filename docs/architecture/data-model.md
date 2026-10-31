@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Status** | Proposal. Storage acceptance alone does not ratify schemas; adopt the relevant contracts explicitly under ADR-0009/OQ-15. |
-| **Last updated** | 2026-10-19 |
+| **Status** | Current. Schemas follow the [analysis rules](../decisions/0009-analysis-and-evaluation-contract-repair.md) and [local Parquet storage](../decisions/0005-local-storage-parquet-duckdb.md). |
+| **Last updated** | 2026-10-31 |
 
-These are the tables that pipeline stages exchange. **Any schema change, including adding a nullable column, requires an ADR or ADR update in the same PR** (see [AGENTS.md § Hard rules](../../AGENTS.md#6-hard-rules-never-break-these)), because it can break downstream stages and invalidate past results. Document the change here too.
+These are the tables that pipeline stages exchange. **Any schema change, including adding a nullable column, requires an ADR or ADR update in the same PR** (see [AGENTS.md § Hard rules](../../AGENTS.md#6-hard-rules)), because it can break downstream stages and invalidate past results. Document the change here too.
 
 ## Conventions
 
@@ -68,7 +68,7 @@ Source: Helix **Get Videos**.
 
 ## `clips`
 
-Source: Helix **Get Clips**. Proposed immutable snapshot files: one row per `clip_id` **within a snapshot**, stored under `data/processed/clips/<snapshot_id>.parquet`. Deduplicate query overlaps within that snapshot; never overwrite an earlier observation. A manifest pins snapshot ID, capture start/end in UTC, discovery ranges/horizon, coverage status and file path. Each row retains its actual `fetched_at`; a paginated capture is not an instantaneous historical snapshot. The logical observation key is `(snapshot_id, clip_id)`.
+Source: Helix **Get Clips**. Immutable snapshot files: one row per `clip_id` **within a snapshot**, stored under `data/processed/clips/<snapshot_id>.parquet`. Deduplicate query overlaps within that snapshot; never overwrite an earlier observation. A manifest pins snapshot ID, capture start/end in UTC, discovery ranges/horizon, coverage status and file path. Each row retains its actual `fetched_at`; a paginated capture is not an instantaneous historical snapshot. The logical observation key is `(snapshot_id, clip_id)`.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -88,14 +88,14 @@ Source: Helix **Get Clips**. Proposed immutable snapshot files: one row per `cli
 
 ## `chat_messages`
 
-Source: TwitchDownloader chat replay (proposed) or live chat. This is a **transient parsing representation**, partitioned by `video_id`, not authorization to retain/share per-message text or persistent hashes. OQ-9 chooses aggregate-only retention (source design) versus sanitized messages for a justified period before real ingestion. Hashes are needed only for approved features such as unique-chatter counts; retained messages remain potentially identifying.
+Source: TwitchDownloader chat replay or live chat. The parser returns these rows in memory; the ingest command (#34) saves them as `data/interim/chat/<video_id>.parquet`. Usernames are hashed and names redacted at parse time, and the raw replay file is deleted after a successful parse ([data sources § 2](../data/data-sources.md#2-chat-replay-twitchdownloader-unofficial)), so no chatter name ever reaches disk. Keeping the pseudonymized table means chat features ([features](../ml/features.md)) can be changed and recomputed after the VOD expires. Hashes exist for counts such as unique chatters, never to analyze individuals.
 
 | Column | Type | Notes |
 |---|---|---|
 | `video_id` | str | |
 | `offset_s` | float | Message time from VOD start |
 | `user_hash` | str | Pseudonymized author. **Never store raw names.** |
-| `text` | str | Message text. May contain other users' @-mentions. See governance for the redaction policy. |
+| `text` | str | Message text, redacted at parse time: `@` mentions become `@user` and chatter names become `user` |
 | `emote_ids` | list<str> | Native Twitch emotes in the message |
 | `n_emotes` | int | Including third-party emotes where detectable |
 | `is_subscriber` | bool, *nullable* | From badges |
@@ -105,11 +105,11 @@ Source: TwitchDownloader chat replay (proposed) or live chat. This is a **transi
 
 ## `moments`
 
-Derived from **one pinned clips snapshot** and one label-rules version in [labeling](../data/labeling.md#2-from-clips-to-moments). Record these in the dataset manifest; do not aggregate historical rows across snapshots or count them as distinct clips. Early-ranking candidates and later outcome groups are separate populations with explicit mapping (OQ-1).
+Derived from **one pinned clips snapshot** (the viewer-clip snapshot taken at ingest, [labeling § 7](../data/labeling.md#7-view-count-maturity)) and one label-rules version in [labeling](../data/labeling.md#2-from-clips-to-moments). Record these in the dataset manifest; do not aggregate historical rows across snapshots or count them as distinct clips.
 
 | Column | Type | Notes |
 |---|---|---|
-| `moment_id` | str | Deterministic and unique within the pinned dataset; exact format awaits grouping adoption (ADR-0009). Rounded starts alone do not guarantee uniqueness. |
+| `moment_id` | str | `{video_id}:m{index}`, `index` 0-based in `start_s` order ([labeling § 2](../data/labeling.md#2-from-clips-to-moments)) |
 | `video_id` | str | |
 | `start_s` | float | Earliest start among member clips |
 | `end_s` | float | Latest end among member clips |
@@ -122,7 +122,7 @@ Derived from **one pinned clips snapshot** and one label-rules version in [label
 
 ## `windows`
 
-Fixed-length slices of each VOD, available **without labels or a training split**. Built using the proposed [windowing rules](../data/labeling.md#3-windows); feature extraction consumes these signal windows.
+Fixed-length slices of each VOD, available **without labels or a training split**. Built with the [windowing rules](../data/labeling.md#3-windows); feature extraction consumes these signal windows.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -133,7 +133,7 @@ Fixed-length slices of each VOD, available **without labels or a training split*
 | `end_s` | float | |
 | `is_muted` | bool | Overlaps a muted segment |
 
-## `window_labels` (training/evaluation only, proposal)
+## `window_labels` (training/evaluation only)
 
 Separate annotations keyed by `window_id`, derived from a pinned observed-clips snapshot and saved split. No annotation row means **unavailable ground truth**, not `False`. Never require this table to analyze a new VOD. In a covered weak-label dataset, `False` denotes no observed overlap, not verified absence of a highlight.
 
@@ -143,11 +143,11 @@ Separate annotations keyed by `window_id`, derived from a pinned observed-clips 
 | `label_pos` | bool | Window overlaps an observed moment in source-video time; labels are never chat-lag shifted |
 | `label_n_clips` | int | Graded label: clips overlapping this window |
 | `label_moment_id` | str, *nullable* | |
-| `split` | str | `train`, `val` or `test`, from the saved split file |
+| `split` | str | `train`, `val` or `test` in the dataset version's primary split (fold 0). Splits are a leave-one-streamer-out rotation over the five pilot streamers (3 train / 1 val / 1 test per fold); the other folds read their split from the saved split file ([labeling § 8](../data/labeling.md#8-splits)) |
 
 ## `features_<family>`
 
-One table per adopted signal family (`features_chat`, `features_audio`, optional `features_video`), keyed by `window_id`. Proposed definitions live in [features](../ml/features.md); adopt the task's relevant subset explicitly.
+One table per signal family (`features_chat`, `features_audio`, optional `features_video`), keyed by `window_id`. Definitions live in [features](../ml/features.md).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -160,14 +160,14 @@ One table per adopted signal family (`features_chat`, `features_audio`, optional
 | Column | Type | Notes |
 |---|---|---|
 | `run_id` | str | Experiment/run that produced it |
-| `target_type` | str | `window` or `moment` |
+| `target_type` | str | `window` or `moment`. The scorer scores windows; a `moment` row holds the maximum window score over a viewer-clip moment's span (for the [ranking-agreement diagnostic](../ml/evaluation.md#5-ranking-agreement-with-viewer-clips-secondary)) |
 | `target_id` | str | `window_id` or `moment_id` |
 | `score` | float | Higher = more clip-worthy |
-| `top_signals` | list<str>, *nullable* | For explanations (v2) |
+| `top_signals` | list<str> | Feature names that contributed most, strongest first. Always present; empty only when no signal stands out |
 
 ## `candidates` (API/CLI output, JSON)
 
-**Proposed in the [API contract § 4](api-contract.md#4-results-and-candidates) (#13), awaiting team adoption under ADR-0009.** What `autoclipper analyze` writes and what `GET /api/v1/jobs/{job_id}/result` returns: one `AnalysisResult` JSON document per analyzed VOD, with `schema_version`, `generated_at`, `vod` (ID, title, broadcaster, `duration_s`, `created_at`), `scorer` (`kind`, `name`, `run_id`), `n_viewer_clips_total`, `warnings` and `candidates`. The contract is normative for semantics, invariants and synthetic examples; this table summarizes one candidate.
+**Defined in the [API contract § 4](api-contract.md#4-results-and-candidates) (#13).** What `autoclipper analyze` writes and what `GET /api/v1/jobs/{job_id}/result` returns: one `AnalysisResult` JSON document per analyzed VOD, with `schema_version`, `generated_at`, `vod` (ID, title, broadcaster, `duration_s`, `created_at`), `scorer` (`kind`, `name`, `run_id`), `n_viewer_clips_total`, `warnings` and `candidates`. The contract is normative for semantics, invariants and synthetic examples; this table summarizes one candidate.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -178,9 +178,9 @@ One table per adopted signal family (`features_chat`, `features_audio`, optional
 | `end_s` | float | Exclusive: `[start_s, end_s)` with `0 ≤ start_s < end_s ≤ vod.duration_s` |
 | `source` | str | `viewer_clips`, `discovered` or `both`: **how the candidate was generated**, not whether ground truth overlaps it |
 | `n_viewer_clips` | int | Distinct viewer clip IDs merged into the candidate; 0 exactly when `source` is `discovered` |
-| `top_signals` | list<str>, *nullable* | Feature names, strongest first; null when not computed (optional polish, US-9) |
+| `top_signals` | list<str> | Feature names that contributed most, strongest first. Always present; empty only when no signal stands out. The app turns it into the one-line reason on each clip card |
 
-This replaces the earlier example's top-level `video_id` (now `vod.video_id`), `model_run_id` (now `scorer.run_id`) and binary `viewer_clips`/`model` provenance. Candidate generation rules (budget, peaks, padding, deduplication) stay with ADR-0009 and #27.
+Candidate generation rules (peaks, 20–45 s default length, a shortlist of the top 50 per VOD of which the top 10 are rendered as clips, deduplication with viewer clips) are in [modeling plan § 3](../ml/modeling-plan.md#3-candidate-generation) (#27). Jobs can also take an optional `video_path` (a local VOD file, [API contract § 3.1](api-contract.md#31-create-a-job)). The highlights video (`HighlightsVideo`), built from the top candidates and written to `artifacts/highlights/<highlights_id>.mp4`, is specified in [API contract § 7](api-contract.md#7-highlights-video).
 
 ## `catalog`
 
@@ -188,7 +188,7 @@ This replaces the earlier example's top-level `video_id` (now `vod.video_id`), `
 |---|---|---|
 | `object_type` | str | `vod_meta`, `clips`, `chat`, `audio`, … |
 | `object_key` | str | Usually `video_id` |
-| `status` | str | `ok`, `failed`, `unavailable` (e.g. VOD deleted) |
+| `status` | str | `ok`, `failed`, `unavailable` (e.g. VOD deleted or subscriber-only) |
 | `tool` | str | e.g. `helix`, `twitchdownloader@1.x`, `yt-dlp@2026.x` |
 | `stage_version` | str | |
 | `created_at` | timestamp | |
@@ -196,4 +196,4 @@ This replaces the earlier example's top-level `video_id` (now `vod.video_id`), `
 
 ## Dataset versioning
 
-A **dataset version** (e.g. `v1`) pins: VOD IDs, immutable snapshot IDs/manifests, capture times and coverage, label/feature/preprocessing versions, retained source availability and the saved split. It's recorded in `data/splits/<version>.json` with counts. Inference runs record their inputs and stage versions without inventing a training split. Experiments always cite a dataset version; bump it when any pinned input or contract changes, never edit one in place.
+A **dataset version** (e.g. `v1`) pins: VOD IDs, immutable snapshot IDs/manifests, capture times and coverage, label/feature/preprocessing versions, retained source availability and the saved split. It's recorded in `data/splits/<dataset_version>.json` with counts. Inference runs record their inputs and stage versions without inventing a training split. Experiments always cite a dataset version; bump it when any pinned input or contract changes, never edit one in place.

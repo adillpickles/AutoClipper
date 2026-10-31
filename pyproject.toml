@@ -5,7 +5,9 @@ description = "Find, rank and export the highlights of a long Twitch VOD."
 readme = "README.md"
 # ADR-0002: the project targets Python 3.12 only; `.python-version` pins it for uv.
 requires-python = ">=3.12,<3.13"
-# No license is chosen yet (ADR-0006); this classifier makes PyPI reject accidental uploads.
+license = "MIT"
+license-files = ["LICENSE"]
+# Not published to PyPI; this classifier makes PyPI reject accidental uploads.
 classifiers = ["Private :: Do Not Upload"]
 dependencies = [
     "httpx>=0.28.1",

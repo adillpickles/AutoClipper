@@ -16,7 +16,7 @@ One repository containing:
 
 - `src/autoclipper/`: the Python package (pipeline, models, eval, export, API), in the `src` layout.
 - `tests/`: mirrors the package structure.
-- `web/`: the Next.js frontend ([ADR-0007](0007-web-application-stack.md)).
+- `web/`: the Next.js frontend ([web application stack](0007-web-application-stack.md)).
 - `experiments/`, `configs/`, `notebooks/`, `scripts/`, `docs/`.
 - Git-ignored `data/` and `artifacts/`.
 

@@ -34,15 +34,14 @@ How work moves from an issue to a merged pull request. It applies to everyone, w
 ## 2. Pick up an issue
 
 1. **Find one.** Open the repo's **Issues** tab. Good starting filters:
-   - `agent-ready`: fully specified, ready to hand to you or an AI agent
    - `good first issue`: small and well scoped
    - A category you want to work on, e.g. `frontend` or `modeling`
 
-   From the terminal: `gh issue list --label agent-ready`. The [backlog](docs/project/backlog.md) lists the planned issues in dependency order.
+   From the terminal: `gh issue list`. The [roadmap](docs/product/roadmap.md) lists the issues week by week.
 2. **Make sure you can work on it independently.**
    - Nobody else is assigned.
    - Everything under **Depends on** in the issue is already merged. If not, pick another issue or ask the person working on the dependency.
-   - It doesn't have the `blocked` or `needs-decision` label.
+   - It doesn't have the `blocked` label.
    - It won't edit the same files as someone else's open PR (check its scope / likely files).
 3. **Claim it.** Assign yourself: issue page → right sidebar → **Assignees** → yourself. Or run `gh issue edit <N> --add-assignee @me`. If you can't assign, comment "taking this".
 4. **Unclear?** Ask in a comment on the issue before you start, not halfway through.
@@ -169,7 +168,7 @@ A good issue is **small** (one PR), **testable** (acceptance criteria you can ch
 
 ## 10. Labels
 
-Labels show what kind of work an issue is. Add what's useful, usually one or two **categories** (`frontend`, `backend`, `ingestion`, `data`, `modeling`, `export`, `tooling`) plus a **type** if it isn't plain feature work (`bug`, `docs`, `spike`, `experiment`, `decision`). Readiness labels: `agent-ready` (ready to pick up), `needs-decision` (waits on a team decision), `blocked` (stuck on something external). There are no priority or size labels.
+Labels show what kind of work an issue is. Add what's useful, usually one or two **categories** (`frontend`, `backend`, `ingestion`, `data`, `modeling`, `export`, `tooling`) plus a **type** if it isn't plain feature work (`bug`, `docs`, `spike`, `experiment`), and `stretch` for work after the MVP. `blocked` marks something stuck on an outside factor.
 
 **How to add one:** issue or PR page → right sidebar → **Labels** → tick the labels. Or `gh issue edit <N> --add-label frontend,feature` (`gh pr edit` works the same way for PRs).
 
@@ -181,7 +180,7 @@ Most of this project is built with AI coding agents. The basics:
 
 - **Hand the agent the issue.** Starter prompts are in [prompts](docs/agents/prompts.md). The agent reads `AGENTS.md` automatically and finds the rest from there.
 - **Verify, don't trust.** Run the code. Check that the tests actually test the change. Agents are confidently wrong about APIs, file formats and metrics.
-- **You open the PR.** Agents don't push or open PRs unless you tell them to, and never merge on their own.
+- **The agent opens the PR; you merge it.** When the task is done the agent pushes its branch and opens the PR (unless you tell it to wait). You check the result and merge once CI is green.
 - **Fix the docs when the agent was misled.** If an agent made a mistake because a doc was missing or unclear, fix the doc in the same PR.
 - **Optional second opinion.** For big or risky changes, consider having a different model audit the branch before you open the PR. That workflow is in [review loop](docs/agents/review-loop.md). It's a recommendation, not a requirement.
 
@@ -189,7 +188,8 @@ Most of this project is built with AI coding agents. The basics:
 
 - Docs live in `docs/` as Markdown and are reviewed like code. Use relative links and [Mermaid](https://mermaid.js.org/) for diagrams.
 - Style: short sentences, active voice, concrete examples.
-- **Significant technical decisions** get an ADR in [`docs/decisions/`](docs/decisions/README.md): choosing or replacing a core technology, or changing a data schema, label definition, split policy or evaluation metric. Copy the template, open a PR with status **Proposed**, and mark it **Accepted** once the team agrees. To reverse an accepted ADR, write a new one that supersedes it.
+- **Significant technical decisions** get an ADR in [`docs/decisions/`](docs/decisions/README.md): choosing or replacing a core technology, or changing a data schema, label definition, split policy or evaluation metric. Copy the template, compare the options, pick one, and open a PR with status **Accepted**. To reverse an accepted ADR, write a new one that supersedes it.
+- **Smaller technical choices** (a library, a threshold, a file layout) don't need an ADR: make the call and explain it in the PR description.
 
 ## 13. Getting help
 
