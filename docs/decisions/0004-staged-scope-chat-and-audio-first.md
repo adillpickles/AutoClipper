@@ -1,4 +1,4 @@
-# ADR-0004: Staged scope: chat + audio before video
+# Staged scope: chat + audio before video
 
 | | |
 |---|---|

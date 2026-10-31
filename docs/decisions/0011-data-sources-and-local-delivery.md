@@ -1,4 +1,4 @@
-# ADR-0011: Data sources and delivery defaults
+# Data sources and delivery defaults
 
 | | |
 |---|---|

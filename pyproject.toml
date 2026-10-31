@@ -3,7 +3,7 @@ name = "autoclipper"
 version = "0.1.0"
 description = "Find, rank and export the highlights of a long Twitch VOD."
 readme = "README.md"
-# ADR-0002: the project targets Python 3.12 only; `.python-version` pins it for uv.
+# The project targets Python 3.12 only; `.python-version` pins it for uv.
 requires-python = ">=3.12,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]

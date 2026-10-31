@@ -1,4 +1,4 @@
-# ADR-0002: Python 3.12 with uv, Ruff, Pyright, pytest
+# Python 3.12 with uv, Ruff, Pyright, pytest
 
 | | |
 |---|---|

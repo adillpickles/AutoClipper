@@ -1,6 +1,6 @@
 # AutoClipper web app
 
-The Next.js frontend for AutoClipper ([ADR-0007](../docs/decisions/0007-web-application-stack.md)). Right now it's a scaffold with one placeholder home page. It doesn't call the API and shows no data.
+The Next.js frontend for AutoClipper ([app stack](../docs/decisions/0007-web-application-stack.md)). Right now it's a scaffold with one placeholder home page. It doesn't call the API and shows no data.
 
 Stack: Next.js 16 (App Router, Turbopack), React 19, TypeScript (strict), Tailwind CSS 4, ESLint 9 and Prettier 3. npm is the package manager.
 

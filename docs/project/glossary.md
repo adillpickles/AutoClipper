@@ -29,4 +29,3 @@ Terms are used with exactly these meanings across docs, code and issues.
 | **Highlights video** | The top moments joined in stream order into one 16:9 MP4 to watch, for viewers who missed the stream. |
 | **Short-form** | Vertical short video platforms: TikTok, Instagram Reels, YouTube Shorts. |
 | **Helix** | Twitch's official REST API (`api.twitch.tv/helix`). |
-| **ADR** | Architecture Decision Record. See [decisions](../decisions/README.md). |

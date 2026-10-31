@@ -1,4 +1,4 @@
-# ADR-0005: Local file storage with Parquet + DuckDB
+# Local file storage with Parquet + DuckDB
 
 | | |
 |---|---|

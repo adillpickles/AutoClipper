@@ -125,6 +125,7 @@ An untracked `.env` is convenient for local development. A shared worker or host
 2. **Register Your Application.** Name: anything unique. OAuth redirect URL: `http://localhost`. Category: *Analytics Tool*. Client type: *Confidential*.
 3. Copy the **Client ID** and generate a **Client Secret**. Supply `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` through `.env` or the environment.
 4. The team shares one registered app (already done, #4). Reuse its credentials on development machines and collection workers, sharing them privately and keeping them out of git and logs. Hosted instances can use deployment-managed environment variables.
+5. **If the secret is ever committed or pasted somewhere public,** generate a new Client Secret in the console right away and update everyone's `.env`. Deleting it from git history doesn't undo the leak.
 
 ## Chat hash salt
 

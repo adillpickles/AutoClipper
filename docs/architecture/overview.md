@@ -13,7 +13,7 @@
 1. **A pipeline of idempotent stages.** Each stage reads files and writes files. Re-running a stage with the same inputs produces the same outputs and skips work that's already done. This makes the system debuggable, cacheable and agent-friendly: every stage can be built and tested on its own.
 2. **Files are the interface.** Stages communicate through versioned Parquet/JSON artifacts with documented schemas ([data model](data-model.md)), not through in-memory coupling. Any stage can be swapped as long as it honors the contract.
 3. **Reusable processing, parallel interface development.** Pipeline logic lives in the `autoclipper` Python package; CLI/app adapters call it. Build UI and export prototypes with synthetic candidates while processing/ML develops. The product includes the complete app flow, initially runnable on a laptop and adaptable to hosted deployment.
-4. **Cheap signals first.** Chat and audio are per-second numbers that are cheap to compute and strong. Video is expensive and optional ([ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md)).
+4. **Cheap signals first.** Chat and audio are per-second numbers that are cheap to compute and strong. Video is expensive and optional ([build order](../decisions/0004-staged-scope-chat-and-audio-first.md)).
 5. **Practical compute.** Start with laptop-scale chat/audio analysis. Shared workers, storage and hosted deployment can be added for the workload; the initial setup needs no cloud services.
 6. **One time base.** Inside the pipeline, every position is **seconds from VOD start** (`*_s`). Wall-clock time is only used for metadata.
 
@@ -154,7 +154,7 @@ Analytical results stay usable when video is unavailable (VOD deleted, subscribe
 
 ## 5. Storage layout
 
-Everything below is **git-ignored**. See [ADR-0005](../decisions/0005-local-storage-parquet-duckdb.md).
+Everything below is **git-ignored**. See [storage](../decisions/0005-local-storage-parquet-duckdb.md).
 
 ```text
 data/

@@ -50,7 +50,7 @@ jobs:
       - name: Type check (Pyright)
         run: uv run pyright
 
-      # FFmpeg is a system binary (ADR-0002). In CI, tests marked `ffmpeg` fail instead of
+      # FFmpeg is a system binary (docs/decisions/0002-language-and-tooling.md). In CI, tests marked `ffmpeg` fail instead of
       # skipping when it is missing (docs/development/testing.md § FFmpeg tests). On Ubuntu this
       # is the distribution's signed package; its version follows the runner image's release.
       - name: Install FFmpeg (Ubuntu)

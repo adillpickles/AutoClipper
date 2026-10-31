@@ -1,4 +1,4 @@
-# ADR-0007: FastAPI backend + Next.js frontend
+# FastAPI backend + Next.js frontend
 
 | | |
 |---|---|

@@ -78,7 +78,7 @@ Set in `[tool.pytest]` in `pyproject.toml` (pytest 9 native TOML config):
 
 ## FFmpeg tests
 
-FFmpeg is a system binary ([ADR-0002](../decisions/0002-language-and-tooling.md)), and every call to it goes through `autoclipper.ffmpeg`. Tests come in two kinds:
+FFmpeg is a system binary ([tooling](../decisions/0002-language-and-tooling.md)), and every call to it goes through `autoclipper.ffmpeg`. Tests come in two kinds:
 
 - **Unit tests** need no FFmpeg. Check the argument list that `ffmpeg_command` / `ffprobe_command` builds, or pass a fake `runner` to `run_command`, `probe` or `ffmpeg_version` that records the commands and returns canned `CommandResult`s (`RecordingRunner` in `tests/test_ffmpeg.py` is an example).
 - **FFmpeg tests** run the real `ffmpeg`/`ffprobe`. Mark them `@pytest.mark.ffmpeg`; tests that use the `make_test_media` fixture get the marker automatically.

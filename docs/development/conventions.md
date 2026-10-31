@@ -105,12 +105,12 @@ These rules prevent the most common silent bugs in this project:
 ## 9. Dependencies
 
 - Add with `uv add <pkg>` (or `uv add --dev <pkg>` for dev tools), which updates `pyproject.toml` and `uv.lock`. Commit both.
-- Justify every new dependency in the PR. Prefer what's already in [ADR-0002](../decisions/0002-language-and-tooling.md).
+- Justify every new dependency in the PR. Prefer what's already in [tooling](../decisions/0002-language-and-tooling.md).
 - Heavy optional stacks (PyTorch, video/CV models) go in optional dependency groups so the core pipeline stays light.
 
 ## 10. Frontend
 
-The Next.js app in `web/` ([ADR-0007](../decisions/0007-web-application-stack.md)). Tool config in `web/` (`package.json`, `tsconfig.json`, `eslint.config.mjs`, `.prettierrc.json`) is authoritative for anything automated. Commands are in [`web/README.md`](../../web/README.md).
+The Next.js app in `web/` ([app stack](../decisions/0007-web-application-stack.md)). Tool config in `web/` (`package.json`, `tsconfig.json`, `eslint.config.mjs`, `.prettierrc.json`) is authoritative for anything automated. Commands are in [`web/README.md`](../../web/README.md).
 
 - **Stack:** Next.js App Router, React, TypeScript in `strict` mode, Tailwind CSS v4. Node version from `web/.nvmrc`. npm with a committed `package-lock.json`; install with `npm ci`.
 - **Formatting and linting:** Prettier with default settings, plus `prettier-plugin-tailwindcss` to sort class names. ESLint uses `eslint-config-next` (core-web-vitals + TypeScript, including the `jsx-a11y` rules), with `eslint-config-prettier` last so the two never disagree. Don't hand-format. A lint warning fails CI.

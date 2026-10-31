@@ -24,7 +24,7 @@ The initial setup uses `autoclipper serve` on a development machine and the app 
 - **Messages are for people.** `message` fields are short English sentences that are safe to show in the UI: no secrets, tokens, file paths or chat usernames. Clients branch on `code`, never on `message`.
 - **Initial API scope:** single-user operation, polling (§ 9), no authentication or pagination. Deployment work can extend this setup ([PRD § Delivery](../product/prd.md#5-delivery)).
 
-**Model mapping.** Response models live in one FastAPI-free module (e.g. `autoclipper.schemas`) so the CLI can use them too (ADR-0007: Pydantic models are shared with the CLI output schema). TypeScript types are hand-written from this page, in one module the screens share (e.g. `web/src/lib/api/types.ts`), so #29–#31 don't wait for a backend. Generating them from FastAPI's OpenAPI document is an option once #28 exists; the hand-written types must then match it.
+**Model mapping.** Response models live in one FastAPI-free module (e.g. `autoclipper.schemas`) so the CLI can use them too ([app stack](../decisions/0007-web-application-stack.md): Pydantic models are shared with the CLI output schema). TypeScript types are hand-written from this page, in one module the screens share (e.g. `web/src/lib/api/types.ts`), so #29–#31 don't wait for a backend. Generating them from FastAPI's OpenAPI document is an option once #28 exists; the hand-written types must then match it.
 
 | JSON | Pydantic (Python 3.12) | TypeScript |
 |---|---|---|
