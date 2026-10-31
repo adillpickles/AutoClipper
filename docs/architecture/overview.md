@@ -186,11 +186,11 @@ artifacts/
 | Concern | Approach |
 |---|---|
 | Configuration | One config module that reads env vars (`.env.example`) with typed defaults. CLI flags override env. |
-| Logging | Python `logging`, structured key=value messages. Never log secrets or raw usernames. |
+| Logging | Python `logging`, structured key=value messages. Never log secrets. |
 | Errors | Fail loudly with actionable messages. Stage-level retry for network errors only. Never silently drop rows: count and log them. |
 | Idempotency | Key outputs by inputs (including snapshot/dataset IDs) and stage version. A refresh is a new observation; `--force` must not overwrite pinned historical inputs. |
 | Versioning | `dataset_version` for processed data. Each stage records its code version. Each run records its git SHA. |
-| Privacy | Chatter names hashed and redacted at parse time, raw chat deleted after parsing; features are per-window aggregates. See [data handling](../data/data-governance.md). |
+| Chat | Author IDs hashed at parse time (enough for unique-chatter counts); the raw replay file is deleted after parsing to save space; features are per-window aggregates. See [data handling](../data/data-governance.md). |
 | Testing | Unit tests on pure functions with synthetic fixtures. No network in unit tests. See [testing](../development/testing.md). |
 
 ## 7. Initial infrastructure defaults

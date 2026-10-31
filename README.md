@@ -54,7 +54,7 @@ Twitch VOD URL
    └─▶ 6. App            ranked clip cards: preview, nudge start/end, download
 ```
 
-Viewer clips double as **noisy training labels**: roughly, a stretch of the VOD that viewers clipped counts as a good moment ([modeling plan](docs/ml/modeling-plan.md#0-the-plan-in-plain-english)). The model is evaluated on streamers it never trained on and compared against simple baselines (random, biggest chat spike, loudest audio). Results get reported honestly, even if a baseline wins. See [evaluation](docs/ml/evaluation.md). No dataset or model exists yet.
+Viewer clips double as **noisy training labels**: roughly, a stretch of the VOD that viewers clipped counts as a good moment ([modeling plan](docs/ml/modeling-plan.md#0-the-plan-in-plain-english)). The model is evaluated on streamers it never trained on and compared against simple baselines (random, biggest chat spike, loudest audio, and chat + loudness combined). Results get reported honestly, even if a baseline wins. See [evaluation](docs/ml/evaluation.md). No dataset or model exists yet.
 
 ## Tech stack
 
@@ -87,11 +87,11 @@ Viewer clips double as **noisy training labels**: roughly, a stretch of the VOD 
 
 ## Contributing
 
-Pick an issue, branch, open a PR that says `Closes #N`, and squash-merge once CI is green (a teammate's review is welcome but optional). [`CONTRIBUTING.md`](CONTRIBUTING.md) walks through every step, including PR titles, labels and screenshots for UI work.
+Pick an issue, branch, open a PR that says `Closes #N`, and squash-merge once CI is green. [`CONTRIBUTING.md`](CONTRIBUTING.md) walks through every step, including PR titles, labels and screenshots for UI work.
 
 ## Data handling
 
-Follow [data handling](docs/data/data-governance.md): hash chatter names, and keep media, data and secrets out of git.
+Keep media, datasets and secrets out of git; where data lives is in [data handling](docs/data/data-governance.md).
 
 ## Background
 

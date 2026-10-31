@@ -83,11 +83,10 @@ CI runs `uv sync --locked`, Ruff, Pyright and pytest on Ubuntu and Windows. Add 
 
 ## 6. Engineering basics
 
-1. **Nothing heavy or private in git.** No video/audio files, VOD or chat dumps, model weights, `.env`, tokens or keys. `data/` and `artifacts/` are git-ignored. Small synthetic test fixtures under `tests/fixtures/` are fine.
-2. **No chatter usernames or user IDs in git, issues, PRs or logs.** The chat parser pseudonymizes them; keep it that way.
-3. **Every change goes through a PR** from a branch (`main` is protected). Keep `main` green.
-4. **Don't invent results.** Metrics and performance claims come from a reproducible run in `experiments/`. Write "TBD" otherwise.
-5. **Keep docs true.** If you change behavior, a schema, a label definition or a metric, update the doc that describes it in the same PR.
+1. **Nothing heavy or secret in git.** No video/audio files, VOD or chat dumps, model weights, `.env`, tokens or keys. `data/` and `artifacts/` are git-ignored. Small synthetic test fixtures under `tests/fixtures/` are fine.
+2. **Every change goes through a PR** from a branch (`main` is protected). Keep `main` green.
+3. **Don't invent results.** Metrics and performance claims come from a reproducible run in `experiments/`. Write "TBD" otherwise.
+4. **Keep docs true.** If you change behavior, a schema, a label definition or a metric, update the doc that describes it in the same PR.
 
 ## 7. How to do a task
 
@@ -96,7 +95,7 @@ CI runs `uv sync --locked`, Ruff, Pyright and pytest on Ubuntu and Windows. Add 
 3. **Branch:** `<type>/<issue#>-<short-slug>`, e.g. `feat/24-audio-features`.
 4. **Implement and test.** Follow [conventions](docs/development/conventions.md). Test the changed behavior; bug fixes get a regression test.
 5. **Update docs** in the same change, including `docs/project/status.md` when project state changes.
-6. **Check your work:** run checks relevant to the change and read your full diff. Record results and checks that could not run. Agent-run checks count; the human author doesn't need to repeat them. When asked to publish before checks finish, open or update the PR with the outstanding checks stated.
+6. **Check your work:** run the checks relevant to the change and read your full diff. Say in the PR what you ran and anything that couldn't run.
 7. **Commit** with short [Conventional Commits](https://www.conventionalcommits.org/) messages, e.g. `feat(features): add chat message rate`.
 8. **Publish when requested.** Implement, test and commit autonomously. Push branches or open/update PRs when the user requests publication; a request to update an existing PR includes pushing the needed commits. Use [the template](.github/pull_request_template.md): what changed, the decisions you made, how you verified it, what's uncertain. Your human handles merging.
 
@@ -108,7 +107,7 @@ For substantial changes, an optional second opinion can help. See the [review gu
 - [ ] Relevant checks pass, or the PR states what remains unverified.
 - [ ] New logic has tests.
 - [ ] Docs affected by the change are updated.
-- [ ] No media, data, secrets or chatter usernames in the diff.
+- [ ] No media, data or secrets in the diff.
 - [ ] UI changes include a screenshot when available.
 
 ## 9. Conventions at a glance
@@ -127,7 +126,6 @@ Full detail in `docs/development/conventions.md`.
 ## 10. When you're unsure
 
 - **Build from the documented defaults.** They make the first implementation concrete and can evolve with the product. Shared collection, shared storage and hosted deployment are valid options; choose the arrangement that fits the task and resources. Update affected contracts in the same change.
-- **Keep work moving.** Resolve routine uncertainty with the docs, tests or a small prototype. Ask only for essential missing inputs or actions outside the requested scope. Don't add speculative policy reviews or team-approval checkpoints to implementation tasks.
 - **Ambiguous requirement:** pick the option that best serves the product in §1, note the assumption in the PR, and keep going.
 - **Technical choice the docs don't cover** (a library, a threshold, a file layout, model parameters): make the call yourself, explain it in the PR, and update the doc if it changes a documented contract. Don't stop to ask, and don't open "needs a decision" issues.
 - **Doc is wrong or stale:** fix it in your PR.

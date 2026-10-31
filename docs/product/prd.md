@@ -124,7 +124,6 @@ The cutting rules are in [architecture § Export](../architecture/overview.md#46
 | Runs on a student laptop without a GPU | Chat + audio features for a 6-hour VOD in ≤ 10 minutes, excluding download |
 | Reproducibility | Any reported metric regenerates from a commit + dataset version + seed |
 | Cross-platform | Windows, macOS, Linux |
-| Privacy | No chatter names in processed data, logs or git |
 | Polite API use | Respects Twitch API rate limits |
 | Robustness | Handles missing chat, deleted VODs, muted audio, clips without a VOD timestamp |
 

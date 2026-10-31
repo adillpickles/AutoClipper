@@ -5,7 +5,7 @@
 | **Status** | Current. Background: [data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md). |
 | **Last updated** | 2026-10-31 |
 
-AutoClipper uses TwitchDownloader and yt-dlp for VOD media and chat. These storage and processing conventions make inputs reusable, keep the repo small and keep credentials and chatter names out of committed files.
+AutoClipper uses TwitchDownloader and yt-dlp for VOD media and chat. These storage and processing conventions make inputs reusable and keep the repo small.
 
 ## 1. Where data lives
 
@@ -16,9 +16,9 @@ AutoClipper uses TwitchDownloader and yt-dlp for VOD media and chat. These stora
 
 ## 2. Chat
 
-- The chat parser replaces usernames and user IDs with salted hashes and redacts `@mentions`. Reuse its output for features; keep raw chat and chatter names out of committed files and logs.
+- The chat parser replaces user IDs with salted hashes (enough for unique-chatter counts) and redacts `@mentions`. Reuse its output for features.
 - The raw chat download is deleted after parsing. The pseudonymized messages are kept in `data/interim/chat/` so features can be recomputed after the VOD expires.
-- Features are per-window totals (message rate, emotes, unique chatters). Nothing needs individual chatters.
+- Features are per-window totals (message rate, emotes, unique chatters).
 
 ## 3. Downloading
 
@@ -34,6 +34,5 @@ AutoClipper uses TwitchDownloader and yt-dlp for VOD media and chat. These stora
 
 ## 5. PR checklist for data-touching changes
 
-- [ ] Usernames are hashed before anything is written outside the raw download
-- [ ] No media, data or usernames in the diff, tests, docs or logs
+- [ ] No media or data in the diff
 - [ ] New data sources are documented in [data sources](data-sources.md)

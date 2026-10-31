@@ -86,7 +86,7 @@ These rules prevent the most common silent bugs in this project:
 - Use `logging.getLogger(__name__)` with key=value messages: `log.info("fetched clips video_id=%s n=%d", vid, n)`.
 - Only entry points configure logging, by calling `autoclipper.logging.configure_logging()` once. The CLI's root callback does it for every subcommand. Library modules never call `basicConfig` or add handlers (`tests/test_logging.py` checks it).
 - Each record is one line on stderr: `ts=2026-10-19T16:29:01.123Z level=INFO logger=autoclipper.ingest fetched clips video_id=123 n=5` (UTC, milliseconds). `AUTOCLIPPER_LOG_LEVEL` sets the level of the `autoclipper` loggers. Other libraries keep Python's default of WARNING.
-- **Never log** secrets, tokens or raw usernames.
+- **Never log** secrets or tokens.
 
 ## 7. CLI
 

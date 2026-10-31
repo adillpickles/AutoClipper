@@ -102,7 +102,7 @@ Subscriber-only VODs are skipped: the downloader tools can't fetch them without 
   | `embeddedData.thirdParty[].name` | third-party emotes in `n_emotes`: whitespace-separated tokens of non-emote fragments that equal a name | L231, L263; [downloader L561–L576][td-dl-embed] |
 
 - **Risks:** relies on Twitch's undocumented internal API and can break without warning. Pin the version in the catalog (`tool` column) and fail loudly on schema surprises.
-- **Privacy:** raw output contains usernames. The parser hashes `commenter._id`, deletes the raw file after a successful parse and redacts text: `@` mentions become `@user`, and any word equal to a commenter's login or display name, or a viewer named in a gift-sub notice, becomes `user`. Its module docstring states the exact rules and what they miss.
+- **Hashing:** raw output contains usernames. The parser hashes `commenter._id`, deletes the raw file after a successful parse and redacts text: `@` mentions become `@user`, and any word equal to a commenter's login or display name, or a viewer named in a gift-sub notice, becomes `user`. Its module docstring states the exact rules and what they miss.
 
 [td-root]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/TwitchObjects/ChatRoot.cs
 [td-info]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/TwitchObjects/ChatRootInfo.cs#L5-L16

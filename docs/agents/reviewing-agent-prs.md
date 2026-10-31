@@ -4,9 +4,7 @@ Use this checklist when a second opinion would help. [CONTRIBUTING § 7](../../C
 
 ## Verification context
 
-The PR should describe how the change was checked and what remains unverified. Checks performed by a coding agent count; the human author doesn't need to repeat them personally.
-
-If useful checks are missing, run them or identify the gap in the review. A request to open or update a PR can proceed with outstanding checks documented.
+The PR should say how the change was checked and what remains unverified. If useful checks are missing, run them or point out the gap.
 
 ## Common agent failure modes in this project
 

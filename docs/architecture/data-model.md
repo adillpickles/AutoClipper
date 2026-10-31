@@ -94,7 +94,7 @@ Source: TwitchDownloader chat replay or live chat. The parser returns these rows
 |---|---|---|
 | `video_id` | str | |
 | `offset_s` | float | Message time from VOD start |
-| `user_hash` | str | Pseudonymized author. **Never store raw names.** |
+| `user_hash` | str | Hashed author ID |
 | `text` | str | Message text, redacted at parse time: `@` mentions become `@user` and chatter names become `user` |
 | `emote_ids` | list<str> | Native Twitch emotes in the message |
 | `n_emotes` | int | Including third-party emotes where detectable |

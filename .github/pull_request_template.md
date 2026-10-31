@@ -21,7 +21,7 @@ Closes #
 
 ## Checklist
 
-- [ ] Verification results recorded, including checks that could not run (agent-run checks count)
+- [ ] Checks run (or the PR says what couldn't run)
 - [ ] Docs updated if behavior, commands, schemas or project status changed
-- [ ] No data, media, secrets or real chat usernames in the diff
+- [ ] No data, media or secrets in the diff
 - [ ] New dependencies explained above (or none added)

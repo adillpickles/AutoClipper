@@ -4,7 +4,7 @@ Pick an issue, build it on a branch, and describe the result in a PR. Setup comm
 
 ## 1. Ground rules
 
-- Changes reach protected `main` through squash-merged PRs. A teammate's approval is optional.
+- Changes reach protected `main` through squash-merged PRs. To keep development fast, PRs don't need a teammate's approval: check your own work, yourself or with AI, before you merge.
 - Keep media, datasets, model weights and credentials out of git. Small synthetic fixtures are fine ([data handling](docs/data/data-governance.md)).
 - Update affected docs alongside the implementation.
 
@@ -35,7 +35,7 @@ uv run pyright
 uv run pytest
 ```
 
-Frontend checks are in [web/README.md](web/README.md). Use checks relevant to the change. Record what ran, its result, and anything that could not run. Checks run by the coding agent count; the human author does not need to repeat them personally. If asked to open or update a PR before verification finishes, publish it with the current results and outstanding checks clearly stated.
+Frontend checks are in [web/README.md](web/README.md). Run the checks relevant to the change and note in the PR anything that couldn't run.
 
 ## 5. Commit
 
@@ -56,13 +56,13 @@ Use the [PR template](.github/pull_request_template.md): what changed, why, how 
 
 ## 7. Review
 
-Review is useful for substantial changes and optional as a second-person approval step. Check the behavior against the issue, read the diff and tests, and compare names, units and schemas with the documented contracts. The [review guide](docs/agents/reviewing-agent-prs.md) lists common mistakes in this pipeline.
+A second look helps on big changes. Check the behavior against the issue, read the diff and tests, and compare names, units and schemas with the documented contracts. The [review guide](docs/agents/reviewing-agent-prs.md) lists common mistakes in this pipeline.
 
-Use precise comments and distinguish bugs from suggestions. Address feedback on the same branch. A separate model review and a human rerun of the tests are optional, rather than prerequisites for opening a PR.
+Use precise comments and distinguish bugs from suggestions. Address feedback on the same branch.
 
 ## 8. Merge
 
-The human handles merging when the work is ready, CI is green and review conversations are resolved. A teammate's approval is optional. Use **Squash and merge**, then remove the merged branch and update your local `main`. Current repository settings are in [git workflow](docs/development/git-workflow.md).
+Merge when the work is ready and CI is green. Use **Squash and merge**, then remove the merged branch and update your local `main`. Current repository settings are in [git workflow](docs/development/git-workflow.md).
 
 ## 9. Filing new issues
 
@@ -80,7 +80,7 @@ Give the agent the issue and let it follow `AGENTS.md`. It makes engineering cho
 
 ## 12. Docs and decisions
 
-Use the existing doc for the subject, relative links and concrete examples. Explain choices in the PR and update affected contracts with the implementation. The [technical choices](docs/decisions/README.md) explain the main defaults; a separate decision record or approval process is unnecessary for routine work.
+Use the existing doc for the subject, relative links and concrete examples. Explain choices in the PR and update affected contracts with the implementation. The [technical choices](docs/decisions/README.md) explain the main defaults.
 
 ## 13. Getting help
 

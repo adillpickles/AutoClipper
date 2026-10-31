@@ -246,7 +246,7 @@ def download_chat(
     """Download a VOD's chat replay with TwitchDownloaderCLI and parse it.
 
     The raw file holds usernames. It is deleted after a successful parse unless ``keep_raw`` is
-    set (docs/data/data-governance.md §4), and kept if parsing fails so it can be inspected.
+    set (docs/data/data-governance.md §2), and kept if parsing fails so it can be inspected.
 
     Args:
         video_id: The Twitch video ID (digits only).

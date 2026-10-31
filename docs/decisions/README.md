@@ -12,4 +12,4 @@ These notes explain the main implementation defaults and their tradeoffs. Build 
 
 The implementation contracts live in the [data model](../architecture/data-model.md), [API contract](../architecture/api-contract.md), [labeling](../data/labeling.md), [modeling plan](../ml/modeling-plan.md) and [evaluation](../ml/evaluation.md). The contributor workflow lives in [CONTRIBUTING](../../CONTRIBUTING.md).
 
-Explain engineering choices in the PR. A separate numbered record, lifecycle or approval step is unnecessary; add a short background note only when it would help future work understand a substantial tradeoff.
+Explain engineering choices in the PR. Add a short note here only when a substantial tradeoff would help future work.
