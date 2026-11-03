@@ -1,4 +1,4 @@
-# ADR-0002: Python 3.12 with uv, Ruff, Pyright, pytest
+# Python 3.12 with uv, Ruff, Pyright, pytest
 
 | | |
 |---|---|
@@ -8,7 +8,7 @@
 
 ## Context
 
-The core of the project is data processing and ML (audio analysis, tabular models, a small neural net), wrapped in a CLI and later a web API. The team is from a data-science program, works on Windows and macOS, and relies on AI agents that do best with mainstream, well-documented tools and fast, deterministic feedback (lint/type/test).
+The core of the project is data processing and ML (audio analysis and tabular models), wrapped in a CLI and web API. The team is from a data-science program, works on Windows and macOS, and benefits from mainstream tools and fast feedback (lint/type/test).
 
 ## Decision
 
@@ -39,7 +39,7 @@ The core of the project is data processing and ML (audio analysis, tabular model
 
 - **Positive:** one command to set up (`uv sync`), reproducible environments, fast feedback loops for agents.
 - **Negative:** contributors must install uv. FFmpeg and TwitchDownloaderCLI remain manual system installs.
-- **Follow-ups:** the scaffold PR (roadmap M0) creates `pyproject.toml`, Ruff/Pyright/pytest config, pre-commit config and the CI workflow, and updates `AGENTS.md § 5`.
+- Tooling is configured in `pyproject.toml`, the pre-commit config and CI. Current implementation progress is in [status](../project/status.md).
 
 ## Revisit when
 

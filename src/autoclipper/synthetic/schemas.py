@@ -1,8 +1,7 @@
 """Arrow schemas for the synthetic tables.
 
-They mirror the **proposed** tables in docs/architecture/data-model.md (column names, types and
-nullability) for prototype use. They are not adopted contracts: the real schemas are ratified
-under ADR-0009, and a change there must be mirrored here. Following the data model's
+They mirror the tables in docs/architecture/data-model.md (column names, types and
+nullability). Update these schemas alongside changes to that document. Following the data model's
 conventions: Twitch IDs are strings, VOD positions are ``float64`` seconds (``*_s``), wall-clock
 times are ``timestamp[us, tz=UTC]`` (``*_at``) and every column is non-null unless the data model
 marks it *nullable*.

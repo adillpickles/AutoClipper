@@ -3,10 +3,10 @@ name = "autoclipper"
 version = "0.1.0"
 description = "Find, rank and export the highlights of a long Twitch VOD."
 readme = "README.md"
-# ADR-0002: the project targets Python 3.12 only; `.python-version` pins it for uv.
+# The project targets Python 3.12 only; `.python-version` pins it for uv.
 requires-python = ">=3.12,<3.13"
-# No license is chosen yet (ADR-0006); this classifier makes PyPI reject accidental uploads.
-classifiers = ["Private :: Do Not Upload"]
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "httpx>=0.28.1",
     "numpy>=2.5.4",
@@ -101,7 +101,7 @@ addopts = ["-ra", "--import-mode=importlib"]
 # Unknown markers, config keys and duplicate parametrize ids are errors; xfail is strict.
 strict = true
 markers = [
-    "live: calls real external services (Twitch API, downloads); needs .env credentials and source authorization. Deselected by default; select with `-m live`.",
+    "live: calls real external services (Twitch API, downloads); needs configured credentials and tools. Deselected by default; select with `-m live`.",
     "ffmpeg: runs the real ffmpeg/ffprobe binaries. Added automatically to tests that use the make_test_media fixture. Skipped when FFmpeg is not on PATH, except in CI (CI=true), where that is an error (tests/conftest.py).",
 ]
 filterwarnings = ["error"]

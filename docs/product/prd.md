@@ -2,185 +2,157 @@
 
 | | |
 |---|---|
-| **Status** | Product scope agreed (2026-10-16), based on the team's project design doc. The exact training target and detailed label/evaluation rules are still open (see below). |
-| **Last updated** | 2026-10-16 |
-| **Related** | [Roadmap](roadmap.md) · [Architecture](../architecture/overview.md) · [Evaluation](../ml/evaluation.md) · [Open questions](../project/open-questions.md) |
+| **Status** | Current. Updated 2026-10-31: two outputs (vertical clips and a highlights video), flexible collection, storage and delivery defaults. |
+| **Last updated** | 2026-10-31 |
+| **Related** | [Roadmap](roadmap.md) · [Architecture](../architecture/overview.md) · [API contract](../architecture/api-contract.md) · [Modeling plan](../ml/modeling-plan.md) · [Evaluation](../ml/evaluation.md) |
 
 ## Scope at a glance
 
-**The MVP, end to end by demo night:** paste a Twitch VOD link → the pipeline pulls viewer clips, chat and audio → chat and audio signals plus a trained model rank moments across the whole VOD → the web app shows the top moments with scores, a timeline and a preview → the user adjusts start/end → one click exports a vertical (9:16), captioned MP4.
+**The MVP, end to end by demo night:** give the app a Twitch VOD → it pulls the chat and audio → it scores every moment of the stream → it comes back with the **top 10 moments as ready-made vertical clips** (9:16, captioned), ranked, each with a one-line reason → the user previews, nudges start/end if needed, and downloads them one by one or all at once, **or turns the top moments into one highlights video** to watch.
 
 | Priority | What's in it |
 |---|---|
-| **Must (MVP)** | Paste a VOD link · collect VOD info, viewer clips, chat replay and audio · find and rank moments across the whole VOD, **including VODs with no viewer clips** · show viewer clips too, with duplicates merged · web app with ranked shortlist, timeline and preview · adjust start/end · export a 9:16 MP4 with basic crop and burned-in captions · 3 simple baselines (random, biggest chat spike, loudest audio) and at least one trained model (logistic regression, then LightGBM), evaluated on VODs and streamers it never trained on |
-| **Should (polish)** | Speech (Whisper) signals on the shortlist · signal-by-signal comparison (ablations) · blind taste test with classmates · smart crop (facecam stacked over gameplay) · "why this moment" explanations · caching processed VODs · progress bar and clear errors (bad link, expired VOD, missing chat) · evaluation script in CI |
-| **Could (stretch)** | Video signal experiment · learning the chat delay automatically · thumbs up/down feedback · interactive heatmap dashboard · AI-suggested titles and hooks · Docker · hosted deployment (OQ-18) |
+| **Must (MVP)** | VOD in (Twitch link, or an already-downloaded VOD plus its link) · download chat and audio with TwitchDownloader · viewer-clip list from the Twitch API · chat and audio features for every few seconds of the VOD · baselines (random, biggest chat spike, loudest moment, chat + loudness) and a trained model (logistic regression, then LightGBM) tested on a streamer it never saw · top 10 clips auto-rendered as 9:16 MP4s with burned-in captions · results screen: ranked clip cards with preview, score and a one-line reason · trim and re-export · download · **highlights video**: the top moments joined into one 16:9 video |
+| **Should (polish)** | Laughter/scream/cheer detection with a pretrained audio model · speech (Whisper) signals for the shortlist · an LLM rerank of the top ~30 moments that also writes the reason and a title · clip start/end snapped to natural speech pauses · a whole-VOD timeline/heatmap view · signal-by-signal comparison · blind taste test with classmates · caching analyzed VODs |
+| **Could (stretch)** | Facecam stacked over gameplay (smart crop) · track channels and auto-analyze each new VOD · desktop app download plus a project website · video signals (scene cuts, motion) · thumbs up/down feedback · Docker |
 | **Won't (this semester)** | Clipping live streams in real time · auto-posting to TikTok, Reels or Shorts · training video models from scratch · predicting TikTok/Reels views · YouTube or Kick input · accounts and payments · mobile app |
 
-**Editing is deliberately small:** trim (start/end), a basic 9:16 crop and captions. No timeline editor, effects or multi-clip compilations. Nothing from Should or Could starts until the MVP runs end to end.
+**Editing stays small:** trim, a 9:16 crop, captions on/off, and picking which moments go into the highlights video. No timeline editor or effects.
 
-**The model goal** is to beat the baselines on streamers it never trained on. If it doesn't, we report that honestly and the app still ships; app and export work never wait on the model.
-
-### Decided vs. still open
-
-| Decided (follow it) | Still open (don't decide alone; see [open questions](../project/open-questions.md)) |
-|---|---|
-| Users: viewers, streamers, clippers/editors, all in one app | **OQ-1:** the exact training target (what counts as a positive, how views are used) |
-| Web app: FastAPI backend + Next.js frontend ([ADR-0007](../decisions/0007-web-application-stack.md)) | **OQ-9 / OQ-17:** chat retention and source permissions. These block *real* data collection; synthetic data is fine meanwhile. |
-| Python 3.12 + uv, single repo ([ADR-0002](../decisions/0002-language-and-tooling.md), [ADR-0003](../decisions/0003-repository-layout.md)) | **OQ-18:** hosting and the app's database (local demo first) |
-| Chat + audio first; video optional for ranking, required for export ([ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md)) | **ADR-0009 details:** window size, moment grouping, matching rules for evaluation |
-| Parquet + DuckDB for pipeline data ([ADR-0005](../decisions/0005-local-storage-parquet-duckdb.md)) | **OQ-4:** which channels to collect |
-| Baselines → logistic regression → LightGBM; splits grouped by streamer ([modeling plan](../ml/modeling-plan.md)) | |
+**The model goal** is to beat the baselines on a streamer it never trained on. If it doesn't, we say so; the app still ships with the best scorer we have.
 
 ---
 
 ## 1. Summary
 
-AutoClipper helps users discover, review and export highlights from a supported Twitch VOD (past broadcast). Viewers can catch up on interesting moments; streamers and editors can turn selected moments into useful clips, including vertical captioned videos for short-form destinations.
+AutoClipper turns a long Twitch VOD into its best moments. It reads the two cheapest, strongest signals of a great moment, **chat going wild** and **the streamer getting loud**, scores every few seconds of the stream, and hands back two things:
 
-Existing viewer clips, available VOD offsets and view counts are useful candidates, signals and weak labels. They do not supply exhaustive ground truth or prove standalone highlight quality. Combine available information with heuristics and useful trained ML, particularly where clips are incomplete or unavailable. The research goal is measurable improvement over simple baselines; honest negative results are still findings.
+- **Vertical clips:** the top 10 moments as ranked, captioned 9:16 clips (20–45 s each by default), ready to post on TikTok, Reels or Shorts.
+- **A highlights video:** the same top moments, in stream order, joined into one 16:9 video for someone who wants to watch the best of the stream.
+
+Viewer-made clips on Twitch tell us which moments people already cared about. We use them as training examples, not as the answer: the app also finds moments nobody clipped.
 
 **One-line pitch:** *Someone had to scrub an 8-hour stream to find those 30 seconds. AutoClipper finds them for you.*
 
 ## 2. Problem
 
-**Stream clipping is a real side hustle.** Popular streamers' highlights are reposted to short-form platforms by fan "clip accounts". Many streamers allow this, and some actively pay clippers. The bottleneck is **finding and choosing** moments:
+**Clipping is a real side hustle, and watching a whole VOD is a big ask.** Popular streamers' highlights are reposted by clip accounts, and fans who missed a stream want the best parts. The bottleneck is finding and formatting the moments:
 
-1. **Scrubbing is slow.** Streams often run 4–10+ hours. Finding the best moments by hand takes hours per stream.
-2. **Viewer clips are noisy.** A big stream can produce hundreds of viewer-made clips. Many duplicate the same moment, many are inside jokes, and their Twitch view counts reflect live context rather than how they'd perform as a standalone short.
-3. **Small streams have no clips.** For smaller channels, or streams that just ended, few or no viewer clips exist, so there's nothing to choose from.
-4. **Formatting is busywork.** Turning a 16:9 gameplay+facecam clip into a 9:16 captioned short is repetitive manual editing.
-
-### Project focus
-
-AutoClipper's focus is Twitch VODs and their available audience reactions:
-
-- **Use what is already available:** viewer clips can seed discovery and support experiments, while signal-based analysis covers time that has no clips.
-- **It's measured.** Every claim about quality is backed by an offline evaluation against baselines. The project's value is the evidence as much as the tool.
+1. **Scrubbing is slow.** Streams run 4–10+ hours.
+2. **Viewer clips are noisy.** Big streams produce hundreds of duplicate, inside-joke or badly trimmed clips.
+3. **Small or fresh streams have few clips,** and small streamers rarely have a community of clippers.
+4. **Formatting is busywork.** Turning 16:9 gameplay+facecam into a captioned 9:16 short, or stitching moments into a recap, is repetitive.
 
 ## 3. Users
 
-- **Viewer:** missed a stream or lacks time to watch the whole broadcast; wants to browse and watch interesting highlights.
-- **Streamer:** wants highlights from their own broadcasts to review, export or hand to an editor. Longer compilations are a possible later extension.
-- **Clipper/editor:** wants to discover, preview, trim, caption and export selected moments for short-form destinations.
+| User | Wants | Main output |
+|---|---|---|
+| **Clipper/editor** | Ready-to-post clips from a stream without watching it | Vertical clips |
+| **Small streamer** | Clips of their own broadcasts without hiring an editor or having clippers | Vertical clips (and a highlights video for YouTube) |
+| **Viewer/fan** | The best parts of a stream they missed, in one video | Highlights video |
 
-These audiences share one analysis and review workflow. Separate applications are unnecessary.
+All three use the same app and the same analysis; only the export differs.
 
-## 4. Goals and non-goals
+## 4. The app experience
 
-### Goals
+Inspired by tools like Opus Clip: the analysis is a black box to the user; the output is finished video.
+
+1. **Start.** Paste a Twitch VOD link. If you already downloaded the VOD, also paste the file's path on your computer (browsers don't expose dropped files' paths to a local server), so it isn't downloaded again; the link is still needed for chat and viewer clips.
+2. **Wait.** A progress screen: "Downloading chat… Listening to audio… Finding moments… Rendering clips (4 of 10)".
+3. **Results.** A grid of 10 clip cards, ranked 1–10. Each card shows the vertical clip (playable), its rank and score bar, the time in the stream, and a one-line reason, e.g. "Chat exploded to 9× normal and the streamer screamed".
+4. **Adjust.** Open a card to nudge start/end and re-render, or toggle captions.
+5. **Download** one clip or all of them.
+6. **Highlights video.** A "Make highlights video" button joins the top moments (all 10 by default; untick any you don't want; uses your trims) in stream order into one 16:9 video, then offers it for download.
+
+A whole-stream timeline with the top moments highlighted is a Should, as a secondary view.
+
+## 5. Delivery
+
+- **Initial setup.** `autoclipper serve` starts the backend and the app opens in the browser. A team laptop is the first demo target; the core flow needs no hosting service.
+- **Collection and storage.** Download a VOD once and reuse its media and processed tables. A team machine, shared drive, collection worker or hosted storage can supply the same versioned inputs. No teammate needs to repeat another person's completed downloads.
+- **Distribution (Could):** a project website that explains the project, shows a demo video, links the repo and offers a packaged download (#70). It can also link to a hosted app when one is available.
+- **Hosted deployment is an option.** Choose it when it improves access or the demo and fits available resources. Extend the [API contract](../architecture/api-contract.md), job persistence and media-input handling as the deployment needs; these are implementation choices within the project.
+
+## 6. Goals and non-goals
 
 | # | Goal | How we'll know |
 |---|---|---|
-| G1 | Use available viewer clips intelligently | Useful candidates and duplicate handling, compared with a views baseline when applicable |
-| G2 | Discover interesting moments when clips are sparse or absent | A discovery path independent of clip metadata, evaluated honestly against observed clips and human judgments |
-| G3 | Export useful clips | Correct source-time trim, basic framing/aspect-ratio options and captions |
-| G4 | Provide an appealing, understandable app | Enter VOD → understandable shortlist/timeline → preview → trim → export |
-| G5 | Produce a credible data-science result | Reproducible evaluation, ablations ("which signals matter?") |
+| G1 | Find the moments worth clipping | Our top 10 overlap viewer clips more often than the baselines, on a streamer the model never saw |
+| G2 | Find moments nobody clipped | Discovery works from chat + audio alone; checked in the taste test |
+| G3 | Hand back finished video | Correct trim, 9:16 clips and a 16:9 highlights video, readable captions, plays everywhere |
+| G4 | Be easy to use | A classmate goes from VOD to downloaded clip and highlights video without help |
+| G5 | Credible data science | Reproducible evaluation; which signals matter |
 
-### Non-goals (for the course project)
+**Non-goals:** auto-publishing, other platforms as input, end-to-end video models, live clipping, predicting short-form views, accounts and billing.
 
-- **Auto-publishing to social platforms.** Out of scope: platform API approval and scope creep. A clipper uploads the exported files themselves.
-- **Platforms other than Twitch** as an input source.
-- **Training on raw video end to end.** Video is optional and comes later (see [ADR-0004](../decisions/0004-staged-scope-chat-and-audio-first.md)).
-- **Real-time / live-stream clipping.** Possible future work after the semester.
-- **Predicting TikTok/Reels views** or any other platform's engagement.
-- **Monetization** or revenue targets as a success metric.
-- **Multi-user accounts, auth, billing.** The app is a single-user tool for the demo.
-
-## 5. User stories
-
-| ID | As a… | I want to… | So that… | Stage |
-|---|---|---|---|---|
-| US-1 | user | paste a supported Twitch VOD URL | I can start analysis easily | MVP |
-| US-2 | streamer/editor | see available viewer clips alongside discovered moments, with duplicates handled | I can choose useful highlights | MVP |
-| US-3 | viewer | browse an understandable shortlist or timeline | I can catch up on the stream | MVP; richer timeline optional |
-| US-4 | user | preview a candidate | I can judge it before watching or exporting | MVP |
-| US-5 | clipper/editor | export a vertical, captioned MP4 | I can prepare a short-form clip | MVP; smart crop optional |
-| US-6 | user | get candidates from parts of the stream nobody clipped | I can discover missed moments | MVP |
-| US-7 | user | analyze a supported VOD with zero viewer clips | the tool still offers signal-derived candidates | MVP |
-| US-8 | streamer/editor | adjust start/end before export | I can fix a bad trim | MVP |
-| US-9 | team member | inspect contributing signals where supported | we can debug and explain the analysis | Optional polish |
-| US-10 | clipper | get candidates while a stream is still live | I can post before other clippers | Won't (this semester) |
-
-## 6. Functional requirements
-
-Requirement IDs are stable. Reference them in issues and PRs (e.g. "implements FR-3").
+## 7. Functional requirements
 
 ### Ingestion
 
-- **FR-1** Accept a Twitch VOD URL or video ID and resolve its metadata (channel, duration, created time, muted segments) via the Twitch Helix API.
-- **FR-2** Fetch retrievable viewer clips linked to that VOD with `vod_offset`, duration, view count and creation time. Handle query limits and report incomplete discovery coverage ([data sources](../data/data-sources.md)).
-- **FR-3** Obtain authorized **chat replay** or an agreed substitute with per-message offsets; apply the approved retention/privacy policy before sharing.
-- **FR-4** Obtain authorized **audio** for feature extraction; report missing or muted audio.
-- **FR-5** Cache permitted artifacts with versions and expiry/deletion rules; report source/media availability separately from analytical availability.
+- Accept a Twitch VOD link or ID; resolve its metadata (channel, duration, muted segments) with the Twitch API.
+- Accept an already-downloaded VOD file (plus its link for chat and clips) instead of downloading again.
+- Fetch the VOD's viewer clips (start time in the VOD, duration, views) with the Twitch API.
+- Download the chat replay with TwitchDownloader; hash usernames and redact mentions at parse time; keep the pseudonymized messages and compute per-window totals.
+- Download audio-only with TwitchDownloader or yt-dlp; report missing or muted audio.
+- Cache downloads and processed tables locally so re-running a VOD is fast.
 
 ### Analysis
 
-- **FR-6** Merge overlapping viewer clips into **moments** (deduplication).
-- **FR-7** Compute per-window chat and audio features (see [features](../ml/features.md)).
-- **FR-8** Score and rank candidates, using API-derived information where useful. An existing-clip ranker is a possible intermediate prototype.
-- **FR-9** Analyze across a supported VOD and propose moments independently of existing clips. Whole-VOD scoring or heuristic shortlisting with learned reranking are possible approaches; a second trained model is not required.
-- **FR-10** Return, for each candidate, the score and start/end in VOD seconds. Top contributing signals ("why this moment") are optional polish (US-9), not an MVP requirement.
+- Merge overlapping viewer clips into one moment.
+- Compute chat and audio features for every window (see [features](../ml/features.md)).
+- Score every window with the selected scorer (a baseline or the trained model).
+- Turn scores into candidate moments (20–45 s by default) across the whole VOD, including parts nobody clipped and VODs with zero clips.
+- For each candidate return rank, score, start/end in VOD seconds and its strongest signals, which the app turns into a one-line reason.
 
 ### Export
 
-- **FR-11** Preview and cut the selected source-video interval; allow basic trim adjustment. Consume already aligned VOD timestamps without another chat-lag shift (see [labeling](../data/labeling.md)).
-- **FR-12** Support basic framing, including 9:16 via center crop or a configured layout. Smart crop and further aspect ratios are optional polish.
-- **FR-13** Burn in captions generated by speech-to-text.
-- **FR-14** Output a playable MP4. Proposed vertical preset: H.264/AAC, 1080×1920, configurable duration; confirm destination constraints during export implementation.
+The cutting rules are in [architecture § Export](../architecture/overview.md#46-export); the API is in the [API contract](../architecture/api-contract.md).
+
+- **Vertical clips.** Cut the selected interval from the source video exactly as trimmed (times are already aligned; no extra chat-lag shift). Reframe to 9:16 by center crop or a configured region (smart crop is a Could). Burn in captions from speech-to-text (faster-whisper). Output H.264/AAC MP4, 1080×1920, at most 90 s.
+- **Auto-render.** When analysis finishes, the app requests clip exports for the top 10 candidates (center crop, captions on) and fills in the cards as they finish.
+- **Highlights video.** On request, join the chosen moments (default: the top 10 with their current trims) in stream order into one H.264/AAC MP4 at 1920×1080, original framing, with a 0.5 s fade between moments, captions optional (off by default), at most 15 minutes.
 
 ### Interface
 
-- **FR-15** Internal CLI tools for reproducible pipeline and experiment work.
-- **FR-16** A web app for the semester demo (FastAPI + Next.js, [ADR-0007](../decisions/0007-web-application-stack.md)): VOD input → progress/errors → understandable highlights → preview → trim → export. UI development starts early with synthetic candidates and proceeds alongside analysis.
+- CLI commands for the pipeline, exports and experiments (`autoclipper analyze`, `export`, `highlights`, `train`, `evaluate`).
+- A local web app (FastAPI + Next.js, [web stack](../decisions/0007-web-application-stack.md)) following § 4.
 
-## 7. Non-functional requirements
+## 8. Non-functional requirements
 
-| ID | Requirement | Target (Proposal) |
-|---|---|---|
-| NFR-1 | Runs on a typical student laptop (no GPU required) for v1/v2 | Chat + audio features for a 6-hour VOD in ≤ 10 minutes on CPU, excluding download time |
-| NFR-2 | Reproducibility | Any reported metric can be regenerated from a commit + dataset version + seed |
-| NFR-3 | Cross-platform | Windows, macOS, Linux |
-| NFR-4 | Privacy | No raw chat identities in shared/processed outputs or logs; downloads may contain them transiently on the collector. Retention choice is OQ-9. No media or chat in git. |
-| NFR-5 | Platform etiquette | Respects Twitch API rate limits and backs off on 429 |
-| NFR-6 | Robustness | Handles missing chat, deleted VODs, muted segments, clips with null `vod_offset` |
+| Requirement | Target |
+|---|---|
+| Runs on a student laptop without a GPU | Chat + audio features for a 6-hour VOD in ≤ 10 minutes, excluding download |
+| Reproducibility | Any reported metric regenerates from a commit + dataset version + seed |
+| Cross-platform | Windows, macOS, Linux |
+| Polite API use | Respects Twitch API rate limits |
+| Robustness | Handles missing chat, deleted VODs, muted audio, clips without a VOD timestamp |
 
-## 8. Success metrics
+## 9. Success metrics
 
-**Offline evaluation is required; exact targets, budgets and metrics need team agreement** under OQ-1/OQ-15 and ADR-0009. The alternatives below are proposals, not two mandatory models. See [evaluation](../ml/evaluation.md).
+See [evaluation](../ml/evaluation.md). In short, starting simple:
 
 | Stage | Metric | Must beat |
 |---|---|---|
-| Optional clip-ranking experiment | NDCG@10 / Precision@5 against an agreed relevance target | Random; Twitch views at the same observation time where applicable |
-| Independent discovery | Recall and agreement with observed clips; window PR-AUC only as a weak-label diagnostic | Random, chat spike, loudness and combined heuristic at the same candidate budget |
-| Both | Ablation: contribution of each signal family | n/a (reported as a finding) |
+| First | **Hit rate@10**: of our top 10 moments, how many overlap a real viewer clip, on a held-out streamer | Random, chat spike, loudness, chat + loudness |
+| Next | Recall of the most-viewed clips; NDCG@10 weighted by clip views | Same |
+| Polish | Blind taste test: classmates rate our clips vs. the chat-spike baseline's (1–5) | Chat-spike baseline |
 
-**Secondary (online, stretch, needs streamer permission):** post model-picked clips vs. randomly picked clips on a clip account and compare normalized views. See [evaluation § online experiment](../ml/evaluation.md#5-online-experiment-stretch).
+> **No results exist yet.**
 
-**Product completion:** a non-team member can follow the review/export flow unassisted. A cached demo may be brief; fresh analysis time is reported separately. Research success means improvement on the agreed protocol, but an unfavorable result does not block UI/export completion.
+## 10. Constraints
 
-> **No results exist yet.** This section defines how success will be measured, not what has been achieved.
+- **Team:** four students, part time, building with AI coding agents.
+- **Compute:** start with laptops and available free resources; choose shared workers or hosting to fit the workload and budget.
+- **Data:** Twitch API for metadata and viewer clips; TwitchDownloader and yt-dlp for chat, audio and video ([data sources and delivery](../decisions/0011-data-sources-and-local-delivery.md)). These tools are unofficial and can break when Twitch changes things.
+- **VOD expiry:** Twitch deletes VODs after 7–60 days, so download the pilot VODs early.
 
-## 9. Constraints and assumptions
+## 11. Risks
 
-- **Team:** four students working part time over the course term, with heavy use of AI coding agents.
-- **Compute:** laptops. Free tiers only, unless the team decides otherwise.
-- **Data access:** Twitch Helix API (official, free developer app). Chat replay and VOD download rely on **unofficial** tools (see [data sources](../data/data-sources.md)). This is a known risk.
-- **VOD retention:** Twitch deletes past broadcasts after a retention period, so **collection must start early and run continuously**.
-- **Course aim:** useful ML trained on real, authorized data, sensible experimental evaluation and a polished product. Neither a neural network nor TikTok-view prediction is a requirement.
+Main implementation challenges:
 
-## 10. Risks
-
-The full register is in [`../project/risks.md`](../project/risks.md). The top three:
-
-1. **Unofficial chat/VOD tooling breaks** → keep a live-chat logger as a backup source. Collect early.
-2. **Label noise** (clips reflect live context, duplicates, clip-start bias) → moment merging, careful label definitions, ranking metrics robust to noise.
-3. **Scope creep into video ML** → chat + audio first. Video only as a measured add-on.
-
-## 11. Open questions
-
-Tracked in [`../project/open-questions.md`](../project/open-questions.md). The most important one for this PRD is **OQ-1: what exactly is the v1 ranking target?** Twitch view count is available for existing clips, so predicting it for old clips isn't useful. The candidate framings are listed there.
+1. **Downloader tools break** → pin versions, download early, keep local copies.
+2. **Noisy labels** (duplicate clips, clips that start late) → merge clips into moments, generous time matching.
+3. **Scope creep** → nothing from Should/Could until the MVP runs end to end.
 
 ## 12. Milestones
 

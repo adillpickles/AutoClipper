@@ -1,8 +1,8 @@
 """Live smoke test of the Helix client against the real Twitch API.
 
-Deselected by default (tests/conftest.py); run with ``uv run pytest -m live`` only with the app
-credentials in ``.env`` and the source authorization in docs/data/data-governance.md. It reads
-public metadata of Twitch's own developer channel and stores nothing.
+Deselected by default (tests/conftest.py); run with ``uv run pytest -m live`` after configuring
+the app credentials through the environment or ``.env``. It reads public metadata of Twitch's own
+developer channel and stores nothing.
 """
 
 import pytest

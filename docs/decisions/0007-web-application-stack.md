@@ -1,23 +1,23 @@
-# ADR-0007: FastAPI backend + Next.js frontend
+# FastAPI backend + Next.js frontend
 
 | | |
 |---|---|
-| **Status** | Accepted (2026-10-16, matches the team's project design doc). Hosting is deferred to OQ-18. |
+| **Status** | Accepted (2026-10-16). The initial setup runs locally; deployment can evolve with the product ([delivery defaults](0011-data-sources-and-local-delivery.md)). |
 | **Date** | 2026-10-09 |
 | **Related** | [Architecture § Interfaces](../architecture/overview.md#47-interfaces), [PRD § Interface](../product/prd.md#interface) |
 
 ## Context
 
-The demo needs a polished, visual flow: paste a VOD link, watch progress, browse the best moments on a timeline, preview, trim and export. The pipeline and ML are Python. Team members already know Python web APIs and TypeScript/Next.js. Viewers, streamers and editors all use the same flow, so there is one app.
+The demo needs a polished, visual flow: paste a VOD link, watch progress, browse the ranked clips, preview, trim and download them or a highlights video. The pipeline and ML are Python. Team members already know Python web APIs and TypeScript/Next.js. Viewers, streamers and editors all use the same flow, so there is one app.
 
 ## Decision
 
-- **Web app**, not desktop.
+- **Initial web app setup.** `autoclipper serve` starts the backend and the Next.js app runs in a browser. A packaged download and hosted deployment are options as the product develops.
 - **Backend:** FastAPI in `src/autoclipper/api/`, wrapping the same library functions the CLI uses. Processing a VOD takes minutes, so long jobs run in a background worker, never inside the HTTP request. Pydantic models are shared with the CLI output schema.
 - **Frontend:** Next.js + TypeScript (strict) + Tailwind in `web/`, talking to the API through one typed client. The highlight timeline is a custom component (canvas/SVG heat strip with markers).
-- **Video preview:** serve approved retained/exported clips from the backend, or embed Twitch's player under its rules. Pick the route allowed under OQ-17 before building preview. Full VOD playback is optional.
+- **Video preview:** the backend serves downloaded media and rendered clips through the API; the browser uses the returned URLs. Full VOD playback is optional.
 - **Build early:** start the UI with synthetic (fake) candidates while the pipeline and model are being built. Don't wait for ML.
-- **Hosting is not decided here.** The project design doc proposes Vercel for the frontend, Render/Railway for the API and worker, Supabase Postgres and an S3-compatible bucket. Until OQ-18 is decided, the app must run locally on a laptop, which is also the demo-night fallback.
+- **Delivery options.** Start with the laptop setup. A project website can offer the app download and link to a hosted instance; worker execution, storage and API extensions are chosen as needed ([delivery defaults](0011-data-sources-and-local-delivery.md)).
 
 ## Options considered
 
@@ -32,7 +32,7 @@ The demo needs a polished, visual flow: paste a VOD link, watch progress, browse
 
 - **Positive:** the best demo quality, and reusable API endpoints.
 - **Negative:** Node tooling, plus a second set of conventions to maintain.
-- **Follow-ups:** frontend conventions doc and a CI job for `web/` when the frontend is scaffolded.
+- Frontend setup and CI commands are in [web/README.md](../../web/README.md); implementation progress is in [status](../project/status.md).
 
 ## Revisit when
 

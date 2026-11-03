@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Proposal (feature set `v0`, ADR-0009). Candidate names/definitions become a contract only when adopted; implement the task's agreed subset. |
-| **Last updated** | 2026-10-13 |
+| **Status** | Adopted. Build the **Phase 1** features first (everything in the chat, audio and context tables below); Phase 2 and 3 come after the MVP works. |
+| **Last updated** | 2026-10-31 |
 
 ## Naming
 
@@ -19,16 +19,16 @@ Adding a feature means adding a row to this file in the same PR. Changing a feat
 Channels differ hugely in chat volume and audio levels, so raw values rarely transfer:
 
 - **`_z`:** `(x - mean_vod) / std_vod` over all windows of the same VOD. Fine offline, where the whole VOD is known.
-- **`_rz`:** `(x - rolling_mean) / rolling_std` over the previous `R` windows (proposed `R = 30`, i.e. 5 minutes). Usable live.
+- **`_rz`:** `(x - rolling_mean) / rolling_std` over the previous `R` windows (default `R = 30`, i.e. 5 minutes). Usable live.
 - Guard against zero variance: if `std < eps`, set the z-score to 0.
 
 Fit cross-dataset preprocessing (scalers, imputers, learned thresholds) on training data only. Per-input unsupervised VOD statistics are allowed offline even for a held-out VOD; do not pool held-out VODs or use their labels. Outcome transformations are evaluation/label operations, not inference inputs. Live experiments use only observations available at their stated prediction time.
 
 ## Chat preprocessing and leakage
 
-Before **all** chat aggregates, proposed filtering removes whole messages containing Twitch clip URLs (`clips.twitch.tv/...` or `twitch.tv/<channel>/clip/...`) and recognized automated clip-created announcements, including any bot metadata linked to clip creation. Removing only URL text would leave giveaway message counts. Use the same versioned URL/announcement rules at training and inference, including lead/lag windows; record filtered counts without logging raw messages.
+Before **all** chat aggregates, filtering removes whole messages containing Twitch clip URLs (`clips.twitch.tv/...` or `twitch.tv/<channel>/clip/...`) and recognized automated clip-created announcements, including any bot metadata linked to clip creation. Removing only URL text would leave giveaway message counts. Use the same versioned URL/announcement rules at training and inference, including lead/lag windows; record filtered counts without logging raw messages.
 
-Ordinary reactions such as "clip it" remain eligible signals. Do not remove all bot messages or all occurrences of "clip". The initial announcement patterns must be explicit, synthetic-tested and ratified with the feature subset (OQ-15/ADR-0009); ablations can test ordinary reaction keywords separately. Clip-derived game/category information also stays out of independent-discovery inputs.
+Ordinary reactions such as "clip it" remain eligible signals. Do not remove all bot messages or all occurrences of "clip". The URL and announcement patterns live in a versioned file under `configs/` and are covered by synthetic tests; ablations can test ordinary reaction keywords separately. Clip-derived game/category information also stays out of independent-discovery inputs.
 
 ## Chat features (`features_chat`)
 
@@ -44,6 +44,11 @@ Ordinary reactions such as "clip it" remain eligible signals. Do not remove all 
 | `chat_repeat_frac` | Fraction of messages that duplicate a message seen in the last 10 s | "Copypasta" / spam waves |
 | `chat_mean_len` | Mean message length in characters | Reactions are short |
 | `chat_keyword_rate` | Messages per second matching a small reaction lexicon (e.g. "clip it", "LOL", "W", "OMEGALUL") | Lexicon lives in `configs/`. It's language and community specific. |
+| `chat_laugh_rate` | Messages per second with a laugh emote or word (KEKW, OMEGALUL, LUL, LMAO, "LOL", 😂) | Funny moments. Lexicon in `configs/lexicon.yaml` |
+| `chat_hype_rate` | Messages per second with a hype emote or word (POG, PogChamp, "W", "LETS GO", "!!!") | Hype moments |
+| `chat_shock_rate` | Messages per second with a shock/confusion reaction ("?", monkaS, "WTF", "NO WAY", "D:") | Shocking moments |
+| `chat_unique_rate_z` | `_z` of `chat_unique_rate` | Many people reacting, not a few spammers |
+| `chat_event_count` | Subs, bits and raids announced in the window | Context; donations can trigger loud text-to-speech |
 | `chat_msg_rate_lead{1..3}` | `chat_msg_rate_z` of windows t+1…t+3 | **Offline only** (chat lag). Excluded in live experiments. |
 | `chat_msg_rate_lag{1..3}` | Same for t−1…t−3 | Build-up context |
 
@@ -61,10 +66,20 @@ Computed from 16 kHz mono audio with librosa/NumPy. Frame-level values are aggre
 | `audio_spectral_centroid_mean` | Mean spectral centroid | Brightness (screams and laughter are brighter) |
 | `audio_zcr_mean` | Mean zero-crossing rate | Noisiness |
 | `audio_silence_frac` | Fraction of frames below an energy threshold | |
+| `audio_rms_rz` | `_rz` of `audio_rms_max` (vs. the last 5 minutes) | A sudden jump matters more than being loud all stream |
 | `audio_is_muted` | 1 if the window overlaps a Twitch muted segment | Audio features are unreliable when 1 |
 | `audio_rms_max_lead{1..2}` / `_lag{1..2}` | Neighbor context | |
 
-**Stretch:** pretrained audio embeddings (e.g. a general audio-event model) for laughter/cheering detection, mean-pooled per window. These go in a separate family (`audio_emb_*`) so ablations stay clean.
+## Phase 2 features (after the MVP works)
+
+| Name | Definition | Notes |
+|---|---|---|
+| `audio_evt_laughter`, `audio_evt_scream`, `audio_evt_cheer`, `audio_evt_music` | Max probability per window from a pretrained audio-event model (PANNs or YAMNet) | Runs on CPU; if too slow for a whole VOD, run it on the windows of the shortlist only |
+| `speech_rate`, `speech_exclaim_count`, `speech_keyword_count` | From a Whisper transcript of the shortlist (the top 50 candidates, [modeling plan § 3](modeling-plan.md#3-candidate-generation); #64) | Words per second, exclamations, reaction keywords |
+
+## Phase 3: LLM rerank (after Phase 2)
+
+An LLM (#65) reads the transcript and a short chat summary for each of the top ~30 candidates of the shortlist, picks the best 10 for a standalone short, and writes a one-line reason and a title for each. It reranks; it doesn't replace the scorer, and the evaluation reports the scorer with and without it.
 
 ## Video features (`features_video`), stretch only
 
@@ -84,8 +99,6 @@ Video features require video download, which is far more expensive than audio. S
 | `ctx_minutes_since_start` | `start_s / 60` | |
 | `ctx_game_id` | Category at that time (categorical) | Only if derivable. Watch for leakage via clips. |
 
-**Not inputs to independent discovery:** anything derived from clips (counts, titles, views or clip-inferred category). Product ranking may use available API information, but must be evaluated as that setup. Time-bounded early ranking needs a pinned inference snapshot under OQ-1; mature outcomes never feed its candidate formation or inputs.
+**Not inputs to independent discovery:** anything derived from clips (counts, titles, views or clip-inferred category). Product ranking may use available API information, but must be evaluated as that setup.
 
-## Moment-level features (v1)
-
-For a moment spanning windows `[a, b]`: aggregate window features with `max`, `mean` and `argmax-position`, plus `moment_duration_s` and the build-up (mean of the 3 windows before `a`).
+The scorer works on windows only. A candidate's score is the scorer's window score at its peak, and a viewer-clip moment is scored by the maximum window score over its span ([modeling plan § 3](modeling-plan.md#3-candidate-generation)); build-up before a moment is covered by the `_lag` features.

@@ -2,21 +2,21 @@
 
 | | |
 |---|---|
-| **Status** | Reference. Endpoint details reflect Twitch's public docs as understood when this was written. **Verify against the official reference before implementing.** Items marked ⚠️ need a spike. |
-| **Last updated** | 2026-10-13 |
+| **Status** | Current. Endpoint details are checked against Twitch's official reference (dates below). Items marked ⚠️ are measured in the pilot. |
+| **Last updated** | 2026-10-31 |
 
 > **Agents: don't invent API fields or parameters.** If a field you need isn't documented here or in the official reference, check the live docs or open a `spike` issue.
 
 ## Overview
 
-| Source | What we get | Official? | Used for | Stage |
+| Source | What we get | Official? | Used for | When |
 |---|---|---|---|---|
-| Twitch Helix **Get Users** | Broadcaster ID, type | ✅ | Resolving channels | v1 |
-| Twitch Helix **Get Videos** | VOD metadata, duration, muted segments | ✅ | VOD discovery | v1 |
-| Twitch Helix **Get Clips** | Retrievable viewer clips + `vod_offset` + views (query limits apply) | ✅ | Candidates, signals and possible weak labels | Initial analysis |
-| **TwitchDownloader** (CLI) | Chat replay with offsets | ❌ unofficial | Chat features | v1 |
-| **yt-dlp** | VOD audio/video | ❌ unofficial | Audio features, export | v1 |
-| Twitch **chat** (IRC / EventSub) | Live chat messages | ✅ | Backup chat source; live mode | M1 backup, stretch |
+| Twitch Helix **Get Users** | Broadcaster ID, type | ✅ | Resolving channels | MVP |
+| Twitch Helix **Get Videos** | VOD metadata, duration, muted segments | ✅ | VOD discovery | MVP |
+| Twitch Helix **Get Clips** | Viewer clips + `vod_offset` + views (query limits apply) | ✅ | Training labels, evaluation | MVP |
+| **TwitchDownloader** (CLI, pinned) | Chat replay with offsets; VOD audio/video | ❌ unofficial | Chat features; audio features, export | MVP |
+| **yt-dlp** | VOD audio/video | ❌ unofficial | Audio features, export | MVP |
+| Twitch **chat** (IRC / EventSub) | Live chat messages | ✅ | Backup chat source; live mode | Not planned (live clipping is out of scope) |
 | 7TV / BTTV / FFZ emote APIs | Third-party emote sets | ✅ (their own APIs) | Emote features | optional |
 | External short-form engagement data | Public clip-account videos + views | depends on tool | Short-form performance model | out of scope this semester |
 
@@ -26,7 +26,7 @@
 
 - **Reference:** <https://dev.twitch.tv/docs/api/reference>. The details below were checked against it and the [API guide](https://dev.twitch.tv/docs/api/guide) on 2026-10-21; `autoclipper.ingest.twitch_api` implements them.
 - **Base URL:** `https://api.twitch.tv/helix`
-- **Auth:** register an app at <https://dev.twitch.tv/console>, then use the [**client-credentials** grant](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#client-credentials-grant-flow) to get an *app access token*. The parameters go in an `x-www-form-urlencoded` body, not the URL:
+- **Auth:** the team shares one app registered at <https://dev.twitch.tv/console>. Supply its credentials through an untracked `.env` or the worker/deployment environment ([setup](../development/setup.md#configuration)). Use the [**client-credentials** grant](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#client-credentials-grant-flow) to get an *app access token*. The parameters go in an `x-www-form-urlencoded` body, not the URL:
 
   ```http
   POST https://id.twitch.tv/oauth2/token
@@ -50,17 +50,17 @@
 ### Get Clips: <https://dev.twitch.tv/docs/api/reference/#get-clips>
 
 - Query by `broadcaster_id` (plus `started_at`/`ended_at`), by `game_id`, or by clip `id`.
-- **There's no "clips for this video" filter.** Query the broadcaster by clip-creation date range and keep rows whose `video_id` matches. The broadcast's wall-clock interval is only an initial discovery range; refreshed snapshots need a documented horizon for clips created later.
+- **There's no "clips for this video" filter.** Query the broadcaster by clip-creation date range and keep rows whose `video_id` matches. The broadcast's wall-clock interval is only the first search range; later snapshots extend it to catch clips created after the stream.
 - Fields we use: `id`, `broadcaster_id`, `creator_id` (hashed at ingest), `video_id`, `game_id`, `language`, `title`, `view_count`, `created_at`, `duration`, `vod_offset`, `is_featured`.
 - **`vod_offset` can be null**, e.g. when the VOD is deleted or not yet processed. Store the row but exclude it from labeling.
 - `video_id` may be an **empty string** when the associated video is unavailable; normalize it to internal null. Broadcaster/game queries return clips by descending views, so incomplete discovery can favor popular clips.
 - **Pagination limit (verified 2026-10-09):** [Get Clips](https://dev.twitch.tv/docs/api/reference/#get-clips) returns approximately 1,000 results across pages for a query. **Chunk queries into short time ranges** and deduplicate by `clip_id`; subdivide saturated ranges. A completed page sequence does not prove all clips were retrieved. ⚠️ Measure coverage and record potentially incomplete ranges in the early spike.
-- **Clip creation time is not VOD event time.** Date filters select when a clip was created; viewers can clip a past VOD later. Searching only the broadcast's wall-clock interval can miss those clips. The collection spike must choose and document the later discovery horizon for refreshed snapshots, then filter by `video_id`.
-- ⚠️ **View counts grow over time** and may be updated with a delay. Always store `fetched_at`. For labeling, prefer a consistent observation lag (e.g. re-fetch clips N days after the VOD; see [collection plan](collection-plan.md)).
+- **Clip creation time is not VOD event time.** Date filters select when a clip was created; viewers can clip a past VOD later. Searching only the broadcast's wall-clock interval misses those clips, so the snapshot taken at ingest searches from the broadcast start to the capture time, then filters by `video_id`.
+- ⚠️ **View counts grow over time** and may be updated with a delay. Always store `fetched_at`. Labels use the one snapshot taken at ingest, when the VOD is at least 7 days old ([labeling § 7](labeling.md#7-view-count-maturity)).
 
-### Authorized clip media
+### Clip media
 
-The current official [Get Clips Download](https://dev.twitch.tv/docs/api/reference/#get-clips-download) endpoint offers download URLs for authorized broadcaster/editor workflows. It is not an unrestricted arbitrary-channel VOD download API. Evaluate this route and its current authorization requirements before defaulting to unofficial media tooling; it covers existing clips, not additional surrounding VOD footage. OQ-17 still governs retention, preview and export permissions.
+The official [Get Clips Download](https://dev.twitch.tv/docs/api/reference/#get-clips-download) endpoint only works for a channel's own broadcaster or editors, and only covers existing clips, not the surrounding VOD footage. We download VOD media with TwitchDownloader or yt-dlp instead ([data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md)).
 
 ### Get Users: <https://dev.twitch.tv/docs/api/reference/#get-users>
 
@@ -68,7 +68,11 @@ The current official [Get Clips Download](https://dev.twitch.tv/docs/api/referen
 
 ### VOD retention
 
-Checked 2026-10-13: [Twitch's VOD policy](https://help.twitch.tv/s/article/video-on-demand) states 7 days for ordinary broadcasters, 14 for Affiliates and 60 for Partners, Prime and Turbo users. `broadcaster_type` alone does not reveal every retention entitlement. Deletion or unpublishing may happen earlier. Features do not preserve video; secure permitted demo/evaluation media while available and report unavailable sources ([collection](collection-plan.md)). Recheck policy before implementing collection.
+Checked 2026-10-13: [Twitch's VOD policy](https://help.twitch.tv/s/article/video-on-demand) states 7 days for ordinary broadcasters, 14 for Affiliates and 60 for Partners, Prime and Turbo users. `broadcaster_type` alone does not reveal every retention entitlement, and a streamer can delete or unpublish a VOD earlier. Features do not preserve video, so download the media needed for the demo and evaluation while the VOD is up, and mark VODs that disappear as `unavailable` in the catalog ([collection plan](collection-plan.md)).
+
+### Subscriber-only VODs
+
+Subscriber-only VODs are skipped: the downloader tools can't fetch them without a subscriber login. The collector records them as `unavailable` in the catalog and moves on.
 
 ## 2. Chat replay: TwitchDownloader (unofficial)
 
@@ -98,7 +102,7 @@ Checked 2026-10-13: [Twitch's VOD policy](https://help.twitch.tv/s/article/video
   | `embeddedData.thirdParty[].name` | third-party emotes in `n_emotes`: whitespace-separated tokens of non-emote fragments that equal a name | L231, L263; [downloader L561–L576][td-dl-embed] |
 
 - **Risks:** relies on Twitch's undocumented internal API and can break without warning. Pin the version in the catalog (`tool` column) and fail loudly on schema surprises.
-- **Privacy:** raw output contains usernames. Parse transiently, apply the approved OQ-9 minimization/redaction policy and delete raw files after validation. No raw sharing; git-ignored storage is not a retention authorization. The parser hashes `commenter._id`, deletes the raw file after a successful parse and redacts text: `@` mentions become `@user`, and any word equal to a commenter's login or display name, or a viewer named in a gift-sub notice, becomes `user`. Its module docstring states the exact rules and what they miss.
+- **Hashing:** raw output contains usernames. The parser hashes `commenter._id`, deletes the raw file after a successful parse and redacts text: `@` mentions become `@user`, and any word equal to a commenter's login or display name, or a viewer named in a gift-sub notice, becomes `user`. Its module docstring states the exact rules and what they miss.
 
 [td-root]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/TwitchObjects/ChatRoot.cs
 [td-info]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/TwitchObjects/ChatRootInfo.cs#L5-L16
@@ -113,23 +117,24 @@ Checked 2026-10-13: [Twitch's VOD policy](https://help.twitch.tv/s/article/video
 [td-gql]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/TwitchObjects/Gql/GqlCommentResponse.cs#L8-L13
 [td-bits]: https://github.com/lay295/TwitchDownloader/blob/1.56.5/TwitchDownloaderCore/Tools/TwitchRegex.cs#L10-L11
 
-## 3. VOD media: yt-dlp (unofficial)
+## 3. VOD media: yt-dlp or TwitchDownloader (unofficial)
 
-- **Repo:** <https://github.com/yt-dlp/yt-dlp>
+- **Repos:** <https://github.com/yt-dlp/yt-dlp>; TwitchDownloader (above) has an equivalent video download mode. The commands below are yt-dlp's (the audio download, #19, uses yt-dlp). The catalog `tool` column records which tool and version fetched each file.
 - **Audio only** for feature extraction. Twitch VODs usually expose an audio-only format:
 
   ```bash
   yt-dlp -f "bestaudio" -o "data/raw/audio/%(id)s.%(ext)s" https://www.twitch.tv/videos/<video_id>
   ```
 
-- **Segments** for preview/export can reduce download cost, subject to source authorization and a pilot verifying tool behavior:
+- **Segments** for preview/export reduce download cost (⚠️ verify the tool's segment accuracy in the pilot):
 
   ```bash
   yt-dlp --download-sections "*<start>-<end>" -f "best[height<=1080]" -o "…" https://www.twitch.tv/videos/<video_id>
   ```
 
 - Audio is then normalized with FFmpeg to 16 kHz mono WAV for analysis.
-- **Risks:** unofficial and may conflict with platform terms (see [governance](data-governance.md)). Keep yt-dlp up to date, because Twitch changes break old versions.
+- **Already-downloaded VOD:** a user who already has the VOD file passes its absolute path as the optional `video_path` when creating a job, together with the VOD link ([API contract § 3.1](../architecture/api-contract.md#31-create-a-job)). Preview and export read video from that file instead of downloading it, and the pipeline may take the audio from it too (#44). Metadata, viewer clips and chat still come from the link.
+- **Risks:** unofficial, and Twitch changes can break old versions. Keep yt-dlp up to date and record its version in the catalog.
 
 ## 4. Live chat: official Twitch chat (backup and live mode)
 
@@ -148,8 +153,8 @@ Chat in many communities is dominated by 7TV/BTTV/FFZ emotes, which appear as pl
 
 ## 6. External short-form engagement data (stretch)
 
-To predict performance **on short-form platforms** rather than on Twitch, we'd need short-form clip accounts' videos and view counts. One option is a third-party account-export tool licensed by a team member. It has a monthly limit on how many accounts can be scanned, so choose high-volume accounts. Use is subject to that tool's terms and the platforms' terms. See OQ-3 in [open questions](../project/open-questions.md). **Not part of v1/v2.**
+To predict performance **on short-form platforms** rather than on Twitch, we'd need short-form clip accounts' videos and view counts, for example from a third-party account-export tool a team member already uses (it has a monthly account-scan limit, so it would target high-volume accounts). **Out of scope this semester** ([PRD scope](../product/prd.md#scope-at-a-glance)).
 
 ## 7. Related public datasets (for context, not required)
 
-- *Video Highlight Prediction Using Audience Chat Reactions* (Fu et al., EMNLP 2017) studied highlight prediction from live-stream chat and video for esports broadcasts. It's useful as related work and as a sanity check that chat signals work. Check its dataset license before using any data.
+- *Video Highlight Prediction Using Audience Chat Reactions* (Fu et al., EMNLP 2017) studied highlight prediction from live-stream chat and video for esports broadcasts. Use it as related work and a reference for chat-based signals.
