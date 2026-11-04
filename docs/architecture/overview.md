@@ -161,7 +161,7 @@ data/
 ├── raw/                         # exactly as downloaded; never edited
 │   ├── api/<endpoint>/<date>/…json
 │   ├── chat/<video_id>.json     # TwitchDownloader output; deleted after parsing
-│   └── audio/<video_id>.m4a
+│   └── audio/<video_id>.<ext>   # best audio-only format as served (.ts for Twitch)
 ├── interim/                     # parsed, pseudonymized, per-VOD
 │   ├── chat/<video_id>.parquet # pseudonymized messages (hashed authors, redacted text)
 │   └── audio/<video_id>.wav     # 16 kHz mono, for feature extraction
