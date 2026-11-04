@@ -101,9 +101,9 @@ class Settings(BaseSettings):
             Defaults to ``INFO``.
         export_region: ``AUTOCLIPPER_EXPORT_REGION``: the fixed part of the source frame that
             vertical exports show, as ``x,y,width,height`` in fractions (0-1) of the source
-            width and height from the top-left corner, e.g. ``0.25,0,0.5,1``. None (unset)
-            means a center crop. `autoclipper.export.reframe.layout_from_settings` turns it
-            into a layout.
+            width and height from the top-left corner, e.g. ``0.25,0,0.5,1``; a region that
+            isn't 9:16 is cropped to 9:16 around its center. None (unset) means a center crop.
+            `autoclipper.export.reframe.layout_from_settings` turns it into a layout.
 
     Both directories are absolute. A relative value, including the defaults, is taken relative to
     the working directory at the time the settings are loaded (the directory ``.env`` is read

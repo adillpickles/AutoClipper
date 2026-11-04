@@ -182,6 +182,26 @@ def test_export_of_a_source_with_fewer_frames_than_the_output_starts_on_the_fram
     assert_vertical_h264_aac(result.output, 1.0)
 
 
+def test_export_starting_just_before_a_source_frame_shows_the_frame_on_screen(
+    tmp_path: Path,
+) -> None:
+    # 30 fps, brightness up by 2 luma per frame: 134 at 1.9667 s, 136 at 2.0 s.
+    source = tmp_path / "steep.mp4"
+    ramp = "nullsrc=size=320x180:rate=30:duration=4,geq=lum='16+60*T':cb=128:cr=128"
+    run_command(
+        ffmpeg_command("-f", "lavfi", "-i", ramp, "-c:v", "libx264", "-qp", "0", source),
+        timeout_s=TIMEOUT_S,
+    )
+
+    # At 1.99 s the frame from 1.9667 s is on screen; the one at 2.0 s comes 10 ms later.
+    result = export_clip(
+        ExportRequest(source, Interval(1.99, 2.99), tmp_path / "clip.mp4"), settings=LOSSLESS
+    )
+
+    assert frame_luma(result.output, 0) == pytest.approx(134, abs=0.5)
+    assert frame_luma(result.output, 1) == pytest.approx(136, abs=0.5)  # 2.0 s at 1/30 s in
+
+
 def test_export_that_cannot_decode_from_the_start_fails_instead_of_freezing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -350,7 +370,8 @@ def test_export_of_the_last_half_second_of_an_mpegts_uses_the_real_audio_end(
 
     result = export_clip(ExportRequest(source, Interval(9.3, 10.0), tmp_path / "clip.mp4"))
 
-    assert result.end_s == pytest.approx(9.835, abs=0.01)
+    assert result.end_s == pytest.approx(content_end_s(source), abs=0.01)
+    assert result.end_s > 9.7
     assert_vertical_h264_aac(result.output, result.end_s - 9.3)
 
 

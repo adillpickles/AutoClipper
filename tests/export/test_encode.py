@@ -200,7 +200,7 @@ def test_command_seeks_before_the_start_and_trims_exactly_to_it(tmp_path: Path) 
     ]
     # Video: shift the start to 0, resample, then drop what is before 0.
     assert value_after(command, "-filter:v").startswith(
-        "setpts=PTS-5.000000/TB,fps=fps=30:round=down,trim=start=0,crop="
+        "setpts=PTS-5.000000/TB,fps=fps=30:round=up,trim=start=0,crop="
     )
     assert value_after(command, "-filter:a") == "atrim=start=5.000000,asetpts=PTS-5.000000/TB"
     # The duration limit is an output option, after the input.
@@ -236,7 +236,7 @@ def test_command_encodes_h264_aac_with_faststart_and_constant_frame_rate(tmp_pat
     )
 
     assert value_after(command, "-filter:v") == (
-        "setpts=PTS-0.000000/TB,fps=fps=30:round=down,trim=start=0,"
+        "setpts=PTS-0.000000/TB,fps=fps=30:round=up,trim=start=0,"
         "crop=w=606:h=1080:x=656:y=0,"
         "scale=w=1080:h=1920:flags=lanczos,setsar=1,format=yuv420p"
     )
@@ -268,7 +268,7 @@ def test_command_uses_encode_settings(tmp_path: Path) -> None:
         settings=settings,
     )
 
-    assert ",fps=fps=60:round=down," in value_after(command, "-filter:v")
+    assert ",fps=fps=60:round=up," in value_after(command, "-filter:v")
     assert value_after(command, "-preset") == "medium"
     assert value_after(command, "-crf") == "18"
     assert value_after(command, "-b:a") == "192k"

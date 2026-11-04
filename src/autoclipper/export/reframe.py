@@ -8,10 +8,11 @@ Layouts:
 
 - `CenterCrop` (``"center_crop"``): the largest 9:16 area around the center of the frame.
   Landscape sources lose their sides; sources narrower than 9:16 lose their top and bottom.
-- `FixedRegion` (``"fixed_region"``): a rectangle given in normalized source coordinates (0-1 of
-  the width and height), e.g. a facecam corner or the game area. A region that isn't 9:16 is
-  scaled to fit and padded with black bars by default (``fit="pad"``), so everything the caller
-  chose stays visible; ``fit="crop"`` instead crops it to 9:16 around its center.
+- `FixedRegion` (``"configured_region"`` in the API contract): a rectangle given in normalized
+  source coordinates (0-1 of the width and height), e.g. a facecam corner or the game area. A
+  region that isn't 9:16 is scaled to fit and padded with black bars by default (``fit="pad"``),
+  so everything the caller chose stays visible; ``fit="crop"`` instead crops it to 9:16 around
+  its center, which is what the configured region (`layout_from_settings`) uses.
 
 Pixel geometry uses the stored frame size from `probe`. Crop offsets and sizes are rounded down to
 even numbers, which yuv420p needs, so odd source sizes (e.g. 321x181) lose at most one pixel row or
@@ -71,7 +72,7 @@ class FixedRegion:
             not ``"pad"`` or ``"crop"``.
     """
 
-    name: ClassVar[str] = "fixed_region"
+    name: ClassVar[str] = "configured_region"
 
     x: float
     y: float
@@ -104,7 +105,10 @@ type Layout = CenterCrop | FixedRegion
 
 
 def layout_from_settings(region: tuple[float, float, float, float] | None) -> Layout:
-    """The layout set in config: `FixedRegion` for a region, `CenterCrop` for None.
+    """The layout set in config: `CenterCrop` for None, otherwise `FixedRegion` cropped to 9:16.
+
+    The API contract's ``configured_region`` is a 9:16 source region, so a configured region of
+    another shape is cropped to 9:16 around its center (``fit="crop"``), never letterboxed.
 
     Args:
         region: ``Settings.export_region`` (``AUTOCLIPPER_EXPORT_REGION``): x, y, width and
@@ -116,7 +120,7 @@ def layout_from_settings(region: tuple[float, float, float, float] | None) -> La
     if region is None:
         return CenterCrop()
     x, y, width, height = region
-    return FixedRegion(x, y, width, height)
+    return FixedRegion(x, y, width, height, fit="crop")
 
 
 @dataclass(frozen=True, slots=True)

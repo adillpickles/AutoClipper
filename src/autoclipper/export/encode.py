@@ -267,7 +267,11 @@ def build_export_command(
     skip = _seconds(interval.start_s - seek_s)
     filters = (
         f"setpts=PTS-{skip}/TB",
-        f"fps=fps={encode.frame_rate}:round=down",
+        # round=up puts a source frame at clip time p in output slot ceil(p * fps), so output frame
+        # n shows the last source frame at or before n / fps: the frame on screen then. With
+        # round=down a frame just after the start would already fill slot 0, and the video would
+        # run up to one output frame ahead of the audio.
+        f"fps=fps={encode.frame_rate}:round=up",
         "trim=start=0",
         *reframe.filters(),
         *video_filters,
