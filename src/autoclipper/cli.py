@@ -327,6 +327,9 @@ def export(
     except CaptioningError as exc:  # a missing install or a failing model: an external tool
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+    except FileExistsError:
+        typer.echo(f"Error: {target} exists; pass --overwrite to replace it", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
     except ExportError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
@@ -338,7 +341,9 @@ def export(
 
 def _export_name(video: Path, start: float, end: float) -> str:
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", video.stem).strip("._") or "clip"
-    return f"{stem}_{start:g}-{end:g}.mp4"
+    # The floats as given (like the API's download name), never rounded: two trims of a long
+    # VOD that differ by a fraction of a second get different names.
+    return f"{stem}_{start}-{end}.mp4"
 
 
 @app.command()

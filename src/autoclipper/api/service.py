@@ -36,7 +36,7 @@ from autoclipper.export.clip import (
     available_layouts,
     render_clip,
 )
-from autoclipper.export.cut import Interval
+from autoclipper.export.cut import Interval, IntervalTooShortError
 from autoclipper.export.errors import ExportError
 from autoclipper.ffmpeg import FFmpegError, ffmpeg_command, probe, run_command
 from autoclipper.schemas import (
@@ -908,11 +908,11 @@ class MockService:
                 ),
             )
             return
-        except IntervalOutsideMediaError as exc:
+        except (IntervalOutsideMediaError, IntervalTooShortError) as exc:
             log.warning("export outside the media id=%s: %s", record.render_id, exc)
             self._finish_render(record, error=_OUTSIDE_MEDIA)
             return
-        except (ExportError, FFmpegError) as exc:
+        except (ExportError, FFmpegError, OSError) as exc:  # OSError: e.g. the disk is full
             log.warning("export render failed id=%s: %s", record.render_id, exc)
             self._finish_render(record, error=_RENDER_FAILED)
             return

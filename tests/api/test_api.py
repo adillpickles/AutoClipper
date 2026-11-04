@@ -13,6 +13,7 @@ from autoclipper.api.app import create_app
 from autoclipper.api.service import MockService, SampleMedia, ensure_sample_media
 from autoclipper.export.captions import CaptioningError, Stage, Transcriber, Word
 from autoclipper.export.clip import ClipSpec, IntervalOutsideMediaError, SourceMissingError
+from autoclipper.export.cut import IntervalTooShortError
 from autoclipper.export.errors import ExportError
 from autoclipper.ffmpeg import FFmpegExitError, ffmpeg_command, probe
 
@@ -655,10 +656,21 @@ def test_configured_region_without_a_region_is_an_invalid_request(client: TestCl
             "couldn't be rendered",
         ),
         (IntervalOutsideMediaError("short"), "render_failed", "doesn't cover this whole clip"),
+        (IntervalTooShortError("starts after the end"), "render_failed", "doesn't cover"),
+        (OSError(28, "No space left on device"), "render_failed", "couldn't be rendered"),
         (SourceMissingError("gone"), "media_unavailable", "missing or can't be read"),
         (RuntimeError("a bug"), "internal_error", "Something went wrong"),
     ],
-    ids=["captions", "export", "ffmpeg", "outside_media", "source_missing", "bug"],
+    ids=[
+        "captions",
+        "export",
+        "ffmpeg",
+        "outside_media",
+        "after_media",
+        "disk",
+        "source_missing",
+        "bug",
+    ],
 )
 def test_render_failures_get_the_contract_codes(
     make_client: Callable[..., tuple[TestClient, MockService]],

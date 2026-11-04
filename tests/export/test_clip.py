@@ -144,13 +144,15 @@ def test_the_export_command_writes_to_the_artifacts_dir(
     result = runner.invoke(app, ["export", str(video), "--start", "1", "--end", "3.5"])
 
     assert result.exit_code == ExitCode.SUCCESS, result.output
-    output = tmp_path / "artifacts" / "exports" / "my_vod_1-3.5.mp4"
+    output = tmp_path / "artifacts" / "exports" / "my_vod_1.0-3.5.mp4"
     assert f"Wrote {output}" in result.output
     info = probe(output)
     assert (info.video_streams[0].width, info.video_streams[0].height) == (1080, 1920)
     assert info.duration_s == pytest.approx(2.5, abs=0.05)
     again = runner.invoke(app, ["export", str(video), "--start", "1", "--end", "3.5"])
-    assert again.exit_code == ExitCode.USER_ERROR  # exists; --overwrite replaces it
+    assert again.exit_code == ExitCode.USER_ERROR
+    assert again.exception is None or isinstance(again.exception, SystemExit)
+    assert "pass --overwrite to replace it" in again.output
     replaced = runner.invoke(
         app, ["export", str(video), "--start", "1", "--end", "3.5", "--overwrite"]
     )
@@ -174,6 +176,14 @@ def test_bad_export_requests_are_user_errors(tmp_path: Path, args: list[str], me
 
     assert result.exit_code == ExitCode.USER_ERROR
     assert message in result.output
+
+
+def test_default_export_names_keep_the_exact_times() -> None:
+    from autoclipper.cli import _export_name  # pyright: ignore[reportPrivateUsage]
+
+    assert _export_name(Path("v.mp4"), 14400.25, 14430.0) == "v_14400.25-14430.0.mp4"
+    assert _export_name(Path("v.mp4"), 14400.2, 14430.0) == "v_14400.2-14430.0.mp4"
+    assert _export_name(Path("a b/../c?.mkv"), 123456.5, 123480.0) == "c_123456.5-123480.0.mp4"
 
 
 def test_a_missing_video_is_a_user_error(tmp_path: Path) -> None:
