@@ -74,6 +74,14 @@ Window scores → candidate moments. These rules apply to every scorer, baseline
 
 All of these values are config parameters tuned on validation and recorded in each experiment's config.
 
+**Implementation:** `autoclipper.models.candidates.generate_candidates(scores, duration_s=..., features=..., moments=..., params=CandidateParams(...))` returns contract `Candidate`s (`autoclipper.analysis`, the `AnalysisResult` models with the § 4.5 invariants). Choices the rules leave open:
+
+- Each smoothed peak moves to the highest raw score within the smoothing span; a candidate's score is that window's raw score, and non-max suppression uses the same score. A plateau is a peak only if it's higher than both neighbouring runs, so a step on the way up isn't one.
+- "Half the peak" is measured from the VOD's median smoothed score, because scores can be negative (sums of z-scores).
+- A candidate cut short by the VOD's start or end is moved inside it, keeping its length where possible.
+- Viewer-clip moments are matched against every surviving peak, not just the top 50, so a clipped peak just outside the shortlist comes back as `both` rather than `viewer_clips`. Clip-backed candidates are added after the top-50 shortlist, up to the contract's 200. A moment overlapping several discovered candidates marks each `both`; moments never merge into each other. A moment outside the scored windows is dropped with a warning.
+- `top_signals` lists up to 3 standardized features (`chat_msg_rate_z`, `chat_unique_rate_z`, `chat_msg_rate_rz`, `chat_msg_rate_lead1/2`, `audio_rms_max_z`, `audio_rms_rz`) whose maximum over the candidate's windows is at least 1.0, strongest first.
+
 ## 4. Training practices
 
 - **Splits:** leave-one-streamer-out rotation (3 train / 1 validation / 1 test per fold, fold 0 primary), saved to disk ([labeling § 8](../data/labeling.md#8-splits)). Model and threshold choices use validation only; never tune on test.
