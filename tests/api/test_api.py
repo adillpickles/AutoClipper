@@ -754,17 +754,15 @@ def test_exports_and_highlights_share_one_render_queue(
         f"{API}/highlights/{middle['highlights_id']}",
         f"{API}/exports/{last['export_id']}",
     ]
-    running_at_once: list[int] = []
 
     def all_done() -> bool:
-        states = [client.get(url).json()["state"] for url in urls]
-        running_at_once.append(states.count("running"))
-        return all(state == "done" for state in states)
+        return all(client.get(url).json()["state"] == "done" for url in urls)
 
     wait_until(all_done)
     finished = [client.get(url).json() for url in urls]
-    assert max(running_at_once) <= 1
-    # First in, first out: each render starts after the one before it finished.
+    # One at a time, first in, first out: each render starts only after the one before it
+    # finished, so no two ever run at once. (Polling states one URL at a time can't show this:
+    # a render can finish and the next start between two requests.)
     for before, after in itertools.pairwise(finished):
         started = datetime.fromisoformat(after["started_at"])
         assert started >= datetime.fromisoformat(before["finished_at"])
