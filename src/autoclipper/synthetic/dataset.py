@@ -40,15 +40,15 @@ from autoclipper.synthetic.scenario import BASE_TIME, Scenario, build_scenario
 log = logging.getLogger(__name__)
 
 GENERATOR = "autoclipper.synthetic"
-GENERATOR_VERSION = "1"
+GENERATOR_VERSION = "2"
 """Bump when the same seed would give different output (scenario, schemas or file layout)."""
 
 MANIFEST = "manifest.json"
 
 NOTE = (
     "Synthetic development data: fake VODs, clips and chat, generated audio and video. No real "
-    "Twitch data. Tables follow the PROPOSED tables in docs/architecture/data-model.md for "
-    "prototype use; they are not adopted contracts (ADR-0009). Hashes use a public synthetic salt."
+    "Twitch data. Tables follow docs/architecture/data-model.md. "
+    "Hashes use a public synthetic salt."
 )
 
 

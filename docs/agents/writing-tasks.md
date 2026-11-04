@@ -1,55 +1,69 @@
-# Writing Agent-Ready Tasks
+# Writing Issues
 
-A task is **agent-ready** when an agent with no prior context can finish it correctly using only the issue and the repo. Most bad agent output comes from vague tasks, not weak agents.
+Use the same plain-English format for tasks, so a teammate or coding agent can finish one from the issue plus the repo. Name the actual work and link the relevant docs directly.
 
-## The checklist
+## Title
 
-An issue gets the `agent-ready` label only when it has:
+A short action in plain words: **"Compute chat features for each time window"**.
 
-- [ ] **A goal** in 1–3 sentences: what will be true, and why.
-- [ ] **Links to the governing docs**: the exact sections, e.g. `docs/data/labeling.md §2`.
-- [ ] **Concrete acceptance criteria**: inputs → expected outputs, including edge cases.
-- [ ] **Scope boundaries**: likely files touched, and what's explicitly **out of scope**.
-- [ ] **A verification step**: a command or check that proves it works.
-- [ ] **No open decisions upstream**: nothing it relies on is waiting on a `decision` issue or an open question. Otherwise it gets `needs-decision` instead.
-- [ ] **Fits in one reviewable PR** (aim for under ~400 changed lines). Split anything bigger.
-- [ ] **Dependencies** listed under "Depends on" (or "None"). Whoever picks it up waits until they're merged.
+## Body template
 
-## Good vs. bad
+```markdown
+### Goal
+One or two sentences: what will be true when this is done, and why it matters for the app.
 
-**Bad:**
+### What to build
+- The pieces, in plain words, with likely files (`src/autoclipper/...`).
 
-> Add chat features.
+### Done when
+- [ ] Concrete, checkable outcomes (inputs → expected outputs, edge cases).
+- [ ] Tests that prove it.
 
-The agent will guess the window size, invent feature names, maybe add a library, and test nothing in particular.
+### Depends on
+- #N Short title (or "Nothing")
 
-**Good:**
+### Not included
+- What's deliberately left for another issue.
 
-> **Goal:** Compute the core chat features per window so baselines B2/B4 can run.
+### How to check
+`the command that proves it works`
+
+### Background reading
+- `docs/...` (only the sections that matter)
+```
+
+## Rules of thumb
+
+- **One PR per issue.** Aim for one module plus its tests and a little wiring. Split anything that would take several days.
+- **Depends on** lists only real prerequisites. Anything whose dependencies are merged can be picked up.
+- **UI issues** describe the screen states (empty, loading, error, done) and need a screenshot in the PR.
+- **External services** (Twitch API, downloads): unit tests use recorded, scrubbed responses; real calls go in `live` tests.
+- **Experiments** state the question and the metric before running.
+- **Labels:** one or two categories ([labels](../project/labels.md)), plus `stretch` for anything after the MVP.
+
+## Example
+
+> **Title:** Compute chat features for each time window
 >
-> **Context:** Feature definitions: `docs/ml/features.md` § Chat features (only `chat_msg_rate`, `chat_msg_rate_z`, `chat_unique_rate`, `chat_emote_rate`). Inputs: `chat_messages` and `windows` tables per `docs/architecture/data-model.md`. Depends on #12 (merged).
+> ### Goal
+> Turn a VOD's chat into numbers for every 10-second window (how busy chat is, how much it's laughing or hyped), so the baselines and the model have something to score.
 >
-> **Acceptance criteria:**
-> - [ ] `autoclipper.features.chat.compute_chat_features(windows, messages) -> DataFrame` keyed by `window_id`, with exactly those 4 columns + `feature_version="chat-v0"`
-> - [ ] Windows with no messages → raw rates (`chat_msg_rate`, `chat_unique_rate`, `chat_emote_rate`) are 0, not NaN. `chat_msg_rate_z` follows the normal z-score formula (usually negative for an empty window); only a zero-variance VOD gives `_z` = 0.
-> - [ ] A message at exactly `end_s` belongs to the *next* window
-> - [ ] Unit tests for: empty chat, single message, boundary message, zero variance
+> ### What to build
+> - `compute_chat_features(windows, messages)` in `src/autoclipper/features/chat.py`, returning one row per window.
 >
-> **Out of scope:** lead/lag features, emote lexicons, CLI wiring (separate issues).
+> ### Done when
+> - [ ] Message rate, unique chatters, laugh/hype/shock rates and their z-scores per window.
+> - [ ] Empty windows get 0, not blank. A message exactly on a window boundary goes to the later window.
+> - [ ] Tests for empty chat, a single message, a boundary message and a VOD where every window is the same.
 >
-> **Verify:** `uv run pytest tests/features/test_chat.py`
-
-## Keeping tasks small
-
-There are no size labels. Instead, aim for one module plus its tests and a little wiring per issue. If a task spans several modules or would take several days, split it: agents drift on long tasks, and big PRs are hard to review. Don't go the other way either: one issue per function is too fine.
-
-## Task types that need extra care
-
-- **Schema / label / metric changes:** the issue must say "ADR required". Usually a human writes the ADR first.
-- **Anything with external services** (Twitch API, downloads): include the exact endpoints and the documented behavior, and link `docs/data/data-sources.md`. Tell the agent to write tests against recorded, scrubbed responses, not live calls.
-- **Exploratory or research work:** use the Research spike template with a time box and a written deliverable, not a Task.
-- **UI work:** include a sketch or a description of the screen states (empty, loading, error, success). The PR needs a screenshot (before/after for changes to existing screens).
-
-## Writing the issue with an agent
-
-Planned MVP work already has drafts in the [backlog](../project/backlog.md); start there. For new work, it's fine to have an agent draft issues in the same format ([prompt](prompts.md#add-issue-drafts-to-the-backlog)). **A human must review every drafted issue** before labeling it `agent-ready`, especially the acceptance criteria.
+> ### Depends on
+> - #22 Split each VOD into time windows
+>
+> ### Not included
+> - Audio features; the training command.
+>
+> ### How to check
+> `uv run pytest tests/features/test_chat.py`
+>
+> ### Background reading
+> - `docs/ml/features.md` § Chat features
