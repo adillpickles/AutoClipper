@@ -92,6 +92,7 @@ def test_environment_variables_set_every_field(
     monkeypatch.setenv("AUTOCLIPPER_DATA_DIR", str(tmp_path / "custom-data"))
     monkeypatch.setenv("AUTOCLIPPER_ARTIFACTS_DIR", str(tmp_path / "custom-artifacts"))
     monkeypatch.setenv("AUTOCLIPPER_LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("AUTOCLIPPER_EXPORT_REGION", "0.25,0,0.5,1")
 
     settings = get_settings()
 
@@ -102,6 +103,7 @@ def test_environment_variables_set_every_field(
     assert settings.data_dir == tmp_path / "custom-data"
     assert settings.artifacts_dir == tmp_path / "custom-artifacts"
     assert settings.log_level == "DEBUG"
+    assert settings.export_region == (0.25, 0.0, 0.5, 1.0)
 
 
 def test_env_file_in_the_working_directory_is_read(tmp_path: Path) -> None:
@@ -606,3 +608,34 @@ def test_environment_access_check_detects_os_environ() -> None:
     assert _environment_access("import os\nx = os.environ['A']\n") == ["line 2: .environ"]
     assert _environment_access("from os import getenv\n") == ["line 1: from os import ..."]
     assert _environment_access("import dotenv\n") == ["line 1: import dotenv"]
+
+
+def test_export_region_is_unset_by_default() -> None:
+    assert get_settings().export_region is None
+
+
+@pytest.mark.parametrize("value", [" 0.7 , 0.1 , 0.3 , 0.25 ", "0.7,0.1,0.3,0.25"])
+def test_export_region_reads_four_fractions(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("AUTOCLIPPER_EXPORT_REGION", value)
+
+    assert get_settings().export_region == (0.7, 0.1, 0.3, 0.25)
+
+
+@pytest.mark.parametrize(
+    ("value", "problem"),
+    [
+        ("0.25,0,0.5", "four numbers"),
+        ("a,b,c,d", "four numbers"),
+        ("0,0,1.5,1", "between 0 and 1"),
+        ("nan,0,0.5,1", "between 0 and 1"),
+        ("0,0,0,1", "greater than 0"),
+        ("0.6,0,0.5,1", "outside the frame"),
+    ],
+)
+def test_invalid_export_region_is_a_config_error(
+    monkeypatch: pytest.MonkeyPatch, value: str, problem: str
+) -> None:
+    monkeypatch.setenv("AUTOCLIPPER_EXPORT_REGION", value)
+
+    with pytest.raises(ConfigError, match=rf"AUTOCLIPPER_EXPORT_REGION: .*{problem}"):
+        get_settings()

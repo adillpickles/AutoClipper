@@ -9,7 +9,7 @@
 
 ## Summary
 
-Scope, architecture and the plan are documented, with concrete defaults for building the MVP. The planned app has two outputs: ranked, captioned 9:16 clips and a 16:9 highlights video. The initial setup targets a laptop; collection/storage can be shared and hosted deployment remains an option. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client, a pseudonymizing chat replay parser and VOD audio download with 16 kHz mono normalization. Python and frontend tooling run in CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
+Scope, architecture and the plan are documented, with concrete defaults for building the MVP. The planned app has two outputs: ranked, captioned 9:16 clips and a 16:9 highlights video. The initial setup targets a laptop; collection/storage can be shared and hosted deployment remains an option. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client, a pseudonymizing chat replay parser, VOD audio download with 16 kHz mono normalization and vertical-MP4 export (cut, reframe, encode). Python and frontend tooling run in CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
 
 ## What exists
 
@@ -32,7 +32,7 @@ Scope, architecture and the plan are documented, with concrete defaults for buil
 | Data collection | ❌ Not started | Five pilot channels in [`configs/channels.yaml`](../../configs/channels.yaml); collect the VODs in `configs/pilot_vods.txt` (#35) once on a suitable machine or worker and reuse the outputs through shared storage ([data sources and delivery](../decisions/0011-data-sources-and-local-delivery.md)) |
 | Labels / features / models / eval | ❌ Not started | Approach decided: [modeling plan § 0](../ml/modeling-plan.md#0-the-plan-in-plain-english) |
 | Audio download | ✅ In place (#19), tested on synthetic data only | `autoclipper.ingest.media`: audio-only VOD download with yt-dlp to `data/raw/audio/<video_id>.<ext>` (resumable, checked for damaged bytes and against the reported duration, no FFmpeg run by yt-dlp, typed errors for unavailable, subscriber-only, no audio-only format, network and tool failures), then FFmpeg normalization to 16 kHz mono WAV in `data/interim/audio/` that keeps the VOD timeline, rejects sources with more than 1 % undecodable audio and is checked against the source's duration. Tested with fakes, generated tones and a local HLS server; not yet run on a real VOD. Details: [data sources § 3](../data/data-sources.md#3-vod-media-yt-dlp-or-twitchdownloader-unofficial) |
-| Export | 🟡 Draft only (#20) | PR #60 (vertical export) is unmerged; its code is not on `main`. |
+| Export | 🟡 Cut and reframe only (#20) | `autoclipper.export`: exact source-interval cut (padding separate, clamped to where video and audio both have content, no lag shift), `center_crop` and `configured_region` layouts (the region set with `AUTOCLIPPER_EXPORT_REGION`), 1080×1920 H.264/AAC MP4 written atomically. Tested on generated media only. No captions (#21) and no CLI/API command (#32) yet. Details: [overview § 4.6](../architecture/overview.md#46-export) |
 | License | ✅ MIT | [`LICENSE`](../../LICENSE) |
 | Web app | 🟡 Scaffold only (#6) | Next.js + TypeScript (strict) + Tailwind in `web/` with ESLint, Prettier and its own CI workflow (`web.yml`); one placeholder page. No screens (#29–#31), API client (#33) or FastAPI backend (#28) yet. |
 
@@ -42,7 +42,7 @@ Everything needed for the MVP has a documented default: data sources, pilot chan
 
 ## Suggested next tasks
 
-Follow the week of Nov 2 in the [roadmap](../product/roadmap.md): fix and merge the export draft (PR #60), fetch viewer clips (#17), the ingest command (#34) and the pilot download (#35), time windows (#22), chat and audio features (#23, #24), the backend with a fake job (#28) and the app screens (#29–#31).
+Follow the week of Nov 2 in the [roadmap](../product/roadmap.md): captions (#21), fetch viewer clips (#17), the ingest command (#34) and the pilot download (#35), time windows (#22), chat and audio features (#23, #24), the backend with a fake job (#28) and the app screens (#29–#31).
 
 ## Known issues / caveats
 
