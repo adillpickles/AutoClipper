@@ -120,6 +120,8 @@ interface StoredExport {
     | "finished_at"
   >;
   created_ms: number;
+  /** Creation order; exports made in the same millisecond still render first in, first out. */
+  seq?: number;
 }
 
 interface Store {
@@ -387,18 +389,49 @@ function mediaFor(
   };
 }
 
-/** The export as the mock server would report it at `now`. */
+/** Length of one render step: renders are quick in the mock so the cards fill in visibly. */
+export const MOCK_RENDER_STEP_MS = 800;
+
+function renderStages(captions: boolean) {
+  return EXPORT_STAGES.map((s, i) => ({ ...s, index: i + 1 })).filter(
+    (s) => s.stage !== "transcribing" || captions,
+  );
+}
+
+/**
+ * When each export starts rendering: one render at a time, first in first out (§ 9.3), after
+ * being queued for at least one step.
+ */
+export function renderSchedule(
+  exports: Record<string, StoredExport>,
+  stepMs = MOCK_RENDER_STEP_MS,
+): Map<string, number> {
+  const starts = new Map<string, number>();
+  let free = -Infinity;
+  const ordered = Object.values(exports).sort(
+    (a, b) =>
+      a.created_ms - b.created_ms ||
+      (a.seq ?? 0) - (b.seq ?? 0) ||
+      a.export.export_id.localeCompare(b.export.export_id),
+  );
+  for (const item of ordered) {
+    const start = Math.max(item.created_ms + stepMs, free);
+    starts.set(item.export.export_id, start);
+    free = start + renderStages(item.export.captions).length * stepMs;
+  }
+  return starts;
+}
+
+/** The export as the mock server would report it at `now`, given when it starts rendering. */
 export function exportAt(
   stored: StoredExport,
   now: number,
-  stepMs = MOCK_STEP_MS,
+  startMs = stored.created_ms + MOCK_RENDER_STEP_MS,
+  stepMs = MOCK_RENDER_STEP_MS,
 ): Export {
-  const stages = EXPORT_STAGES.map((s, i) => ({ ...s, index: i + 1 })).filter(
-    (s) => s.stage !== "transcribing" || stored.export.captions,
-  );
-  const step = Math.floor(Math.max(0, now - stored.created_ms) / stepMs);
+  const stages = renderStages(stored.export.captions);
   const base = stored.export;
-  if (step === 0) {
+  if (now < startMs) {
     return {
       ...base,
       state: "queued",
@@ -410,37 +443,43 @@ export function exportAt(
       finished_at: null,
     };
   }
-  const startedAt = iso(stored.created_ms + stepMs);
-  if (step <= stages.length) {
-    const current = stages[step - 1];
+  const step = Math.floor((now - startMs) / stepMs);
+  if (step < stages.length) {
+    const current = stages[step];
     return {
       ...base,
       state: "running",
       progress: {
         stage: current.stage,
         stage_index: current.index,
-        stage_count: 3,
+        stage_count: EXPORT_STAGES.length,
         stage_fraction: null,
         message: current.message,
       },
       error: null,
       download_url: null,
-      started_at: startedAt,
+      started_at: iso(startMs),
       updated_at: iso(now),
       finished_at: null,
     };
   }
-  const finishedAt = iso(stored.created_ms + (stages.length + 1) * stepMs);
+  const finishedAt = iso(startMs + stages.length * stepMs);
   return {
     ...base,
     state: "done",
     progress: null,
     error: null,
     download_url: CLIP_URL,
-    started_at: startedAt,
+    started_at: iso(startMs),
     updated_at: finishedAt,
     finished_at: finishedAt,
   };
+}
+
+function exportNow(store: Store, exportId: string, now: number): Export | null {
+  const stored = store.exports[exportId];
+  if (!stored) return null;
+  return exportAt(stored, now, renderSchedule(store.exports).get(exportId));
 }
 
 export function createMockClient(now: () => number = Date.now): ApiClient {
@@ -546,7 +585,11 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       const store = load();
       const at = now();
       for (const existing of Object.values(store.exports)) {
-        const current = exportAt(existing, at);
+        const current = exportNow(
+          store,
+          existing.export.export_id,
+          at,
+        ) as Export;
         const same = (
           [
             "job_id",
@@ -572,12 +615,17 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
           ...request,
         },
         created_ms: at,
+        seq: Object.keys(store.exports).length + 1,
       };
-      save({
+      const next = {
         ...store,
         exports: { ...store.exports, [created.export.export_id]: created },
-      });
-      return { export: exportAt(created, at), created: true };
+      };
+      save(next);
+      return {
+        export: exportNow(next, created.export.export_id, at) as Export,
+        created: true,
+      };
     },
 
     async getExport(exportId: string) {
@@ -588,7 +636,7 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
           "This export no longer exists. The server may have restarted; export the clip again.",
         );
       }
-      return exportAt(stored, now());
+      return exportNow(load(), exportId, now()) as Export;
     },
 
     resolveUrl(url: string) {

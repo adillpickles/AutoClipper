@@ -5,7 +5,9 @@ import {
   createMockClient,
   exportAt,
   jobAt,
+  MOCK_RENDER_STEP_MS,
   MOCK_STEP_MS,
+  renderSchedule,
   resetMockStore,
   schedule,
 } from "@/lib/api/mock";
@@ -195,15 +197,15 @@ describe("createMockClient", () => {
       captions: false,
     });
     expect(created.state).toBe("queued");
-    now += MOCK_STEP_MS;
+    now += MOCK_RENDER_STEP_MS;
     expect((await client.getExport(created.export_id)).progress?.stage).toBe(
       "obtaining_media",
     );
-    now += MOCK_STEP_MS;
+    now += MOCK_RENDER_STEP_MS;
     expect((await client.getExport(created.export_id)).progress?.stage).toBe(
       "rendering",
     );
-    now += MOCK_STEP_MS;
+    now += MOCK_RENDER_STEP_MS;
     const done = await client.getExport(created.export_id);
     expect(done.state).toBe("done");
     expect(done.download_url).not.toBeNull();
@@ -238,24 +240,76 @@ describe("createMockClient", () => {
 });
 
 describe("exportAt", () => {
-  it("is queued first", () => {
-    const stored = {
-      export: {
-        export_id: "exp_x",
-        job_id: "job_x",
-        candidate_id: "c001",
-        video_id: "9000000001",
-        start_s: 0,
-        end_s: 30,
-        layout: "center_crop",
-        captions: true,
-        created_at: "2026-11-04T12:00:00Z",
-      },
-      created_ms: T0,
-    };
+  const item = (id: string, createdMs: number, captions = true) => ({
+    export: {
+      export_id: id,
+      job_id: "job_x",
+      candidate_id: "c001",
+      video_id: "9000000001",
+      start_s: 0,
+      end_s: 30,
+      layout: "center_crop",
+      captions,
+      created_at: "2026-11-04T12:00:00Z",
+    },
+    created_ms: createdMs,
+  });
+
+  it("is queued first, then renders its three stages", () => {
+    const stored = item("exp_x", T0);
     expect(exportAt(stored, T0).state).toBe("queued");
-    expect(exportAt(stored, T0 + 2 * MOCK_STEP_MS).progress?.stage).toBe(
+    expect(exportAt(stored, T0 + 2 * MOCK_RENDER_STEP_MS).progress?.stage).toBe(
       "transcribing",
+    );
+    expect(exportAt(stored, T0 + 4 * MOCK_RENDER_STEP_MS).state).toBe("done");
+  });
+
+  it("keeps creation order for exports made in the same millisecond", async () => {
+    resetMockStore();
+    let now = T0;
+    const client = createMockClient(() => now);
+    const { job } = await client.createJob({ vod: "9000000041" });
+    now += 12 * MOCK_STEP_MS;
+    const request = {
+      job_id: job.job_id,
+      layout: "center_crop",
+      captions: false,
+    } as const;
+    const ids: string[] = [];
+    for (const [id, start] of [
+      ["c001", 118],
+      ["c002", 251.5],
+      ["c003", 40],
+    ] as const) {
+      const { export: created } = await client.createExport({
+        ...request,
+        candidate_id: id,
+        start_s: start,
+        end_s: start + 20,
+      });
+      ids.push(created.export_id);
+    }
+    now += 3 * MOCK_RENDER_STEP_MS; // the first is done after its 2 stages, the others wait
+    const states = await Promise.all(
+      ids.map(async (id) => (await client.getExport(id)).state),
+    );
+    expect(states).toEqual(["done", "running", "queued"]);
+  });
+
+  it("renders one export at a time, in order", () => {
+    const exports = {
+      exp_a: item("exp_a", T0),
+      exp_b: item("exp_b", T0 + 1, false),
+    };
+    const starts = renderSchedule(exports);
+    expect(starts.get("exp_a")).toBe(T0 + MOCK_RENDER_STEP_MS);
+    expect(starts.get("exp_b")).toBe(T0 + 4 * MOCK_RENDER_STEP_MS); // after a's three stages
+    const at = T0 + 3 * MOCK_RENDER_STEP_MS;
+    expect(exportAt(exports.exp_b, at, starts.get("exp_b")).state).toBe(
+      "queued",
+    );
+    expect(exportAt(exports.exp_a, at, starts.get("exp_a")).state).toBe(
+      "running",
     );
   });
 });

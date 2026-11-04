@@ -242,11 +242,21 @@ function JobStatus({
       )}
 
       {job.state === "done" && result && (
-        <p className="text-lg" role="status">
-          {result.candidates.length === 0
-            ? "No moments stood out in this VOD."
-            : `Found ${result.candidates.length} ${result.candidates.length === 1 ? "moment" : "moments"}.`}
-        </p>
+        <div className="flex flex-col items-start gap-4">
+          <p className="text-lg" role="status">
+            {result.candidates.length === 0
+              ? "No moments stood out in this VOD."
+              : `Found ${result.candidates.length} ${result.candidates.length === 1 ? "moment" : "moments"}.`}
+          </p>
+          <Link
+            href={`/jobs/${job.job_id}/results`}
+            className="rounded-lg bg-amber-500 px-5 py-3 font-semibold text-zinc-950 hover:bg-amber-400 focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:outline-none"
+          >
+            {result.candidates.length === 0
+              ? "See the results"
+              : "See the clips"}
+          </Link>
+        </div>
       )}
     </div>
   );
