@@ -114,5 +114,12 @@ Template table:
 ## 9. Implementation notes
 
 - All metrics live in `autoclipper.eval` with unit tests on hand-computed toy examples.
-- The evaluation CLI takes predictions (Parquet) + a dataset version and writes `artifacts/reports/<run_id>/metrics.json` plus a Markdown summary; the summary `metrics.json` is copied into the experiment's folder ([experiments](experiments.md)).
+- The evaluation CLI writes `artifacts/reports/<run_id>/metrics.json` plus a Markdown summary (`summary.md`) with the dataset version, git commit (`-dirty` if tracked files changed) and seed; the summary `metrics.json` is copied into the experiment's folder ([experiments](experiments.md)). For now it takes the scorer's candidates directly, since candidate generation from window predictions is #27:
+
+  ```bash
+  uv run autoclipper evaluate --candidates c.parquet --moments moments.parquet --clips clips.parquet \
+      --dataset-version v1 --scorer chat_spike --seed 0 [--run-id <id>] [--force]
+  ```
+
+  Candidates have `video_id`, `candidate_id`, `start_s`, `end_s` and `score`; only each VOD's top 10 by score count. Moments and clips come from the same snapshot. Step 1 is implemented in `autoclipper.eval` (`metrics`, `bootstrap`, `harness`): hit rate@10 and top-clip recall@10 per VOD, averaged, with VOD-resampled 95% intervals. A VOD with moments but no candidates scores 0.
 - Bootstrap: 1,000 resamples of VODs with a fixed seed.
