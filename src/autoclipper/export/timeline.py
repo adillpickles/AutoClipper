@@ -16,6 +16,13 @@ the source from the keyframe before the interval, written as Matroska with FFmpe
 timestamps, plus the shift that maps its own times onto the corrected timeline. Export and
 caption extraction cut from the window, so they see what analysis saw.
 
+Accuracy: inside the window FFmpeg corrects a reset the window itself crosses from whichever
+stream reaches it first, while analysis takes the audio's correction; a clip that spans a reset
+can therefore sit up to about one frame off the analysis timeline there. The correction offsets
+are read from FFmpeg's warning "timestamp discontinuity ... new offset=", which FFmpeg 6.1 and
+later print (the tests run it); if the counts don't add up, export refuses the source with
+`TimelineError` rather than cut from times analysis didn't use.
+
 Sources whose timestamps never jump back, and formats FFmpeg never corrects (MP4, Matroska,
 WAV), are used as they are, at no extra cost beyond one check per file (kept for the process).
 For a source with resets the check reads the whole file once (packets only, no decoding).
@@ -126,7 +133,18 @@ def _read(source: Path, *, runner: Runner | None, has_audio: bool) -> ResetTimel
     video = _parse_packets(packets, source)
     # Each stream's timestamps jump back at its own first packet after a reset.
     resets = sum(1 for _, _, _, jump in video if jump)
-    if resets == 0:
+    audio_resets = 0
+    if has_audio:
+        audio_packets = run_command(
+            ffprobe_command(
+                *("-select_streams", "a:0", "-show_entries", "packet=pts_time,dts_time,pos,flags"),
+                *("-of", "csv=p=0", source),
+            ),
+            timeout_s=FULL_READ_TIMEOUT_S,
+            runner=runner,
+        ).stdout
+        audio_resets = sum(1 for _, _, _, jump in _parse_packets(audio_packets, source) if jump)
+    if resets == 0 and audio_resets == 0:
         return None
     # The offsets FFmpeg adds, read the way normalization reads the audio (the reference).
     reference = "0:a:0" if has_audio else "0:v:0"
@@ -140,10 +158,12 @@ def _read(source: Path, *, runner: Runner | None, has_audio: bool) -> ResetTimel
         runner=runner,
     )
     offsets_us = [int(m) for m in _DISCONTINUITY.findall(result.stderr)]
-    if len(offsets_us) != resets:
+    if not (len(offsets_us) == resets == (audio_resets if has_audio else resets)):
+        # Refuse rather than cut from times that may not be the ones analysis used.
         raise TimelineError(
-            f"{source.name}: the video's timestamps restart {resets} time(s) but FFmpeg "
-            f"reports {len(offsets_us)} correction(s), so its timeline can't be mapped"
+            f"{source.name}: its timestamps restart ({resets} time(s) in the video, "
+            f"{audio_resets} in the audio) but FFmpeg reports {len(offsets_us)} correction(s), "
+            "so the video can't be put on the analysis timeline; remux it into MP4 or MKV first"
         )
     container_start_s = _container_start(source, runner)
     keyframes: list[tuple[float, int]] = []
@@ -151,7 +171,7 @@ def _read(source: Path, *, runner: Runner | None, has_audio: bool) -> ResetTimel
     for time_s, pos, key, jump in video:
         if jump:
             segment += 1
-        if key:
+        if key and pos >= 0:  # a window starts at a keyframe's byte position
             offset_s = 0.0 if segment == 0 else offsets_us[segment - 1] / 1_000_000
             keyframes.append((round(time_s + offset_s - container_start_s, 6), pos))
     log.info("timeline resets source=%s n=%d", source, resets)
@@ -169,7 +189,8 @@ def _parse_packets(stdout: bytes, source: Path) -> list[tuple[float, int, bool, 
         try:
             pts_s = float(fields[0])
             dts_s = float(fields[1]) if fields[1] not in ("", "N/A") else pts_s
-            pos = int(fields[2])
+            # Parsed audio frames can have no byte position; only video keyframes need one.
+            pos = int(fields[2]) if fields[2] not in ("", "N/A") else -1
         except ValueError:
             raise FFmpegOutputError(
                 f"unexpected ffprobe packet line for {source}: {line!r}"
@@ -207,8 +228,15 @@ class Window:
     offset_s: float
 
     def local(self, interval: Interval) -> Interval:
-        """`interval` (corrected timeline) in this file's own time."""
-        return Interval(interval.start_s - self.offset_s, interval.end_s - self.offset_s)
+        """`interval` (corrected timeline) in this file's own time.
+
+        A start before the file's own start (the copy begins at the first keyframe, which can lie
+        a little after the start of the media) becomes 0; the cut then clamps it to the media,
+        as for any source.
+        """
+        start_s = max(0.0, interval.start_s - self.offset_s)
+        end_s = max(start_s + 1e-6, interval.end_s - self.offset_s)
+        return Interval(start_s, end_s)
 
     def corrected(self, interval: Interval) -> Interval:
         """`interval` (this file's own time) on the corrected timeline."""

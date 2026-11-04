@@ -25,7 +25,6 @@ recorded as failed (or unavailable) when the metadata is.
 import dataclasses
 import json
 import logging
-import wave
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -37,7 +36,7 @@ import pyarrow.parquet as pq
 from pydantic import SecretStr
 
 from autoclipper import tables
-from autoclipper.ffmpeg import Runner
+from autoclipper.ffmpeg import Runner, probe
 from autoclipper.ingest import chat as chat_module
 from autoclipper.ingest.catalog import CatalogEntry, Status, read_catalog, record
 from autoclipper.ingest.catalog import write_table_atomically as _write_table
@@ -306,8 +305,10 @@ def ingest_vod(
             # may not have known (its metadata step failed). Check the cached audio now, as a
             # first run would, instead of keeping audio that may not be this VOD's.
             try:
-                _check_media_length(_wav_duration_s(wav), vod.duration_s, media_file or wav)
-            except MediaLengthError as exc:
+                _check_media_length(
+                    probe(wav, runner=tools.runner).duration_s, vod.duration_s, media_file or wav
+                )
+            except Exception as exc:  # the wrong length, or unreadable: recorded, not fatal
                 wav.unlink(missing_ok=True)
                 finish("audio", "failed", LOCAL_FILE_TOOL, _describe(exc))
             else:
@@ -345,11 +346,6 @@ def ingest_vod(
 
 # The catalog's `tool` for audio converted from a file the user gave (`--media`).
 LOCAL_FILE_TOOL: Final = "local-file"
-
-
-def _wav_duration_s(path: Path) -> float:
-    with wave.open(str(path), "rb") as audio:
-        return audio.getnframes() / audio.getframerate()
 
 
 # A local file may differ from Twitch's duration by this much (whichever is larger).

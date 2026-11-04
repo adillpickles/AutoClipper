@@ -50,9 +50,11 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from autoclipper.export.cut import (
+    MIN_CLIP_DURATION_S,
     ContextPadding,
     CutPlan,
     Interval,
+    IntervalTooShortError,
     plan_cut,
 )
 from autoclipper.export.errors import ExportError
@@ -413,14 +415,23 @@ def export_clip(
             assert filters_for_cut is not None
             return filters_for_cut(window.corrected(actual))
 
-        result = _export(
-            local,
-            settings=settings,
-            video_filters=video_filters,
-            filters_for_cut=None if filters_for_cut is None else local_filters,
-            runner=runner,
-            timeout_s=timeout_s,
-        )
+        try:
+            result = _export(
+                local,
+                settings=settings,
+                video_filters=video_filters,
+                filters_for_cut=None if filters_for_cut is None else local_filters,
+                runner=runner,
+                timeout_s=timeout_s,
+            )
+        except IntervalTooShortError as exc:
+            # The message would quote the temporary copy's own times; use the caller's.
+            interval = request.interval
+            raise IntervalTooShortError(
+                f"the interval {interval.start_s:g}-{interval.end_s:g} s leaves too little inside "
+                "the media: the video ends before it, or less than "
+                f"{MIN_CLIP_DURATION_S:g} s of it is left"
+            ) from exc
     cut = replace(
         result.cut, requested=request.interval, actual=window.corrected(result.cut.actual)
     )

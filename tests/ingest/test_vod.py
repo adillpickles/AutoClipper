@@ -544,6 +544,29 @@ def test_cached_local_audio_is_length_checked_once_the_vod_length_is_known(
 
 
 @pytest.mark.ffmpeg
+def test_unreadable_cached_local_audio_is_recorded_not_fatal(
+    tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path]
+) -> None:
+    data = tmp_path / "data"
+    two_seconds = make_test_media("two seconds.mp4", duration_s=2.0)
+    no_helix = IngestTools(
+        salt=SALT, chat_runner=FakeChatTool(), chat_binary=chat_binary, clock=lambda: NOW
+    )
+    ingest_vod(VIDEO_ID, data_dir=data, tools=no_helix, media_file=two_seconds)
+    normalized_audio_path(data, VIDEO_ID).write_bytes(b"not a wav")  # e.g. damaged on disk
+
+    second = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=FakeTwitch(video=video_record(duration="0h0m2s"))),
+    )
+
+    assert outcomes(second)["audio"] == "failed"
+    assert read_catalog(data)[("audio", VIDEO_ID)].status == "failed"
+    assert not normalized_audio_path(data, VIDEO_ID).exists()
+
+
+@pytest.mark.ffmpeg
 def test_cached_local_audio_of_the_right_length_is_kept(
     tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path]
 ) -> None:

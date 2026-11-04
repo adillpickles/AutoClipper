@@ -17,7 +17,7 @@ from autoclipper.export.captions import (
     read_wav,
 )
 from autoclipper.export.clip import ClipSpec, render_clip
-from autoclipper.export.cut import Interval
+from autoclipper.export.cut import Interval, IntervalTooShortError
 from autoclipper.export.encode import EncodeSettings, ExportRequest, export_clip
 from autoclipper.ffmpeg import ffmpeg_command, run_command
 from autoclipper.ingest.media import normalize_audio
@@ -153,6 +153,27 @@ def test_caption_audio_after_a_reset_comes_from_the_right_segment(tmp_path: Path
 
     assert dominant_hz(read_wav(wav)) == pytest.approx(880, abs=20)
     assert wav_seconds(wav) == pytest.approx(1.0, abs=0.05)
+
+
+def test_a_reset_source_exports_from_its_very_start(tmp_path: Path) -> None:
+    # The copy the cut comes from starts at the first keyframe, a little after the media start.
+    source = joined(tmp_path)
+
+    result = export_clip(
+        ExportRequest(source, Interval(0.0, 1.0), tmp_path / "clip.mp4"), settings=FAST
+    )
+    wav = extract_audio(source, Interval(0.0, 1.0), tmp_path / "clip.wav")
+
+    assert result.cut.actual.start_s == pytest.approx(0.0, abs=0.05)
+    assert result.cut.actual.end_s == pytest.approx(1.0, abs=1e-6)
+    assert dominant_hz(read_wav(wav)) == pytest.approx(440, abs=20)
+
+
+def test_errors_on_a_reset_source_quote_the_requested_times(tmp_path: Path) -> None:
+    source = joined(tmp_path)
+
+    with pytest.raises(IntervalTooShortError, match=r"the interval 9-10 s"):
+        export_clip(ExportRequest(source, Interval(9.0, 10.0), tmp_path / "c.mp4"), settings=FAST)
 
 
 def test_sources_without_resets_are_used_as_they_are(tmp_path: Path) -> None:
