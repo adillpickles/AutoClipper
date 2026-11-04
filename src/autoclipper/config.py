@@ -23,11 +23,11 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Annotated, Final, Literal
 
 from dotenv.parser import parse_stream
 from pydantic import Field, SecretStr, ValidationError, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 """The values ``AUTOCLIPPER_LOG_LEVEL`` accepts, in any letter case."""
@@ -99,6 +99,11 @@ class Settings(BaseSettings):
             Twitch user IDs, or None if unset. Use `require_chat_hash_salt` to get it.
         log_level: ``AUTOCLIPPER_LOG_LEVEL``: minimum level of AutoClipper's own log records.
             Defaults to ``INFO``.
+        export_region: ``AUTOCLIPPER_EXPORT_REGION``: the fixed part of the source frame that
+            vertical exports show, as ``x,y,width,height`` in fractions (0-1) of the source
+            width and height from the top-left corner, e.g. ``0.25,0,0.5,1``. None (unset)
+            means a center crop. `autoclipper.export.reframe.layout_from_settings` turns it
+            into a layout.
 
     Both directories are absolute. A relative value, including the defaults, is taken relative to
     the working directory at the time the settings are loaded (the directory ``.env`` is read
@@ -137,6 +142,10 @@ class Settings(BaseSettings):
         default=None, validation_alias="AUTOCLIPPER_CHAT_HASH_SALT"
     )
     log_level: LogLevel = Field(default="INFO", validation_alias="AUTOCLIPPER_LOG_LEVEL")
+    # NoDecode: the value is "x,y,width,height", not the JSON pydantic-settings expects for tuples.
+    export_region: Annotated[tuple[float, float, float, float] | None, NoDecode] = Field(
+        default=None, validation_alias="AUTOCLIPPER_EXPORT_REGION"
+    )
 
     @field_validator("twitch_client_id", "twitch_client_secret", "chat_hash_salt", mode="before")
     @classmethod
@@ -193,6 +202,28 @@ class Settings(BaseSettings):
     def _normalize_log_level(cls, value: object) -> object:
         # Accept "info" and stray spaces; the type then rejects anything that isn't a level name.
         return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("export_region", mode="before")
+    @classmethod
+    def _parse_region(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        parts = value.split(",")
+        try:
+            x, y, width, height = (float(part) for part in parts)
+        except ValueError:
+            raise ValueError(
+                "must be four numbers x,y,width,height (fractions 0-1 of the source frame), "
+                "e.g. 0.25,0,0.5,1"
+            ) from None
+        if not all(0.0 <= v <= 1.0 for v in (x, y, width, height)):  # also rejects nan
+            raise ValueError("x, y, width and height must each be between 0 and 1")
+        if width <= 0 or height <= 0:
+            raise ValueError("width and height must be greater than 0")
+        # Same float slack as autoclipper.export.reframe, so 0.7 + 0.3 is accepted.
+        if x + width > 1.0 + 1e-9 or y + height > 1.0 + 1e-9:
+            raise ValueError("the region reaches outside the frame (x + width or y + height > 1)")
+        return (x, y, width, height)
 
     def require_twitch_credentials(self) -> TwitchCredentials:
         """Return the Twitch app credentials, for code that calls the Helix API.

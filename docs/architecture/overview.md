@@ -129,10 +129,10 @@ FFmpeg-based. Every FFmpeg call goes through `autoclipper.ffmpeg`: commands are 
 **Vertical clips** (the app requests them for the top 10 when analysis finishes, and again after a trim):
 
 1. Get the video: fetch the segment with TwitchDownloader or yt-dlp, or read the user's local VOD file.
-2. Preview and trim the already aligned VOD interval, respecting manual adjustments and clamping to media bounds. Chat-time heuristics align once during candidate generation; export never applies another lag shift. Context padding is separate and explicit.
-3. Basic 9:16 crop or configured layout; other aspect ratios and detection-based smart crop are optional.
+2. Preview and trim the already aligned VOD interval, respecting manual adjustments and clamping to media bounds. Chat-time heuristics align once during candidate generation; export never applies another lag shift. Context padding is separate and explicit. `autoclipper.export.cut` pads first, then clamps to the span that the video and audio streams used both cover, measured from their last packets because metadata durations are missing (MKV) or estimated (MPEG-TS); at the end of a VOD the audio often stops a little before the video. It reports the requested and actual intervals separately, and refuses an interval that starts after the media ends or leaves less than 0.5 s inside it. The cut is frame-accurate at non-keyframe starts: decoding begins at the last video keyframe at or before the start (`autoclipper.export.seek`, read from the packet list with ffprobe), also in containers without an index (MPEG-TS).
+3. Basic 9:16 crop or configured layout; other aspect ratios and detection-based smart crop are optional. Layouts (`autoclipper.export.reframe`): `center_crop` (the largest centered 9:16 area, the default) and `fixed_region` (a rectangle in normalized source coordinates, padded with black to fit 9:16 by default, or cropped with `fit="crop"`). `AUTOCLIPPER_EXPORT_REGION` sets the fixed region in config (`layout_from_settings`).
 4. Captions: speech-to-text (faster-whisper, CPU-capable) → word timestamps → burned-in subtitles.
-5. Encode H.264/AAC, 1080×1920, at most 90 s.
+5. Encode H.264/AAC, 1080×1920, at most 90 s (the limit is checked by the export endpoint, #32). `autoclipper.export.encode.export_clip`: libx264 `yuv420p`, constant 30 fps by default, `+faststart`, stereo AAC; a source without audio gets a silent AAC track. The MP4 is written to a temporary file and moved into place only after its probe matches (H.264 1080×1920 + AAC, each stream covering the whole clip), so a failed export leaves nothing at the output path. Without `overwrite` the move never replaces an existing file.
 
 **Highlights video** (on request):
 

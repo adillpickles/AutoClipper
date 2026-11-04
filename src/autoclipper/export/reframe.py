@@ -103,6 +103,22 @@ class FixedRegion:
 type Layout = CenterCrop | FixedRegion
 
 
+def layout_from_settings(region: tuple[float, float, float, float] | None) -> Layout:
+    """The layout set in config: `FixedRegion` for a region, `CenterCrop` for None.
+
+    Args:
+        region: ``Settings.export_region`` (``AUTOCLIPPER_EXPORT_REGION``): x, y, width and
+            height as fractions of the source frame.
+
+    Raises:
+        InvalidLayoutError: The region is out of bounds (see `FixedRegion`).
+    """
+    if region is None:
+        return CenterCrop()
+    x, y, width, height = region
+    return FixedRegion(x, y, width, height)
+
+
 @dataclass(frozen=True, slots=True)
 class PixelRect:
     """A rectangle in source pixels, from the top-left corner."""

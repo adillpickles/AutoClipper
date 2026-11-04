@@ -11,6 +11,7 @@ from autoclipper.export.reframe import (
     InvalidLayoutError,
     PixelRect,
     ReframePlan,
+    layout_from_settings,
     plan_reframe,
 )
 
@@ -130,3 +131,11 @@ def test_source_smaller_than_the_minimum_crop_is_rejected() -> None:
 def test_layouts_have_stable_names() -> None:
     assert CenterCrop.name == "center_crop"
     assert FixedRegion.name == "fixed_region"
+
+
+def test_layout_from_settings_is_a_center_crop_without_a_region() -> None:
+    assert layout_from_settings(None) == CenterCrop()
+
+
+def test_layout_from_settings_is_the_configured_fixed_region() -> None:
+    assert layout_from_settings((0.25, 0.0, 0.5, 1.0)) == FixedRegion(0.25, 0.0, 0.5, 1.0)
