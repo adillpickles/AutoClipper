@@ -26,7 +26,7 @@ SEED = 7
 TS = "timestamp[us, tz=UTC]"
 CLIPS = f"processed/clips/synthetic-seed-{SEED}.parquet"
 
-# The proposed tables in docs/architecture/data-model.md: (column, Arrow type, nullable).
+# The tables in docs/architecture/data-model.md: (column, Arrow type, nullable).
 EXPECTED_SCHEMAS = {
     "processed/broadcasters.parquet": [
         ("broadcaster_id", "string", False),
@@ -148,14 +148,14 @@ def test_manifest_lists_every_file_with_its_sha256(dataset: GeneratedDataset) ->
     assert listed | {"manifest.json"} == set(dataset.files) == set(_file_bytes(dataset.out_dir))
     assert all(HEX64.fullmatch(entry["sha256"]) for entry in manifest["files"])
     assert manifest["seed"] == SEED
-    assert "PROPOSED" in manifest["note"]
+    assert "Synthetic development data" in manifest["note"]
 
 
 # --- Schemas and IDs ----------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("name", list(EXPECTED_SCHEMAS))
-def test_tables_follow_the_proposed_data_model(dataset: GeneratedDataset, name: str) -> None:
+def test_tables_follow_the_data_model(dataset: GeneratedDataset, name: str) -> None:
     schema = pq.read_schema(dataset.out_dir / name)
 
     assert [(f.name, str(f.type), f.nullable) for f in schema] == EXPECTED_SCHEMAS[name]
@@ -196,7 +196,7 @@ def test_clips_include_overlapping_touching_near_touching_and_disjoint_pairs(
 
     assert any(gap < 0 for gap in gaps), "overlapping"
     assert 0.0 in gaps, "touching: one clip ends exactly where the next starts"
-    assert any(0 < gap <= 5 for gap in gaps), "near-touching, within the proposed GAP_S"
+    assert any(0 < gap <= 5 for gap in gaps), "near-touching, within GAP_S"
     assert any(gap > 10 for gap in gaps), "disjoint"
 
 

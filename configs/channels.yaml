@@ -1,0 +1,15 @@
+# Pilot channels for data collection. Public channel logins only; no chatter usernames.
+# Large channels have many viewer clips, which gives the model plenty of labeled moments.
+# Evaluation hides or subsamples a held-out VOD's clips to measure how much the scorer
+# depends on clips. That doesn't test a small channel's quieter chat (docs/ml/evaluation.md).
+channels:
+  - login: caseoh_
+    reason: Just Chatting / variety, very large audience
+  - login: ishowspeed
+    reason: High-energy IRL and variety streams, very large audience
+  - login: kaicenat
+    reason: Just Chatting and events, very large audience
+  - login: jynxzi
+    reason: Competitive FPS (Rainbow Six Siege), very large audience
+  - login: flightreacts
+    reason: Sports and gaming reactions, large audience

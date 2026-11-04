@@ -2,105 +2,117 @@
 
 | | |
 |---|---|
-| **Status** | Proposal, amended under ADR-0009. Ratify target, population, matching and budget before reported experiments; changes require an ADR and dataset/protocol version. |
-| **Last updated** | 2026-10-13 |
+| **Status** | Current. Start with § 0; the later sections are the fuller protocol to grow into. |
+| **Last updated** | 2026-10-31 |
 
 > **No results exist yet.** This doc defines how results will be produced. Never put numbers in docs unless they come from a run recorded in `experiments/`.
 
+## 0. Start simple
+
+**Step 1: first numbers.** For each VOD of the test streamer, take the scorer's top 10 candidate moments. **Hit rate@10** is the fraction that match a viewer-clip moment within ±15 seconds, one to one (§ 3). Average over VODs and compare the four baselines: random, chat spike, loudness, and chat + loudness. Also report **top-clip recall@10**: of the moments holding the VOD's 5 most-viewed clips, how many our top 10 found.
+
+**Step 2: sharper.** NDCG@10 with relevance from relative clip views; rotate the test streamer across all five folds; 95% bootstrap intervals over VODs; the small-streamer simulation (§ 6).
+
+**Step 3: people.** Blind taste test: classmates rate our clips and the chat-spike baseline's clips from 1 to 5 (§ 7).
+
+Build step 1 first. Everything below is the fuller version.
+
 ## 1. Principles
 
-1. **Compare honestly.** Report every model alongside applicable B0–B4 on the same population and candidate budget. Baseline improvement is a research goal, not a gate preventing interface/export work.
-2. **One primary metric per question**, chosen before running.
-3. **Held-out channels.** The test split contains broadcasters never seen in training.
+1. **Compare honestly.** Report every model alongside the four baselines on the same population and candidate budget. Beating the baselines is a research goal, not a gate on interface or export work.
+2. **One primary metric**, chosen before running: hit rate@10. NDCG@10 and top-clip recall@10 are secondary.
+3. **Held-out streamers.** Splits are a leave-one-streamer-out rotation over the five pilot streamers: each fold trains on 3, validates on 1 and tests on 1 ([labeling § 8](../data/labeling.md#8-splits)). Fold 0 is the primary split. The test streamer is never seen in training.
 4. **Uncertainty is part of the result.** Report 95% bootstrap confidence intervals, resampling **VODs**, not windows.
-5. **The test split is for final numbers only.** Iterate on validation.
+5. **The test streamer's data is for final numbers only.** Model and threshold choices use validation.
 6. **Report negative results.** "Video features didn't help" is a finding.
 
 ## 2. Baselines
 
-| ID | Name | Applies to | Definition |
-|---|---|---|---|
-| B0 | Random | v1, v2 | Uniform random scores (mean over 100 seeds) |
-| B1 | Twitch views | v1 | Rank moments by Twitch views **at the same observation time the model has** (see OQ-1) |
-| B2 | Chat spike | v1, v2 | Score = `chat_msg_rate_z` (max over the moment, or per window) |
-| B3 | Loudness spike | v1, v2 | Score = `audio_rms_max_z` |
-| B4 | Chat + loudness | v1, v2 | Score = `chat_msg_rate_z + audio_rms_max_z`. A strong unlearned heuristic. |
+| Name | ID | Definition |
+|---|---|---|
+| Random | `random` | Uniform random window scores (mean over 100 seeds) |
+| Chat spike | `chat_spike` | Window score = `chat_msg_rate_z` |
+| Loudness | `loudness` | Window score = `audio_rms_max_z` |
+| Chat + loudness | `chat_loudness` | Window score = `chat_msg_rate_z + audio_rms_max_z`. A strong unlearned heuristic. |
 
-If a learned model does not beat B4, report that outcome for the evaluated protocol and sample. The heuristic may remain the useful product choice; this does not prove it is universally sufficient.
+The ID is the name used in configs, reports and the API's `scorer.name`. Every baseline is a window scorer and goes through the same filtering, source-time alignment, candidate generation ([modeling plan § 3](modeling-plan.md#3-candidate-generation)), top-10 budget and matching rules as the trained models. If a signal is unavailable for a VOD (e.g. muted audio), record it and the baselines it affects.
 
-B1 applies where existing clips are available to the system. It is not an independent-discovery comparator with hidden clip metadata; if shown there, label it an API-assisted reference. All baselines share filtering, source-time alignment, selection budget and matching rules. Record any unavailable signal and applicable baseline exclusions.
+If a learned model does not beat chat + loudness, report that outcome for the evaluated protocol and sample. The heuristic may then be the scorer the app ships; this does not prove it is universally sufficient.
 
-## 3. v1 metrics: clip ranker
+## 3. Top-10 metrics
 
-Unit: the moments of one VOD. Metrics are averaged over test VODs.
+Unit: the top 10 candidates of one test VOD. Metrics are averaged over test VODs.
+
+**Matching.** A candidate `[s, e)` matches an observed moment `[ms, me)` when the intervals overlap after widening the moment by `TOL_S = 15` s on each side: `s < me + 15` and `e > ms − 15`. Matching is one-to-one: process candidates in descending score (earlier start, then candidate ID breaks ties); each takes the unclaimed matching moment with the largest overlap (then earliest start, then `moment_id`). Each moment is matched at most once. Candidates are produced without ground-truth access.
 
 | Metric | Definition | Role |
 |---|---|---|
-| **NDCG@10** | Graded relevance from an agreed target (OQ-1); mature clip strength is one proxy | Proposed primary |
-| Precision@5 | Fraction of the top 5 in the VOD's top-20% by the agreed proxy | Proxy agreement, not verified postability |
-| Spearman ρ | Rank correlation between score and mature strength | Overall ordering |
+| **Hit rate@10** | Fraction of the top 10 candidates per VOD that match an observed moment | **Primary** |
+| Top-clip recall@10 | Fraction of the moments holding the VOD's 5 most-viewed clips that the top 10 match | Secondary: do we find the *big* moments? |
+| NDCG@10 | Relevance of a candidate = strength of its matched moment (0 if none; [labeling § 6](../data/labeling.md#6-normalization-across-channels)); ideal DCG from the VOD's strongest moments | Secondary: ranking quality |
+| Recall@10 | Fraction of all observed moments matched by the top 10 | Diagnostic coverage; capped by 10 / number of moments |
 
-## 4. v2 metrics: moment detector
+**Edge cases.** A VOD that yields fewer than 10 candidates is scored on what it returns (hit rate divides by the number returned). VODs with no observed moments are excluded from these metrics and counted in the report. VODs whose clip snapshot is flagged ([labeling § 7](../data/labeling.md#7-view-count-maturity)) are excluded from the view-weighted metrics (top-clip recall@10 and NDCG@10).
 
-### Window level
-
-| Metric | Definition | Role |
-|---|---|---|
-| PR-AUC | All annotated test windows, including unlabeled buffer windows; observed clips mark positives, other windows are treated as nonmatches for this diagnostic | Weak-label diagnostic, not true highlight precision |
-
-The training negative-buffer filter does not alter this evaluation population. Report coverage, evaluated/excluded VOD counts and exclusions for missing ground truth. A filtered-subset diagnostic must be separately named with its denominator. Under ADR-0009, budget rounding, short VODs, VODs with no observed positives, target transformation and top-percent ties need ratification before metrics are implemented; do not choose defaults by accident.
-
-### Moment level (what matters for the product)
-
-A predicted candidate **matches an observed moment** under the proposed IoU ≥ 0.3 OR source-time peak-in-interval ± `TOL_S` (10 s) rule. Process candidates in descending score (candidate ID breaks ties); match at most one unclaimed eligible moment per candidate, choosing highest IoU then earliest start then moment ID. Each moment is matched at most once. Peaks and boundaries must be produced without ground-truth access. Ratify the peak representation or use an explicitly chosen interval-only protocol for methods without peaks; do not invent peaks from labels. The course design's ±15 s rule remains an alternative to ratify; do not mix protocols within a comparison.
+## 4. Window-level diagnostics
 
 | Metric | Definition | Role |
 |---|---|---|
-| **Recall@k/h** | Fraction of observed moments matched by the top *k* candidates per VOD-hour (proposed *k* = 5) | Proposed primary |
-| Observed-clip agreement@k/h | Fraction of selected candidates that match an observed moment | Neither a quality precision estimate nor a guaranteed lower bound on postability |
-| Strength-weighted recall | Recall weighted by moment `n_clips` | Do we find the *big* moments? |
+| PR-AUC | All annotated test windows, including the training-excluded buffer windows; observed clips mark positives, other windows count as nonmatches for this diagnostic | Weak-label diagnostic, not true highlight precision |
+
+The training negative-buffer filter does not alter this evaluation population. Report coverage, evaluated/excluded VOD counts and exclusions for missing ground truth. A filtered-subset diagnostic must be separately named with its denominator.
+
+## 5. Ranking agreement with viewer clips (secondary)
+
+Does the scorer order the moments viewers clipped the way their views do? Score each observed moment of a test VOD with the scorer's maximum window score over its span, then compare with moment strength. VODs with a flagged clip snapshot are excluded.
+
+| Metric | Definition |
+|---|---|
+| Spearman ρ | Rank correlation between moment score and moment strength |
+| Precision@5 | Fraction of the 5 highest-scored moments that are in the VOD's top 20% of moments by strength (ties at the cutoff count as top 20%) |
+
+This measures agreement with views, not verified postability.
+
+## 6. Held-out clips and the small-streamer simulation
 
 ### Held-out-clips test ("zero-clip mode")
 
-Run independent discovery on test VODs while hiding all clip information through feature extraction, candidate generation, deduplication, boundary refinement and selection. Only then join observed moments for evaluation. This tests independence from clip availability. It does not reproduce sparse chat or demonstrate performance on small channels; report channel-size analyses separately.
+Run independent discovery on test VODs while hiding all clip information through feature extraction, candidate generation, deduplication, boundary refinement and selection. Only then join observed moments for evaluation. This is the default setup for every metric above; product runs that also use viewer clips are reported separately and labeled as API-assisted.
 
-### Human audit (separate quality assessment)
+### Small-streamer simulation
 
-Observed clips are incomplete and may be poor standalone highlights. Propose a blind, shuffled sample of learned-method and baseline candidates, including matched and unmatched picks, rated independently by two reviewers. Record sampling, duplicate handling, rubric, media exclusions and agreement. The original 1–5 rubric and yes/maybe/no are alternatives under OQ-15; choose one before the study. Viewing enjoyment and suitability for posting can differ, so state the assessed use case. Report judgments separately from observed-clip agreement. No "adjusted precision" estimate is promised without a sampling/estimation protocol.
+The pilot channels are all large, so the "few clips" case is simulated on held-out VODs:
 
-## 5. Online experiment (stretch)
+- **No clips:** score each held-out VOD with its viewer clips hidden from the scorer (the zero-clip mode above). Discovery runs on chat and audio alone, so this is the product's behavior for a channel nobody clips.
+- **Few clips:** for API-assisted runs, randomly keep only a fraction of the VOD's clips (e.g. 50%, 20%, 5%, with a fixed seed) before building candidates, then evaluate against the full clip snapshot. Report the metrics as a curve over the kept fraction.
 
-**Question:** do model-picked clips get more short-form views than random or naive picks?
+This tests how much the scorer depends on viewer clips being available. It is **not** a test of small channels: the held-out VODs still have a large channel's busy chat, and a small channel's quieter chat and audience are a different input. Report that limitation with every result. If time allows, add one or two small channels' VODs as an extra, unlabeled spot check in the taste test (§ 7).
 
-Design (proposal, requires team sign-off and streamer permission per [governance](../data/data-governance.md#publishing-clips)):
+## 7. Blind taste test
 
-- One or more clip accounts, one streamer who permits reposting.
-- For each VOD, take the model's top *n* and a random *n* from the same VOD's candidates (or B1's top *n*), and **randomize posting order and times**.
-- Same formatting for every arm (same crop, caption style, title template).
-- Outcome: views at a fixed age (e.g. 72 h), log-transformed. Compare arms with a paired test per VOD.
-- Pre-register the hypothesis, sample size and analysis in the experiment README **before posting**.
-- Threats to validity: account growth over time, posting-time effects, platform algorithm randomness, small sample sizes. Report them all.
+Observed clips are incomplete and may be poor standalone highlights, so people judge too. Take a shuffled sample of our top clips and the chat-spike baseline's top clips from held-out VODs, rendered identically, with the method hidden. At least two classmates rate each clip from 1 to 5 on "would you watch/post this as a short?". Record the sampling, duplicate handling and inter-rater agreement. Report the mean rating per method with a 95% bootstrap CI, separately from observed-clip agreement.
 
-Any money earned is incidental and not a metric.
-
-## 6. Reporting format
+## 8. Reporting format
 
 Every reported result includes:
 
-- Dataset version, split file, git SHA, run ID, seed(s)
-- The metric with its 95% CI, next to applicable B0–B4 on the same split/population/budget
-- Number of VODs, channels, moments and windows evaluated
+- Dataset version, split file and fold, git SHA, run ID, seed(s)
+- The metric with its 95% CI, next to the four baselines on the same split, population and budget
+- Number of VODs, channels, moments and windows evaluated, plus excluded VODs and why
 
 Template table:
 
-| Model | Features | NDCG@10 (95% CI) | P@5 | Notes |
-|---|---|---|---|---|
-| B0 random | — | TBD | TBD | |
-| B4 chat+loudness | — | TBD | TBD | |
-| LightGBM | chat + audio | TBD | TBD | |
+| Model | Features | Hit rate@10 (95% CI) | Top-clip recall@10 | NDCG@10 | Notes |
+|---|---|---|---|---|---|
+| Random | — | TBD | TBD | TBD | |
+| Chat spike | — | TBD | TBD | TBD | |
+| Loudness | — | TBD | TBD | TBD | |
+| Chat + loudness | — | TBD | TBD | TBD | |
+| Logistic regression | chat + audio | TBD | TBD | TBD | |
+| LightGBM | chat + audio | TBD | TBD | TBD | |
 
-## 7. Implementation notes
+## 9. Implementation notes
 
 - All metrics live in `autoclipper.eval` with unit tests on hand-computed toy examples.
-- The evaluation CLI takes predictions (Parquet) + a dataset version and writes `artifacts/reports/<run_id>/metrics.json` plus a Markdown summary.
+- The evaluation CLI takes predictions (Parquet) + a dataset version and writes `artifacts/reports/<run_id>/metrics.json` plus a Markdown summary; the summary `metrics.json` is copied into the experiment's folder ([experiments](experiments.md)).
 - Bootstrap: 1,000 resamples of VODs with a fixed seed.
