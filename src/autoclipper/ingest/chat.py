@@ -25,8 +25,9 @@ stable Twitch user ID (``commenter._id``). Message text is redacted in three ste
 
 Names typed without ``@`` by people who never chat in the VOD, and names glued to other letters
 (e.g. CJK text without spaces), can still remain; these are limits of the text-redaction rules.
-The parser returns messages in memory. The ingest command (#34) will save the pseudonymized table
-under ``data/interim/chat/`` for feature recomputation; this module doesn't write parsed rows.
+The parser returns messages in memory. The ingest command (`autoclipper.ingest.vod`) saves the
+pseudonymized table under ``data/interim/chat/`` for feature recomputation; this module doesn't
+write parsed rows.
 
 Logs and exception messages carry counts, reasons, IDs of videos and version numbers, never chat
 content or tool output (which may contain chat content).

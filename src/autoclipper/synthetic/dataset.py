@@ -32,8 +32,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from autoclipper import __version__
+from autoclipper import tables as schemas
 from autoclipper.ffmpeg import Runner, ffmpeg_version, run_command
-from autoclipper.synthetic import schemas
 from autoclipper.synthetic.media import VideoOptions, render_audio, video_command, write_wav
 from autoclipper.synthetic.scenario import BASE_TIME, Scenario, build_scenario
 

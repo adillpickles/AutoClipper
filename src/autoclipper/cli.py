@@ -272,6 +272,59 @@ def _read_ids(path: Path) -> list[str]:
 
 
 @app.command()
+def ingest(
+    vod: Annotated[str, typer.Argument(help="A Twitch VOD link or numeric video ID.")],
+    media: Annotated[
+        Path | None,
+        typer.Option(
+            help="A video or audio file of this VOD you already have; its audio is used instead "
+            "of downloading. It must start at the VOD's start.",
+            show_default=False,
+        ),
+    ] = None,
+) -> None:
+    """Download everything one VOD needs: metadata, viewer clips, chat and audio."""
+    from autoclipper.config import MissingSettingError
+    from autoclipper.ingest.twitch_api import HelixClient
+    from autoclipper.ingest.vod import IngestTools, ingest_vod
+    from autoclipper.schemas import parse_vod
+
+    video_id = parse_vod(vod)
+    if video_id is None:
+        typer.echo("Error: that isn't a Twitch VOD link or video ID", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    if media is not None and not media.is_file():
+        typer.echo(f"Error: media file not found: {media}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    settings = get_settings()
+    options: dict[str, Any] = {}
+    try:
+        options["salt"] = settings.require_chat_hash_salt()
+    except MissingSettingError as exc:
+        options["missing_salt"] = str(exc)
+    helix: HelixClient | None = None
+    try:
+        helix = HelixClient(settings.require_twitch_credentials())
+    except MissingSettingError as exc:
+        options["missing_helix"] = str(exc)
+    try:
+        report = ingest_vod(
+            video_id,
+            data_dir=settings.data_dir,
+            tools=IngestTools(helix=helix, **options),
+            media_file=media,
+        )
+    finally:
+        if helix is not None:
+            helix.close()
+    for step in report.steps:
+        typer.echo(f"{step.step:>9}: {step.outcome} - {step.detail}")
+    if report.failed:
+        typer.echo("Some steps failed; run the same command again to retry them.", err=True)
+        raise typer.Exit(ExitCode.EXTERNAL_FAILURE)
+
+
+@app.command()
 def serve(
     host: Annotated[str, typer.Option(help="Address to listen on.")] = "127.0.0.1",
     port: Annotated[int, typer.Option(min=1, max=65535, help="Port to listen on.")] = 8000,
