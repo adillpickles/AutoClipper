@@ -102,6 +102,9 @@ class Settings(BaseSettings):
         cors_origins: ``AUTOCLIPPER_CORS_ORIGINS``: browser origins the API (``autoclipper
             serve``) accepts requests from, comma-separated. Defaults to the local Next.js dev
             server, ``http://localhost:3000`` and ``http://127.0.0.1:3000``.
+        whisper_model: ``AUTOCLIPPER_WHISPER_MODEL``: the faster-whisper model that captions
+            exported clips, e.g. ``tiny``, ``base``, ``small``. Defaults to ``base``, which runs
+            on a laptop CPU.
         export_region: ``AUTOCLIPPER_EXPORT_REGION``: the fixed part of the source frame that
             vertical exports show, as ``x,y,width,height`` in fractions (0-1) of the source
             width and height from the top-left corner, e.g. ``0.25,0,0.5,1``; a region that
@@ -145,6 +148,9 @@ class Settings(BaseSettings):
         default=None, validation_alias="AUTOCLIPPER_CHAT_HASH_SALT"
     )
     log_level: LogLevel = Field(default="INFO", validation_alias="AUTOCLIPPER_LOG_LEVEL")
+    whisper_model: str = Field(
+        default="base", min_length=1, validation_alias="AUTOCLIPPER_WHISPER_MODEL"
+    )
     cors_origins: Annotated[tuple[str, ...], NoDecode] = Field(
         default=("http://localhost:3000", "http://127.0.0.1:3000"),
         validation_alias="AUTOCLIPPER_CORS_ORIGINS",
