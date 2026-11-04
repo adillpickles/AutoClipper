@@ -40,10 +40,30 @@ class Scorer(ABC):
 
     name: ClassVar[str]
     kind: ClassVar[ScorerKind]
-    required_features: ClassVar[tuple[str, ...]] = ()
+    # A plain (instance-settable) attribute: a trained model decides its features at fit time.
+    required_features: tuple[str, ...] = ()
 
-    def fit(self, windows: pl.DataFrame, labels: pl.Series) -> Self:
-        """Learn from training windows and their labels. Heuristics have nothing to learn."""
+    def fit(
+        self,
+        features: pl.DataFrame,
+        labels: pl.Series,
+        *,
+        weights: pl.Series | None = None,
+    ) -> Self:
+        """Learn from training windows.
+
+        Args:
+            features: One row per training window.
+            labels: The windows' labels, row-aligned with `features`.
+            weights: Optional per-window training weights, row-aligned with `features`.
+
+        Heuristics have nothing to learn and return themselves; a trained model must override
+        this, so one that forgets can't silently "train".
+        """
+        del labels, weights
+        if self.kind == "trained_model":
+            raise NotImplementedError(f"{type(self).__name__} must implement fit")
+        self._require(features)
         return self
 
     @abstractmethod
@@ -101,7 +121,7 @@ def make_scorer(name: str, **params: object) -> Scorer:
         raise ScorerError(f"unknown scorer {name!r}; known: {', '.join(scorer_names())}")
     try:
         return cls(**params)
-    except TypeError as exc:
+    except (TypeError, ValueError) as exc:
         raise ScorerError(f"bad parameters for scorer {name!r}: {exc}") from exc
 
 
@@ -124,7 +144,9 @@ def load_scorer(directory: Path) -> Scorer:
     cls = _REGISTRY.get(data["name"])
     if cls is None:
         raise ScorerError(f"{path} names unknown scorer {data['name']!r}")
+    if data.get("kind", cls.kind) != cls.kind:
+        raise ScorerError(f"{path}: kind {data.get('kind')!r} doesn't match {cls.name!r}")
     try:
         return cls.load(directory, params)
-    except TypeError as exc:
+    except (TypeError, ValueError, OSError) as exc:
         raise ScorerError(f"{path}: bad parameters for {data['name']!r}: {exc}") from exc

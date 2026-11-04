@@ -7,18 +7,19 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from autoclipper.eval.harness import evaluate
+from autoclipper.eval.harness import evaluate, evaluate_mean
 from autoclipper.features.audio import compute_audio_features
 from autoclipper.features.chat import compute_chat_features, load_lexicon
 from autoclipper.labels.moments import merge_clips_into_moments
 from autoclipper.labels.windows import windows_for_vods
 from autoclipper.models.base import (
+    Scorer,
     ScorerError,
     load_scorer,
     make_scorer,
     scorer_names,
 )
-from autoclipper.models.baselines import BASELINES, RandomScorer
+from autoclipper.models.baselines import BASELINES, RandomScorer, random_scorers
 from autoclipper.models.candidates import candidates_frame, generate_candidates
 from autoclipper.synthetic import generate_dataset
 
@@ -85,7 +86,7 @@ def test_missing_values_count_as_zero_and_are_logged(caplog: pytest.LogCaptureFi
         scores = make_scorer("chat_loudness").score(features)
 
     assert scores.filter(pl.col("window_id") == "v:30")["score"][0] == 2.0
-    assert "missing signal" in caplog.text
+    assert "missing or muted signal" in caplog.text
 
 
 def test_a_missing_feature_column_is_a_scorer_error() -> None:
@@ -144,16 +145,22 @@ def test_all_four_baselines_run_through_the_evaluation_on_the_synthetic_dataset(
         features = chat.drop("feature_version").join(audio.drop("feature_version"), on="window_id")
         per_vod.append((vod["video_id"], vod["duration_s"], windows, features))
 
-    hit_rates: dict[str, float] = {}
-    for name in BASELINES:
+    def run(scorer: Scorer) -> pl.DataFrame:
         frames = []
         for video_id, duration_s, windows, features in per_vod:
             scores = windows.select("window_id", "start_s", "end_s").join(
-                make_scorer(name).score(features), on="window_id"
+                scorer.score(features), on="window_id"
             )
             candidates = generate_candidates(scores, duration_s=duration_s, features=features)
             frames.append(candidates_frame(video_id, candidates))
-        result = evaluate(pl.concat(frames), moments, clips, seed=0)
+        return pl.concat(frames)
+
+    hit_rates: dict[str, float] = {}
+    for name in BASELINES:
+        if name == "random":  # reported as the mean over 100 seeds (evaluation.md § 2)
+            result = evaluate_mean([run(s) for s in random_scorers()], moments, clips, seed=0)
+        else:
+            result = evaluate(run(make_scorer(name)), moments, clips, seed=0)
         hit = result.summary["hit_rate_at_10"]
         assert hit is not None, name
         hit_rates[name] = hit.mean
@@ -163,3 +170,116 @@ def test_all_four_baselines_run_through_the_evaluation_on_the_synthetic_dataset(
     for name in ("chat_spike", "loudness", "chat_loudness"):
         assert hit_rates[name] > hit_rates["random"], hit_rates
     assert hit_rates["chat_loudness"] > 0.5
+
+
+def test_muted_audio_counts_as_missing_not_as_quiet(caplog: pytest.LogCaptureFixture) -> None:
+    # Muted windows read as the quietest of the VOD; their audio must not drag a chat spike down.
+    features = planted_features().with_columns(
+        audio_is_muted=pl.Series([1.0 if i == 5 else 0.0 for i in range(40)]),
+        audio_rms_max_z=pl.Series([-3.0 if i == 5 else 0.0 for i in range(40)]),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="autoclipper.models.baselines"):
+        scores = make_scorer("chat_loudness").score(features)
+
+    assert scores.filter(pl.col("window_id") == "v:5")["score"][0] == 3.0
+    assert "muted" in caplog.text
+    # Chat-only scoring doesn't look at audio at all.
+    chat = make_scorer("chat_spike").score(features)
+    assert chat.filter(pl.col("window_id") == "v:5")["score"][0] == 3.0
+
+
+@pytest.mark.parametrize("value", [float("nan"), None])
+def test_nan_and_null_values_count_as_zero(value: float | None) -> None:
+    features = planted_features().with_columns(
+        chat_msg_rate_z=pl.when(pl.col("window_id") == "v:30")
+        .then(value)
+        .otherwise(pl.col("chat_msg_rate_z"))
+    )
+
+    scores = make_scorer("chat_loudness").score(features)
+
+    assert scores.filter(pl.col("window_id") == "v:30")["score"][0] == 2.0
+
+
+def test_infinite_feature_values_are_a_scorer_error() -> None:
+    features = planted_features().with_columns(chat_msg_rate_z=pl.lit(float("inf")))
+
+    with pytest.raises(ScorerError, match="infinite"):
+        make_scorer("chat_spike").score(features)
+
+
+@pytest.mark.parametrize("seed", [-1, 1.5, True])
+def test_random_seed_must_be_a_non_negative_integer(seed: object) -> None:
+    with pytest.raises(ScorerError, match="seed must be a non-negative integer"):
+        make_scorer("random", seed=seed)
+
+
+def test_a_saved_scorer_with_bad_params_or_kind_fails_with_a_scorer_error(tmp_path: Path) -> None:
+    (tmp_path / "scorer.json").write_text(
+        '{"name": "random", "params": {"seed": -1}}', encoding="utf-8"
+    )
+    with pytest.raises(ScorerError, match="seed"):
+        load_scorer(tmp_path)
+    (tmp_path / "scorer.json").write_text(
+        '{"name": "chat_spike", "kind": "trained_model"}', encoding="utf-8"
+    )
+    with pytest.raises(ScorerError, match="kind"):
+        load_scorer(tmp_path)
+
+
+def test_scorers_register_on_any_import_of_the_package() -> None:
+    import subprocess
+    import sys
+
+    code = "from autoclipper.models.base import make_scorer; print(make_scorer('chat_spike').name)"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+
+    assert out.stdout.strip() == "chat_spike"
+
+
+def test_a_trained_model_must_implement_fit_and_can_set_its_features() -> None:
+    class Untrained(Scorer):
+        name = "untrained_test_model"
+        kind = "trained_model"
+
+        def score(self, features: pl.DataFrame) -> pl.DataFrame:
+            return features.select("window_id", score=pl.lit(0.0))
+
+    model = Untrained()
+    model.required_features = ("chat_msg_rate_z",)  # decided per instance, e.g. at fit time
+    with pytest.raises(NotImplementedError, match="must implement fit"):
+        model.fit(planted_features(), pl.Series([0] * 40))
+    assert (
+        make_scorer("chat_spike").fit(planted_features(), pl.Series([0] * 40)).name == "chat_spike"
+    )
+
+
+def test_evaluate_mean_averages_per_vod_over_runs() -> None:
+    moments = pl.DataFrame(
+        {
+            "video_id": ["a"],
+            "moment_id": ["a:m0"],
+            "start_s": [0.0],
+            "end_s": [30.0],
+            "clip_ids": [["x"]],
+        }
+    )
+    clips = pl.DataFrame({"clip_id": ["x"], "video_id": ["a"], "view_count": [5]})
+
+    def run(start: float) -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "video_id": ["a"],
+                "candidate_id": ["a:c1"],
+                "start_s": [start],
+                "end_s": [start + 30],
+                "score": [1.0],
+            }
+        )
+
+    result = evaluate_mean([run(0.0), run(500.0)], moments, clips, seed=0)
+
+    hit = result.summary["hit_rate_at_10"]
+    assert hit is not None
+    assert hit.mean == 0.5  # one run hits, one misses
