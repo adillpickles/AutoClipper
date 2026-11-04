@@ -9,7 +9,7 @@
 
 ## Summary
 
-Scope, architecture and the plan are documented, with concrete defaults for building the MVP. The planned app has two outputs: ranked, captioned 9:16 clips and a 16:9 highlights video. The initial setup targets a laptop; collection/storage can be shared and hosted deployment remains an option. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client, viewer-clip fetching, a pseudonymizing chat replay parser, VOD audio download with 16 kHz mono normalization, vertical-MP4 export (cut, reframe, encode), VOD time windows and viewer-clip moments, chat and audio features per window, the step-1 evaluation, candidate generation in the `AnalysisResult` format, and the four baselines. Python and frontend tooling run in CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
+Scope, architecture and the plan are documented, with concrete defaults for building the MVP. The planned app has two outputs: ranked, captioned 9:16 clips and a 16:9 highlights video. The initial setup targets a laptop; collection/storage can be shared and hosted deployment remains an option. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client, viewer-clip fetching, a pseudonymizing chat replay parser, VOD audio download with 16 kHz mono normalization, vertical-MP4 export (cut, reframe, encode), VOD time windows and viewer-clip moments, chat and audio features per window, the step-1 evaluation, candidate generation in the `AnalysisResult` format, the four baselines, and a mock backend API (`autoclipper serve`). Python and frontend tooling run in CI. The Next.js frontend has a placeholder page. **There is no real dataset, trained model or analysis pipeline yet; the backend runs mock jobs.** No results exist.
 
 ## What exists
 
@@ -41,6 +41,7 @@ Scope, architecture and the plan are documented, with concrete defaults for buil
 | Audio download | ✅ In place (#19), tested on synthetic data only | `autoclipper.ingest.media`: audio-only VOD download with yt-dlp to `data/raw/audio/<video_id>.<ext>` (resumable, checked for damaged bytes and against the reported duration, no FFmpeg run by yt-dlp, typed errors for unavailable, subscriber-only, no audio-only format, network and tool failures), then FFmpeg normalization to 16 kHz mono WAV in `data/interim/audio/` that keeps the VOD timeline, rejects sources with more than 1 % undecodable audio and is checked against the source's duration. Tested with fakes, generated tones and a local HLS server; not yet run on a real VOD. Details: [data sources § 3](../data/data-sources.md#3-vod-media-yt-dlp-or-twitchdownloader-unofficial) |
 | Export | 🟡 Cut and reframe only (#20) | `autoclipper.export`: exact source-interval cut (padding separate, clamped to where video and audio both have content, no lag shift), `center_crop` and `configured_region` layouts (the region set with `AUTOCLIPPER_EXPORT_REGION`), 1080×1920 H.264/AAC MP4 written atomically. Tested on generated media only. No captions (#21) and no CLI/API command (#32) yet. Details: [overview § 4.6](../architecture/overview.md#46-export) |
 | License | ✅ MIT | [`LICENSE`](../../LICENSE) |
+| Backend API (mock) | ✅ In place (#28) | `autoclipper serve` (FastAPI + uvicorn, `autoclipper.api`): every endpoint of the [API contract](../architecture/api-contract.md) with the § 11 mock scenarios, the error envelope, CORS for `AUTOCLIPPER_CORS_ORIGINS`, in-memory records, a FIFO analysis worker and a shared render worker. Exports and highlights are simulated and finish with generated sample MP4s (1080×1920, 1920×1080); preview serves a generated 360 s sample with Range support. Real analysis (#45) and rendering (#32, #72) come later |
 | Web app | 🟡 Scaffold only (#6) | Next.js + TypeScript (strict) + Tailwind in `web/` with ESLint, Prettier and its own CI workflow (`web.yml`); one placeholder page. No screens (#29–#31), API client (#33) or FastAPI backend (#28) yet. |
 
 ## Decisions
@@ -49,7 +50,7 @@ Everything needed for the MVP has a documented default: data sources, pilot chan
 
 ## Suggested next tasks
 
-Follow the week of Nov 2 in the [roadmap](../product/roadmap.md): captions (#21), the ingest command (#34) and the pilot download (#35), the backend with a fake job (#28) and the app screens (#29–#31).
+Follow the week of Nov 2 in the [roadmap](../product/roadmap.md): captions (#21), the ingest command (#34) and the pilot download (#35), and the app screens (#29–#31).
 
 ## Known issues / caveats
 

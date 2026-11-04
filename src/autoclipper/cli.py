@@ -269,3 +269,30 @@ def _read_ids(path: Path) -> list[str]:
         raise FileNotFoundError(f"input not found: {path}")
     lines = (line.strip() for line in path.read_text(encoding="utf-8").splitlines())
     return [line for line in lines if line and not line.startswith("#")]
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option(help="Address to listen on.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535, help="Port to listen on.")] = 8000,
+    step_s: Annotated[
+        float, typer.Option(min=0.0, help="Seconds each mock job or render stage takes.")
+    ] = 0.5,
+) -> None:
+    """Run the backend API with the mock job runner (open /docs for the endpoints)."""
+    import uvicorn  # Deferred: only this command needs the web server.
+
+    from autoclipper.api.app import create_app
+    from autoclipper.api.service import MockService, ensure_sample_media
+
+    settings = get_settings()
+    typer.echo("Preparing the mock sample videos (first run takes a few seconds)...")
+    try:
+        samples = ensure_sample_media(settings.artifacts_dir / "mock-media")
+    except FFmpegError as exc:
+        typer.echo(f"Error: can't generate the sample videos: {exc}", err=True)
+        raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+    service = MockService(samples=samples, output_dir=settings.artifacts_dir, step_s=step_s)
+    api = create_app(service, cors_origins=settings.cors_origins)
+    typer.echo(f"AutoClipper API (mock) on http://{host}:{port} (docs at /docs)")
+    uvicorn.run(api, host=host, port=port, log_level="warning")

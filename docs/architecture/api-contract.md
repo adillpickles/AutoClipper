@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Current (2026-10-31). Nothing here is implemented yet. Update this contract and its examples alongside implementation changes; see [§ 10](#10-versioning). |
+| **Status** | Current (2026-11-04). The mock backend (#28) implements every endpoint: `autoclipper serve`, `autoclipper.api` and the FastAPI-free models in `autoclipper.schemas` / `autoclipper.analysis`. Update this contract and its examples alongside implementation changes; see [§ 10](#10-versioning). |
 | **Last updated** | 2026-10-31 |
 | **Related** | [Application stack](../decisions/0007-web-application-stack.md) · [Modeling plan](../ml/modeling-plan.md) · [Data sources and delivery defaults](../decisions/0011-data-sources-and-local-delivery.md) · [Data model § candidates](data-model.md#candidates-apicli-output-json) · [Overview § 4.6–4.7](overview.md#46-export) |
 
@@ -1049,7 +1049,7 @@ Fixed synthetic inputs let the frontend exercise every state against the mock ba
 | `9000000002` | `done`; no viewer clips: `n_viewer_clips_total` is 0 and `candidates` holds only the `discovered` candidate shown at the end of § 4.7 (`c001`, score 1.8, 12.0–40.0 s) |
 | `9000000003` | `done` with a `chat_missing` warning: the degraded job and result in § 3.6 and § 4.7, including their `vod` |
 | `9000000004` | `failed` with `vod_unavailable` at `resolving_vod`: the failed job in § 3.6 |
-| `9000000005` | `failed` with the § 3.6 `no_usable_signals` error; `progress` is that of the § 3.6 running job (`downloading_audio`) with `stage_fraction` `null` |
+| `9000000005` | `failed` with the § 3.6 `no_usable_signals` error; `progress` is that of the § 3.6 running job (`downloading_audio`) with `stage_fraction` `null`; `warnings` are `chat_missing` and `audio_missing` (the § 3.6 messages) |
 | `9000000006` | `done` with zero candidates: `n_viewer_clips_total` is 0 and `candidates` is `[]` |
 | `9000000007` | `done`; the media endpoint returns preview and export `unavailable` (`source_unavailable`), as in § 5.2, so `POST /exports` and `POST /highlights` return `409 media_unavailable` |
 | `twitch.tv/user_001` | `422 invalid_vod_link` (normal validation, not mock-specific) |
