@@ -1,0 +1,51 @@
+# Chat reaction lexicon and clip-link filter for chat features (docs/ml/features.md § Chat).
+#
+# Bump `version` whenever a list changes: it is part of the chat features' `feature_version`,
+# so features computed with different lists are never mixed.
+#
+# Each category matches a message when any entry matches:
+#   emotes:   emote names: whole tokens in exact case, optional trailing punctuation ("W!");
+#             emoji anywhere in the message
+#   words:    words or phrases, any case, on word boundaries ("lol", "lets go")
+#   patterns: regular expressions (Rust regex syntax, as Polars uses), any case unless the
+#             pattern says otherwise
+version: 1
+
+categories:
+  laugh:
+    emotes: [KEKW, OMEGALUL, LUL, LULW, KEKL, ICANT, "😂", "🤣"]
+    words: [lol, lmao, lmfao, rofl, haha, hahaha]
+    patterns: ['\b(?:ha){3,}\b', '\bl+o+l+(?:o+l+)*\b', '\blma+o+\b']
+  hype:
+    emotes: [POG, Pog, PogChamp, PogU, POGGERS, Poggers, W, EZ, "🔥"]
+    words: [lets go, let's go, letsgo, clutch, insane, huge]
+    patterns: ['!{3,}', '\blet+s+\s*go+\b']
+  shock:
+    emotes: [monkaS, monkaW, "D:", WAYTOODANK, Sadge, "😱", "😳"]
+    words: [wtf, no way, omg, bruh, holy]
+    patterns: ['^\s*\?+\s*$', '\bno+\s+wa+y+\b']
+  # chat_keyword_rate: the small "this is a moment" list.
+  keyword:
+    emotes: [OMEGALUL, KEKW, W, Pog]
+    words: [clip it, clip that, clipped, lol, lets go]
+    patterns: []
+
+# Chat events (subs, gifted subs, raids), counted in chat_event_count. Cheers come from the
+# `bits` column instead.
+events:
+  patterns:
+    - '\bsubscribed (?:at|with)\b'
+    - '\bgifted (?:a|\d+) (?:tier \d )?subs?\b'
+    - '\bgifted \d+ months? of tier\b'
+    - '\bis gifting \d+ tier \d subs?\b'
+    - '\braiders? from\b'
+    - '\bis raiding\b'
+
+# Messages that give a clip away. Whole messages matching any pattern are removed before every
+# chat aggregate, at training and at inference.
+clip_filter:
+  patterns:
+    - 'clips\.twitch\.tv/'
+    - 'twitch\.tv/(?:[A-Za-z0-9_]+/)?clip/'
+    - '\bcreated a clip\b'
+    - '\bclip created\b'

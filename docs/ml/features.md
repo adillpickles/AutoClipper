@@ -52,6 +52,14 @@ Ordinary reactions such as "clip it" remain eligible signals. Do not remove all 
 | `chat_msg_rate_lead{1..3}` | `chat_msg_rate_z` of windows t+1…t+3 | **Offline only** (chat lag). Excluded in live experiments. |
 | `chat_msg_rate_lag{1..3}` | Same for t−1…t−3 | Build-up context |
 
+**Implementation:** `autoclipper.features.chat.compute_chat_features(windows, messages, lexicon=...)` returns `features_chat` (one Float64 row per window, never null, plus `feature_version`, e.g. `chat-v1+lexicon-v1`). The reaction lists, event notices and clip-link patterns are in [`configs/lexicon.yaml`](../../configs/lexicon.yaml), loaded with `load_lexicon`; its `version` is part of `feature_version`. Choices the table leaves open:
+
+- A message counts in the window whose `[start_s, end_s)` holds its offset; rates divide by the window's real length (a short final window too). Messages after the last window aren't counted.
+- `chat_emote_frac` divides `n_emotes` by whitespace tokens (capped at 1); `chat_caps_frac` counts Unicode letters; `chat_repeat_frac` compares lowercased, whitespace-collapsed text with any chatter's message up to 10 s earlier, across window boundaries.
+- Lexicon `emotes` match whole tokens in exact case, optionally followed by punctuation (`W` and `W!` are hype, `w` isn't); emoji match anywhere (`😂😂😂`). `words` match in any case on word boundaries, `patterns` are regexes. A VOD with no messages in any window is logged as a warning (quiet stream or missing chat).
+- `chat_event_count` counts messages with bits plus subscription, gift and raid notices.
+- `_rz` needs at least two earlier windows of the VOD, otherwise 0. Lead/lag values past the VOD's edges are 0.
+
 ## Audio features (`features_audio`)
 
 Computed from 16 kHz mono audio with librosa/NumPy. Frame-level values are aggregated per window.
