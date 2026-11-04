@@ -10,11 +10,12 @@ How it works:
   about 700 MB of samples. Frames are `FRAME_LENGTH` samples (64 ms) every `HOP_LENGTH` samples
   (32 ms) on one grid over the whole file, so block edges change nothing.
 - Per frame (NumPy only): RMS energy, zero-crossing rate, spectral centroid of the Hann-windowed
-  magnitude spectrum (Hz), and spectral flux (the summed increase of the log-magnitude spectrum
-  from the previous frame). Onsets are peaks of the flux envelope: local maxima over
+  magnitude spectrum (Hz), and spectral flux (the summed increase of the log-magnitude spectrum,
+  clamped `TOP_DB` below full scale, from the previous frame). Onsets are peaks of the flux
+  envelope scaled by its `ONSET_SCALE_PERCENTILE` percentile: local maxima over
   ±`ONSET_PEAK_FRAMES` frames that exceed the local mean over ±`ONSET_MEAN_FRAMES` frames by
-  `ONSET_DELTA`, at most one per `ONSET_WAIT_FRAMES` frames (the method librosa's
-  ``onset_detect`` uses).
+  `ONSET_DELTA`, at most one per `ONSET_WAIT_FRAMES` frames (librosa's ``onset_detect``
+  peak picking, with a percentile instead of the maximum so silence edges don't dominate).
 - A frame belongs to the window holding its centre. A window with no frames (audio shorter
   than the VOD) gets 0 and is counted in a warning.
 - Silence is RMS below `SILENCE_RMS` (-60 dBFS). Windows overlapping a Twitch muted segment keep
@@ -42,15 +43,22 @@ AUDIO_FEATURE_VERSION: Final = "audio-v1"
 SAMPLE_RATE_HZ: Final = 16_000
 FRAME_LENGTH: Final = 1024  # samples: 64 ms
 HOP_LENGTH: Final = 512  # samples: 32 ms
-BLOCK_FRAMES: Final = 1 << 15  # frames per read: about 17 minutes, 64 MB of float32 frames
+# Frames per read: about 4 minutes. The FFT and its temporaries peak at roughly 250 MB.
+BLOCK_FRAMES: Final = 1 << 13
 
 SILENCE_RMS: Final = 10 ** (-60 / 20)  # -60 dBFS, full scale = 1.0
 ONSET_PEAK_FRAMES: Final = 3
 ONSET_MEAN_FRAMES: Final = 10
 ONSET_DELTA: Final = 0.07
 ONSET_WAIT_FRAMES: Final = 3
-# Floor for the log-magnitude spectrum, so digital silence doesn't make flux explode.
-_LOG_FLOOR: Final = 1e-5
+# The log-magnitude spectrum is clamped at `TOP_DB` below a full-scale sine's magnitude (Hann
+# window: FRAME_LENGTH / 4), like librosa's top_db, so a jump out of digital silence (a muted
+# segment, a gap) gives a large but bounded flux.
+TOP_DB: Final = 80.0
+_LOG_FLOOR: Final = math.log10(FRAME_LENGTH / 4) - TOP_DB / 20
+# The flux envelope is scaled by this percentile, not its maximum: a few silence edges or one
+# extreme transient must not lower the onset count of the whole VOD.
+ONSET_SCALE_PERCENTILE: Final = 99.0
 
 # docs/ml/features.md § Normalization.
 ROLLING_WINDOWS: Final = 30
@@ -100,6 +108,14 @@ def compute_audio_features(windows: pl.DataFrame, wav_path: Path) -> pl.DataFram
         AudioFormatError: The WAV is missing, unreadable or not 16 kHz mono 16-bit PCM.
     """
     windows = _checked_windows(windows)
+    if windows.height == 0:  # a VOD shorter than half a window has no windows
+        return pl.DataFrame(
+            schema={
+                "window_id": pl.String,
+                **dict.fromkeys(FEATURE_COLUMNS, pl.Float64),
+                "feature_version": pl.String,
+            }
+        )
     frames = frame_features(wav_path)
     centres_s = (np.arange(len(frames.rms)) * HOP_LENGTH + FRAME_LENGTH / 2) / SAMPLE_RATE_HZ
     onsets = detect_onsets(frames.flux)
@@ -187,7 +203,10 @@ def frame_features(wav_path: Path) -> FrameFeatures:
     try:
         reader = wave.open(str(wav_path), "rb")  # noqa: SIM115 (closed below)
     except (OSError, wave.Error, EOFError) as exc:
-        raise AudioFormatError(f"can't read WAV {wav_path}: {exc}") from exc
+        # Python's wave module can't read RF64, which normalize_audio writes past 4 GiB (about
+        # 37 hours of 16 kHz mono audio).
+        hint = " (RF64 WAVs over 4 GiB aren't supported)" if "RIFF" in str(exc) else ""
+        raise AudioFormatError(f"can't read WAV {wav_path}: {exc}{hint}") from exc
     with reader:
         layout = (reader.getframerate(), reader.getnchannels(), reader.getsampwidth())
         if layout != (SAMPLE_RATE_HZ, 1, 2):
@@ -222,7 +241,7 @@ def frame_features(wav_path: Path) -> FrameFeatures:
             centroid[block] = np.divide(
                 magnitude @ freqs, power, out=np.zeros(count, dtype=np.float32), where=power > 0
             )
-            log_mag = np.log10(np.maximum(magnitude, _LOG_FLOOR))
+            log_mag = np.maximum(np.log10(np.maximum(magnitude, 1e-30)), _LOG_FLOOR)
             before = np.vstack(
                 [log_mag[:1] if previous_log is None else previous_log, log_mag[:-1]]
             )
@@ -236,8 +255,10 @@ def detect_onsets(flux: FloatArray) -> npt.NDArray[np.bool_]:
     """Mark onset frames: peaks of the normalized flux envelope (see the module docstring)."""
     if not len(flux):
         return np.zeros(0, dtype=bool)
-    peak = float(flux.max())
-    envelope = flux / peak if peak > 0 else flux
+    scale = float(np.percentile(flux, ONSET_SCALE_PERCENTILE))
+    if scale <= 0:
+        scale = float(flux.max())
+    envelope = flux / scale if scale > 0 else flux
     padded = np.pad(envelope, ONSET_PEAK_FRAMES, mode="constant", constant_values=-np.inf)
     local_max = np.lib.stride_tricks.sliding_window_view(padded, 2 * ONSET_PEAK_FRAMES + 1).max(
         axis=1

@@ -221,3 +221,43 @@ def test_synthetic_dataset_bursts_and_muted_segment(tmp_path: Path) -> None:
             assert (muted["audio_silence_frac"] > 0.5).all()
         else:
             assert muted.height == 0
+
+
+def syllables(seconds: float, per_second: float = 3.0, seed: int = 2) -> np.ndarray:
+    """Quiet noise with short loud noise bursts, like speech syllables."""
+    rng = np.random.default_rng(seed)
+    samples = quiet_noise(seconds, level=0.005, seed=seed)
+    for start in np.arange(0.1, seconds - 0.2, 1 / per_second):
+        burst = slice(int(start * RATE), int((start + 0.08) * RATE))
+        samples[burst] += rng.normal(0.0, 0.3, burst.stop - burst.start)
+    return samples
+
+
+def test_onsets_are_counted_at_about_the_syllable_rate(tmp_path: Path) -> None:
+    wav = write_wav(tmp_path / "speech.wav", syllables(60.0))
+
+    frame = compute_audio_features(make_windows("v", 60.0), wav)
+
+    assert frame["audio_onset_rate"].to_list() == pytest.approx([3.0] * 6, abs=0.5)
+
+
+def test_a_muted_stretch_doesnt_wipe_out_onsets_elsewhere(tmp_path: Path) -> None:
+    samples = syllables(120.0)
+    samples[60 * RATE : 70 * RATE] = 0.0  # digital silence, like a Twitch mute or a gap
+    wav = write_wav(tmp_path / "muted.wav", samples)
+
+    frame = compute_audio_features(make_windows("v", 120.0, [(60.0, 10.0)]), wav)
+
+    rates = frame["audio_onset_rate"].to_list()
+    far = rates[:5] + rates[8:]
+    assert min(far) >= 2.0, rates
+    assert rates[6] == 0.0  # inside the silence
+
+
+def test_a_vod_shorter_than_half_a_window_gives_an_empty_table(tmp_path: Path) -> None:
+    wav = write_wav(tmp_path / "short.wav", quiet_noise(3.0))
+
+    frame = compute_audio_features(make_windows("v", 3.0), wav)
+
+    assert frame.height == 0
+    assert frame.columns == ["window_id", *FEATURE_COLUMNS, "feature_version"]
