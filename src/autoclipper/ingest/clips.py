@@ -7,19 +7,21 @@ consecutive date ranges. It keeps the clips whose ``video_id`` is the VOD's and 
 Twitch's date filter includes clips created exactly on a range boundary in both ranges.
 
 Twitch returns about 1,000 clips per query, across all pages, sorted by views. A range whose
-listing reaches `SATURATION_RESULTS` may have lost clips past that limit, so it is split in half
-and both halves are queried instead, down to `MIN_RANGE`. A range that is still saturated at that
-size is kept and reported in `ClipFetchSummary.saturated_ranges`: its clips are possibly
-incomplete, never silently treated as complete.
+listing reaches `SATURATION_RESULTS` may have lost clips past that limit, so it is split into
+`SPLIT_PARTS` shorter ranges that are queried too, down to `MIN_RANGE`. A range that is still
+saturated at that size is kept and reported in `ClipFetchSummary.saturated_ranges`: its clips
+are possibly incomplete, never silently treated as complete. Ranges that were split are listed
+in `ClipFetchSummary.split_ranges`.
 
 Rows follow the ``clips`` table in docs/architecture/data-model.md. Creator IDs are pseudonymized
 with `autoclipper.privacy.pseudonymize` as they are parsed; the raw ID is not kept. Saving the
 rows to disk is the ingest command's job (#34).
 """
 
+import itertools
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Final
@@ -39,10 +41,13 @@ CLIPS_PATH: Final = "/clips"
 MAX_RESULTS_PER_QUERY: Final = 1000
 SATURATION_RESULTS: Final = 900
 
-# The first ranges are this long; saturated ranges are halved down to `MIN_RANGE`. Six hours keeps
-# a typical stream in one or two queries; a minute is about the busiest a range can usefully get.
+# The first ranges are this long; a saturated range is split into `SPLIT_PARTS` shorter ones,
+# down to `MIN_RANGE`. Six hours keeps a typical stream in one or two queries; a minute is about
+# the busiest a range can usefully get. Quarters rather than halves need fewer levels of
+# re-querying on a busy channel.
 DEFAULT_RANGE: Final = timedelta(hours=6)
 MIN_RANGE: Final = timedelta(minutes=1)
+SPLIT_PARTS: Final = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,10 +75,18 @@ class TimeRange:
         """How long the range is."""
         return self.ended_at - self.started_at
 
-    def halves(self) -> tuple["TimeRange", "TimeRange"]:
-        """Split at the middle, rounded down to a whole second."""
-        middle = self.started_at + timedelta(seconds=self.length.total_seconds() // 2)
-        return TimeRange(self.started_at, middle), TimeRange(middle, self.ended_at)
+    def split(self, parts: int) -> tuple["TimeRange", ...]:
+        """Split into `parts` consecutive ranges of about equal length, in whole seconds.
+
+        Raises:
+            ValueError: `parts` is below 2 or more than the range's seconds.
+        """
+        seconds = int(self.length.total_seconds())
+        if not 2 <= parts <= seconds:
+            raise ValueError(f"can't split a {seconds} s range into {parts} parts")
+        bounds = [self.started_at + timedelta(seconds=seconds * i // parts) for i in range(parts)]
+        bounds.append(self.ended_at)
+        return tuple(TimeRange(a, b) for a, b in itertools.pairwise(bounds))
 
     def query(self) -> list[tuple[str, str]]:
         """The ``started_at``/``ended_at`` query parameters, in RFC 3339."""
@@ -123,22 +136,24 @@ class Clip:
 
 @dataclass(frozen=True, slots=True)
 class ClipFetchSummary:
-    """What `fetch_vod_clips` searched and found.
+    """What the search for a VOD's clips covered and found.
 
     Attributes:
         search_range: The whole creation-time span searched (broadcast start to capture time).
-        ranges_queried: Every range queried, in order, including ones later split in half.
-        saturated_ranges: Ranges that reached the result limit even at `MIN_RANGE`; clips
-            created in them may be missing.
+        ranges_queried: Every range queried, in order, including ones then split.
+        split_ranges: Ranges that reached the result limit and were split into shorter ones.
+        saturated_ranges: Ranges that reached the result limit even at the minimum length;
+            clips created in them may be missing.
         n_clips: Clips of the VOD returned (after dropping duplicates).
         n_without_vod_offset: Of those, clips without a VOD offset.
-        n_other_videos: Clips of the channel dropped because they belong to another VOD or
-            to none.
-        n_duplicates: Repeated listings of a clip dropped (from overlapping ranges or splits).
+        n_other_videos: Distinct clips of the channel that belong to another VOD or to none.
+        n_duplicates: Repeated listings of the VOD's clips dropped (from range boundaries and
+            from re-querying split ranges).
     """
 
     search_range: TimeRange
     ranges_queried: tuple[TimeRange, ...]
+    split_ranges: tuple[TimeRange, ...]
     saturated_ranges: tuple[TimeRange, ...]
     n_clips: int
     n_without_vod_offset: int
@@ -147,7 +162,7 @@ class ClipFetchSummary:
 
     @property
     def complete(self) -> bool:
-        """True when no range hit the result limit (Twitch gives no stronger guarantee)."""
+        """True when no range stayed at the result limit (Twitch gives no stronger guarantee)."""
         return not self.saturated_ranges
 
 
@@ -175,95 +190,154 @@ def fetch_vod_clips(
 ) -> VodClips:
     """Fetch every viewer clip of `vod` that Get Clips lists.
 
+    The same as `fetch_channel_clips` for one VOD; see there for the arguments.
+    """
+    by_video = fetch_channel_clips(
+        client,
+        [vod],
+        salt=salt,
+        captured_at=captured_at,
+        clock=clock,
+        initial_range=initial_range,
+        min_range=min_range,
+    )
+    return by_video[vod.video_id]
+
+
+def fetch_channel_clips(
+    client: HelixClient,
+    vods: Sequence[Vod],
+    *,
+    salt: SecretStr,
+    captured_at: datetime | None = None,
+    clock: Callable[[], datetime] = _utc_now,
+    initial_range: timedelta = DEFAULT_RANGE,
+    min_range: timedelta = MIN_RANGE,
+) -> dict[str, VodClips]:
+    """Fetch the viewer clips of several VODs of one channel with one listing.
+
+    The channel's clips are listed once, from the earliest VOD's start to the capture time, and
+    sorted into the VODs, so ingesting several VODs of a channel doesn't list the same weeks
+    again for each.
+
     Args:
         client: The Helix client.
-        vod: The VOD, from `HelixClient.get_videos`; its ``created_at`` starts the search and
-            its ``broadcaster_id`` is the channel searched.
+        vods: The VODs, from `HelixClient.get_videos`, all of one broadcaster. The earliest
+            ``created_at`` starts the search.
         salt: The pseudonymization key for creator IDs (``AUTOCLIPPER_CHAT_HASH_SALT``).
         captured_at: The end of the search; defaults to now (from `clock`).
         clock: Returns the current time as an aware datetime.
         initial_range: Length of the first ranges.
-        min_range: Saturated ranges are split until they are shorter than twice this.
+        min_range: The shortest range a saturated range is split into; at least 1 second.
 
     Returns:
-        The VOD's clips, sorted by ``created_at`` then ``clip_id``, and a summary.
+        Each VOD's clips by ``video_id``, sorted by ``created_at`` then ``clip_id``, with a
+        summary. The ranges in the summaries are the shared listing's.
 
     Raises:
-        ValueError: `captured_at` is naive or not after the VOD's start, or a range length is
-            not positive.
-        TwitchAPIError: A request failed; `TwitchResponseError` if a clip record is malformed
-            or belongs to another broadcaster.
+        ValueError: `vods` is empty, mixes broadcasters or repeats a VOD; `captured_at` is
+            naive or not after the earliest VOD's start; or a range length is too short.
+        TwitchAPIError: A request failed; `TwitchResponseError` if a record of one of the VODs
+            is malformed, or a record belongs to another broadcaster.
     """
-    if initial_range <= timedelta(0) or min_range <= timedelta(0):
-        raise ValueError("initial_range and min_range must be positive")
+    if not vods:
+        raise ValueError("vods is empty")
+    broadcaster_id = vods[0].broadcaster_id
+    if any(vod.broadcaster_id != broadcaster_id for vod in vods):
+        raise ValueError("vods must all belong to one broadcaster")
+    wanted = {vod.video_id for vod in vods}
+    if len(wanted) != len(vods):
+        raise ValueError("vods lists a VOD more than once")
+    if initial_range <= timedelta(0):
+        raise ValueError("initial_range must be positive")
+    if min_range < timedelta(seconds=1):
+        raise ValueError("min_range must be at least 1 second (Twitch filters by the second)")
     end = clock() if captured_at is None else captured_at
     if end.tzinfo is None or end.utcoffset() is None:
         raise ValueError("captured_at must be timezone-aware")
-    search = TimeRange(_floor_second(vod.created_at), _ceil_second(end))  # checks the order
+    first_start = min(vod.created_at for vod in vods)
+    search = TimeRange(_floor_second(first_start), _ceil_second(end))  # checks the order
 
     pending = _consecutive_ranges(search, initial_range)
     pending.reverse()  # a stack: pop the earliest range first
     queried: list[TimeRange] = []
+    split: list[TimeRange] = []
     saturated: list[TimeRange] = []
-    found: dict[str, Clip] = {}
-    n_other = n_duplicates = 0
+    found: dict[str, dict[str, Clip]] = {video_id: {} for video_id in wanted}
+    duplicates = dict.fromkeys(wanted, 0)
+    listed: set[str] = set()  # every distinct clip ID of the channel seen
     while pending:
         current = pending.pop()
         queried.append(current)
-        records = _list_clips(client, vod.broadcaster_id, current)
+        records = _list_clips(client, broadcaster_id, current)
         if len(records) >= SATURATION_RESULTS:
-            if current.length >= 2 * min_range:
-                first, second = current.halves()
-                log.info(
-                    "splitting saturated clip range video_id=%s started_at=%s ended_at=%s n=%d",
-                    vod.video_id,
-                    _rfc3339(current.started_at),
-                    _rfc3339(current.ended_at),
-                    len(records),
-                )
-                pending.extend((second, first))
-                continue
-            log.warning(
-                "clip range still saturated video_id=%s started_at=%s ended_at=%s n=%d",
-                vod.video_id,
+            parts = min(SPLIT_PARTS, int(current.length / min_range))
+            if parts >= 2:
+                # The clips already listed are kept (they are real); the shorter ranges then
+                # find the ones past the limit, and their repeats are dropped as duplicates.
+                pending.extend(reversed(current.split(parts)))
+                split.append(current)
+                how = "splitting"
+            else:
+                saturated.append(current)
+                how = "still saturated at the minimum length"
+            log.info(
+                "clip range at the result limit, %s broadcaster_id=%s started_at=%s ended_at=%s "
+                "n=%d",
+                how,
+                broadcaster_id,
                 _rfc3339(current.started_at),
                 _rfc3339(current.ended_at),
                 len(records),
             )
-            saturated.append(current)
         for record, fetched_at in records:
-            clip = _parse_clip(record, fetched_at, salt)
-            if clip.broadcaster_id != vod.broadcaster_id:
+            if record.require_str("broadcaster_id") != broadcaster_id:
                 raise record.invalid("broadcaster_id", "is not the broadcaster queried")
-            if clip.video_id != vod.video_id:
-                n_other += 1
-            elif clip.clip_id in found:
-                n_duplicates += 1
+            clip_id = record.require_str("id", allow_empty=False)
+            listed.add(clip_id)
+            video_id = record.require_str("video_id")
+            if video_id not in wanted:
+                continue  # Another VOD's clip: not parsed, so its fields can't fail the fetch.
+            if clip_id in found[video_id]:
+                duplicates[video_id] += 1
             else:
-                found[clip.clip_id] = clip
+                found[video_id][clip_id] = _parse_clip(record, fetched_at, salt)
 
-    clips = tuple(sorted(found.values(), key=lambda clip: (clip.created_at, clip.clip_id)))
-    summary = ClipFetchSummary(
-        search_range=search,
-        ranges_queried=tuple(queried),
-        saturated_ranges=tuple(saturated),
-        n_clips=len(clips),
-        n_without_vod_offset=sum(not clip.has_vod_offset for clip in clips),
-        n_other_videos=n_other,
-        n_duplicates=n_duplicates,
-    )
-    log.info(
-        "fetched clips video_id=%s n=%d without_offset=%d other_videos=%d duplicates=%d "
-        "ranges=%d saturated=%d",
-        vod.video_id,
-        summary.n_clips,
-        summary.n_without_vod_offset,
-        summary.n_other_videos,
-        summary.n_duplicates,
-        len(queried),
-        len(saturated),
-    )
-    return VodClips(clips, summary)
+    result: dict[str, VodClips] = {}
+    for vod in vods:
+        clips = tuple(
+            sorted(found[vod.video_id].values(), key=lambda clip: (clip.created_at, clip.clip_id))
+        )
+        summary = ClipFetchSummary(
+            search_range=search,
+            ranges_queried=tuple(queried),
+            split_ranges=tuple(split),
+            saturated_ranges=tuple(saturated),
+            n_clips=len(clips),
+            n_without_vod_offset=sum(not clip.has_vod_offset for clip in clips),
+            n_other_videos=len(listed) - len(clips),
+            n_duplicates=duplicates[vod.video_id],
+        )
+        if saturated:
+            log.warning(
+                "clips possibly incomplete video_id=%s saturated_ranges=%d",
+                vod.video_id,
+                len(saturated),
+            )
+        log.info(
+            "fetched clips video_id=%s n=%d without_offset=%d other_videos=%d duplicates=%d "
+            "ranges=%d split=%d saturated=%d",
+            vod.video_id,
+            summary.n_clips,
+            summary.n_without_vod_offset,
+            summary.n_other_videos,
+            summary.n_duplicates,
+            len(queried),
+            len(split),
+            len(saturated),
+        )
+        result[vod.video_id] = VodClips(clips, summary)
+    return result
 
 
 def _list_clips(
@@ -279,7 +353,9 @@ def _list_clips(
 
 def _parse_clip(record: ResponseRecord, fetched_at: datetime, salt: SecretStr) -> Clip:
     creator_id = record.require_str("creator_id", allow_empty=False)
-    vod_offset = record.raw.get("vod_offset")
+    if "vod_offset" not in record.raw:  # null is documented; a missing field is not
+        raise record.invalid("vod_offset", "is missing")
+    vod_offset = record.raw["vod_offset"]
     return Clip(
         clip_id=record.require_str("id", allow_empty=False),
         video_id=record.require_str("video_id") or None,
