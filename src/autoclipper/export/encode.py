@@ -40,7 +40,7 @@ import contextlib
 import logging
 import os
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -336,6 +336,7 @@ def export_clip(
     *,
     settings: EncodeSettings | None = None,
     video_filters: Sequence[str] = (),
+    filters_for_cut: Callable[[Interval], Sequence[str]] | None = None,
     runner: Runner | None = None,
     timeout_s: float | None = None,
 ) -> ExportResult:
@@ -345,6 +346,9 @@ def export_clip(
         request: Source, interval, padding, layout and output path.
         settings: Encoder settings; defaults to `EncodeSettings()`.
         video_filters: Extra filters on the reframed frame (see `build_export_command`).
+        filters_for_cut: Called with the actual interval once it is planned (after padding and
+            clamping); returns more filters for the reframed frame, applied after
+            `video_filters`. Captions use it to time their lines to the real clip start.
         runner: Executes FFmpeg and FFprobe. Defaults to `run_subprocess`; tests pass a fake.
         timeout_s: Seconds the encode may take; defaults to `encode_timeout_s` of the clip.
 
@@ -393,6 +397,11 @@ def export_clip(
         request.interval, media_end_s, media_start_s=media_start_s, padding=request.padding
     )
     reframe = plan_reframe(request.layout, video.width, video.height)
+    extra_filters = (
+        list(video_filters)
+        if filters_for_cut is None
+        else [*video_filters, *filters_for_cut(cut.actual)]
+    )
     keyframe_s = find_keyframe(
         request.source,
         video.index,
@@ -427,7 +436,7 @@ def export_clip(
             # The keyframe can lie just after the start when the video begins after it.
             seek_s=min(seek_point(keyframe_s), cut.actual.start_s),
             settings=encode,
-            video_filters=video_filters,
+            video_filters=extra_filters,
         )
         limit_s = encode_timeout_s(cut.actual.duration_s) if timeout_s is None else timeout_s
         run_command(command, timeout_s=limit_s, runner=runner)
