@@ -639,3 +639,18 @@ def test_invalid_export_region_is_a_config_error(
 
     with pytest.raises(ConfigError, match=rf"AUTOCLIPPER_EXPORT_REGION: .*{problem}"):
         get_settings()
+
+
+def test_whisper_model_defaults_to_base_and_can_be_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert get_settings().whisper_model == "base"
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("AUTOCLIPPER_WHISPER_MODEL", "small")
+
+    assert get_settings().whisper_model == "small"
+
+
+def test_empty_whisper_model_means_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTOCLIPPER_WHISPER_MODEL", "")
+
+    assert get_settings().whisper_model == "base"

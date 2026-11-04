@@ -148,7 +148,9 @@ class Settings(BaseSettings):
         default=None, validation_alias="AUTOCLIPPER_CHAT_HASH_SALT"
     )
     log_level: LogLevel = Field(default="INFO", validation_alias="AUTOCLIPPER_LOG_LEVEL")
-    whisper_model: str = Field(default="base", validation_alias="AUTOCLIPPER_WHISPER_MODEL")
+    whisper_model: str = Field(
+        default="base", min_length=1, validation_alias="AUTOCLIPPER_WHISPER_MODEL"
+    )
     cors_origins: Annotated[tuple[str, ...], NoDecode] = Field(
         default=("http://localhost:3000", "http://127.0.0.1:3000"),
         validation_alias="AUTOCLIPPER_CORS_ORIGINS",

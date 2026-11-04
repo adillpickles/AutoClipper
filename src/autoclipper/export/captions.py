@@ -18,6 +18,7 @@ Times are seconds from the clip's start. A clip without speech is exported witho
 """
 
 import contextlib
+import functools
 import importlib
 import logging
 import math
@@ -32,11 +33,12 @@ from typing import Final, Protocol
 import numpy as np
 import numpy.typing as npt
 
+from autoclipper.config import get_settings
 from autoclipper.export.cut import Interval
 from autoclipper.export.encode import EncodeSettings, ExportRequest, ExportResult, export_clip
 from autoclipper.export.errors import ExportError
 from autoclipper.export.reframe import OUTPUT_HEIGHT, OUTPUT_WIDTH
-from autoclipper.ffmpeg import Runner, ffmpeg_command, probe, run_command
+from autoclipper.ffmpeg import FFmpegError, Runner, ffmpeg_command, probe, run_command
 
 log = logging.getLogger(__name__)
 
@@ -253,14 +255,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def subtitles_filter(ass_path: Path) -> str:
-    """The FFmpeg filter that burns `ass_path` in, with the path escaped for a filter graph.
+    r"""The FFmpeg filter that burns `ass_path` in, with the path escaped for a filter graph.
 
-    Forward slashes work on Windows too; ``:`` (a drive letter) and ``'`` are escaped so the
-    path survives both the option and the filter-graph parser.
+    FFmpeg unescapes a filter's options twice: once as the option value (special: ``\ ' :``)
+    and once as part of the filter graph (special: ``\ ' [ ] , ;``). The path is escaped for
+    both, so a temp directory under a name like ``O'Brien`` or a drive letter (``C:``) works.
+    Forward slashes work on Windows too.
     """
     path = ass_path.resolve().as_posix()
-    escaped = path.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
-    return f"subtitles=filename='{escaped}'"
+    value = "".join(f"\\{c}" if c in "\\':" else c for c in path)
+    escaped = "".join(f"\\{c}" if c in "\\'[],;" else c for c in value)
+    return f"subtitles=filename={escaped}"
 
 
 def extract_audio(
@@ -289,7 +294,10 @@ def caption_lines_for(
     """Transcribe `interval` of `source` and group it into caption lines (clip time)."""
     if not has_audio:
         return []
-    wav = extract_audio(source, interval, work_dir / "clip.wav", runner=runner)
+    try:
+        wav = extract_audio(source, interval, work_dir / "clip.wav", runner=runner)
+    except FFmpegError as exc:
+        raise CaptioningError(f"could not extract the clip's audio for captions: {exc}") from exc
     words = [
         w for w in transcriber(wav) if w.start_s < interval.duration_s
     ]  # nothing past the clip's end
@@ -297,6 +305,12 @@ def caption_lines_for(
     return [
         CaptionLine(line.text, line.start_s, min(line.end_s, interval.duration_s)) for line in lines
     ]
+
+
+@functools.cache
+def transcriber_for(model_size: str) -> FasterWhisperTranscriber:
+    """One shared `FasterWhisperTranscriber` per model size, so the model loads once per process."""
+    return FasterWhisperTranscriber(model_size)
 
 
 def export_clip_with_captions(
@@ -311,18 +325,21 @@ def export_clip_with_captions(
 
     Args:
         request: As for `export_clip`.
-        transcriber: Defaults to `FasterWhisperTranscriber()` (the ``base`` model).
+        transcriber: Defaults to the shared faster-whisper transcriber for the model set with
+            ``AUTOCLIPPER_WHISPER_MODEL`` (`transcriber_for`).
         settings: Encoder settings.
         runner: Executes FFmpeg and FFprobe.
         has_audio: Whether the source has an audio stream; defaults to probing it. A source
             without audio is exported without captions.
 
     Raises:
-        CaptioningError: Transcription failed; nothing is written (the contract never delivers
-            an uncaptioned file when captions were asked for).
+        CaptioningError: The audio couldn't be extracted or transcribed; nothing is written
+            (the contract never delivers an uncaptioned file when captions were asked for).
         The exceptions of `export_clip`.
     """
-    transcribe = transcriber if transcriber is not None else FasterWhisperTranscriber()
+    transcribe = (
+        transcriber if transcriber is not None else transcriber_for(get_settings().whisper_model)
+    )
     audio = (
         has_audio(request.source)
         if has_audio is not None
