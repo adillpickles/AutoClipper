@@ -38,7 +38,15 @@ from autoclipper.export.cut import Interval
 from autoclipper.export.encode import EncodeSettings, ExportRequest, ExportResult, export_clip
 from autoclipper.export.errors import ExportError
 from autoclipper.export.reframe import OUTPUT_HEIGHT, OUTPUT_WIDTH
-from autoclipper.ffmpeg import FFmpegError, Runner, ffmpeg_command, probe, run_command
+from autoclipper.export.timeline import timeline_window
+from autoclipper.ffmpeg import (
+    TIMELINE_OPTIONS,
+    FFmpegError,
+    Runner,
+    ffmpeg_command,
+    probe,
+    run_command,
+)
 
 log = logging.getLogger(__name__)
 
@@ -274,14 +282,24 @@ def subtitles_filter(ass_path: Path) -> str:
 def extract_audio(
     source: Path, interval: Interval, wav: Path, *, runner: Runner | None = None
 ) -> Path:
-    """Cut `interval` of `source`'s first audio stream to a 16 kHz mono 16-bit WAV."""
-    command = ffmpeg_command(
-        "-y",
-        *("-ss", f"{interval.start_s:.6f}", "-t", f"{interval.duration_s:.6f}"),
-        *("-i", source, "-map", "0:a:0", "-vn"),
-        *("-ac", "1", "-ar", str(SAMPLE_RATE_HZ), "-c:a", "pcm_s16le", wav),
-    )
-    run_command(command, timeout_s=max(60.0, 4 * interval.duration_s), runner=runner)
+    """Cut `interval` of `source`'s first audio stream to a 16 kHz mono 16-bit WAV.
+
+    The WAV keeps the clip's timeline, as the rendered clip and the analysis audio do: gaps in
+    the audio's timestamps, and audio missing at the start, become silence, and a source whose
+    timestamps restart is read on the corrected timeline (`autoclipper.export.timeline`). So a
+    word at second t of the WAV is spoken at second t of the clip.
+    """
+    with timeline_window(source, interval, runner=runner) as window:
+        local = window.local(interval)
+        command = ffmpeg_command(
+            "-y",
+            *TIMELINE_OPTIONS,
+            *("-ss", f"{local.start_s:.6f}", "-t", f"{local.duration_s:.6f}"),
+            *("-i", window.path, "-map", "0:a:0", "-vn"),
+            *("-af", "aresample=async=1:first_pts=0"),
+            *("-ac", "1", "-ar", str(SAMPLE_RATE_HZ), "-c:a", "pcm_s16le", wav),
+        )
+        run_command(command, timeout_s=max(60.0, 4 * interval.duration_s), runner=runner)
     return wav
 
 

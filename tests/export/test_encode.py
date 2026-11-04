@@ -147,7 +147,9 @@ def exported_interval(command: FFmpegCommand) -> tuple[float, float]:
     first_video_filter = value_after(command, "-filter:v").split(",")[0]
     assert first_video_filter.startswith("setpts=PTS-")
     skip_s = float(first_video_filter.removeprefix("setpts=PTS-").removesuffix("/TB"))
-    assert value_after(command, "-filter:a").startswith(f"atrim=start={skip_s:.6f},")
+    assert value_after(command, "-filter:a").startswith(
+        f"aresample=async=1:first_pts=0,atrim=start={skip_s:.6f},"
+    )
     start_s = float(value_after(command, "-ss")) + skip_s
     return round(start_s, 6), round(start_s + float(value_after(command, "-t")), 6)
 
@@ -188,10 +190,13 @@ def test_command_seeks_before_the_start_and_trims_exactly_to_it(tmp_path: Path) 
 
     args = list(command.args)
     source_at = args.index(str(source))
-    # Input options (no rotation, accurate seek, seek point) come right before -i. The seek
-    # lands before the start; trim/atrim drop the preroll and shift time back to 0.
-    assert args[source_at - 5 : source_at + 1] == [
+    # Input options (no rotation, the analysis timeline, accurate seek, seek point) come right
+    # before -i. The seek lands before the start; trim/atrim drop the preroll and shift time
+    # back to 0.
+    assert args[source_at - 7 : source_at + 1] == [
         "-noautorotate",
+        "-dts_delta_threshold",
+        "86400",
         "-accurate_seek",
         "-ss",
         "7.345000",
@@ -202,7 +207,10 @@ def test_command_seeks_before_the_start_and_trims_exactly_to_it(tmp_path: Path) 
     assert value_after(command, "-filter:v").startswith(
         "setpts=PTS-5.000000/TB,fps=fps=30:round=up,trim=start=0,crop="
     )
-    assert value_after(command, "-filter:a") == "atrim=start=5.000000,asetpts=PTS-5.000000/TB"
+    # Audio: gaps become silence first, then the preroll is dropped.
+    assert value_after(command, "-filter:a") == (
+        "aresample=async=1:first_pts=0,atrim=start=5.000000,asetpts=PTS-5.000000/TB"
+    )
     # The duration limit is an output option, after the input.
     assert value_after(command, "-t") == "30.155000"
     assert args.index("-t") > source_at

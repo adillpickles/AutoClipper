@@ -504,6 +504,68 @@ def test_a_young_vod_is_flagged_in_the_manifest(tmp_path: Path, chat_binary: Pat
 
 
 @pytest.mark.ffmpeg
+def test_cached_local_audio_is_length_checked_once_the_vod_length_is_known(
+    tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path]
+) -> None:
+    data = tmp_path / "data"
+    six_seconds = make_test_media("six seconds.mp4", duration_s=6.0)
+    no_helix = IngestTools(
+        salt=SALT, chat_runner=FakeChatTool(), chat_binary=chat_binary, clock=lambda: NOW
+    )
+    # Run 1: metadata fails, so the local file's audio can't be checked against the VOD yet.
+    first = ingest_vod(VIDEO_ID, data_dir=data, tools=no_helix, media_file=six_seconds)
+    assert outcomes(first)["audio"] == "ok"
+
+    # Run 2: the metadata says the VOD lasts a minute.
+    one_minute = FakeTwitch(video=video_record(duration="0h1m0s"))
+    no_download = FakeDownloader(None, AssertionError("must not download"))
+    second = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=one_minute, downloader=no_download),
+        media_file=six_seconds,
+    )
+
+    assert outcomes(second)["vod_meta"] == "ok"
+    assert outcomes(second)["audio"] == "failed"
+    entry = read_catalog(data)[("audio", VIDEO_ID)]
+    assert entry.status == "failed"
+    assert "MediaLengthError" in (entry.error or "")
+    assert "60.0 s" in (entry.error or "")
+    assert not normalized_audio_path(data, VIDEO_ID).exists()
+    # Without --media, the next run doesn't keep it either: it downloads instead.
+    third = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=one_minute, downloader=no_download),
+    )
+    assert outcomes(third)["audio"] == "failed"
+    assert no_download.calls == 1
+
+
+@pytest.mark.ffmpeg
+def test_cached_local_audio_of_the_right_length_is_kept(
+    tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path]
+) -> None:
+    data = tmp_path / "data"
+    two_seconds = make_test_media("two seconds.mp4", duration_s=2.0)
+    no_helix = IngestTools(
+        salt=SALT, chat_runner=FakeChatTool(), chat_binary=chat_binary, clock=lambda: NOW
+    )
+    ingest_vod(VIDEO_ID, data_dir=data, tools=no_helix, media_file=two_seconds)
+
+    second = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=FakeTwitch(video=video_record(duration="0h0m2s"))),
+        media_file=two_seconds,
+    )
+
+    assert outcomes(second)["audio"] == "skipped"
+    assert normalized_audio_path(data, VIDEO_ID).is_file()
+
+
+@pytest.mark.ffmpeg
 def test_a_local_media_file_is_used_instead_of_downloading(
     tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path]
 ) -> None:

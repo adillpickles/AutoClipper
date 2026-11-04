@@ -53,6 +53,14 @@ FFMPEG_GLOBAL_OPTIONS: tuple[str, ...] = (
 )
 FFPROBE_GLOBAL_OPTIONS: tuple[str, ...] = ("-hide_banner", "-loglevel", "error")
 
+# How FFmpeg reads a source's timeline, wherever a source is read: when a download is checked,
+# when its audio is normalized for analysis, when a clip is exported and when caption audio is
+# cut. Put before ``-i`` (an input option). FFmpeg joins MPEG-TS timestamps that jump back (an
+# HLS discontinuity, or segments written twice) onto the end, and by default also forward jumps
+# of more than `-dts_delta_threshold` (10 s), which would remove a long gap. A day keeps forward
+# gaps as silence. The price: a timestamp reset that jumps forward is also kept as silence.
+TIMELINE_OPTIONS: tuple[str, ...] = ("-dts_delta_threshold", "86400")
+
 # Default timeouts. Both read only file headers, so they finish in well under a second normally;
 # the margin covers slow disks and antivirus scans on first launch (Windows).
 PROBE_TIMEOUT_S = 60.0
