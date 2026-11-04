@@ -3,7 +3,7 @@
 // FFmpeg on PATH. Run with `npm run mock-media`; existing files are kept.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,7 +16,7 @@ const out = join(
 mkdirSync(out, { recursive: true });
 
 const samples = [
-  { name: "clip.mp4", size: "1080x1920", seconds: 30 },
+  { name: "clip.mp4", size: "1080x1920", seconds: 15 },
   { name: "preview.mp4", size: "640x360", seconds: 360 },
 ];
 
@@ -53,13 +53,17 @@ for (const { name, size, seconds } of samples) {
       "-movflags",
       "+faststart",
       "-shortest",
-      path,
+      "-f",
+      "mp4",
+      `${path}.part`,
     ],
     { stdio: "inherit" },
   );
   if (result.error || result.status !== 0) {
+    rmSync(`${path}.part`, { force: true });
     console.error(`FFmpeg failed for ${name}. Is it installed and on PATH?`);
     process.exit(1);
   }
+  renameSync(`${path}.part`, path); // only finished files get the final name
   console.log(`wrote ${path}`);
 }

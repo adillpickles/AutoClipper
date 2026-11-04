@@ -66,7 +66,7 @@ New code follows the frontend conventions in [docs/development/conventions.md §
 - **Scenarios:** the VOD ID picks the outcome, as in the contract's § 11. For example, `9000000003` finishes with a chat warning, `9000000004` fails, `9000000006` finds nothing, and any other ID gets the example result.
 - **Storage:** jobs are kept in `localStorage`, so a reload or a new tab finds them.
 - **Fixtures:** the results are in `src/lib/api/fixtures/`.
-- **Exports:** the results screen asks for the top 10 exports (center crop, captions on). The mock renders them one at a time, each stage taking `MOCK_RENDER_STEP_MS` (0.8 s), so the cards fill in one by one.
+- **Exports:** the results screen asks for the top 10 exports (center crop, captions on) and remembers their IDs per job in `localStorage`, so coming back shows the same clips instead of rendering them again. The mock renders them one at a time in the order they were requested, each stage taking `MOCK_RENDER_STEP_MS` (0.8 s), so the cards fill in by rank.
 - **Sample videos:** previews and clips play generated test-pattern MP4s from `public/mock-media/`. They're git-ignored and need FFmpeg; create them once with `npm run mock-media`.
 
 ## Notes

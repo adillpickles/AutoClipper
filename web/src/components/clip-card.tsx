@@ -9,7 +9,8 @@ import { reasonFor } from "@/lib/reason";
 export type ClipExport =
   | { kind: "pending" }
   | { kind: "export"; export: Export; url: string | null }
-  | { kind: "unavailable"; message: string };
+  | { kind: "unavailable"; message: string }
+  | { kind: "error"; message: string };
 
 const SOURCE_LABEL: Record<Candidate["source"], string> = {
   discovered: "Discovered",
@@ -29,11 +30,13 @@ export function ClipCard({
   scoreFraction,
   clip,
   videoId,
+  onRetry,
 }: {
   candidate: Candidate;
   scoreFraction: number;
   clip: ClipExport;
   videoId: string;
+  onRetry: () => void;
 }) {
   const [videoFailed, setVideoFailed] = useState(false);
   const span = `${formatTime(candidate.start_s)}–${formatTime(candidate.end_s)}`;
@@ -56,10 +59,14 @@ export function ClipCard({
           />
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-sm text-zinc-600 dark:text-zinc-400">
-            <ClipPlaceholder clip={clip} videoFailed={videoFailed} />
+            <ClipPlaceholder
+              clip={clip}
+              videoFailed={videoFailed}
+              onRetry={onRetry}
+            />
           </div>
         )}
-        <span className="absolute top-3 left-3 flex size-9 items-center justify-center rounded-full bg-zinc-950/80 font-semibold text-white">
+        <span className="absolute top-3 left-3 flex size-9 items-center justify-center rounded-full bg-zinc-950/80 font-semibold text-white ring-1 ring-white/40">
           <span className="sr-only">Rank </span>
           {candidate.rank}
         </span>
@@ -88,6 +95,7 @@ export function ClipCard({
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={Math.round(scoreFraction * 100)}
+            aria-valuetext={`Rank ${candidate.rank} by score in this stream`}
             className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800"
           >
             <div
@@ -108,12 +116,17 @@ export function ClipCard({
               Download<span className="sr-only"> clip {candidate.rank}</span>
             </a>
           ) : (
-            <span
-              className="inline-flex rounded-lg bg-zinc-100 px-4 py-2 text-sm font-semibold text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
-              aria-disabled="true"
+            <button
+              type="button"
+              disabled
+              className="inline-flex rounded-lg bg-zinc-100 px-4 py-2 text-sm font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
             >
               Download
-            </span>
+              <span className="sr-only">
+                {" "}
+                clip {candidate.rank} (not ready yet)
+              </span>
+            </button>
           )}
         </div>
       </div>
@@ -124,9 +137,11 @@ export function ClipCard({
 function ClipPlaceholder({
   clip,
   videoFailed,
+  onRetry,
 }: {
   clip: ClipExport;
   videoFailed: boolean;
+  onRetry: () => void;
 }) {
   if (videoFailed) {
     return (
@@ -136,15 +151,29 @@ function ClipPlaceholder({
     );
   }
   if (clip.kind === "unavailable") return <p>{clip.message}</p>;
+  if (
+    clip.kind === "error" ||
+    (clip.kind === "export" && clip.export.state === "failed")
+  ) {
+    const message =
+      clip.kind === "error"
+        ? clip.message
+        : (clip.export.error?.message ?? "Rendering failed.");
+    return (
+      <>
+        <p className="text-red-700 dark:text-red-300">{message}</p>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-zinc-900 ring-1 ring-zinc-300 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none dark:bg-zinc-900 dark:text-zinc-100 dark:ring-zinc-700"
+        >
+          Try again
+        </button>
+      </>
+    );
+  }
   if (clip.kind === "pending" || clip.export.state === "queued") {
     return <p>Waiting to render…</p>;
-  }
-  if (clip.export.state === "failed") {
-    return (
-      <p className="text-red-700 dark:text-red-300">
-        {clip.export.error?.message ?? "Rendering failed."}
-      </p>
-    );
   }
   const progress = clip.export.progress;
   return (

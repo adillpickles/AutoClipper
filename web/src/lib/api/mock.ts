@@ -120,6 +120,8 @@ interface StoredExport {
     | "finished_at"
   >;
   created_ms: number;
+  /** Creation order; exports made in the same millisecond still render first in, first out. */
+  seq?: number;
 }
 
 interface Store {
@@ -409,6 +411,7 @@ export function renderSchedule(
   const ordered = Object.values(exports).sort(
     (a, b) =>
       a.created_ms - b.created_ms ||
+      (a.seq ?? 0) - (b.seq ?? 0) ||
       a.export.export_id.localeCompare(b.export.export_id),
   );
   for (const item of ordered) {
@@ -612,6 +615,7 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
           ...request,
         },
         created_ms: at,
+        seq: Object.keys(store.exports).length + 1,
       };
       const next = {
         ...store,

@@ -264,6 +264,38 @@ describe("exportAt", () => {
     expect(exportAt(stored, T0 + 4 * MOCK_RENDER_STEP_MS).state).toBe("done");
   });
 
+  it("keeps creation order for exports made in the same millisecond", async () => {
+    resetMockStore();
+    let now = T0;
+    const client = createMockClient(() => now);
+    const { job } = await client.createJob({ vod: "9000000041" });
+    now += 12 * MOCK_STEP_MS;
+    const request = {
+      job_id: job.job_id,
+      layout: "center_crop",
+      captions: false,
+    } as const;
+    const ids: string[] = [];
+    for (const [id, start] of [
+      ["c001", 118],
+      ["c002", 251.5],
+      ["c003", 40],
+    ] as const) {
+      const { export: created } = await client.createExport({
+        ...request,
+        candidate_id: id,
+        start_s: start,
+        end_s: start + 20,
+      });
+      ids.push(created.export_id);
+    }
+    now += 3 * MOCK_RENDER_STEP_MS; // the first is done after its 2 stages, the others wait
+    const states = await Promise.all(
+      ids.map(async (id) => (await client.getExport(id)).state),
+    );
+    expect(states).toEqual(["done", "running", "queued"]);
+  });
+
   it("renders one export at a time, in order", () => {
     const exports = {
       exp_a: item("exp_a", T0),

@@ -10,11 +10,54 @@ import {
   getApiClient,
   POLL_INTERVAL_MS,
 } from "@/lib/api/client";
-import type { AnalysisResult, Candidate } from "@/lib/api/types";
+import type {
+  AnalysisResult,
+  Candidate,
+  Export,
+  Layout,
+} from "@/lib/api/types";
 import { formatTime } from "@/lib/format";
 
 /** The top 10 are rendered as vertical clips automatically (PRD § 4). */
 export const TOP_CLIPS = 10;
+
+// Back off on network errors (2, 4, 8 s, capped at 10 s) and give up after about a minute (§ 9.1).
+const FIRST_BACKOFF_MS = 2000;
+const MAX_BACKOFF_MS = 10_000;
+const GIVE_UP_AFTER_MS = 60_000;
+// Spacing between the clicks of "Download all", so the browser starts every download.
+const DOWNLOAD_SPACING_MS = 400;
+
+const exportsKey = (jobId: string) => `autoclipper.exports.${jobId}`;
+
+function rememberedExport(jobId: string, candidateId: string): string | null {
+  try {
+    const saved = JSON.parse(
+      window.localStorage.getItem(exportsKey(jobId)) ?? "{}",
+    ) as Record<string, string>;
+    return saved[candidateId] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberExport(
+  jobId: string,
+  candidateId: string,
+  exportId: string,
+): void {
+  try {
+    const saved = JSON.parse(
+      window.localStorage.getItem(exportsKey(jobId)) ?? "{}",
+    ) as Record<string, string>;
+    window.localStorage.setItem(
+      exportsKey(jobId),
+      JSON.stringify({ ...saved, [candidateId]: exportId }),
+    );
+  } catch {
+    // Without storage the clips are rendered again on the next visit; nothing breaks.
+  }
+}
 
 type View =
   | { kind: "loading" }
@@ -68,6 +111,11 @@ export function ResultsScreen() {
   const result = view.kind === "result" ? view.result : null;
 
   // Request the top 10 exports once the result is in, then poll each until it finishes.
+  // Export IDs are remembered per job, so coming back to the page shows the same clips instead of
+  // rendering them all again. `renderRef` lets a card's Retry button run the same flow.
+  const renderRef = useRef<
+    ((candidate: Candidate, fresh: boolean) => Promise<void>) | null
+  >(null);
   useEffect(() => {
     if (!result) return;
     let cancelled = false;
@@ -77,80 +125,133 @@ export function ResultsScreen() {
       if (!cancelled)
         setClips((current) => ({ ...current, [candidateId]: clip }));
     };
+    const wait = (ms: number) =>
+      new Promise<void>((resolve) => timers.push(setTimeout(resolve, ms)));
 
-    async function render(candidate: Candidate) {
-      try {
-        const media = await client.getCandidateMedia(
-          jobId,
-          candidate.candidate_id,
-        );
-        const availability = media.export;
-        if (availability.status !== "available") {
-          set(candidate.candidate_id, {
-            kind: "unavailable",
-            message: availability.message ?? "This clip can't be exported.",
-          });
-          return;
+    async function start(
+      candidate: Candidate,
+      fresh: boolean,
+    ): Promise<Export | null> {
+      const known = fresh
+        ? null
+        : rememberedExport(jobId, candidate.candidate_id);
+      if (known) {
+        try {
+          return await client.getExport(known);
+        } catch (error) {
+          if (!(error instanceof ApiRequestError && error.status === 404))
+            throw error;
+          // The server forgot it (e.g. a restart): render it again.
         }
-        if (
-          availability.max_duration_s !== null &&
-          candidate.end_s - candidate.start_s > availability.max_duration_s
-        ) {
-          set(candidate.candidate_id, {
-            kind: "unavailable",
-            message: `This moment is longer than ${availability.max_duration_s} seconds. Shorten it in the editor to export it.`,
-          });
-          return;
-        }
-        const { export: created } = await client.createExport({
-          job_id: jobId,
-          candidate_id: candidate.candidate_id,
-          start_s: candidate.start_s,
-          end_s: candidate.end_s,
-          layout: "center_crop",
-          captions: true,
-        });
-        let current = created;
-        while (
-          !cancelled &&
-          (current.state === "queued" || current.state === "running")
-        ) {
-          set(candidate.candidate_id, {
-            kind: "export",
-            export: current,
-            url: null,
-          });
-          await new Promise<void>((resolve) =>
-            timers.push(setTimeout(resolve, POLL_INTERVAL_MS)),
-          );
-          if (cancelled) return;
-          current = await client.getExport(current.export_id);
-        }
+      }
+      const media = await client.getCandidateMedia(
+        jobId,
+        candidate.candidate_id,
+      );
+      if (cancelled) return null;
+      const availability = media.export;
+      if (availability.status !== "available") {
         set(candidate.candidate_id, {
-          kind: "export",
-          export: current,
-          url: current.download_url
-            ? client.resolveUrl(current.download_url)
-            : null,
+          kind: "unavailable",
+          message: availability.message ?? "This clip can't be exported.",
         });
-      } catch (error) {
+        return null;
+      }
+      const layout = availability.layouts.includes("center_crop")
+        ? "center_crop"
+        : availability.layouts.find(
+            (l): l is Layout => l === "configured_region",
+          );
+      if (!layout) {
         set(candidate.candidate_id, {
           kind: "unavailable",
           message:
-            error instanceof ApiRequestError
-              ? error.error.message
-              : "Can't reach the server to render this clip.",
+            "The server can't render a vertical layout for this clip right now.",
         });
+        return null;
+      }
+      if (
+        availability.max_duration_s !== null &&
+        candidate.end_s - candidate.start_s > availability.max_duration_s
+      ) {
+        set(candidate.candidate_id, {
+          kind: "unavailable",
+          message: `This moment is longer than ${availability.max_duration_s} seconds. Shorten it in the editor to export it.`,
+        });
+        return null;
+      }
+      const { export: created } = await client.createExport({
+        job_id: jobId,
+        candidate_id: candidate.candidate_id,
+        start_s: candidate.start_s,
+        end_s: candidate.end_s,
+        layout,
+        captions: true,
+      });
+      rememberExport(jobId, candidate.candidate_id, created.export_id);
+      return created;
+    }
+
+    async function render(candidate: Candidate, fresh: boolean) {
+      let failingSince: number | null = null;
+      let backoff = FIRST_BACKOFF_MS;
+      let current: Export | null = null;
+      while (!cancelled) {
+        try {
+          current =
+            current === null
+              ? await start(candidate, fresh)
+              : await client.getExport(current.export_id);
+          if (current === null) return;
+          failingSince = null;
+          backoff = FIRST_BACKOFF_MS;
+          const url = current.download_url
+            ? client.resolveUrl(current.download_url)
+            : null;
+          set(candidate.candidate_id, { kind: "export", export: current, url });
+          if (current.state === "done" || current.state === "failed") return;
+          await wait(POLL_INTERVAL_MS);
+        } catch (error) {
+          if (cancelled) return;
+          if (error instanceof ApiRequestError) {
+            set(candidate.candidate_id, {
+              kind: "error",
+              message: error.error.message,
+            });
+            return;
+          }
+          // Network trouble: back off (§ 9.1), and offer a retry after about a minute.
+          failingSince ??= Date.now();
+          if (Date.now() - failingSince > GIVE_UP_AFTER_MS) {
+            set(candidate.candidate_id, {
+              kind: "error",
+              message: "Can't reach the server to render this clip.",
+            });
+            return;
+          }
+          await wait(backoff);
+          backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+        }
       }
     }
 
+    renderRef.current = render;
     for (const candidate of result.candidates.slice(0, TOP_CLIPS))
-      void render(candidate);
+      void render(candidate, false);
     return () => {
       cancelled = true;
+      renderRef.current = null;
       timers.forEach(clearTimeout);
     };
   }, [result, jobId]);
+
+  const retry = (candidate: Candidate) => {
+    setClips((current) => ({
+      ...current,
+      [candidate.candidate_id]: { kind: "pending" },
+    }));
+    void renderRef.current?.(candidate, true);
+  };
 
   if (view.kind === "loading") {
     return (
@@ -184,10 +285,8 @@ export function ResultsScreen() {
   const finished = top.filter((c) => {
     const clip = clips[c.candidate_id];
     if (!clip || clip.kind === "pending") return false;
-    return (
-      clip.kind === "unavailable" ||
-      (clip.export.state !== "queued" && clip.export.state !== "running")
-    );
+    if (clip.kind !== "export") return true;
+    return clip.export.state !== "queued" && clip.export.state !== "running";
   }).length;
   const ready = top.filter((c) => {
     const clip = clips[c.candidate_id];
@@ -196,10 +295,14 @@ export function ResultsScreen() {
   const { vod } = view.result;
 
   function downloadAll() {
-    // One click per finished clip; each link has its own `download` file name.
-    downloads.current
-      ?.querySelectorAll<HTMLAnchorElement>("a[download]")
-      .forEach((link) => link.click());
+    // One click per finished clip, spaced out: each link has its own `download` file name, and
+    // clicks in quick succession can cancel each other.
+    const links =
+      downloads.current?.querySelectorAll<HTMLAnchorElement>("a[download]") ??
+      [];
+    links.forEach((link, index) =>
+      setTimeout(() => link.click(), index * DOWNLOAD_SPACING_MS),
+    );
   }
 
   return (
@@ -226,8 +329,11 @@ export function ResultsScreen() {
         <div className="flex flex-col gap-3 rounded-2xl border border-dashed border-zinc-300 p-8 text-center dark:border-zinc-700">
           <h2 className="text-lg font-semibold">No moments stood out</h2>
           <p className="text-zinc-600 dark:text-zinc-400">
-            Chat and audio stayed steady through this VOD and nobody clipped it,
-            so there&apos;s nothing to rank.
+            {view.result.warnings.length > 0
+              ? "Nothing could be ranked from the signals that were available for this VOD."
+              : view.result.n_viewer_clips_total === 0
+                ? "Chat and audio stayed steady through this VOD and nobody clipped it, so there's nothing to rank."
+                : "Chat and audio stayed steady through this VOD, so there's nothing to rank."}
           </p>
           <Link
             href="/"
@@ -277,6 +383,7 @@ export function ResultsScreen() {
                   candidate={candidate}
                   scoreFraction={scale(candidate.score)}
                   clip={clips[candidate.candidate_id] ?? { kind: "pending" }}
+                  onRetry={() => retry(candidate)}
                   videoId={vod.video_id}
                 />
               ))}
