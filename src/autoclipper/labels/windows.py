@@ -127,13 +127,16 @@ def windows_for_vods(
         raise ValueError(f"vods is missing columns: {', '.join(sorted(missing))}")
     if vods["video_id"].null_count() or vods["duration_s"].null_count():
         raise ValueError("vods has a null video_id or duration_s")
+    if vods["muted_segments"].null_count():
+        # data-model.md § vods: ingest stores "nothing muted" as []; null means unknown.
+        raise ValueError("vods has a null muted_segments; store an empty list for no muting")
     if vods["video_id"].n_unique() != vods.height:
         raise ValueError("vods lists a video_id more than once")
     frames = [
         make_windows(
             row["video_id"],
             float(row["duration_s"]),
-            [(s["offset_s"], s["duration_s"]) for s in row["muted_segments"] or ()],
+            [(s["offset_s"], s["duration_s"]) for s in row["muted_segments"]],
             window_s=window_s,
             stride_s=stride_s,
         )

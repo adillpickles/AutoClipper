@@ -15,7 +15,7 @@ FETCHED = datetime(2026, 10, 9, 18, 0, tzinfo=UTC)
 
 
 def clips_frame(
-    *rows: tuple[str, str | None, float | None, float], views: list[int] | None = None
+    *rows: tuple[str, str | None, float | None, float | None], views: list[int] | None = None
 ) -> pl.DataFrame:
     """Clips as (clip_id, video_id, vod_offset_s, duration_s), created a minute apart."""
     n = len(rows)
@@ -156,19 +156,48 @@ def test_repeated_listing_of_a_clip_counts_once_with_its_latest_views() -> None:
 def test_one_clip_with_two_intervals_is_an_error() -> None:
     clips = clips_frame(("a", "v", 100.0, 30.0), ("a", "v", 200.0, 30.0))
 
-    with pytest.raises(ValueError, match="different intervals"):
+    with pytest.raises(ValueError, match="different VOD positions"):
         merge_clips_into_moments(clips)
 
 
 @pytest.mark.parametrize(
-    ("row", "message"),
-    [(("a", "v", -1.0, 30.0), "negative"), (("a", "v", 1.0, 0.0), "positive")],
+    "row",
+    [
+        ("a", "v", -1.0, 30.0),
+        ("a", "v", 1.0, 0.0),
+        ("a", "v", float("nan"), 30.0),
+        ("a", "v", 1.0, float("inf")),
+        ("a", "v", 1.0, None),
+    ],
+    ids=["negative_offset", "zero_duration", "nan_offset", "inf_duration", "null_duration"],
 )
-def test_impossible_clip_intervals_are_rejected(
-    row: tuple[str, str, float, float], message: str
-) -> None:
-    with pytest.raises(ValueError, match=message):
-        merge_clips_into_moments(clips_frame(row))
+def test_impossible_clip_intervals_are_rejected(row: tuple[str, str, float, float | None]) -> None:
+    clips = clips_frame(("x", "v", 0.0, 30.0), row, ("z", "v", 20.0, 30.0))
+
+    with pytest.raises(ValueError, match=r"clip\(s\) have a vod_offset_s"):
+        merge_clips_into_moments(clips)
+
+
+def test_clip_listed_with_and_without_an_offset_is_an_error() -> None:
+    clips = clips_frame(("a", "v", 100.0, 30.0), ("a", "v", None, 30.0))
+
+    with pytest.raises(ValueError, match="different VOD positions"):
+        merge_clips_into_moments(clips)
+
+
+@pytest.mark.parametrize("column", ["created_at", "fetched_at"])
+def test_naive_timestamps_are_rejected(column: str) -> None:
+    clips = clips_frame(("a", "v", 1.0, 2.0))
+    clips = clips.with_columns(pl.col(column).dt.replace_time_zone(None))
+
+    with pytest.raises(ValueError, match=f"{column} must be a timezone-aware"):
+        merge_clips_into_moments(clips)
+
+
+def test_clip_ids_follow_start_then_end_order() -> None:
+    clips = clips_frame(("a", "v", 100.0, 30.0), ("b", "v", 100.0, 10.0))
+
+    assert merge_clips_into_moments(clips).moments["clip_ids"].to_list() == [["b", "a"]]
 
 
 def test_missing_columns_are_named() -> None:

@@ -112,7 +112,7 @@ def test_windows_for_vods_reads_the_vods_table() -> None:
         {
             "video_id": ["b", "a"],
             "duration_s": [20.0, 10.0],
-            "muted_segments": [[{"offset_s": 0.0, "duration_s": 5.0}], None],
+            "muted_segments": [[{"offset_s": 0.0, "duration_s": 5.0}], []],
         }
     )
 
@@ -130,6 +130,27 @@ def test_windows_for_vods_rejects_missing_columns_and_repeated_vods() -> None:
     )
     with pytest.raises(ValueError, match="more than once"):
         windows_for_vods(repeated)
+
+
+def test_null_muted_segments_is_an_error_not_no_muting() -> None:
+    # Ingest stores "nothing muted" as []; null means the field was never read.
+    vods = pl.DataFrame(
+        {
+            "video_id": ["a"],
+            "duration_s": [10.0],
+            "muted_segments": [None],
+        },
+        schema={
+            "video_id": pl.String,
+            "duration_s": pl.Float64,
+            "muted_segments": pl.List(
+                pl.Struct({"offset_s": pl.Float64, "duration_s": pl.Float64})
+            ),
+        },
+    )
+
+    with pytest.raises(ValueError, match="null muted_segments"):
+        windows_for_vods(vods)
 
 
 def test_empty_vods_table_gives_no_windows() -> None:

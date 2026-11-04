@@ -11,8 +11,9 @@ Follows docs/data/labeling.md § 2 and the ``moments`` table in docs/architectur
    ``{video_id}:m{index}`` with ``index`` 0-based in start order; merged moments never overlap.
 
 The input is one pinned clips snapshot, so a ``clip_id`` appears once. A clip listed twice with
-the same interval (a repeated observation) counts once, keeping its latest observation; listed
-twice with different intervals is an error. The output depends only on the input rows, not their
+the same VOD position (a repeated observation) counts once, keeping its latest observation, with
+a warning; listed with different positions is an error. Within a moment, ``clip_ids`` are in the
+order the clips start (then end, then ID). The output depends only on the input rows, not their
 order.
 """
 
@@ -82,8 +83,10 @@ def merge_clips_into_moments(clips: pl.DataFrame, *, gap_s: float = GAP_S) -> Mo
         gap_s: Clips starting at most this many seconds after the current moment's end join it.
 
     Raises:
-        ValueError: A column is missing, `gap_s` is negative, a clip has a negative offset or a
-            non-positive duration, or one ``clip_id`` appears with different intervals.
+        ValueError: A column is missing, a timestamp column has no time zone, `gap_s` is
+            negative, a placed clip's offset is negative or not finite or its duration is
+            missing, not finite or not positive, or one ``clip_id`` appears with different VOD
+            positions.
     """
     missing = set(CLIP_COLUMNS) - set(clips.columns)
     if missing:
@@ -93,7 +96,32 @@ def merge_clips_into_moments(clips: pl.DataFrame, *, gap_s: float = GAP_S) -> Mo
     if clips["clip_id"].null_count():
         raise ValueError("clips has a null clip_id")
 
+    for column in ("created_at", "fetched_at"):
+        dtype = clips.schema[column]
+        if not isinstance(dtype, pl.Datetime) or dtype.time_zone is None:
+            raise ValueError(f"clips.{column} must be a timezone-aware datetime, got {dtype}")
+
     frame = clips.select(CLIP_COLUMNS)
+    # One snapshot lists a clip once. A repeated listing with the same VOD position is the
+    # same observation and counts once (its latest); different positions mean mixed data.
+    conflicting = (
+        frame.group_by("clip_id")
+        .agg(pl.struct("video_id", "vod_offset_s", "duration_s").n_unique().alias("n"))
+        .filter(pl.col("n") > 1)
+    )
+    if conflicting.height:
+        raise ValueError(
+            f"{conflicting.height} clip_id(s) appear with different VOD positions, e.g. "
+            f"{conflicting['clip_id'].sort()[0]}; clips must come from one snapshot"
+        )
+    n_rows = frame.height
+    frame = frame.sort(["clip_id", "fetched_at", "view_count"]).unique(
+        "clip_id", keep="last", maintain_order=True
+    )
+    n_repeated = n_rows - frame.height
+    if n_repeated:
+        log.warning("counted repeated clip listings once n=%d", n_repeated)
+
     n_without_video = frame["video_id"].null_count()
     n_without_offset = frame.filter(
         pl.col("video_id").is_not_null() & pl.col("vod_offset_s").is_null()
@@ -105,30 +133,23 @@ def merge_clips_into_moments(clips: pl.DataFrame, *, gap_s: float = GAP_S) -> Mo
             n_without_offset,
         )
     placed = frame.filter(pl.col("video_id").is_not_null() & pl.col("vod_offset_s").is_not_null())
-    if placed.filter((pl.col("vod_offset_s") < 0) | ~(pl.col("duration_s") > 0)).height:
-        raise ValueError("clips have a negative vod_offset_s or a duration_s that isn't positive")
-
+    valid = (
+        pl.col("vod_offset_s").is_finite()
+        & (pl.col("vod_offset_s") >= 0)
+        & pl.col("duration_s").is_finite()
+        & (pl.col("duration_s") > 0)
+    ).fill_null(False)
+    invalid = placed.filter(~valid)
+    if invalid.height:
+        raise ValueError(
+            f"{invalid.height} clip(s) have a vod_offset_s that is negative or not finite, or "
+            f"a duration_s that is missing, not finite or not positive, e.g. "
+            f"{invalid['clip_id'].sort()[0]}"
+        )
     placed = placed.with_columns(
         start_s=pl.col("vod_offset_s").cast(pl.Float64),
         end_s=(pl.col("vod_offset_s") + pl.col("duration_s")).cast(pl.Float64),
     )
-    conflicting = (
-        placed.group_by("clip_id")
-        .agg(pl.struct("video_id", "start_s", "end_s").n_unique().alias("n"))
-        .filter(pl.col("n") > 1)
-    )
-    if conflicting.height:
-        raise ValueError(
-            f"{conflicting.height} clip_id(s) appear with different intervals, e.g. "
-            f"{conflicting['clip_id'].sort()[0]}; clips must come from one snapshot"
-        )
-    n_rows = placed.height
-    placed = placed.sort(["clip_id", "fetched_at", "view_count"]).unique(
-        "clip_id", keep="last", maintain_order=True
-    )
-    n_repeated = n_rows - placed.height
-    if n_repeated:
-        log.info("counted repeated clip listings once n=%d", n_repeated)
 
     moments = (
         placed.sort(["video_id", "start_s", "end_s", "clip_id"])

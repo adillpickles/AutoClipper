@@ -9,7 +9,7 @@
 
 ## Summary
 
-Scope, architecture and the plan are documented, with concrete defaults for building the MVP. The planned app has two outputs: ranked, captioned 9:16 clips and a 16:9 highlights video. The initial setup targets a laptop; collection/storage can be shared and hosted deployment remains an option. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client, viewer-clip fetching, a pseudonymizing chat replay parser, VOD audio download with 16 kHz mono normalization vertical-MP4 export (cut, reframe, encode), and VOD time windows and viewer-clip moments. Python and frontend tooling run in CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
+Scope, architecture and the plan are documented, with concrete defaults for building the MVP. The planned app has two outputs: ranked, captioned 9:16 clips and a 16:9 highlights video. The initial setup targets a laptop; collection/storage can be shared and hosted deployment remains an option. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client, viewer-clip fetching, a pseudonymizing chat replay parser, VOD audio download with 16 kHz mono normalization, vertical-MP4 export (cut, reframe, encode), and VOD time windows and viewer-clip moments. Python and frontend tooling run in CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
 
 ## What exists
 
