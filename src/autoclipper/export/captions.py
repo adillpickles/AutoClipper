@@ -28,7 +28,7 @@ import wave
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final, Literal, Protocol
 
 import numpy as np
 import numpy.typing as npt
@@ -52,6 +52,9 @@ HOLD_S: Final = 0.3
 SAMPLE_RATE_HZ: Final = 16_000
 
 DEFAULT_MODEL: Final = "base"
+
+# The export stages a captioned export goes through (api-contract.md § 6.3).
+type Stage = Literal["transcribing", "rendering"]
 
 
 class CaptioningError(ExportError):
@@ -320,6 +323,8 @@ def export_clip_with_captions(
     settings: EncodeSettings | None = None,
     runner: Runner | None = None,
     has_audio: Callable[[Path], bool] | None = None,
+    check_cut: Callable[[Interval], None] | None = None,
+    on_stage: Callable[[Stage], None] | None = None,
 ) -> ExportResult:
     """Export `request` with burned-in captions of its speech.
 
@@ -331,6 +336,9 @@ def export_clip_with_captions(
         runner: Executes FFmpeg and FFprobe.
         has_audio: Whether the source has an audio stream; defaults to probing it. A source
             without audio is exported without captions.
+        check_cut: Called with the planned (actual) interval before anything is transcribed;
+            it may raise to stop the export.
+        on_stage: Called with ``transcribing`` before transcription and ``rendering`` after it.
 
     Raises:
         CaptioningError: The audio couldn't be extracted or transcribed; nothing is written
@@ -349,9 +357,15 @@ def export_clip_with_captions(
         work = Path(temp)
 
         def filters(actual: Interval) -> list[str]:
+            if check_cut is not None:
+                check_cut(actual)
+            if on_stage is not None:
+                on_stage("transcribing")
             lines = caption_lines_for(
                 request.source, actual, transcribe, work, has_audio=audio, runner=runner
             )
+            if on_stage is not None:
+                on_stage("rendering")
             log.info("captions lines=%d start_s=%.3f", len(lines), actual.start_s)
             if not lines:
                 return []

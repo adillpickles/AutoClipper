@@ -384,7 +384,8 @@ function mediaFor(
       min_start_s: 0,
       max_end_s: duration,
       max_duration_s: 90,
-      layouts: ["center_crop", "configured_region"],
+      // Like `autoclipper serve` without AUTOCLIPPER_EXPORT_REGION (contract § 5).
+      layouts: ["center_crop"],
     },
   };
 }

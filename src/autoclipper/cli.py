@@ -6,7 +6,7 @@ Subcommands are verbs (``ingest``, ``export``, ...) registered on `app` with ``@
 """
 
 import re
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -271,6 +271,81 @@ def _read_ids(path: Path) -> list[str]:
     return [line for line in lines if line and not line.startswith("#")]
 
 
+class ExportLayout(StrEnum):
+    """The export layouts of docs/architecture/api-contract.md § 6.1."""
+
+    CENTER_CROP = "center_crop"
+    CONFIGURED_REGION = "configured_region"
+
+
+@app.command()
+def export(
+    video: Annotated[
+        Path, typer.Argument(help="The video file; it must start at the VOD's start.")
+    ],
+    start: Annotated[float, typer.Option(min=0.0, help="Start, seconds from the VOD start.")],
+    end: Annotated[float, typer.Option(min=0.0, help="End (exclusive), seconds from the start.")],
+    layout: Annotated[
+        ExportLayout,
+        typer.Option(help="center_crop, or configured_region (AUTOCLIPPER_EXPORT_REGION)."),
+    ] = ExportLayout.CENTER_CROP,
+    captions: Annotated[
+        bool,
+        typer.Option(help="Burn in captions of the speech (needs `uv sync --extra captions`)."),
+    ] = False,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            help="Where to write the MP4. Default: <artifacts dir>/exports/"
+            "<video>_<start>-<end>.mp4.",
+            show_default=False,
+        ),
+    ] = None,
+    overwrite: Annotated[bool, typer.Option(help="Replace an existing output file.")] = False,
+) -> None:
+    """Cut an exact interval of a video into a vertical 1080x1920 clip, optionally captioned."""
+    from autoclipper.export.captions import CaptioningError
+    from autoclipper.export.clip import ClipSpec, render_clip
+    from autoclipper.export.cut import Interval
+    from autoclipper.export.errors import ExportError
+
+    if end <= start:
+        typer.echo("Error: --end must be after --start", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    settings = get_settings()
+    target = output or settings.artifacts_dir / "exports" / _export_name(video, start, end)
+    spec = ClipSpec(
+        source=video,
+        interval=Interval(start, end),
+        output=target,
+        layout=layout.value,
+        captions=captions,
+        overwrite=overwrite,
+    )
+    try:
+        result = render_clip(spec, region=settings.export_region)
+    except CaptioningError as exc:  # a missing install or a failing model: an external tool
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+    except FileExistsError:
+        typer.echo(f"Error: {target} exists; pass --overwrite to replace it", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    except ExportError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    except FFmpegError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+    typer.echo(f"Wrote {result.output} ({result.duration_s:.2f} s, {result.width}x{result.height})")
+
+
+def _export_name(video: Path, start: float, end: float) -> str:
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", video.stem).strip("._") or "clip"
+    # The floats as given (like the API's download name), never rounded: two trims of a long
+    # VOD that differ by a fraction of a second get different names.
+    return f"{stem}_{start}-{end}.mp4"
+
+
 @app.command()
 def serve(
     host: Annotated[str, typer.Option(help="Address to listen on.")] = "127.0.0.1",
@@ -292,7 +367,12 @@ def serve(
     except FFmpegError as exc:
         typer.echo(f"Error: can't generate the sample videos: {exc}", err=True)
         raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
-    service = MockService(samples=samples, output_dir=settings.artifacts_dir, step_s=step_s)
+    service = MockService(
+        samples=samples,
+        output_dir=settings.artifacts_dir,
+        step_s=step_s,
+        export_region=settings.export_region,
+    )
     api = create_app(service, cors_origins=settings.cors_origins)
     typer.echo(f"AutoClipper API (mock) on http://{host}:{port} (docs at /docs)")
     uvicorn.run(api, host=host, port=port, log_level="warning")
