@@ -50,6 +50,7 @@ from autoclipper.ffmpeg import (
     MediaInfo,
     Runner,
     ffmpeg_command,
+    ffprobe_command,
     probe,
     run_command,
 )
@@ -98,6 +99,11 @@ _TIMELINE_OPTIONS: Final = ("-dts_delta_threshold", "86400")
 # already about 3.6 minutes of lost audio, so more means a damaged file, not glitches.
 MAX_DECODE_ERROR_RATE: Final = 0.01
 _MAX_ERROR_RATE_EXIT_CODE: Final = 69
+# FFmpeg 6.1 ignores -max_error_rate for audio (it exits with 0 however many frames fail), so
+# failed frames are also counted directly: packets ffprobe reads minus frames it decodes. An
+# intact file decodes one frame fewer when its container trims the encoder delay (MP4), so this
+# many missing frames are not counted as damage.
+_UNDECODED_FRAMES_ALLOWED: Final = 2
 
 # MPEG-TS (ISO/IEC 13818-1) is a run of 188-byte packets, each starting with a sync byte. Some
 # variants put a 4-byte timestamp before each packet (M2TS) or 16 parity bytes after it, so the
@@ -572,16 +578,37 @@ def _release_failed_download(exc: BaseException, request: DownloadRequest) -> No
 
 
 def _close_files_left_open(directory: Path, stem: str) -> None:
-    # The garbage collector's object list finds the stream wherever it is referenced.
+    """Close streams yt-dlp left open on this download's staging files.
+
+    The garbage collector's object list finds a stream wherever it is referenced. Outside
+    Windows, yt-dlp opens the ``.part`` file with ``os.fdopen`` (``locked_file`` in
+    yt_dlp/utils/_utils.py), so the stream's ``name`` is a file descriptor, not a path; such
+    streams are matched to the staging files by device and inode instead.
+    """
     directory = directory.resolve()
+    staging = {
+        (info.st_dev, info.st_ino)
+        for path in (directory.iterdir() if directory.is_dir() else ())
+        if path.name.startswith(f"{stem}.") and path.is_file()
+        for info in [path.stat()]
+    }
     for obj in gc.get_objects():
         if not isinstance(obj, io.IOBase):
             continue
         name = getattr(obj, "name", None)
-        if not isinstance(name, str) or not Path(name).name.startswith(f"{stem}."):
-            continue
         try:
-            if not obj.closed and Path(name).resolve().parent == directory:
+            if obj.closed:
+                continue
+            if isinstance(name, str):
+                ours = Path(name).name.startswith(f"{stem}.") and (
+                    Path(name).resolve().parent == directory
+                )
+            elif isinstance(name, int):
+                info = os.fstat(name)
+                ours = (info.st_dev, info.st_ino) in staging
+            else:
+                ours = False
+            if ours:
                 obj.close()
         except (OSError, ValueError) as exc:
             log.warning("could not close a file yt-dlp left open path=%s error=%s", name, exc)
@@ -709,6 +736,28 @@ def _played_duration_s(path: Path, runner: Runner | None) -> float:
     if not times:
         raise FFmpegOutputError(f"ffmpeg reported no out_time_us while reading {path}")
     return int(times[-1]) / 1_000_000
+
+
+def _undecoded_fraction(path: Path, runner: Runner | None, *, timeout_s: float) -> float:
+    """Return the fraction of the first audio stream's packets that FFmpeg fails to decode.
+
+    ffprobe reads every packet and decodes it (``-count_frames``); a packet that fails to
+    decode gives no frame. Up to `_UNDECODED_FRAMES_ALLOWED` missing frames are not counted.
+    """
+    command = ffprobe_command(
+        *("-select_streams", "a:0", "-count_frames", "-count_packets"),
+        *("-show_entries", "stream=nb_read_frames,nb_read_packets", "-of", "json", path),
+    )
+    result = run_command(command, timeout_s=timeout_s, runner=runner)
+    try:
+        streams = json.loads(result.stdout)["streams"]
+        frames = int(streams[0]["nb_read_frames"])
+        packets = int(streams[0]["nb_read_packets"])
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise FFmpegOutputError(f"ffprobe reported no frame and packet counts for {path}") from exc
+    if packets <= 0:
+        raise FFmpegOutputError(f"ffprobe read no audio packets from {path}")
+    return max(0, packets - frames - _UNDECODED_FRAMES_ALLOWED) / packets
 
 
 def _container_extension(info: MediaInfo) -> str | None:
@@ -1059,6 +1108,12 @@ def normalize_audio(
         raise FFmpegOutputError(
             f"more than {MAX_DECODE_ERROR_RATE:.0%} of the audio in {source} could not be "
             f"decoded (damaged file): {damage}"
+        )
+    undecoded = _undecoded_fraction(source, runner, timeout_s=timeout_s)
+    if undecoded > MAX_DECODE_ERROR_RATE:
+        raise FFmpegOutputError(
+            f"more than {MAX_DECODE_ERROR_RATE:.0%} of the audio in {source} could not be "
+            f"decoded (damaged file): {undecoded:.1%} of its audio frames failed to decode"
         )
     if output.exists() and not force:
         try:

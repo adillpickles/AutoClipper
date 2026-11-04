@@ -10,6 +10,7 @@ import gc
 import io
 import json
 import os
+import random
 import shutil
 import subprocess
 import wave
@@ -152,7 +153,8 @@ class FakeFFmpeg:
     ffprobe returns `output_probe` for WAVs (``.wav`` or ``.wav.part``) and `source_probe` for
     anything else. ffmpeg with ``-progress`` (measuring how long a file plays) reports
     `played_s`, by default the source's probed duration; any other ffmpeg command writes its
-    output file and exits with `ffmpeg_returncode`.
+    output file and exits with `ffmpeg_returncode`. ffprobe counting frames reports
+    `undecoded_fraction` of 1000 packets as not decoded.
     """
 
     def __init__(
@@ -161,8 +163,10 @@ class FakeFFmpeg:
         source_probe: bytes | None = None,
         ffmpeg_returncode: int = 0,
         played_s: float | None = None,
+        undecoded_fraction: float = 0.0,
     ) -> None:
         self.output_probe = output_probe
+        self.undecoded_fraction = undecoded_fraction
         self.source_probe = output_probe if source_probe is None else source_probe
         self.ffmpeg_returncode = ffmpeg_returncode
         self.played_s = played_s
@@ -170,6 +174,11 @@ class FakeFFmpeg:
 
     def __call__(self, command: FFmpegCommand, /, *, timeout_s: float) -> CommandResult:
         self.commands.append(command)
+        if command.program == "ffprobe" and "-count_frames" in command.args:
+            packets = 1000
+            frames = packets - round(self.undecoded_fraction * packets)
+            counts = {"nb_read_frames": str(frames), "nb_read_packets": str(packets)}
+            return CommandResult(0, stdout=json.dumps({"streams": [counts]}).encode())
         if command.program == "ffprobe":
             is_wav = command.args[-1].endswith((".wav", ".wav.part"))
             return CommandResult(0, stdout=self.output_probe if is_wav else self.source_probe)
@@ -745,12 +754,27 @@ def hls_downloader(hls: HlsServer) -> Callable[[DownloadRequest], DownloadedMedi
 
 
 def open_files_in(directory: Path) -> list[str]:
+    # Outside Windows yt-dlp opens the .part file with os.fdopen, so a stream's name can be a
+    # file descriptor; those are matched to the directory's files by device and inode.
+    files = (
+        {
+            (info.st_dev, info.st_ino): path.name
+            for path in directory.iterdir()
+            for info in [path.stat()]
+        }
+        if directory.is_dir()
+        else {}
+    )
     names: list[str] = []
     for obj in gc.get_objects():
         if isinstance(obj, io.IOBase) and not obj.closed:
             name = getattr(obj, "name", None)
             if isinstance(name, str) and Path(name).parent == directory:
                 names.append(name)
+            elif isinstance(name, int):
+                info = os.fstat(name)
+                if (info.st_dev, info.st_ino) in files:
+                    names.append(files[info.st_dev, info.st_ino])
     return names
 
 
@@ -902,10 +926,12 @@ def test_normalize_converts_to_16_khz_mono_pcm_via_a_partial_file(
 
     output = normalized_audio_path(data_dir, VIDEO_ID)
     partial = output.with_name(f"{output.name}.part")
-    check_source, measure_source, convert, check_output = runner.commands
+    check_source, measure_source, count_frames, convert, check_output = runner.commands
     assert check_source.args[-1] == os.fspath(source.absolute())
     measure = " ".join(measure_source.args)
     assert f"-dts_delta_threshold 86400 -progress pipe:1 -i {source.absolute()}" in measure
+    assert "-count_frames" in count_frames.args
+    assert count_frames.args[-1] == os.fspath(source.absolute())
     assert convert.args[-1] == os.fspath(partial.absolute())
     args = " ".join(convert.args[:-1])
     assert f"-dts_delta_threshold 86400 -max_error_rate 0.01 -i {source.absolute()}" in args
@@ -979,6 +1005,27 @@ def test_too_many_undecodable_frames_is_an_error_and_leaves_no_file(
     assert list(normalized_audio_path(data_dir, VIDEO_ID).parent.iterdir()) == []
 
 
+@pytest.mark.parametrize("undecoded_fraction", [0.02, 0.5])
+def test_frames_that_fail_to_decode_are_an_error_even_if_ffmpeg_exits_with_0(
+    source: Path, data_dir: Path, undecoded_fraction: float
+) -> None:
+    # FFmpeg 6.1 exits with 0 despite -max_error_rate; the frame count still catches it.
+    runner = FakeFFmpeg(undecoded_fraction=undecoded_fraction)
+
+    with pytest.raises(FFmpegOutputError, match=r"of its audio frames failed to decode"):
+        normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner)
+
+    assert normalized_files(data_dir) == []
+
+
+def test_a_few_undecoded_frames_are_tolerated(source: Path, data_dir: Path) -> None:
+    runner = FakeFFmpeg(undecoded_fraction=0.01)  # 10 of 1000 packets: at the limit, allowed
+
+    audio = normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner)
+
+    assert audio.path == normalized_audio_path(data_dir, VIDEO_ID)
+
+
 def normalized_files(data_dir: Path) -> list[str]:
     directory = normalized_audio_path(data_dir, VIDEO_ID).parent
     return sorted(path.name for path in directory.iterdir()) if directory.exists() else []
@@ -1047,12 +1094,13 @@ def test_existing_output_is_checked_and_reused_unless_forced(source: Path, data_
     runner = FakeFFmpeg()
 
     reused = normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner)
-    assert [command.program for command in runner.commands] == ["ffprobe", "ffmpeg", "ffprobe"]
+    programs = [command.program for command in runner.commands]
+    assert programs == ["ffprobe", "ffmpeg", "ffprobe", "ffprobe"]
 
     runner.commands.clear()
     normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner, force=True)
     programs = [command.program for command in runner.commands]
-    assert programs == ["ffprobe", "ffmpeg", "ffmpeg", "ffprobe"]
+    assert programs == ["ffprobe", "ffmpeg", "ffprobe", "ffmpeg", "ffprobe"]
     assert reused.duration_s == pytest.approx(3.0)
 
 
@@ -1067,7 +1115,7 @@ def test_existing_output_that_fails_the_checks_is_converted_again(
         normalize_audio(source, VIDEO_ID, data_dir=data_dir, runner=runner)
 
     programs = [command.program for command in runner.commands]
-    assert programs == ["ffprobe", "ffmpeg", "ffprobe", "ffmpeg", "ffprobe"]
+    assert programs == ["ffprobe", "ffmpeg", "ffprobe", "ffprobe", "ffmpeg", "ffprobe"]
 
 
 def test_missing_source_is_an_error(data_dir: Path, tmp_path: Path) -> None:
@@ -1520,21 +1568,24 @@ def test_normalize_rejects_audio_damaged_inside_instead_of_padding_it_with_silen
     entries = ("-select_streams", "a:0", "-show_entries", "packet=pts_time,pos,size")
     listing = run_command(ffprobe_command(*entries, "-of", "json", tone), timeout_s=60).stdout
     content = bytearray(tone.read_bytes())
+    noise = random.Random(19)
     for packet in json.loads(listing)["packets"]:
-        if 2 <= float(packet["pts_time"]) < 8:  # zero the audio data of seconds 2 to 8
+        if 2 <= float(packet["pts_time"]) < 8:  # overwrite the audio data of seconds 2 to 8
             start, size = int(packet["pos"]), int(packet["size"])
-            content[start : start + size] = bytes(size)
+            # Random bytes, not zeros: some FFmpeg builds (6.1) decode an all-zero AAC packet
+            # as valid silence, which is indistinguishable from a quiet stream.
+            content[start : start + size] = noise.randbytes(size)
     damaged = tmp_path / "damaged.mp4"
     damaged.write_bytes(content)
     if container == "mpegts":
         damaged = generate(tmp_path / "damaged.ts", "-i", damaged, "-c:a", "copy")
 
-    # Without the error limit FFmpeg exits with 0 and the 6 s become silence; the WAV still has
-    # the right length.
+    # FFmpeg alone exits with 0 and the 6 s become silence (FFmpeg 6.1 even with
+    # -max_error_rate); the WAV still has the right length.
     with pytest.raises(FFmpegOutputError, match="could not be decoded"):
         normalize_audio(damaged, VIDEO_ID, data_dir=data_dir)
 
-    assert list(normalized_audio_path(data_dir, VIDEO_ID).parent.iterdir()) == []
+    assert normalized_files(data_dir) == []
 
 
 @pytest.mark.ffmpeg
