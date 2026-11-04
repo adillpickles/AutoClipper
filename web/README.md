@@ -1,6 +1,6 @@
 # AutoClipper web app
 
-The Next.js frontend for AutoClipper ([app stack](../docs/decisions/0007-web-application-stack.md)). Right now it's a scaffold with one placeholder home page. It doesn't call the API and shows no data.
+The Next.js frontend for AutoClipper ([app stack](../docs/decisions/0007-web-application-stack.md)). It has the start screen (`/`) and the progress screen (`/jobs/<job_id>`), running in **mock mode**: the typed API client answers from the [API contract](../docs/architecture/api-contract.md)'s examples and § 11 scenarios inside the browser, so no backend is needed yet (#33 connects the real one).
 
 Stack: Next.js 16 (App Router, Turbopack), React 19, TypeScript (strict), Tailwind CSS 4, ESLint 9 and Prettier 3. npm is the package manager.
 
@@ -27,11 +27,12 @@ The same commands work in PowerShell. Full setup steps are in [docs/development/
 | `npm run typecheck`    | `next typegen` (route types, `next-env.d.ts`), then `tsc --noEmit`      |
 | `npm run format`       | Prettier: format every file, sorting Tailwind classes                   |
 | `npm run format:check` | Prettier: report unformatted files without changing them (what CI runs) |
+| `npm test`             | Vitest unit tests (`src/**/*.test.ts`)                                  |
 
 Before you push, run what CI runs ([`.github/workflows/web.yml`](../.github/workflows/web.yml)):
 
 ```bash
-npm run lint && npm run typecheck && npm run format:check && npm run build
+npm run lint && npm run typecheck && npm run format:check && npm test && npm run build
 ```
 
 ## Layout
@@ -39,11 +40,14 @@ npm run lint && npm run typecheck && npm run format:check && npm run build
 ```text
 web/
 ├── src/
-│   └── app/            # App Router: routes, layouts, global styles
-│       ├── layout.tsx  # root layout and page metadata
-│       ├── page.tsx    # placeholder home page
-│       ├── icon.svg    # favicon
-│       └── globals.css # Tailwind entry point and color tokens
+│   ├── app/                 # App Router: routes, layouts, global styles
+│   │   ├── layout.tsx       # root layout and page metadata
+│   │   ├── page.tsx         # start screen: VOD link and optional local file
+│   │   ├── jobs/[jobId]/    # progress screen
+│   │   ├── icon.svg         # favicon
+│   │   └── globals.css      # Tailwind entry point and color tokens
+│   ├── components/          # start form, job progress, header
+│   └── lib/api/             # the typed API client: types, mock mode, fixtures
 ├── AGENTS.md           # maintained by Next.js; see below
 ├── eslint.config.mjs
 ├── next.config.ts
@@ -52,6 +56,10 @@ web/
 ```
 
 New code follows the frontend conventions in [docs/development/conventions.md § 10](../docs/development/conventions.md#10-frontend). That's where components and the typed API client will live.
+
+## Mock mode
+
+`getApiClient()` in `src/lib/api/client.ts` is the only way components reach the API. In mock mode it simulates a server: a job is queued for one step, then spends one step (`MOCK_STEP_MS`, 2 s) in each of the six stages, then finishes with its scenario. The VOD ID picks the scenario, as in the contract's § 11. For example, `9000000003` finishes with a chat warning, `9000000004` fails, `9000000006` finds nothing, and any other ID gets the example result. Jobs are kept in `sessionStorage`, so a reload resumes polling. Result fixtures are in `src/lib/api/fixtures/`.
 
 ## Notes
 

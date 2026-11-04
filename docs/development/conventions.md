@@ -124,14 +124,14 @@ The Next.js app in `web/` ([app stack](../decisions/0007-web-application-stack.m
       └── api/        # the one typed API client
   ```
 
-  Only `app/` exists so far. Create the others when the first file needs them.
+  `app/`, `components/` and `lib/api/` exist.
 - **File names:** kebab-case (`highlight-timeline.tsx`) exporting a `PascalCase` component (`HighlightTimeline`). This matches Next.js's own file names and avoids case-only renames, which break on Windows and macOS.
 - **Imports:** use the `@/` alias for anything under `src/` (`@/components/highlight-timeline`). Relative imports only within the same folder.
-- **API access:** every call to the FastAPI backend goes through the typed client in `web/src/lib/api/`. Components never `fetch` the API directly. The client mirrors the [API contract](../architecture/api-contract.md) exactly; don't invent endpoints or types. It doesn't exist yet: the screen tasks (#29–#31) add it with a mock mode backed by fixture JSON, and #33 connects it to the real API.
+- **API access:** every call to the FastAPI backend goes through the typed client in `web/src/lib/api/`. Components never `fetch` the API directly. The client mirrors the [API contract](../architecture/api-contract.md) exactly; don't invent endpoints or types. `getApiClient()` returns it; mock mode (fixture JSON plus the § 11 scenarios, #29) is the only mode until #33 connects the real API.
 - **Server and client components:** components are Server Components by default. Add `"use client"` only where you need state, effects or browser APIs (player, trim controls, job polling), and keep those components small. Cache Components is on (`cacheComponents` in `next.config.ts`, the create-next-app default).
 - **Time and IDs:** §3 applies in the UI too. VOD positions stay `number` seconds (`start_s`) in state and are formatted (`1:02:03`) only when rendered. Twitch IDs stay `string`.
 - **Styling:** Tailwind utility classes in JSX. Global CSS lives only in `src/app/globals.css` (Tailwind entry point and color tokens). Support light and dark (`dark:` variants follow the OS setting).
 - **Accessibility:** semantic elements (`header`, `main`, `nav`, real `<button>`s), one `h1` per page, labelled form controls, visible focus, and WCAG AA text contrast in both color schemes.
 - **Next.js version drift:** Next.js 16 changed many APIs. Before relying on memory, check the docs bundled with the installed version in `web/node_modules/next/dist/docs/`. `web/AGENTS.md` (maintained by `next dev`) tells agents the same.
-- **Tests:** no frontend test runner yet. The first UI task with logic worth unit-testing (e.g. timeline math) adds Vitest.
+- **Tests:** Vitest (`npm test`) for logic: `src/**/*.test.ts` next to the code (the API client's mock and link parsing so far). CI runs it.
 - **Dependencies:** `npm install <pkg>` (or `--save-dev`) inside `web/`. Commit `package.json` and `package-lock.json` together and justify the dependency in the PR (§9).
