@@ -227,6 +227,7 @@ def test_scenario_9000000005_fails_with_no_usable_signals(client: TestClient) ->
     job = done_job(client, "9000000005")
 
     assert job["error"]["code"] == "no_usable_signals"  # type: ignore[index]
+    assert [w["code"] for w in job["warnings"]] == ["chat_missing", "audio_missing"]  # type: ignore[union-attr]
     assert job["progress"] == {
         "stage": "downloading_audio",
         "stage_index": 4,
@@ -699,6 +700,144 @@ def test_sample_media_has_the_contract_sizes_and_is_reused(tmp_path: Path) -> No
     assert again.clip.stat().st_mtime_ns == before  # not generated again
 
 
+def test_a_500_keeps_its_cors_headers(
+    make_client: Callable[..., tuple[TestClient, MockService]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, service = make_client()
+
+    def broken(job_id: str) -> object:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(service, "get_job", broken)
+    response = client.get(f"{API}/jobs/job_x", headers={"Origin": "http://localhost:3000"})
+
+    assert response.status_code == 500
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert error_code(response) == "internal_error"
+
+
+def test_json_bodies_say_utf_8(client: TestClient) -> None:
+    ok = client.get(f"{API}/health")
+    error = client.get(f"{API}/jobs/job_x")
+
+    assert ok.headers["content-type"] == "application/json; charset=utf-8"
+    assert error.headers["content-type"] == "application/json; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [(b'{"vod":"9000000001",}', "the body isn't valid JSON"), (b"", "the body is missing")],
+)
+def test_broken_bodies_name_no_bogus_fields(
+    client: TestClient, content: bytes, message: str
+) -> None:
+    response = client.post(
+        f"{API}/jobs", content=content, headers={"Content-Type": "application/json"}
+    )
+
+    assert response.json()["error"] == {
+        "code": "invalid_request",
+        "message": f"The request is invalid: {message}.",
+        "details": {"fields": []},
+    }
+
+
+def test_a_trailing_slash_is_a_404_envelope_not_a_redirect(client: TestClient) -> None:
+    response = client.post(f"{API}/jobs/", json={"vod": "9000000001"}, follow_redirects=False)
+
+    assert (response.status_code, error_code(response)) == (404, "not_found")
+
+
+def test_unsatisfiable_and_malformed_ranges(client: TestClient) -> None:
+    job = done_job(client)
+    url = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()["preview"]["url"]
+
+    beyond = client.get(url, headers={"Range": "bytes=999999999-"})
+    malformed = client.get(url, headers={"Range": "frames=1-2"})
+
+    assert beyond.status_code == 416
+    assert malformed.status_code == 400
+
+
+def test_9000000007_with_a_local_file_has_media(client: TestClient, tmp_path: Path) -> None:
+    video = tmp_path / "vod.mp4"
+    video.write_bytes(b"x")
+    created = client.post(f"{API}/jobs", json={"vod": "9000000007", "video_path": str(video)})
+
+    media = client.get(f"{API}/jobs/{created.json()['job_id']}/candidates/c001/media").json()
+
+    assert media["preview"]["status"] == "available"
+    assert media["export"]["status"] == "available"
+
+
+def test_a_running_job_always_has_progress(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    client, _ = make_client(synchronous=False, step_s=0.02)
+    job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+
+    def check() -> bool:
+        job = client.get(f"{API}/jobs/{job_id}").json()
+        if job["state"] == "running":
+            assert job["progress"] is not None
+        return job["state"] == "done"
+
+    wait_until(check)
+
+
+def test_a_null_segments_request_dedupes_with_its_explicit_equivalent(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    client, _ = make_client(synchronous=False, step_s=0.05)
+    job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+    wait_until(lambda: client.get(f"{API}/jobs/{job_id}").json()["state"] == "done")
+    explicit = [
+        {"candidate_id": "c001", "start_s": 118.0, "end_s": 148.0},
+        {"candidate_id": "c002", "start_s": 251.5, "end_s": 276.5},
+        {"candidate_id": "c003", "start_s": 40.0, "end_s": 62.0},
+    ]
+
+    first = client.post(f"{API}/highlights", json={"job_id": job_id})
+    second = client.post(f"{API}/highlights", json={"job_id": job_id, "segments": explicit})
+
+    assert first.status_code == 201
+    assert second.status_code == 200
+    assert second.json()["highlights_id"] == first.json()["highlights_id"]
+
+
+def test_closing_drops_queued_work_and_returns_promptly(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    _, service = make_client(synchronous=False, step_s=0.2)
+    from autoclipper.schemas import CreateJobRequest
+
+    ids = [
+        service.create_job(CreateJobRequest(vod=str(9000000100 + i)))[0].job_id for i in range(10)
+    ]
+    started = time.monotonic()
+
+    service.close()
+
+    assert time.monotonic() - started < 3.0
+    assert service.get_job(ids[-1]).state == "queued"  # never started
+
+
+@pytest.mark.ffmpeg
+def test_the_real_probe_accepts_videos_and_rejects_audio_only_files(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+) -> None:
+    client, _ = make_client(probe_video=None)
+    video = make_test_media("vod.mp4")
+    audio = make_test_media("tone.wav", video_size=None)
+
+    ok = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(video)})
+    rejected = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(audio)})
+
+    assert ok.status_code == 201
+    assert error_code(rejected) == "invalid_video_path"
+
+
 def test_serve_starts_uvicorn_with_the_mock_app(
     monkeypatch: pytest.MonkeyPatch, samples: SampleMedia
 ) -> None:
@@ -710,7 +849,13 @@ def test_serve_starts_uvicorn_with_the_mock_app(
 
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(service_module, "ensure_sample_media", lambda directory: samples)
-    monkeypatch.setattr(uvicorn, "run", lambda api, **kwargs: calls.append({"api": api, **kwargs}))
+
+    def run(api: object, **kwargs: object) -> None:
+        calls.append({"api": api, **kwargs})
+        with TestClient(api):  # type: ignore[arg-type]  # runs the lifespan, which stops the workers
+            pass
+
+    monkeypatch.setattr(uvicorn, "run", run)
 
     result = CliRunner().invoke(cli, ["serve", "--port", "8123"])
 

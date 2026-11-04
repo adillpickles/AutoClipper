@@ -42,7 +42,7 @@ Scope, architecture and the plan are documented, with concrete defaults for buil
 | Export | 🟡 Cut and reframe only (#20) | `autoclipper.export`: exact source-interval cut (padding separate, clamped to where video and audio both have content, no lag shift), `center_crop` and `configured_region` layouts (the region set with `AUTOCLIPPER_EXPORT_REGION`), 1080×1920 H.264/AAC MP4 written atomically. Tested on generated media only. No captions (#21) and no CLI/API command (#32) yet. Details: [overview § 4.6](../architecture/overview.md#46-export) |
 | License | ✅ MIT | [`LICENSE`](../../LICENSE) |
 | Backend API (mock) | ✅ In place (#28) | `autoclipper serve` (FastAPI + uvicorn, `autoclipper.api`): every endpoint of the [API contract](../architecture/api-contract.md) with the § 11 mock scenarios, the error envelope, CORS for `AUTOCLIPPER_CORS_ORIGINS`, in-memory records, a FIFO analysis worker and a shared render worker. Exports and highlights are simulated and finish with generated sample MP4s (1080×1920, 1920×1080); preview serves a generated 360 s sample with Range support. Real analysis (#45) and rendering (#32, #72) come later |
-| Web app | 🟡 Scaffold only (#6) | Next.js + TypeScript (strict) + Tailwind in `web/` with ESLint, Prettier and its own CI workflow (`web.yml`); one placeholder page. No screens (#29–#31), API client (#33) or FastAPI backend (#28) yet. |
+| Web app | 🟡 Scaffold only (#6) | Next.js + TypeScript (strict) + Tailwind in `web/` with ESLint, Prettier and its own CI workflow (`web.yml`); one placeholder page. No screens (#29–#31) or API client (#33) yet; the mock backend (#28) is ready for them. |
 
 ## Decisions
 

@@ -6,7 +6,7 @@ marks status responses ``Cache-Control: no-store`` (§ 9.1).
 """
 
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Final
 
@@ -38,18 +38,19 @@ API_PREFIX: Final = "/api/v1"
 DEFAULT_CORS_ORIGINS: Final = ("http://localhost:3000", "http://127.0.0.1:3000")
 _NO_STORE: Final = {"Cache-Control": "no-store"}
 _INTERNAL: Final = "Something went wrong on the server. Try again."
+_JSON_TYPE: Final = "application/json; charset=utf-8"
 
 
 def _error(status: int, error: ApiError, headers: dict[str, str] | None = None) -> JSONResponse:
     body = ErrorResponse(error=error).model_dump(mode="json")
-    return JSONResponse(body, status_code=status, headers=headers)
+    return JSONResponse(body, status_code=status, headers=headers, media_type=_JSON_TYPE)
 
 
 def _json(model: BaseModel, status: int = 200, headers: dict[str, str] | None = None) -> Response:
     return Response(
         content=model.model_dump_json(),
         status_code=status,
-        media_type="application/json",
+        media_type=_JSON_TYPE,
         headers=headers,
     )
 
@@ -60,14 +61,19 @@ def _invalid_request_message(errors: Sequence[object]) -> tuple[str, list[str]]:
     for error in errors:
         if not isinstance(error, dict):
             continue
-        loc = [str(part) for part in error.get("loc", ()) if part != "body"]
+        kind = str(error.get("type", ""))
+        # A JSON syntax error's location is a byte offset, not a field.
+        loc = (
+            [] if kind == "json_invalid" else [str(p) for p in error.get("loc", ()) if p != "body"]
+        )
         name = ".".join(loc)
         if name and name not in fields:
             fields.append(name)
         if not first:
-            kind = str(error.get("type", ""))
             if kind == "json_invalid":
                 first = "the body isn't valid JSON"
+            elif kind == "missing" and not name:
+                first = "the body is missing"
             elif kind == "missing":
                 first = f"{name} is required"
             elif kind == "extra_forbidden":
@@ -95,7 +101,23 @@ def create_app(
         lifespan=lifespan,
         docs_url="/docs",
         redoc_url=None,
+        # A trailing slash gets the 404 envelope, not a redirect without one (§ 8).
+        redirect_slashes=False,
     )
+
+    # Registered before CORSMiddleware, so it runs inside it: a 500 keeps its CORS headers and
+    # the browser can read the envelope. (Starlette's own exception handler for `Exception` runs
+    # outside every middleware.)
+    @app.middleware("http")
+    async def _catch_all(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        try:
+            return await call_next(request)
+        except Exception as exc:
+            log.error("unhandled API error: %r", exc, exc_info=exc)
+            return _error(500, ApiError(code="internal_error", message=_INTERNAL))
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),

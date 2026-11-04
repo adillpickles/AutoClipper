@@ -278,13 +278,18 @@ class MockService:
             self._threads.append(thread)
 
     def close(self) -> None:
-        """Stop the workers after the work in hand (records stay readable)."""
+        """Stop the workers: queued work is dropped, the work in hand finishes."""
         if self.synchronous:
             return
-        self._analysis_queue.put(None)
-        self._render_queue.put(None)
+        for work in (self._analysis_queue, self._render_queue):
+            while True:  # queued work is dropped, like everything else on restart (§ 9.3)
+                try:
+                    work.get_nowait()
+                except queue.Empty:
+                    break
+            work.put(None)
         for thread in self._threads:
-            thread.join(timeout=10)
+            thread.join(timeout=5)
 
     # --- Jobs ----------------------------------------------------------------------------------
 
@@ -580,7 +585,8 @@ class MockService:
     def _media_for(self, job: _JobRecord, candidate: Candidate) -> CandidateMedia:
         assert job.result is not None
         duration_s = job.result.vod.duration_s
-        if job.video_id == mock.NO_MEDIA_VIDEO_ID:
+        # The VOD's video can't be downloaded, but a local file works (§ 5 source_unavailable).
+        if job.video_id == mock.NO_MEDIA_VIDEO_ID and job.video_path is None:
             preview = PreviewMedia(
                 status="unavailable",
                 kind=None,
@@ -681,11 +687,13 @@ class MockService:
             scenario = mock.scenario_for(record.video_id)
             now = self.clock()
             record.state = "running"
+            record.progress = mock.stage_progress(1)  # never running without progress (§ 3.4)
             record.times.started_at = record.times.updated_at = now
         for index in range(1, len(mock.JOB_STAGES) + 1):
-            with self._lock:
-                record.progress = mock.stage_progress(index)
-                record.times.updated_at = self.clock()
+            if index > 1:
+                with self._lock:
+                    record.progress = mock.stage_progress(index)
+                    record.times.updated_at = self.clock()
             self._sleep()
             if scenario.error is not None and index == scenario.fail_at_stage:
                 with self._lock:
@@ -727,18 +735,23 @@ class MockService:
     def _run_render(self, render_id: str) -> None:
         with self._lock:
             record = self._renders[render_id]
-            record.state = "running"
-            record.times.started_at = record.times.updated_at = self.clock()
-        for index, stage in enumerate(RENDER_STAGES, start=1):
-            if stage == "transcribing" and not record.captions:
-                continue  # skipped stages are passed over (§ 3.4)
-            message = _RENDER_MESSAGES.get(
-                stage,
+        stages = [
+            (index, stage)
+            for index, stage in enumerate(RENDER_STAGES, start=1)
+            if stage != "transcribing" or record.captions  # skipped stages are passed over
+        ]
+        for position, (index, stage) in enumerate(stages):
+            default = (
                 "Rendering the clip"
                 if record.kind == "export"
-                else "Rendering the highlights video",
+                else "Rendering the highlights video"
             )
+            message = _RENDER_MESSAGES.get(stage, default)
             with self._lock:
+                now = self.clock()
+                if position == 0:  # running and its first progress together (§ 3.4)
+                    record.state = "running"
+                    record.times.started_at = now
                 record.progress = Progress(
                     stage=stage,
                     stage_index=index,
@@ -746,13 +759,18 @@ class MockService:
                     stage_fraction=None,
                     message=message,
                 )
-                record.times.updated_at = self.clock()
+                record.times.updated_at = now
             self._sleep()
         sample = self.samples.clip if record.kind == "export" else self.samples.highlights
         folder = self.output_dir / ("exports" if record.kind == "export" else "highlights")
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / f"{render_id}.mp4"
-        shutil.copyfile(sample, target)
+        partial = folder / f"{render_id}.part"
+        try:  # never leave a truncated file under the final name
+            shutil.copyfile(sample, partial)
+            partial.replace(target)
+        finally:
+            partial.unlink(missing_ok=True)
         with self._lock:
             now = self.clock()
             record.file = target
