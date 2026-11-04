@@ -45,7 +45,7 @@ BANNER = f"TwitchDownloaderCLI {PINNED_TOOL_VERSION} Copyright (c) lay295 and co
 CHATTER_NAMES = ("user_001", "User_001", "user_002", "User_002")
 
 
-def video_record(created_at: datetime = VOD_CREATED) -> dict[str, object]:
+def video_record(created_at: datetime = VOD_CREATED, duration: str = "1h0m0s") -> dict[str, object]:
     return {
         "id": VIDEO_ID,
         "stream_id": "9200000100",
@@ -62,7 +62,7 @@ def video_record(created_at: datetime = VOD_CREATED) -> dict[str, object]:
         "view_count": 10,
         "language": "en",
         "type": "archive",
-        "duration": "1h0m0s",
+        "duration": duration,
         "muted_segments": [{"duration": 30, "offset": 120}],
     }
 
@@ -333,33 +333,122 @@ def test_a_removed_output_is_fetched_again(tmp_path: Path, chat_binary: Path) ->
 # --- Failures are recorded, not fatal -----------------------------------------------------------
 
 
-@pytest.mark.ffmpeg
-def test_a_deleted_vod_is_unavailable_and_the_rest_still_runs(
-    tmp_path: Path, chat_binary: Path, audio_source: Path
+def test_a_deleted_vod_is_unavailable_everywhere_and_not_retried(
+    tmp_path: Path, chat_binary: Path
 ) -> None:
     data = tmp_path / "data"
     twitch = FakeTwitch(video={})
+    chat = FakeChatTool()
+    downloader = FakeDownloader(None, AssertionError("must not download"))
 
     report = ingest_vod(
         VIDEO_ID,
         data_dir=data,
-        tools=tools(chat_binary, twitch=twitch, downloader=FakeDownloader(audio_source)),
+        tools=tools(chat_binary, twitch=twitch, chat=chat, downloader=downloader),
     )
-
-    assert outcomes(report) == {
-        "vod_meta": "unavailable",
-        "clips": "unavailable",
-        "chat": "ok",
-        "audio": "ok",
-    }
-    assert not report.failed
     again = ingest_vod(
         VIDEO_ID,
         data_dir=data,
-        tools=tools(chat_binary, twitch=twitch, downloader=FakeDownloader(audio_source)),
+        tools=tools(chat_binary, twitch=twitch, chat=chat, downloader=downloader),
     )
+
+    assert set(outcomes(report).values()) == {"unavailable"}
+    assert not report.failed  # nothing to retry: the command exits 0
     assert set(outcomes(again).values()) == {"skipped"}
     assert twitch.paths.count("/helix/videos") == 1
+    assert (chat.calls, downloader.calls) == (0, 0)
+
+
+@pytest.mark.ffmpeg
+def test_a_local_file_recovers_audio_twitch_refused(
+    tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path]
+) -> None:
+    data = tmp_path / "data"
+    short = FakeTwitch(video=video_record(duration="0h0m2s"))
+    restricted = FakeDownloader(None, VodAccessRestrictedError(VIDEO_ID, "subscriber-only"))
+    ingest_vod(
+        VIDEO_ID, data_dir=data, tools=tools(chat_binary, twitch=short, downloader=restricted)
+    )
+    video = make_test_media("my copy.mp4", duration_s=2.0)
+
+    report = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=short, downloader=restricted),
+        media_file=video,
+    )
+
+    assert outcomes(report)["audio"] == "ok"
+    assert read_catalog(data)[("audio", VIDEO_ID)].tool == "local-file"
+
+
+@pytest.mark.ffmpeg
+def test_a_local_file_of_the_wrong_length_is_refused(
+    tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path]
+) -> None:
+    data = tmp_path / "data"
+    clip = make_test_media("a clip.mp4", duration_s=2.0)  # the VOD is an hour long
+
+    report = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, downloader=FakeDownloader(None, AssertionError("no"))),
+        media_file=clip,
+    )
+
+    assert outcomes(report)["audio"] == "failed"
+    assert "MediaLengthError" in (read_catalog(data)[("audio", VIDEO_ID)].error or "")
+    assert not normalized_audio_path(data, VIDEO_ID).exists()
+
+
+def test_an_interrupted_chat_download_leaves_no_raw_file(tmp_path: Path, chat_binary: Path) -> None:
+    data = tmp_path / "data"
+
+    class Interrupted(FakeChatTool):
+        def __call__(self, args: Sequence[str]) -> CommandResult:
+            super().__call__(args)  # the raw file, with usernames, is on disk now
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        ingest_vod(VIDEO_ID, data_dir=data, tools=tools(chat_binary, chat=Interrupted()))
+
+    assert not raw_chat_path(data, VIDEO_ID).exists()
+
+
+def test_a_leftover_raw_chat_file_is_removed_even_when_chat_is_done(
+    tmp_path: Path, chat_binary: Path
+) -> None:
+    data = tmp_path / "data"
+    offline = FakeDownloader(None, RuntimeError("offline"))
+    ingest_vod(VIDEO_ID, data_dir=data, tools=tools(chat_binary, downloader=offline))
+    raw = raw_chat_path(data, VIDEO_ID)
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text('{"commenter": "user_001"}', encoding="utf-8")  # e.g. from a killed run
+
+    report = ingest_vod(VIDEO_ID, data_dir=data, tools=tools(chat_binary, downloader=offline))
+
+    assert outcomes(report)["chat"] == "skipped"
+    assert not raw.exists()
+
+
+def test_a_failed_manifest_write_leaves_no_unpinned_snapshot(
+    tmp_path: Path, chat_binary: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = tmp_path / "data"
+    real_write_text = Path.write_text
+
+    def failing_write_text(self: Path, *args: object, **kwargs: object) -> int:
+        if self.name.endswith(".json.part"):
+            raise OSError(28, "No space left on device")
+        return real_write_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", failing_write_text)
+    offline = FakeDownloader(None, RuntimeError("offline"))
+
+    report = ingest_vod(VIDEO_ID, data_dir=data, tools=tools(chat_binary, downloader=offline))
+
+    assert outcomes(report)["clips"] == "failed"
+    assert list(clips_dir(data).iterdir()) == []
 
 
 def test_a_subscriber_only_vod_has_unavailable_audio(tmp_path: Path, chat_binary: Path) -> None:
@@ -418,11 +507,12 @@ def test_a_local_media_file_is_used_instead_of_downloading(
     data = tmp_path / "data"
     video = make_test_media("my vod.mp4", duration_s=2.0)
     downloader = FakeDownloader(None, AssertionError("must not download"))
+    two_seconds = FakeTwitch(video=video_record(duration="0h0m2s"))
 
     report = ingest_vod(
         VIDEO_ID,
         data_dir=data,
-        tools=tools(chat_binary, downloader=downloader),
+        tools=tools(chat_binary, twitch=two_seconds, downloader=downloader),
         media_file=video,
     )
 

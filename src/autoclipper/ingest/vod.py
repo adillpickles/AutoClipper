@@ -250,27 +250,39 @@ def ingest_vod(
                 f"{manifest['n_clips']} clips in snapshot {manifest['snapshot_id']}{flag}",
             )
 
+    # A VOD Twitch doesn't have (deleted, expired, unpublished) has no chat or audio either.
+    vod_gone = catalog[("vod_meta", video_id)].status == "unavailable"
+    gone = "the VOD is unavailable (Twitch has no published video with this ID)"
+
     # 3. Chat.
     chat_file = chat_path(data_dir, video_id)
+    raw_chat = raw_chat_path(data_dir, video_id)
+    # A raw replay left by an interrupted run holds usernames: remove it whatever happens next.
+    raw_chat.unlink(missing_ok=True)
     chat_entry = done_before("chat", chat_file.is_file())
     tool = f"{chat_module.TOOL_NAME}@{chat_module.PINNED_TOOL_VERSION}"
     if chat_entry is not None:
         skip("chat", chat_entry)
+    elif vod_gone:
+        finish("chat", "unavailable", tool, gone)
     elif tools.salt is None:
         finish("chat", "failed", tool, tools.missing_salt)
     else:
         try:
-            replay = chat_module.download_chat(
-                video_id,
-                raw_chat_path(data_dir, video_id),
-                salt=tools.salt,
-                binary=tools.chat_binary,
-                runner=tools.chat_runner,
-            )
-            _write_chat(chat_file, replay)
+            try:
+                replay = chat_module.download_chat(
+                    video_id,
+                    raw_chat,
+                    salt=tools.salt,
+                    binary=tools.chat_binary,
+                    runner=tools.chat_runner,
+                )
+                _write_chat(chat_file, replay)
+            finally:
+                # The raw replay holds usernames: never leave it behind, not after a failure
+                # and not after an interrupt (Ctrl+C) either.
+                raw_chat.unlink(missing_ok=True)
         except Exception as exc:  # recorded, not fatal
-            # The raw replay holds usernames: never leave it behind, not even after a failure.
-            raw_chat_path(data_dir, video_id).unlink(missing_ok=True)
             finish("chat", "failed", tool, _describe(exc))
         else:
             version = replay.tool_version or chat_module.PINNED_TOOL_VERSION
@@ -284,9 +296,13 @@ def ingest_vod(
     # 4. Audio.
     wav = normalized_audio_path(data_dir, video_id)
     audio_entry = done_before("audio", wav.is_file())
+    if audio_entry is not None and audio_entry.status == "unavailable" and media_file is not None:
+        audio_entry = None  # the user's own file replaces a download Twitch refused
     audio_tool = "local-file" if media_file is not None else _ytdlp_tool()
     if audio_entry is not None:
         skip("audio", audio_entry)
+    elif vod_gone and media_file is None:
+        finish("audio", "unavailable", audio_tool, gone)
     else:
         try:
             if media_file is not None:
@@ -297,8 +313,13 @@ def ingest_vod(
                 audio = prepare_vod_audio(
                     video_id, data_dir=data_dir, downloader=tools.downloader, runner=tools.runner
                 )
+            if media_file is not None and vod is not None:
+                _check_media_length(audio.duration_s, vod.duration_s, media_file)
         except (VodUnavailableError, VodAccessRestrictedError) as exc:
             finish("audio", "unavailable", audio_tool, _describe(exc))
+        except MediaLengthError as exc:
+            wav.unlink(missing_ok=True)  # its timeline doesn't match the VOD's
+            finish("audio", "failed", audio_tool, _describe(exc))
         except Exception as exc:  # recorded, not fatal
             finish("audio", "failed", audio_tool, _describe(exc))
         else:
@@ -308,6 +329,23 @@ def ingest_vod(
 
 
 # --- Steps -------------------------------------------------------------------------------------
+
+# A local file may differ from Twitch's duration by this much (whichever is larger).
+MEDIA_LENGTH_TOLERANCE_S: Final = 5.0
+MEDIA_LENGTH_TOLERANCE_FRACTION: Final = 0.01
+
+
+class MediaLengthError(Exception):
+    """A ``--media`` file's length doesn't match the VOD's, so it isn't the whole VOD."""
+
+
+def _check_media_length(media_s: float, vod_s: float, media_file: Path) -> None:
+    tolerance = max(MEDIA_LENGTH_TOLERANCE_S, MEDIA_LENGTH_TOLERANCE_FRACTION * vod_s)
+    if abs(media_s - vod_s) > tolerance:
+        raise MediaLengthError(
+            f"{media_file.name} is {media_s:.1f} s long but the VOD is {vod_s:.1f} s; pass a "
+            "file of the whole VOD, starting at its start"
+        )
 
 
 def _describe(exc: BaseException) -> str:
@@ -352,7 +390,12 @@ def _read_vod(data_dir: Path, video_id: str) -> Vod | None:
 
 
 def _snapshot_exists(data_dir: Path, video_id: str) -> bool:
-    return any(clips_dir(data_dir).glob(f"{validate_video_id(video_id)}-*.parquet"))
+    """A snapshot counts only with both its Parquet file and its manifest."""
+    directory = clips_dir(data_dir)
+    return any(
+        manifest.with_suffix(".parquet").is_file()
+        for manifest in directory.glob(f"{validate_video_id(video_id)}-*.json")
+    )
 
 
 def _take_snapshot(
@@ -395,8 +438,14 @@ def _take_snapshot(
     text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     manifest_path = parquet.with_suffix(".json")
     temp = manifest_path.with_name(f".{manifest_path.name}.part")
-    temp.write_text(text, encoding="utf-8", newline="\n")
-    temp.replace(manifest_path)
+    try:
+        temp.write_text(text, encoding="utf-8", newline="\n")
+        temp.replace(manifest_path)
+    except BaseException:
+        # A snapshot without its manifest isn't pinned: remove it, so a retry leaves one.
+        temp.unlink(missing_ok=True)
+        parquet.unlink(missing_ok=True)
+        raise
     return manifest
 
 
