@@ -427,6 +427,45 @@ def test_download_without_readable_audio_is_deleted(data_dir: Path, runner: Fake
     assert list(raw_audio_dir(data_dir).iterdir()) == []
 
 
+def test_download_whose_frames_fail_to_decode_is_deleted(data_dir: Path) -> None:
+    # Kept, it would never be fetched again, and normalizing it would fail on every run.
+    runner = downloaded_probe()
+    runner.undecoded_fraction = 0.5
+    downloader = FakeDownloader()
+
+    with pytest.raises(DownloadIntegrityError, match="fail to decode"):
+        download_audio(VIDEO_ID, data_dir=data_dir, downloader=downloader, runner=runner)
+
+    assert list(raw_audio_dir(data_dir).iterdir()) == []
+
+
+@pytest.mark.ffmpeg
+def test_download_with_undecodable_aac_frames_is_deleted(tmp_path: Path, data_dir: Path) -> None:
+    # Intact MPEG-TS packets and ADTS frames whose AAC payloads are random bytes: the byte
+    # checks pass, only decoding finds the damage.
+    tone = generate(
+        tmp_path / "tone.mp4", "-f", "lavfi", "-i", "sine=frequency=440:d=10", "-c:a", "aac"
+    )
+    entries = ("-select_streams", "a:0", "-show_entries", "packet=pts_time,pos,size")
+    listing = run_command(ffprobe_command(*entries, "-of", "json", tone), timeout_s=60).stdout
+    content = bytearray(tone.read_bytes())
+    noise = random.Random(19)
+    for packet in json.loads(listing)["packets"]:
+        if 2 <= float(packet["pts_time"]) < 8:
+            start, size = int(packet["pos"]), int(packet["size"])
+            content[start : start + size] = noise.randbytes(size)
+    (tmp_path / "damaged.mp4").write_bytes(content)
+    damaged = generate(tmp_path / "damaged.ts", "-i", tmp_path / "damaged.mp4", "-c:a", "copy")
+    assert scan_mpegts(damaged) == ByteDamage(0.0, 0.0)
+
+    with pytest.raises(DownloadIntegrityError, match="fail to decode"):
+        download_audio(
+            VIDEO_ID, data_dir=data_dir, downloader=FakeDownloader(source=damaged, duration_s=10.0)
+        )
+
+    assert list(raw_audio_dir(data_dir).iterdir()) == []
+
+
 def test_ytdlp_options_resume_retry_and_never_skip_fragments(tmp_path: Path) -> None:
     options = ytdlp_options(DownloadRequest("https://example.invalid/v", tmp_path, STEM))
 
@@ -1644,13 +1683,12 @@ LIVE_VOD_ENV = "AUTOCLIPPER_LIVE_AUDIO_VOD_ID"
 def test_live_download_and_normalize_a_real_vod(tmp_path: Path) -> None:
     """Download and normalize one real, public, short VOD.
 
-    Run this only after real-data use is authorized for the VOD's source
-    (docs/data/data-governance.md, OQ-17), with ``-m live`` and the VOD's ID in
-    ``AUTOCLIPPER_LIVE_AUDIO_VOD_ID``. It downloads the whole VOD's audio into ``tmp_path``.
+    Run with ``-m live`` and a short public VOD's ID in ``AUTOCLIPPER_LIVE_AUDIO_VOD_ID``. It
+    downloads the whole VOD's audio into ``tmp_path``, so pick a VOD of a few minutes.
     """
     video_id = os.environ.get(LIVE_VOD_ENV, "").strip()
     if not video_id:
-        pytest.skip(f"set {LIVE_VOD_ENV} to an authorized public VOD's ID to run this test")
+        pytest.skip(f"set {LIVE_VOD_ENV} to a short public VOD's ID to run this test")
 
     audio = prepare_vod_audio(video_id, data_dir=tmp_path / "data")
 

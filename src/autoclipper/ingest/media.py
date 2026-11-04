@@ -8,10 +8,9 @@ normally ``get_settings().data_dir``:
   otherwise the one yt-dlp reports.
 - ``interim/audio/<video_id>.wav``: 16 kHz mono 16-bit PCM for feature extraction.
 
-Downloading VOD media through yt-dlp is unofficial and needs an approved source basis before it
-is used on real data (docs/data/data-governance.md, OQ-17). Only public VODs and audio-only
-formats are downloaded: no cookies or login are passed, and there is no fallback to formats with
-video.
+Downloading VOD media through yt-dlp is unofficial (docs/data/data-sources.md § 3). Only public
+VODs and audio-only formats are downloaded: no cookies or login are passed, and there is no
+fallback to formats with video.
 
 yt-dlp only downloads: its own FFmpeg use (remuxing, fix-ups, FFmpeg as HLS downloader) is turned
 off, so every FFmpeg and FFprobe run goes through `autoclipper.ffmpeg`, with a timeout.
@@ -216,8 +215,8 @@ class VodAccessRestrictedError(AudioDownloadError):
     """The VOD is subscriber-only or needs a login, which AutoClipper never uses."""
 
     headline = (
-        "VOD {video_id} is subscriber-only or requires a login; only public VODs can be "
-        "downloaded (docs/data/data-governance.md)"
+        "VOD {video_id} is subscriber-only or requires a login; AutoClipper downloads only "
+        "public VODs and passes no login"
     )
 
 
@@ -226,7 +225,7 @@ class NoAudioOnlyFormatError(AudioDownloadError):
 
     headline = (
         "VOD {video_id} offers no audio-only format, and AutoClipper doesn't download video "
-        "to get the audio (issue #19, docs/data/data-governance.md)"
+        "to get the audio"
     )
 
 
@@ -700,6 +699,11 @@ def _download_problem(
     damage = _byte_damage(info)
     if damage is not None and damage.fraction > MAX_DECODE_ERROR_RATE:
         return f"{info.path.name} is damaged: {damage}"
+    # Also checked here, not only when normalizing: a kept download is never fetched again, so
+    # one whose frames don't decode would fail normalization on every later run.
+    undecoded = _undecoded_fraction(info.path, runner, timeout_s=READ_CHECK_TIMEOUT_S)
+    if undecoded > MAX_DECODE_ERROR_RATE:
+        return f"{info.path.name} is damaged: {undecoded:.1%} of its audio frames fail to decode"
     if expected_duration_s is None:
         return None
     played_s = _played_duration_s(info.path, runner)
