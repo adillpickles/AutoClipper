@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { ApiRequestError } from "@/lib/api/errors";
 import {
@@ -6,6 +6,8 @@ import {
   exportAt,
   jobAt,
   MOCK_STEP_MS,
+  resetMockStore,
+  schedule,
 } from "@/lib/api/mock";
 
 const T0 = Date.UTC(2026, 10, 4, 12, 0, 0);
@@ -17,32 +19,48 @@ const stored = (videoId: string) => ({
 });
 
 describe("jobAt", () => {
+  // Stage lengths in steps: 1, 1, 1, 4 (audio), 1, 1, after one step queued.
+  const STARTS = [1, 2, 3, 4, 8, 9];
+
   it("is queued, then walks through the six stages, then is done", () => {
     expect(jobAt(stored("9000000001"), T0).state).toBe("queued");
     expect(jobAt(stored("9000000001"), T0).progress).toBeNull();
-    for (let stage = 1; stage <= 6; stage++) {
-      const job = jobAt(stored("9000000001"), T0 + stage * MOCK_STEP_MS);
+    STARTS.forEach((step, i) => {
+      const job = jobAt(stored("9000000001"), T0 + step * MOCK_STEP_MS);
       expect(job.state).toBe("running");
-      expect(job.progress?.stage_index).toBe(stage);
+      expect(job.progress?.stage_index).toBe(i + 1);
       expect(job.progress?.stage_count).toBe(6);
-    }
-    const done = jobAt(stored("9000000001"), T0 + 7 * MOCK_STEP_MS);
+    });
+    const done = jobAt(stored("9000000001"), T0 + 10 * MOCK_STEP_MS);
     expect(done.state).toBe("done");
     expect(done.progress).toBeNull();
-    expect(done.finished_at).toBe("2026-11-04T12:00:14Z");
+    expect(done.started_at).toBe("2026-11-04T12:00:02Z");
+    expect(done.finished_at).toBe("2026-11-04T12:00:20Z");
   });
 
-  it("measures only the audio download", () => {
-    const audio = jobAt(
-      stored("9000000001"),
-      T0 + 4 * MOCK_STEP_MS + MOCK_STEP_MS / 2,
-    );
-    expect(audio.progress?.stage).toBe("downloading_audio");
-    expect(audio.progress?.stage_fraction).toBeCloseTo(0.5);
-    expect(
-      jobAt(stored("9000000001"), T0 + 2 * MOCK_STEP_MS).progress
-        ?.stage_fraction,
-    ).toBeNull();
+  it("measures only the audio download, across several polls", () => {
+    const at = (steps: number) =>
+      jobAt(stored("9000000001"), T0 + steps * MOCK_STEP_MS);
+    expect(at(4).progress?.stage).toBe("downloading_audio");
+    expect(at(4).progress?.stage_fraction).toBeCloseTo(0);
+    expect(at(5).progress?.stage_fraction).toBeCloseTo(0.25);
+    expect(at(7).progress?.stage_fraction).toBeCloseTo(0.75);
+    expect(at(2).progress?.stage_fraction).toBeNull();
+  });
+
+  it("starts a job only when the one before it has finished", () => {
+    const first = { ...stored("9000000001"), job_id: "job_a" };
+    const second = {
+      ...stored("9000000002"),
+      job_id: "job_b",
+      created_ms: T0 + 100,
+    };
+    const starts = schedule({ job_a: first, job_b: second });
+    expect(starts.get("job_a")).toBe(T0 + MOCK_STEP_MS);
+    expect(starts.get("job_b")).toBe(T0 + 10 * MOCK_STEP_MS);
+    const middle = T0 + 5 * MOCK_STEP_MS;
+    expect(jobAt(second, middle, starts.get("job_b")).state).toBe("queued");
+    expect(jobAt(first, middle, starts.get("job_a")).state).toBe("running");
   });
 
   it("fails 9000000004 at the first stage with vod_unavailable", () => {
@@ -66,12 +84,14 @@ describe("jobAt", () => {
       "chat_missing",
       "audio_missing",
     ]);
-    const running = jobAt(stored("9000000005"), T0 + 4 * MOCK_STEP_MS + 500);
+    const running = jobAt(stored("9000000005"), T0 + 5 * MOCK_STEP_MS);
     expect(running.progress?.stage_fraction).toBeNull();
   });
 });
 
 describe("createMockClient", () => {
+  beforeEach(() => resetMockStore());
+
   it("runs a job to its scenario's result", async () => {
     let now = T0;
     const client = createMockClient(() => now);
@@ -84,7 +104,7 @@ describe("createMockClient", () => {
       status: 409,
       error: { code: "job_not_done", details: { state: "queued" } },
     });
-    now += 8 * MOCK_STEP_MS;
+    now += 12 * MOCK_STEP_MS;
     const result = await client.getResult(job.job_id);
     expect(result.vod.video_id).toBe("9000000002");
     expect(result.n_viewer_clips_total).toBe(0);
@@ -118,6 +138,41 @@ describe("createMockClient", () => {
     ).rejects.toMatchObject({ error: { code: "invalid_video_path" } });
   });
 
+  it("keeps the scenarios' results", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const warned = (await client.createJob({ vod: "9000000003" })).job;
+    now += 12 * MOCK_STEP_MS;
+    const empty = (await client.createJob({ vod: "9000000006" })).job;
+    now += 12 * MOCK_STEP_MS;
+    const result = await client.getResult(warned.job_id);
+    expect(result.warnings.map((w) => w.code)).toEqual(["chat_missing"]);
+    expect((await client.getJob(warned.job_id)).warnings).toEqual(
+      result.warnings,
+    );
+    expect((await client.getResult(empty.job_id)).candidates).toEqual([]);
+  });
+
+  it("gives 9000000007 media only with a local file", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const plain = (await client.createJob({ vod: "9000000007" })).job;
+    now += 12 * MOCK_STEP_MS;
+    const local = (
+      await client.createJob({
+        vod: "9000000007",
+        video_path: "/videos/vod.mp4",
+      })
+    ).job;
+    now += 12 * MOCK_STEP_MS;
+    expect(
+      (await client.getCandidateMedia(plain.job_id, "c001")).preview.status,
+    ).toBe("unavailable");
+    expect(
+      (await client.getCandidateMedia(local.job_id, "c001")).preview.status,
+    ).toBe("available");
+  });
+
   it("answers an unknown job with job_not_found", async () => {
     const error = await createMockClient(() => T0)
       .getJob("job_missing")
@@ -130,7 +185,7 @@ describe("createMockClient", () => {
     let now = T0;
     const client = createMockClient(() => now);
     const { job } = await client.createJob({ vod: "9000000021" });
-    now += 8 * MOCK_STEP_MS;
+    now += 12 * MOCK_STEP_MS;
     const { export: created } = await client.createExport({
       job_id: job.job_id,
       candidate_id: "c001",
@@ -159,7 +214,7 @@ describe("createMockClient", () => {
     const client = createMockClient(() => now);
     const noMedia = (await client.createJob({ vod: "9000000007" })).job;
     const other = (await client.createJob({ vod: "9000000031" })).job;
-    now += 8 * MOCK_STEP_MS;
+    now += 24 * MOCK_STEP_MS; // both jobs, one after the other
     const request = {
       candidate_id: "c001",
       start_s: 0,

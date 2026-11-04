@@ -1,7 +1,8 @@
 // Mock mode of the API client: the § 11 scenarios of docs/architecture/api-contract.md, run in
 // the browser. A job's state follows from the time since it was created (queued for one step,
 // then one step per stage), so polling shows queued, running and the final state, and a page
-// reload picks up where it was: jobs are kept in sessionStorage.
+// reload or a new tab picks up where it was: jobs are kept in localStorage, like the server keeps
+// them until it restarts.
 
 import type { ApiClient } from "@/lib/api/client";
 import { ApiRequestError } from "@/lib/api/errors";
@@ -20,6 +21,7 @@ import type {
   Job,
   Progress,
 } from "@/lib/api/types";
+import { EXPORT_STAGES, JOB_STAGES } from "@/lib/api/stages";
 import { INVALID_VOD_MESSAGE, looksAbsolute, parseVod } from "@/lib/api/vod";
 
 /** Length of one mock step (queued, then each stage). */
@@ -27,24 +29,9 @@ export const MOCK_STEP_MS = 2000;
 
 const STORAGE_KEY = "autoclipper.mock.v1";
 const NO_MEDIA_VIDEO_ID = "9000000007";
-/** A locally generated, git-ignored sample (see web/README.md § Mock mode). */
+/** Sample files the results screen (#30) serves from `public/mock-media/`. */
 const PREVIEW_URL = "/mock-media/preview.mp4";
 const CLIP_URL = "/mock-media/clip.mp4";
-
-export const JOB_STAGES: ReadonlyArray<{ stage: string; message: string }> = [
-  { stage: "resolving_vod", message: "Looking up the VOD" },
-  { stage: "fetching_clips", message: "Fetching viewer clips" },
-  { stage: "downloading_chat", message: "Downloading chat replay" },
-  { stage: "downloading_audio", message: "Downloading audio" },
-  { stage: "computing_features", message: "Computing chat and audio features" },
-  { stage: "ranking", message: "Ranking moments" },
-];
-
-const EXPORT_STAGES = [
-  { stage: "obtaining_media", message: "Getting the video" },
-  { stage: "transcribing", message: "Generating captions" },
-  { stage: "rendering", message: "Rendering the clip" },
-];
 
 interface Scenario {
   result?: AnalysisResult;
@@ -144,10 +131,10 @@ let memory: Store = { jobs: {}, exports: {} };
 
 function load(): Store {
   try {
-    const text = window.sessionStorage.getItem(STORAGE_KEY);
+    const text = window.localStorage.getItem(STORAGE_KEY);
     if (text) memory = JSON.parse(text) as Store;
   } catch {
-    // No sessionStorage (private mode, server render): keep the in-memory copy.
+    // No localStorage (blocked, server render): keep the in-memory copy.
   }
   return memory;
 }
@@ -155,7 +142,7 @@ function load(): Store {
 function save(store: Store): void {
   memory = store;
   try {
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
   } catch {
     // See load().
   }
@@ -181,15 +168,49 @@ const JOB_NOT_FOUND = () =>
     "This analysis no longer exists. The server may have restarted; analyze the VOD again.",
   );
 
-/** The job as the mock server would report it `now` milliseconds since the epoch. */
+/**
+ * Steps each analysis stage takes in the mock. The audio download is the one stage with a
+ * measured fraction, so it lasts several polls and the progress bar visibly moves.
+ */
+const STAGE_STEPS: readonly number[] = [1, 1, 1, 4, 1, 1];
+
+function runSteps(videoId: string): number {
+  const lastStage = scenarioFor(videoId).failAtStage ?? JOB_STAGES.length;
+  return STAGE_STEPS.slice(0, lastStage).reduce((a, b) => a + b, 0);
+}
+
+/**
+ * When each job starts running: one analysis at a time, first in first out (§ 9.3), and never
+ * before it has been queued for one step.
+ */
+export function schedule(
+  jobs: Record<string, StoredJob>,
+  stepMs = MOCK_STEP_MS,
+): Map<string, number> {
+  const starts = new Map<string, number>();
+  let free = -Infinity;
+  const ordered = Object.values(jobs).sort(
+    (a, b) => a.created_ms - b.created_ms || a.job_id.localeCompare(b.job_id),
+  );
+  for (const job of ordered) {
+    const start = Math.max(job.created_ms + stepMs, free);
+    starts.set(job.job_id, start);
+    free = start + runSteps(job.video_id) * stepMs;
+  }
+  return starts;
+}
+
+/**
+ * The job as the mock server would report it `now` (milliseconds since the epoch), given when
+ * it starts running (`startMs`, from `schedule`; by default as if it were alone).
+ */
 export function jobAt(
   stored: StoredJob,
   now: number,
+  startMs = stored.created_ms + MOCK_STEP_MS,
   stepMs = MOCK_STEP_MS,
 ): Job {
   const scenario = scenarioFor(stored.video_id);
-  const elapsed = Math.max(0, now - stored.created_ms);
-  const step = Math.floor(elapsed / stepMs); // 0 = queued, 1..6 = stages, 7 = finished
   const lastStage = scenario.failAtStage ?? JOB_STAGES.length;
   const base = {
     job_id: stored.job_id,
@@ -197,7 +218,7 @@ export function jobAt(
     video_path: stored.video_path,
     created_at: iso(stored.created_ms),
   };
-  if (step === 0) {
+  if (now < startMs) {
     return {
       ...base,
       state: "queued",
@@ -209,25 +230,30 @@ export function jobAt(
       finished_at: null,
     };
   }
-  const startedAt = iso(stored.created_ms + stepMs);
-  if (step <= lastStage) {
-    const index = step;
-    const fraction =
-      scenario.fractions && JOB_STAGES[index - 1].stage === "downloading_audio"
-        ? Math.min(1, (elapsed - index * stepMs) / stepMs)
-        : null;
-    return {
-      ...base,
-      state: "running",
-      progress: progress(JOB_STAGES, index, fraction),
-      warnings: [],
-      error: null,
-      started_at: startedAt,
-      updated_at: iso(now),
-      finished_at: null,
-    };
+  const startedAt = iso(startMs);
+  let stageStart = startMs;
+  for (let index = 1; index <= lastStage; index++) {
+    const length = STAGE_STEPS[index - 1] * stepMs;
+    if (now < stageStart + length) {
+      const fraction =
+        scenario.fractions &&
+        JOB_STAGES[index - 1].stage === "downloading_audio"
+          ? Math.min(1, (now - stageStart) / length)
+          : null;
+      return {
+        ...base,
+        state: "running",
+        progress: progress(JOB_STAGES, index, fraction),
+        warnings: [],
+        error: null,
+        started_at: startedAt,
+        updated_at: iso(now),
+        finished_at: null,
+      };
+    }
+    stageStart += length;
   }
-  const finishedAt = iso(stored.created_ms + (lastStage + 1) * stepMs);
+  const finishedAt = iso(stageStart);
   if (scenario.error) {
     return {
       ...base,
@@ -252,6 +278,12 @@ export function jobAt(
   };
 }
 
+function jobNow(store: Store, jobId: string, now: number): Job | null {
+  const stored = store.jobs[jobId];
+  if (!stored) return null;
+  return jobAt(stored, now, schedule(store.jobs).get(jobId));
+}
+
 function progress(
   stages: ReadonlyArray<{ stage: string; message: string }>,
   index: number,
@@ -271,9 +303,10 @@ function doneJob(
   jobId: string,
   now: number,
 ): { stored: StoredJob; result: AnalysisResult } {
-  const stored = load().jobs[jobId];
-  if (!stored) throw JOB_NOT_FOUND();
-  const job = jobAt(stored, now);
+  const store = load();
+  const stored = store.jobs[jobId];
+  const job = jobNow(store, jobId, now);
+  if (!stored || !job) throw JOB_NOT_FOUND();
   if (job.state !== "done") {
     throw new ApiRequestError(409, {
       code: "job_not_done",
@@ -435,7 +468,7 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       const store = load();
       const at = now();
       for (const stored of Object.values(store.jobs)) {
-        const job = jobAt(stored, at);
+        const job = jobNow(store, stored.job_id, at) as Job;
         if (
           stored.video_id === videoId &&
           stored.video_path === videoPath &&
@@ -450,14 +483,18 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
         video_path: videoPath,
         created_ms: at,
       };
-      save({ ...store, jobs: { ...store.jobs, [stored.job_id]: stored } });
-      return { job: jobAt(stored, at), created: true };
+      const next = {
+        ...store,
+        jobs: { ...store.jobs, [stored.job_id]: stored },
+      };
+      save(next);
+      return { job: jobNow(next, stored.job_id, at) as Job, created: true };
     },
 
     async getJob(jobId: string) {
-      const stored = load().jobs[jobId];
-      if (!stored) throw JOB_NOT_FOUND();
-      return jobAt(stored, now());
+      const job = jobNow(load(), jobId, now());
+      if (!job) throw JOB_NOT_FOUND();
+      return job;
     },
 
     async getResult(jobId: string) {
@@ -558,4 +595,9 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       return url; // the mock's files are served by the app itself
     },
   };
+}
+
+/** Forget every mock job and export (tests). */
+export function resetMockStore(): void {
+  save({ jobs: {}, exports: {} });
 }

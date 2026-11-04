@@ -59,7 +59,12 @@ New code follows the frontend conventions in [docs/development/conventions.md §
 
 ## Mock mode
 
-`getApiClient()` in `src/lib/api/client.ts` is the only way components reach the API. In mock mode it simulates a server: a job is queued for one step, then spends one step (`MOCK_STEP_MS`, 2 s) in each of the six stages, then finishes with its scenario. The VOD ID picks the scenario, as in the contract's § 11. For example, `9000000003` finishes with a chat warning, `9000000004` fails, `9000000006` finds nothing, and any other ID gets the example result. Jobs are kept in `sessionStorage`, so a reload resumes polling. Result fixtures are in `src/lib/api/fixtures/`.
+`getApiClient()` in `src/lib/api/client.ts` is the only way components reach the API. In mock mode it simulates a server.
+
+- **Timing:** a job is queued for one step (`MOCK_STEP_MS`, 2 s) and then runs the six stages. The audio download takes four steps and reports how far along it is; every other stage takes one. Jobs run one at a time, first in first out, as on the server.
+- **Scenarios:** the VOD ID picks the outcome, as in the contract's § 11. For example, `9000000003` finishes with a chat warning, `9000000004` fails, `9000000006` finds nothing, and any other ID gets the example result.
+- **Storage:** jobs are kept in `localStorage`, so a reload or a new tab finds them.
+- **Fixtures:** the results are in `src/lib/api/fixtures/`.
 
 ## Notes
 

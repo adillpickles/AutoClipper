@@ -9,16 +9,18 @@ import {
   getApiClient,
   POLL_INTERVAL_MS,
 } from "@/lib/api/client";
-import { JOB_STAGES } from "@/lib/api/mock";
+import { JOB_STAGES } from "@/lib/api/stages";
 import type { AnalysisResult, Job } from "@/lib/api/types";
 
 type View =
   | { kind: "loading" }
   | { kind: "job"; job: Job; result: AnalysisResult | null }
   | { kind: "missing"; message: string }
+  | { kind: "error"; message: string }
   | { kind: "offline" };
 
 // Back off on network errors (2, 4, 8 s, capped at 10 s) and give up after about a minute (§ 9.1).
+const FIRST_BACKOFF_MS = 2000;
 const MAX_BACKOFF_MS = 10_000;
 const GIVE_UP_AFTER_MS = 60_000;
 
@@ -31,27 +33,32 @@ export function JobProgress() {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let failingSince: number | null = null;
-    let backoff = 2000;
+    let backoff = FIRST_BACKOFF_MS;
     const client = getApiClient();
 
     async function poll() {
       try {
         const job = await client.getJob(jobId);
+        const result =
+          job.state === "done" ? await client.getResult(jobId) : null;
+        // Reset the backoff only after a whole round succeeds, so a failing result fetch backs
+        // off and gives up like any other failure.
         failingSince = null;
-        backoff = 2000;
+        backoff = FIRST_BACKOFF_MS;
         if (cancelled) return;
-        if (job.state === "done") {
-          const result = await client.getResult(jobId);
-          if (!cancelled) setView({ kind: "job", job, result });
-          return;
+        setView({ kind: "job", job, result });
+        if (job.state === "queued" || job.state === "running") {
+          timer = setTimeout(poll, POLL_INTERVAL_MS);
         }
-        setView({ kind: "job", job, result: null });
-        if (job.state === "failed") return;
-        timer = setTimeout(poll, POLL_INTERVAL_MS);
       } catch (error) {
         if (cancelled) return;
         if (error instanceof ApiRequestError && error.status === 404) {
           setView({ kind: "missing", message: error.error.message });
+          return;
+        }
+        if (error instanceof ApiRequestError && error.status >= 500) {
+          // The server answered, so it isn't unreachable: it failed.
+          setView({ kind: "error", message: error.error.message });
           return;
         }
         failingSince ??= Date.now();
@@ -72,27 +79,41 @@ export function JobProgress() {
   }, [jobId, attempt]);
 
   if (view.kind === "loading") {
-    return <p className="text-zinc-600 dark:text-zinc-400">Loading…</p>;
+    return <h1 className="text-2xl font-semibold tracking-tight">Loading…</h1>;
   }
   if (view.kind === "missing") {
     return (
       <Problem
+        heading="h1"
         title="This analysis no longer exists"
         message={view.message}
         action="Start again"
       />
     );
   }
-  if (view.kind === "offline") {
+  if (view.kind === "error" || view.kind === "offline") {
+    const retry = () => {
+      setView({ kind: "loading" });
+      setAttempt((n) => n + 1);
+    };
     return (
       <div className="flex flex-col gap-4">
         <Problem
-          title="Can't reach the server"
-          message="Check that AutoClipper is running, then try again."
+          heading="h1"
+          title={
+            view.kind === "offline"
+              ? "Can't reach the server"
+              : "Something went wrong"
+          }
+          message={
+            view.kind === "offline"
+              ? "Check that AutoClipper is running, then try again."
+              : view.message
+          }
         />
         <button
           type="button"
-          onClick={() => setAttempt((n) => n + 1)}
+          onClick={retry}
           className="self-start rounded-lg bg-amber-500 px-5 py-3 font-semibold text-zinc-950 hover:bg-amber-400 focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:outline-none"
         >
           Retry
@@ -102,6 +123,8 @@ export function JobProgress() {
   }
   return <JobStatus job={view.job} result={view.result} />;
 }
+
+type StepStatus = "done" | "current" | "failed" | "pending";
 
 function JobStatus({
   job,
@@ -113,6 +136,9 @@ function JobStatus({
   const progress = job.progress;
   const stageCount = progress?.stage_count ?? JOB_STAGES.length;
   const current = progress?.stage_index ?? 0;
+  // The stepper lists the contract's stages. A server reporting other stages (`stage` is an
+  // open enum) still gets the headline, just no list.
+  const knownStages = stageCount === JOB_STAGES.length;
   const headline = {
     queued: "Waiting to start",
     running: progress
@@ -121,11 +147,25 @@ function JobStatus({
     done: "Analysis finished",
     failed: "Analysis stopped",
   }[job.state];
+  const listLabel = {
+    queued: `${stageCount} steps, not started`,
+    running: `Step ${current} of ${stageCount}`,
+    done: `All ${stageCount} steps done`,
+    failed: `Stopped at step ${current} of ${stageCount}`,
+  }[job.state];
+  const fraction =
+    job.state === "running" ? (progress?.stage_fraction ?? null) : null;
+
+  function statusOf(index: number): StepStatus {
+    if (job.state === "done" || index < current) return "done";
+    if (index === current) return job.state === "failed" ? "failed" : "current";
+    return "pending";
+  }
 
   return (
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-2">
-        <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+        <p className="text-sm font-medium text-zinc-600 dark:text-zinc-400">
           VOD {job.video_id}
         </p>
         <h1
@@ -136,77 +176,48 @@ function JobStatus({
         </h1>
         {job.state === "queued" && (
           <p className="text-zinc-600 dark:text-zinc-400">
-            Another analysis is ahead of this one.
+            The server starts it as soon as it&apos;s free.
           </p>
         )}
       </div>
 
-      {job.state === "running" && progress?.stage_fraction != null && (
+      {fraction !== null && progress && (
         <div className="flex flex-col gap-2">
           <div
             role="progressbar"
             aria-label={progress.message}
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-valuenow={Math.round(progress.stage_fraction * 100)}
+            aria-valuenow={Math.round(fraction * 100)}
             className="h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800"
           >
             <div
-              className="h-full rounded-full bg-amber-500 transition-[width]"
-              style={{ width: `${Math.round(progress.stage_fraction * 100)}%` }}
+              className="h-full rounded-full bg-amber-500 transition-[width] duration-500"
+              style={{ width: `${Math.round(fraction * 100)}%` }}
             />
           </div>
           <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            {Math.round(progress.stage_fraction * 100)}% of this step
+            {Math.round(fraction * 100)}% of this step
           </p>
         </div>
       )}
 
-      <ol
-        role="list"
-        className="flex flex-col gap-3"
-        aria-label={`Step ${current} of ${stageCount}`}
-      >
-        {JOB_STAGES.map((stage, i) => {
-          const index = i + 1;
-          const status =
-            job.state === "done" || index < current
-              ? "done"
-              : index === current
-                ? job.state === "failed"
-                  ? "failed"
-                  : "current"
-                : "pending";
-          return (
-            <li key={stage.stage} className="flex items-center gap-3">
-              <StepIcon status={status} />
-              <span
-                className={
-                  status === "pending"
-                    ? "text-zinc-500 dark:text-zinc-500"
-                    : status === "failed"
-                      ? "font-medium text-red-700 dark:text-red-300"
-                      : status === "current"
-                        ? "font-medium"
-                        : "text-zinc-700 dark:text-zinc-300"
-                }
-              >
-                {stage.message}
-                <span className="sr-only">
-                  {
-                    {
-                      done: " (done)",
-                      current: " (in progress)",
-                      failed: " (stopped here)",
-                      pending: "",
-                    }[status]
-                  }
+      {knownStages && (
+        <ol role="list" className="flex flex-col gap-3" aria-label={listLabel}>
+          {JOB_STAGES.map((stage, i) => {
+            const status = statusOf(i + 1);
+            return (
+              <li key={stage.stage} className="flex items-center gap-3">
+                <StepIcon status={status} />
+                <span className={STEP_TEXT[status]}>
+                  {stage.message}
+                  <span className="sr-only">{STEP_SUFFIX[status]}</span>
                 </span>
-              </span>
-            </li>
-          );
-        })}
-      </ol>
+              </li>
+            );
+          })}
+        </ol>
+      )}
 
       {job.warnings.length > 0 && (
         <ul role="list" className="flex flex-col gap-2">
@@ -226,11 +237,12 @@ function JobStatus({
           title="What happened"
           message={job.error.message}
           action="Try another VOD"
+          alert
         />
       )}
 
       {job.state === "done" && result && (
-        <p className="text-lg">
+        <p className="text-lg" role="status">
           {result.candidates.length === 0
             ? "No moments stood out in this VOD."
             : `Found ${result.candidates.length} ${result.candidates.length === 1 ? "moment" : "moments"}.`}
@@ -240,11 +252,21 @@ function JobStatus({
   );
 }
 
-function StepIcon({
-  status,
-}: {
-  status: "done" | "current" | "failed" | "pending";
-}) {
+const STEP_TEXT: Record<StepStatus, string> = {
+  done: "text-zinc-700 dark:text-zinc-300",
+  current: "font-medium",
+  failed: "font-medium text-red-700 dark:text-red-300",
+  pending: "text-zinc-500 dark:text-zinc-400",
+};
+
+const STEP_SUFFIX: Record<StepStatus, string> = {
+  done: " (done)",
+  current: " (in progress)",
+  failed: " (stopped here)",
+  pending: "",
+};
+
+function StepIcon({ status }: { status: StepStatus }) {
   const base =
     "flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-bold";
   if (status === "done") {
@@ -280,14 +302,25 @@ function Problem({
   title,
   message,
   action,
+  heading: Heading = "h2",
+  alert = false,
 }: {
   title: string;
   message: string;
   action?: string;
+  heading?: "h1" | "h2";
+  alert?: boolean;
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-5 dark:border-red-900 dark:bg-red-950/40">
-      <h2 className="font-semibold text-red-900 dark:text-red-200">{title}</h2>
+    <div
+      role={alert ? "alert" : undefined}
+      className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-5 dark:border-red-900 dark:bg-red-950/40"
+    >
+      <Heading
+        className={`font-semibold text-red-900 dark:text-red-200 ${Heading === "h1" ? "text-2xl" : ""}`}
+      >
+        {title}
+      </Heading>
       <p className="text-red-900 dark:text-red-100">{message}</p>
       {action && (
         <Link
