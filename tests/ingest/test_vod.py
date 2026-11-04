@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import sys
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -151,7 +152,9 @@ class FakeDownloader:
 
 @pytest.fixture
 def chat_binary(tmp_path: Path) -> Path:
-    binary = tmp_path / "bin" / "TwitchDownloaderCLI"
+    # shutil.which finds only executables with a PATHEXT extension on Windows.
+    name = "TwitchDownloaderCLI.exe" if sys.platform == "win32" else "TwitchDownloaderCLI"
+    binary = tmp_path / "bin" / name
     binary.parent.mkdir()
     binary.write_bytes(b"")
     binary.chmod(0o755)
