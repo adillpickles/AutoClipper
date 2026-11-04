@@ -1,4 +1,4 @@
-"""Arrow schemas for the synthetic tables.
+"""Arrow schemas of the stored tables, shared by the ingest command and the synthetic data.
 
 They mirror the tables in docs/architecture/data-model.md (column names, types and
 nullability). Update these schemas alongside changes to that document. Following the data model's

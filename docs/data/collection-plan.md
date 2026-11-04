@@ -54,6 +54,19 @@ The pilot runs `autoclipper ingest` (#34) once for each VOD in `configs/pilot_vo
 5. Records each step's status and tool versions in the catalog.
 
 - **Idempotent and resumable:** the catalog records what's done. Re-runs pick up failures. Deleted and subscriber-only VODs are recorded as `unavailable`.
+
+How `autoclipper ingest <vod link or id> [--media FILE]` (`autoclipper.ingest.vod.ingest_vod`) does this:
+
+- **Outputs.** Each output is written to a temporary file and moved into place:
+  - `data/processed/vods.parquet`: one row per VOD, replaced when it is fetched again.
+  - `data/processed/clips/<video_id>-<capture start, YYYYMMDDTHHMMSSZ>.parquet` with a `.json` manifest. The manifest holds `snapshot_id`, the capture start and end, the creation-time span searched, the number of ranges queried, any `saturated_ranges` and `complete`, the clip counts, the VOD's age in days, and `mature` (at least 7 days old at capture; a younger VOD is flagged, not refused).
+  - `data/interim/chat/<video_id>.parquet`.
+  - `data/interim/audio/<video_id>.wav`.
+- **Catalog.** `data/catalog.parquet` has one row per `(object_type, object_key)` for the steps `vod_meta`, `clips`, `chat` and `audio`. A re-run replaces the row, so it always shows the latest state, and the tool column holds `helix`, `TwitchDownloaderCLI@<version>`, `yt-dlp@<version>` or `local-file`.
+- **Skipping and failures.** A step is skipped when its row is `ok` and its output still exists, or when the row is `unavailable`. A clip snapshot is taken only once. A failing step is recorded with its error, and the other steps still run; the command then exits with code 2. When Twitch has no published video with the ID (deleted or expired), every step is recorded `unavailable` without trying, and the command exits 0.
+- **Missing settings.** Twitch credentials or the chat hash salt being unset fails only the steps that need them.
+- **Local media.** `--media` converts the audio of a video or audio file you already have instead of downloading it, also after a download was refused (`unavailable`). The file must last as long as the VOD (within 5 s or 1 %), so a clip or another VOD's file is refused rather than misaligning the audio with chat and clip times.
+- **No usernames on disk.** The raw chat file, which holds usernames, is deleted after parsing, and also when the download or the parse fails or is interrupted. A raw file left by a killed run is removed at the start of the next one.
 - **Polite:** respect rate limits, run downloads sequentially (or with low concurrency), and add a random delay between media downloads.
 
 There is no scheduled collector in the MVP. Watching channels for new VODs automatically is the stretch channel-tracking issue (#37).

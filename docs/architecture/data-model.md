@@ -88,7 +88,7 @@ Source: Helix **Get Clips**. Immutable snapshot files: one row per `clip_id` **w
 
 ## `chat_messages`
 
-Source: TwitchDownloader chat replay or live chat. The parser returns these rows in memory; the ingest command (#34) saves them as `data/interim/chat/<video_id>.parquet`. Author identifiers become hashes, and mentions and known names are redacted from message text at parse time. The raw replay is a temporary download deleted after a successful parse ([data sources § 2](../data/data-sources.md#2-chat-replay-twitchdownloader-unofficial)). Keeping the pseudonymized table means chat features ([features](../ml/features.md)) can be changed and recomputed after the VOD expires. Hashes support counts such as unique chatters.
+Source: TwitchDownloader chat replay or live chat. The parser returns these rows in memory; `autoclipper ingest` saves them as `data/interim/chat/<video_id>.parquet`. Author identifiers become hashes, and mentions and known names are redacted from message text at parse time. The raw replay is a temporary download deleted after a successful parse ([data sources § 2](../data/data-sources.md#2-chat-replay-twitchdownloader-unofficial)). Keeping the pseudonymized table means chat features ([features](../ml/features.md)) can be changed and recomputed after the VOD expires. Hashes support counts such as unique chatters.
 
 | Column | Type | Notes |
 |---|---|---|
