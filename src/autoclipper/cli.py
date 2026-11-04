@@ -5,6 +5,7 @@ parses its arguments, calls one library function and turns failures into an `Exi
 Subcommands are verbs (``ingest``, ``export``, ...) registered on `app` with ``@app.command()``.
 """
 
+import re
 from enum import IntEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
@@ -20,6 +21,12 @@ from typer.core import TyperGroup
 
 from autoclipper import __version__
 from autoclipper.config import ConfigError, get_settings
+from autoclipper.eval.harness import (
+    ReportExistsError,
+    current_git_sha,
+    default_run_id,
+    evaluate_files,
+)
 from autoclipper.ffmpeg import FFmpegError
 from autoclipper.logging import configure_logging
 from autoclipper.synthetic import (
@@ -32,6 +39,10 @@ from autoclipper.synthetic import (
 if TYPE_CHECKING:
     # Only needed to match the signatures overridden in _RootGroup.
     from typer._click import Context
+
+
+# Report folder names: one path segment, safe on every OS.
+RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 
 class ExitCode(IntEnum):
@@ -151,3 +162,110 @@ def synth(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
     typer.echo(f"Wrote {len(dataset.files)} files to {dataset.out_dir}")
+
+
+@app.command()
+def evaluate(
+    candidates: Annotated[
+        Path, typer.Option(help="Parquet: video_id, candidate_id, start_s, end_s, score.")
+    ],
+    moments: Annotated[Path, typer.Option(help="Parquet: the moments table of the snapshot.")],
+    clips: Annotated[Path, typer.Option(help="Parquet: the clips table of the same snapshot.")],
+    dataset_version: Annotated[str, typer.Option(help="Dataset version, e.g. v1.")],
+    scorer: Annotated[str, typer.Option(help="Scorer name, e.g. chat_spike.")],
+    seed: Annotated[int, typer.Option(min=0, help="Seed for the bootstrap.")] = 0,
+    run_id: Annotated[
+        str | None,
+        typer.Option(
+            help="Report folder name. Default: eval-<scorer>-<UTC time>.", show_default=False
+        ),
+    ] = None,
+    vods: Annotated[
+        Path | None,
+        typer.Option(
+            help="Text file with the VOD IDs to evaluate (the split's test VODs), one per line. "
+            "Default: every VOD with candidates.",
+            show_default=False,
+        ),
+    ] = None,
+    flagged: Annotated[
+        Path | None,
+        typer.Option(
+            help="Text file with VOD IDs whose clip snapshot is flagged (left out of "
+            "top-clip recall), one per line.",
+            show_default=False,
+        ),
+    ] = None,
+    split: Annotated[
+        str | None,
+        typer.Option(help="Split file and fold, recorded in the report.", show_default=False),
+    ] = None,
+    force: Annotated[bool, typer.Option(help="Replace an existing report.")] = False,
+) -> None:
+    """Score candidates against viewer-clip moments: hit rate@10 and top-clip recall@10."""
+    if not RUN_ID.fullmatch(scorer) or _is_reserved_name(scorer):
+        typer.echo("Error: --scorer must be a short name such as chat_spike", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    name = run_id or default_run_id(scorer)
+    if not RUN_ID.fullmatch(name) or _is_reserved_name(name):
+        typer.echo(
+            "Error: --run-id must start with a letter or digit and use only letters, digits, "
+            "'.', '_' and '-'",
+            err=True,
+        )
+        raise typer.Exit(ExitCode.USER_ERROR)
+    out_dir = get_settings().artifacts_dir / "reports" / name
+    try:
+        video_ids = None if vods is None else _read_ids(vods)
+        flagged_ids = () if flagged is None else _read_ids(flagged)
+        result, metrics_path, _ = evaluate_files(
+            candidates,
+            moments,
+            clips,
+            out_dir=out_dir,
+            run_id=name,
+            dataset_version=dataset_version,
+            scorer=scorer,
+            seed=seed,
+            git_sha=current_git_sha(),
+            split=split,
+            video_ids=video_ids,
+            flagged_video_ids=flagged_ids,
+            force=force,
+        )
+    except (FileNotFoundError, ReportExistsError, ValueError, UnicodeDecodeError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    for metric, interval in result.summary.items():
+        shown = (
+            "n/a"
+            if interval is None
+            else (f"{interval.mean:.3f} (95% CI {interval.low:.3f} to {interval.high:.3f})")
+        )
+        typer.echo(f"{metric}: {shown}")
+    typer.echo(f"Wrote {metrics_path}")
+
+
+# Device names Windows refuses as file or folder names, with or without an extension.
+_RESERVED_NAMES = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{i}" for i in range(1, 10)),
+        *(f"lpt{i}" for i in range(1, 10)),
+    }
+)
+
+
+def _is_reserved_name(name: str) -> bool:
+    return name.split(".")[0].lower() in _RESERVED_NAMES
+
+
+def _read_ids(path: Path) -> list[str]:
+    """Non-blank lines of a UTF-8 text file, stripped; '#' starts a comment line."""
+    if not path.is_file():
+        raise FileNotFoundError(f"input not found: {path}")
+    lines = (line.strip() for line in path.read_text(encoding="utf-8").splitlines())
+    return [line for line in lines if line and not line.startswith("#")]
