@@ -4,9 +4,13 @@
 them, § 9.3), validates requests in the contract's order and raises `ApiException` with the
 contract's codes. Two worker threads run the work: one for analysis jobs, one shared by exports
 and highlights videos (one render at a time), each first in, first out. The mock job walks
-through the six analysis stages and finishes with its § 11 scenario; renders step through their
-three stages and finish with a copy of a pre-generated sample MP4, one file per export or
-highlights video.
+through the six analysis stages and finishes with its § 11 scenario.
+
+Exports are real: the render worker cuts the requested interval from the job's ``video_path``,
+or from the sample preview video when the job has none, and renders it with
+`autoclipper.export.clip.render_clip` (exact interval, layout, optional captions), one file per
+export. Highlights videos are still simulated: they step through their stages and finish with a
+copy of a pre-generated sample MP4 (#72 replaces that).
 """
 
 import logging
@@ -19,10 +23,21 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, Protocol
 
 from autoclipper.analysis import AnalysisResult, AnalysisWarning, Candidate
 from autoclipper.api import mock
+from autoclipper.export.captions import CaptioningError, Stage, Transcriber
+from autoclipper.export.clip import (
+    MAX_CLIP_DURATION_S,
+    ClipSpec,
+    IntervalOutsideMediaError,
+    SourceMissingError,
+    available_layouts,
+    render_clip,
+)
+from autoclipper.export.cut import Interval, IntervalTooShortError
+from autoclipper.export.errors import ExportError
 from autoclipper.ffmpeg import FFmpegError, ffmpeg_command, probe, run_command
 from autoclipper.schemas import (
     ApiError,
@@ -43,9 +58,8 @@ from autoclipper.schemas import (
 
 log = logging.getLogger(__name__)
 
-MAX_EXPORT_DURATION_S: Final = 90.0  # api-contract.md § 5, labeling.md § 2
+MAX_EXPORT_DURATION_S: Final = MAX_CLIP_DURATION_S  # api-contract.md § 5, labeling.md § 2
 MAX_HIGHLIGHTS_DURATION_S: Final = 900.0  # § 7.1
-LAYOUTS: Final = ("center_crop", "configured_region")
 RENDER_STAGES: Final = ("obtaining_media", "transcribing", "rendering")
 _RENDER_MESSAGES: Final = {
     "obtaining_media": "Getting the video",
@@ -53,6 +67,22 @@ _RENDER_MESSAGES: Final = {
 }
 
 type Clock = Callable[[], datetime]
+
+
+class ClipRenderer(Protocol):
+    """Renders one export; `render_clip` is the real one, tests pass a fake."""
+
+    def __call__(
+        self,
+        spec: ClipSpec,
+        /,
+        *,
+        region: tuple[float, float, float, float] | None,
+        transcriber: Transcriber | None,
+        on_stage: Callable[[Stage], None],
+    ) -> object:
+        """Write `spec.output` or raise."""
+        ...
 
 
 class ApiException(Exception):
@@ -79,7 +109,6 @@ class SampleMedia:
     """The mock's pre-generated files (§ 5, § 11)."""
 
     preview: Path
-    clip: Path
     highlights: Path
 
 
@@ -92,9 +121,9 @@ def ensure_sample_media(
 ) -> SampleMedia:
     """Generate the sample MP4s into `directory` unless they are already there and readable.
 
-    The preview is a 640x360 test pattern with a tone, `preview_duration_s` long; the clip
-    sample is 1080x1920 and the highlights sample 1920x1080, 5 s each. All go through the
-    shared FFmpeg runner.
+    The preview is a 640x360 test pattern with a tone, `preview_duration_s` long (exports of a
+    job without a ``video_path`` are cut from it); the highlights sample is 1920x1080, 5 s. All
+    go through the shared FFmpeg runner.
 
     Raises:
         FFmpegError: FFmpeg is missing or failed.
@@ -102,7 +131,6 @@ def ensure_sample_media(
     directory.mkdir(parents=True, exist_ok=True)
     specs = {
         "preview": ("preview.mp4", 640, 360, preview_duration_s),
-        "clip": ("clip-1080x1920.mp4", 1080, 1920, 5.0),
         "highlights": ("highlights-1920x1080.mp4", 1920, 1080, 5.0),
     }
     paths: dict[str, Path] = {}
@@ -130,7 +158,7 @@ def ensure_sample_media(
         finally:
             partial.unlink(missing_ok=True)
         log.info("generated mock sample media path=%s", path)
-    return SampleMedia(paths["preview"], paths["clip"], paths["highlights"])
+    return SampleMedia(paths["preview"], paths["highlights"])
 
 
 # --- Records -----------------------------------------------------------------------------------
@@ -243,13 +271,18 @@ class MockService:
 
     Args:
         samples: The sample MP4s (`ensure_sample_media`).
-        output_dir: Where export and highlights files go (one file per ID).
+        output_dir: Where export and highlights files go (``exports/`` and ``highlights/``, one
+            file per ID).
         step_s: Seconds each stage takes, so ``queued`` and ``running`` are visible; 0 in tests.
         probe_video: Checks a request's ``video_path``; returns True for a readable video with a
             known duration. Defaults to the shared FFmpeg probe.
         clock: The current time, timezone-aware.
         synchronous: Run each job or render inside the request that creates it, with no worker
             threads (tests). The response still shows the record as created (``queued``).
+        export_region: ``AUTOCLIPPER_EXPORT_REGION``; ``configured_region`` is offered only
+            when it is set.
+        transcriber: For captions; None means faster-whisper with the configured model.
+        render: Renders an export (default `render_clip`).
     """
 
     samples: SampleMedia
@@ -258,6 +291,9 @@ class MockService:
     probe_video: Callable[[Path], bool] | None = None
     clock: Clock = _utc_now
     synchronous: bool = False
+    export_region: tuple[float, float, float, float] | None = None
+    transcriber: Transcriber | None = None
+    render: ClipRenderer = render_clip
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _jobs: dict[str, _JobRecord] = field(default_factory=dict, init=False)
     _renders: dict[str, _RenderRecord] = field(default_factory=dict, init=False)
@@ -586,7 +622,26 @@ class MockService:
         assert job.result is not None
         duration_s = job.result.vod.duration_s
         # The VOD's video can't be downloaded, but a local file works (§ 5 source_unavailable).
-        if job.video_id == mock.NO_MEDIA_VIDEO_ID and job.video_path is None:
+        if job.video_path is not None and not Path(job.video_path).is_file():
+            preview = PreviewMedia(
+                status="unavailable",
+                kind=None,
+                url=None,
+                media_start_s=None,
+                media_end_s=None,
+                reason="local_file_missing",
+                message=_LOCAL_FILE_MISSING,
+            )
+            export = ExportAvailability(
+                status="unavailable",
+                reason="local_file_missing",
+                message=_LOCAL_FILE_MISSING,
+                min_start_s=None,
+                max_end_s=None,
+                max_duration_s=None,
+                layouts=(),
+            )
+        elif job.video_id == mock.NO_MEDIA_VIDEO_ID and job.video_path is None:
             preview = PreviewMedia(
                 status="unavailable",
                 kind=None,
@@ -628,7 +683,7 @@ class MockService:
                 min_start_s=0.0,
                 max_end_s=duration_s,
                 max_duration_s=MAX_EXPORT_DURATION_S,
-                layouts=LAYOUTS,
+                layouts=available_layouts(self.export_region),
             )
         return CandidateMedia(
             job_id=job.job_id,
@@ -735,18 +790,16 @@ class MockService:
     def _run_render(self, render_id: str) -> None:
         with self._lock:
             record = self._renders[render_id]
+        if record.kind == "export":
+            self._run_export(record)
+            return
         stages = [
             (index, stage)
             for index, stage in enumerate(RENDER_STAGES, start=1)
             if stage != "transcribing" or record.captions  # skipped stages are passed over
         ]
         for position, (index, stage) in enumerate(stages):
-            default = (
-                "Rendering the clip"
-                if record.kind == "export"
-                else "Rendering the highlights video"
-            )
-            message = _RENDER_MESSAGES.get(stage, default)
+            message = _RENDER_MESSAGES.get(stage, "Rendering the highlights video")
             with self._lock:
                 now = self.clock()
                 if position == 0:  # running and its first progress together (§ 3.4)
@@ -761,8 +814,8 @@ class MockService:
                 )
                 record.times.updated_at = now
             self._sleep()
-        sample = self.samples.clip if record.kind == "export" else self.samples.highlights
-        folder = self.output_dir / ("exports" if record.kind == "export" else "highlights")
+        sample = self.samples.highlights
+        folder = self.output_dir / "highlights"
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / f"{render_id}.mp4"
         partial = folder / f"{render_id}.part"
@@ -778,8 +831,116 @@ class MockService:
             record.progress = None
             record.times.updated_at = record.times.finished_at = now
 
+    def _set_render_stage(self, record: _RenderRecord, stage: str) -> None:
+        index = RENDER_STAGES.index(stage) + 1
+        message = _RENDER_MESSAGES.get(stage, "Rendering the clip")
+        with self._lock:
+            now = self.clock()
+            if record.state == "queued":  # running and its first progress together (§ 3.4)
+                record.state = "running"
+                record.times.started_at = now
+            record.progress = Progress(
+                stage=stage,
+                stage_index=index,
+                stage_count=len(RENDER_STAGES),
+                stage_fraction=None,
+                message=message,
+            )
+            record.times.updated_at = now
+
+    def _finish_render(
+        self, record: _RenderRecord, *, file: Path | None = None, error: ApiError | None = None
+    ) -> None:
+        with self._lock:
+            now = self.clock()
+            record.state = "done" if error is None else "failed"
+            record.file = file
+            record.error = error
+            if error is None:
+                record.progress = None
+            record.times.updated_at = record.times.finished_at = now
+
+    def _run_export(self, record: _RenderRecord) -> None:
+        """Render one export for real (§ 6.3): obtain the media, transcribe, render."""
+        request = record.request
+        assert request is not None
+        self._set_render_stage(record, "obtaining_media")
+        with self._lock:
+            video_path = self._jobs[record.job_id].video_path
+        source = Path(video_path) if video_path is not None else self.samples.preview
+        if not source.is_file():
+            self._finish_render(
+                record,
+                error=ApiError(
+                    code="media_unavailable",
+                    message=_LOCAL_FILE_MISSING,
+                    details={"reason": "local_file_missing"},
+                ),
+            )
+            return
+        folder = self.output_dir / "exports"
+        target = folder / f"{record.render_id}.mp4"
+        spec = ClipSpec(
+            source=source,
+            interval=Interval(request.start_s, request.end_s),
+            output=target,
+            layout=request.layout,
+            captions=request.captions,
+        )
+        try:
+            self.render(
+                spec,
+                region=self.export_region,
+                transcriber=self.transcriber,
+                on_stage=lambda stage: self._set_render_stage(record, stage),
+            )
+        except CaptioningError as exc:
+            log.warning("export captions failed id=%s: %s", record.render_id, exc)
+            self._finish_render(record, error=_CAPTIONING_FAILED)
+            return
+        except SourceMissingError:
+            self._finish_render(
+                record,
+                error=ApiError(
+                    code="media_unavailable",
+                    message=_LOCAL_FILE_MISSING,
+                    details={"reason": "local_file_missing"},
+                ),
+            )
+            return
+        except (IntervalOutsideMediaError, IntervalTooShortError) as exc:
+            log.warning("export outside the media id=%s: %s", record.render_id, exc)
+            self._finish_render(record, error=_OUTSIDE_MEDIA)
+            return
+        except (ExportError, FFmpegError, OSError) as exc:  # OSError: e.g. the disk is full
+            log.warning("export render failed id=%s: %s", record.render_id, exc)
+            self._finish_render(record, error=_RENDER_FAILED)
+            return
+        if not target.is_file():  # a renderer that returned without writing is a bug
+            raise RuntimeError(f"the renderer wrote no file for {record.render_id}")
+        self._finish_render(record, file=target)
+
 
 _INTERNAL: Final = "Something went wrong on the server. Try again."
+_LOCAL_FILE_MISSING: Final = (
+    "The video file for this analysis is missing or can't be read. Check that it's still there, "
+    "or analyze the VOD again."
+)
+_CAPTIONING_FAILED: Final = ApiError(
+    code="captioning_failed",
+    message="Captions couldn't be generated for this clip. Try again, or export without captions.",
+)
+_RENDER_FAILED: Final = ApiError(
+    code="render_failed",
+    message="The clip couldn't be rendered. Try again, or pick another layout.",
+)
+_OUTSIDE_MEDIA: Final = ApiError(
+    code="render_failed",
+    message=(
+        "The video file doesn't cover this whole clip. Trim the clip to fit inside the video and "
+        "try again."
+    ),
+)
 
 
 def _within(export: ExportAvailability, start_s: float, end_s: float) -> bool:
