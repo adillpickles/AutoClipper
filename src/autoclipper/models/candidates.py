@@ -6,8 +6,8 @@ The same rules apply to every scorer, baselines included:
    windows.
 2. **Peaks** are local maxima of the smoothed score (the first window of a plateau), each moved
    to the highest raw score within the smoothing span.
-3. **Non-max suppression** drops a peak whose window starts within ``min_gap_s`` of a higher
-   kept peak.
+3. **Non-max suppression** drops a peak whose window starts within ``min_gap_s`` of a kept peak
+   with a higher raw score (the same score that ranks candidates).
 4. **Boundaries:** start ``pre_s`` before the peak window's start; end ``post_s`` after the last
    consecutive window whose smoothed score stays at or above half the peak's height above the
    VOD's median smoothed score (scores can be negative z-score sums, so "half the peak" is
@@ -15,9 +15,11 @@ The same rules apply to every scorer, baselines included:
    the peak window kept inside, and the interval moved inside the VOD.
 5. **Shortlist:** the ``shortlist_k`` best peaks by score (the peak window's raw score; ties to
    the earlier start). The top 10 are rendered and evaluated.
-6. **Viewer clips (product mode only):** a viewer-clip moment overlapping a shortlisted candidate
-   turns it into ``both``; other moments become ``viewer_clips`` candidates, scored by the
-   highest window score over their span and cut to the same length rules around that window.
+6. **Viewer clips (product mode only):** a viewer-clip moment overlapping a discovered candidate
+   turns it into ``both`` (kept even past the shortlist); other moments become ``viewer_clips``
+   candidates, scored by the highest window score over their span and cut to the same length
+   rules around that window. Moments never merge into each other, and a moment outside the
+   scored windows is dropped with a warning.
    Independent-discovery evaluation passes no moments, so clips never influence discovery.
 
 Each candidate's ``top_signals`` are the feature columns (from `SIGNAL_COLUMNS`) whose maximum
@@ -25,6 +27,7 @@ over the candidate's windows is at least ``signal_min``, strongest first, at mos
 ``max_signals``.
 """
 
+import logging
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -34,6 +37,8 @@ import numpy as np
 import polars as pl
 
 from autoclipper.analysis import MAX_CANDIDATES, Candidate, Source
+
+log = logging.getLogger(__name__)
 
 SIGNAL_COLUMNS: Final = (
     "chat_msg_rate_z",
@@ -140,14 +145,15 @@ def generate_candidates(
             for lo, hi in [(max(0, i - half), min(len(raw) - 1, i + half))]
         }
     )
+    # Suppression and ranking use the same score: the peak window's raw score.
     kept: list[int] = []
-    for index in sorted(peaks, key=lambda i: (-smoothed[i], starts[i])):
+    for index in sorted(peaks, key=lambda i: (-raw[i], starts[i])):
         if all(abs(starts[index] - starts[k]) >= params.min_gap_s for k in kept):
             kept.append(index)
-    kept.sort(key=lambda i: (-raw[i], starts[i]))
-    kept = kept[: params.shortlist_k]
 
-    drafts: list[_Draft] = []
+    # Every surviving peak gets a draft, so a viewer-clip moment over a peak just outside the
+    # shortlist is still recognized as discovered too (`both`), not mislabelled `viewer_clips`.
+    discovered: list[_Draft] = []
     for index in kept:
         threshold = baseline + params.half_peak * (smoothed[index] - baseline)
         last = index
@@ -160,29 +166,39 @@ def generate_candidates(
             duration_s,
             params,
         )
-        drafts.append(_Draft(float(raw[index]), start, end, "discovered", set()))
+        discovered.append(_Draft(float(raw[index]), start, end, "discovered", set()))
 
+    clipped: list[_Draft] = []
     for moment in moments:
-        overlapping = [d for d in drafts if d.start < moment.end_s and moment.start_s < d.end]
+        if not moment.clip_ids:
+            continue
+        # Moments merge into discovered candidates only, never into each other.
+        overlapping = [d for d in discovered if d.start < moment.end_s and moment.start_s < d.end]
         if overlapping:
             for draft in overlapping:
-                if draft.source == "discovered":
-                    draft.source = "both"
+                draft.source = "both"
                 draft.clip_ids.update(moment.clip_ids)
             continue
         inside = np.flatnonzero((starts < moment.end_s) & (ends > moment.start_s))
-        if len(inside):
-            best = int(inside[np.argmax(raw[inside])])
-            score, peak = float(raw[best]), (float(starts[best]), float(ends[best]))
-        else:  # the moment lies outside the scored windows (e.g. past the last one)
-            score = float(raw.min())
-            peak = (moment.start_s, min(moment.end_s, duration_s))
+        if not len(inside):
+            log.warning(
+                "viewer-clip moment outside the scored windows moment_id=%s start_s=%.1f",
+                moment.moment_id,
+                moment.start_s,
+            )
+            continue
+        best = int(inside[np.argmax(raw[inside])])
+        peak = (float(starts[best]), float(ends[best]))
         start = max(moment.start_s, peak[0] - params.pre_s)
         start, end = _bounds(start, moment.end_s, peak, duration_s, params)
-        if not moment.clip_ids:
-            continue
-        drafts.append(_Draft(score, start, end, "viewer_clips", set(moment.clip_ids)))
+        clipped.append(_Draft(float(raw[best]), start, end, "viewer_clips", set(moment.clip_ids)))
 
+    # The shortlist: the best `shortlist_k` discovered peaks (merged or not), then every
+    # clip-backed candidate beyond it, so viewer clips are never dropped by the cut.
+    discovered.sort(key=lambda d: (-d.score, d.start))
+    drafts = discovered[: params.shortlist_k]
+    drafts += [d for d in discovered[params.shortlist_k :] if d.source == "both"]
+    drafts += clipped
     drafts.sort(key=lambda d: (-d.score, d.start))
     drafts = drafts[:MAX_CANDIDATES]
     candidates: list[Candidate] = []
@@ -212,14 +228,24 @@ class _Draft:
 
 
 def _peaks(smoothed: np.ndarray) -> list[int]:
-    """Local maxima; on a plateau, its first window."""
+    """Local maxima of the smoothed scores.
+
+    A peak is the first window of a run of equal values that is higher than the run before it
+    and the run after it (the VOD's edges count as lower). A step on the way up is not a peak; a
+    VOD with a single value has one peak, at its start.
+    """
     n = len(smoothed)
     peaks: list[int] = []
-    for i in range(n):  # one pass over the windows of one VOD (a few thousand)
-        rises = i == 0 or smoothed[i] > smoothed[i - 1]
-        holds = i == n - 1 or smoothed[i] >= smoothed[i + 1]
-        if rises and holds:
+    i = 0
+    while i < n:  # one pass over the windows of one VOD (a few thousand)
+        j = i
+        while j + 1 < n and smoothed[j + 1] == smoothed[i]:
+            j += 1
+        higher_before = i == 0 or smoothed[i - 1] < smoothed[i]
+        higher_after = j == n - 1 or smoothed[j + 1] < smoothed[i]
+        if higher_before and higher_after:
             peaks.append(i)
+        i = j + 1
     return peaks
 
 
@@ -251,6 +277,8 @@ def _signal_matrix(
 ) -> tuple[list[str], np.ndarray]:
     if features is None or "window_id" not in features.columns:
         return [], np.zeros((windows.height, 0))
+    if features["window_id"].n_unique() != features.height:
+        raise ValueError("features lists a window_id more than once")
     present = [c for c in columns if c in features.columns]
     joined = windows.select("window_id").join(
         features.select("window_id", *present), on="window_id", how="left", maintain_order="left"

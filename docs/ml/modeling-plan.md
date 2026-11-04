@@ -76,10 +76,10 @@ All of these values are config parameters tuned on validation and recorded in ea
 
 **Implementation:** `autoclipper.models.candidates.generate_candidates(scores, duration_s=..., features=..., moments=..., params=CandidateParams(...))` returns contract `Candidate`s (`autoclipper.analysis`, the `AnalysisResult` models with the § 4.5 invariants). Choices the rules leave open:
 
-- Each smoothed peak moves to the highest raw score within the smoothing span; a candidate's score is that window's raw score.
+- Each smoothed peak moves to the highest raw score within the smoothing span; a candidate's score is that window's raw score, and non-max suppression uses the same score. A plateau is a peak only if it's higher than both neighbouring runs, so a step on the way up isn't one.
 - "Half the peak" is measured from the VOD's median smoothed score, because scores can be negative (sums of z-scores).
 - A candidate cut short by the VOD's start or end is moved inside it, keeping its length where possible.
-- A viewer-clip moment overlapping several discovered candidates marks each `both`, and `n_viewer_clips` counts the distinct clips merged into each.
+- Viewer-clip moments are matched against every surviving peak, not just the top 50, so a clipped peak just outside the shortlist comes back as `both` rather than `viewer_clips`. Clip-backed candidates are added after the top-50 shortlist, up to the contract's 200. A moment overlapping several discovered candidates marks each `both`; moments never merge into each other. A moment outside the scored windows is dropped with a warning.
 - `top_signals` lists up to 3 standardized features (`chat_msg_rate_z`, `chat_unique_rate_z`, `chat_msg_rate_rz`, `chat_msg_rate_lead1/2`, `audio_rms_max_z`, `audio_rms_rz`) whose maximum over the candidate's windows is at least 1.0, strongest first.
 
 ## 4. Training practices

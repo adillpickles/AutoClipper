@@ -219,3 +219,139 @@ def test_candidates_make_a_valid_analysis_result_on_the_synthetic_dataset(tmp_pa
         if not own:
             assert {c.source for c in result.candidates} == {"discovered"}
         json.loads(result.model_dump_json())  # serializes
+
+
+def test_a_sharp_spike_next_to_a_broad_stretch_keeps_the_highest_window() -> None:
+    # Raw 9 at window 30, 5 at windows 33-35: smoothed, the stretch is higher, but the ranking
+    # uses raw scores, so the spike must not be suppressed by it.
+    scores = scores_with_peaks(600.0, {30: 9.0, 33: 5.0, 34: 5.0, 35: 5.0})
+
+    (first, *_) = generate_candidates(scores, duration_s=600.0)
+
+    assert first.score == 9.0
+    assert first.start_s <= 300.0 < first.end_s
+
+
+def test_score_ties_rank_the_earlier_start_first() -> None:
+    scores = scores_with_peaks(600.0, {40: 4.0, 10: 4.0})
+
+    candidates = generate_candidates(
+        scores, duration_s=600.0, params=CandidateParams(smooth_windows=1)
+    )
+
+    assert [c.start_s for c in candidates[:2]] == [80.0, 380.0]
+
+
+def test_a_climb_and_a_flat_start_are_not_peaks() -> None:
+    # Flat zeros, a step up to 2 for 10 windows (100 s), then the spike: one candidate only.
+    peaks = dict.fromkeys(range(10, 20), 2.0) | {20: 6.0}
+    scores = scores_with_peaks(300.0, peaks)
+
+    candidates = generate_candidates(
+        scores, duration_s=300.0, params=CandidateParams(smooth_windows=1)
+    )
+
+    assert [c.score for c in candidates] == [6.0]
+
+
+def test_moments_merge_into_discovered_candidates_only_whatever_their_order() -> None:
+    flat = scores_with_peaks(600.0, {})
+    moments = [MomentInput("m0", 400.0, 405.0, ("a",)), MomentInput("m1", 412.0, 418.0, ("b",))]
+
+    forward = generate_candidates(flat, duration_s=600.0, moments=moments)
+    backward = generate_candidates(flat, duration_s=600.0, moments=moments[::-1])
+
+    clipped = [c for c in forward if c.source == "viewer_clips"]
+    assert len(clipped) == 2
+    assert all(c.n_viewer_clips == 1 for c in clipped)
+    assert [(c.start_s, c.end_s) for c in forward] == [(c.start_s, c.end_s) for c in backward]
+
+
+def test_a_moment_over_several_candidates_marks_each_both() -> None:
+    scores = scores_with_peaks(600.0, {20: 5.0, 27: 4.0})
+    moments = [MomentInput("m0", 190.0, 290.0, ("a", "b", "c"))]
+
+    candidates = generate_candidates(
+        scores,
+        duration_s=600.0,
+        moments=moments,
+        params=CandidateParams(smooth_windows=1, min_gap_s=60.0),
+    )
+
+    both = [c for c in candidates if c.source == "both"]
+    assert len(both) == 2
+    assert all(c.n_viewer_clips == 3 for c in both)
+
+
+def test_a_viewer_clip_candidate_is_cut_around_its_best_window() -> None:
+    # A 120 s moment with its best window at 200-210 s: cut to 45 s starting 20 s before it.
+    scores = scores_with_peaks(600.0, {20: 3.0, 50: 9.0})
+    moments = [MomentInput("m0", 150.0, 270.0, ("a",))]
+
+    candidates = generate_candidates(
+        scores,
+        duration_s=600.0,
+        moments=moments,
+        params=CandidateParams(smooth_windows=1, shortlist_k=1),
+    )
+
+    # The 9.0 peak is the whole shortlist; the moment covers only the 3.0 peak, which is a
+    # surviving peak outside the shortlist, so it comes back as `both`.
+    clip_backed = [c for c in candidates if c.n_viewer_clips]
+    assert [c.source for c in clip_backed] == ["both"]
+    assert clip_backed[0].score == 3.0
+
+
+def test_empty_and_out_of_range_moments_are_skipped() -> None:
+    scores = scores_with_peaks(300.0, {10: 5.0})
+    moments = [MomentInput("empty", 100.0, 110.0, ()), MomentInput("late", 400.0, 420.0, ("a",))]
+
+    candidates = generate_candidates(scores, duration_s=300.0, moments=moments)
+
+    assert {c.source for c in candidates} == {"discovered"}
+
+
+def test_duplicate_feature_rows_are_rejected() -> None:
+    scores = scores_with_peaks(100.0, {5: 1.0})
+    features = pl.concat([scores.select("window_id")] * 2).with_columns(chat_msg_rate_z=pl.lit(1.0))
+
+    with pytest.raises(ValueError, match="window_id more than once"):
+        generate_candidates(scores, duration_s=100.0, features=features)
+
+
+def test_independent_discovery_finds_the_planted_synthetic_highlights(tmp_path: Path) -> None:
+    # No moments passed: the chat + loudness signals alone must put every planted highlight in
+    # the top candidates.
+    from autoclipper.features.audio import compute_audio_features
+    from autoclipper.features.chat import compute_chat_features, load_lexicon
+
+    dataset = generate_dataset(tmp_path / "synthetic", seed=1)
+    root = dataset.out_dir
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    vods = pl.read_parquet(root / "processed" / "vods.parquet")
+    lexicon = load_lexicon(Path(__file__).parents[2] / "configs" / "lexicon.yaml")
+    for vod in manifest["vods"]:
+        video_id = vod["video_id"]
+        windows = windows_for_vods(vods.filter(pl.col("video_id") == video_id))
+        chat = compute_chat_features(
+            windows,
+            pl.read_parquet(root / "interim" / "chat" / f"{video_id}.parquet"),
+            lexicon=lexicon,
+        )
+        audio = compute_audio_features(windows, root / "interim" / "audio" / f"{video_id}.wav")
+        features = chat.drop("feature_version").join(audio.drop("feature_version"), on="window_id")
+        scores = windows.join(features, on="window_id").select(
+            "window_id",
+            "start_s",
+            "end_s",
+            score=pl.col("chat_msg_rate_z") + pl.col("audio_rms_max_z"),
+        )
+
+        candidates = generate_candidates(scores, duration_s=vod["duration_s"], features=features)
+
+        planted = [e["time_s"] for e in vod["planted_events"]]
+        top = candidates[: len(planted) + 1]
+        for t in planted:
+            assert any(c.start_s <= t < c.end_s for c in top), (video_id, t)
+        assert all(c.source == "discovered" for c in candidates)
+        assert top[0].top_signals  # the strongest candidate is explained
