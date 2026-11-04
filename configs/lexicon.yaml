@@ -4,7 +4,8 @@
 # so features computed with different lists are never mixed.
 #
 # Each category matches a message when any entry matches:
-#   emotes:   whole whitespace-separated tokens, exact case (emote names, "W", "D:")
+#   emotes:   emote names: whole tokens in exact case, optional trailing punctuation ("W!");
+#             emoji anywhere in the message
 #   words:    words or phrases, any case, on word boundaries ("lol", "lets go")
 #   patterns: regular expressions (Rust regex syntax, as Polars uses), any case unless the
 #             pattern says otherwise
@@ -14,15 +15,15 @@ categories:
   laugh:
     emotes: [KEKW, OMEGALUL, LUL, LULW, KEKL, ICANT, "😂", "🤣"]
     words: [lol, lmao, lmfao, rofl, haha, hahaha]
-    patterns: ['\b(?:ha){3,}\b', '\bl+o+l+\b']
+    patterns: ['\b(?:ha){3,}\b', '\bl+o+l+(?:o+l+)*\b', '\blma+o+\b']
   hype:
     emotes: [POG, Pog, PogChamp, PogU, POGGERS, Poggers, W, EZ, "🔥"]
     words: [lets go, let's go, letsgo, clutch, insane, huge]
-    patterns: ['!{3,}', '\blet+s+ go+\b']
+    patterns: ['!{3,}', '\blet+s+\s*go+\b']
   shock:
     emotes: [monkaS, monkaW, "D:", WAYTOODANK, Sadge, "😱", "😳"]
     words: [wtf, no way, omg, bruh, holy]
-    patterns: ['^\s*\?+\s*$']
+    patterns: ['^\s*\?+\s*$', '\bno+\s+wa+y+\b']
   # chat_keyword_rate: the small "this is a moment" list.
   keyword:
     emotes: [OMEGALUL, KEKW, W, Pog]
@@ -45,6 +46,6 @@ events:
 clip_filter:
   patterns:
     - 'clips\.twitch\.tv/'
-    - 'twitch\.tv/[A-Za-z0-9_]+/clip/'
+    - 'twitch\.tv/(?:[A-Za-z0-9_]+/)?clip/'
     - '\bcreated a clip\b'
     - '\bclip created\b'

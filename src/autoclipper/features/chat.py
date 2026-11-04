@@ -132,10 +132,15 @@ def _category_regex(section: object, where: str) -> str:
     words = _strings(section.get("words", []), f"{where}.words")
     patterns = _strings(section.get("patterns", []), f"{where}.patterns")
     parts: list[str] = []
-    if emotes:
-        # A whole token, exact case: "W" is hype, "w" isn't.
-        alternatives = "|".join(pl.escape_regex(e) for e in sorted(emotes, key=len, reverse=True))
-        parts.append(rf"(?:^|\s)(?:{alternatives})(?:\s|$)")
+    # Emoji match anywhere ("😂😂😂"); other emotes are whole tokens in exact case ("W" is hype,
+    # "w" isn't), optionally followed by punctuation ("KEKW!").
+    emoji = [e for e in emotes if not any(c.isascii() for c in e)]
+    names = [e for e in emotes if e not in emoji]
+    if emoji:
+        parts.append("|".join(pl.escape_regex(e) for e in emoji))
+    if names:
+        alternatives = "|".join(pl.escape_regex(e) for e in sorted(names, key=len, reverse=True))
+        parts.append(rf"(?:^|\s)(?:{alternatives})[!?.,:;]*(?:\s|$)")
     if words:
         alternatives = "|".join(pl.escape_regex(w) for w in sorted(words, key=len, reverse=True))
         parts.append(rf"(?i:\b(?:{alternatives})\b)")
@@ -212,6 +217,10 @@ def compute_chat_features(
         .filter(pl.col("window_id").is_not_null() & (pl.col("offset_s") < pl.col("end_s")))
     )
     n_outside = chat.height - placed.height
+    silent = sorted(set(windows["video_id"].unique()) - set(placed["video_id"].unique()))
+    if silent:
+        # Could be a quiet stream, or chat that failed to download: say which VODs.
+        log.warning("no chat messages in any window video_ids=%s", ",".join(silent))
     log.info(
         "chat features windows=%d messages=%d clip_links_removed=%d outside_windows=%d",
         windows.height,

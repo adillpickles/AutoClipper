@@ -141,6 +141,47 @@ def test_rolling_z_compares_with_the_previous_windows_only(lexicon: Lexicon) -> 
     assert rz[3] == pytest.approx((1.0 - mean) / std)
 
 
+def test_rolling_z_looks_back_30_windows_and_not_past_the_vod_start(lexicon: Lexicon) -> None:
+    # 40 windows: 1 message each, except 10 messages in windows 0-4 and in window 39.
+    counts = [10] * 5 + [1] * 34 + [10]
+    rows = [(10.0 * w + i * 0.1, f"u{i}", "x") for w, n in enumerate(counts) for i in range(n)]
+    windows = pl.concat([make_windows("a", 400.0), make_windows("b", 30.0)])
+    chat = pl.concat([messages(*rows, video_id="a"), messages((25.0, "u", "x"), video_id="b")])
+
+    frame = compute_chat_features(windows, chat, lexicon=lexicon)
+
+    rz = frame.filter(pl.col("window_id").str.starts_with("a:"))["chat_msg_rate_rz"].to_list()
+    # Window 39 sees windows 9-38 only: all 1 message, zero std, so 0 (an expanding baseline
+    # would include the busy start and give a large value).
+    assert rz[39] == 0.0
+    # Window 34 sees windows 4-33: one busy window and 29 quiet ones.
+    previous = counts[4:34]
+    mean = sum(previous) / 30 / 10
+    std = math.sqrt(sum((c / 10 - mean) ** 2 for c in previous) / 30)
+    assert rz[34] == pytest.approx((0.1 - mean) / std)
+    # VOD b starts fresh: its first windows have no earlier windows of their own.
+    assert frame.filter(pl.col("window_id").str.starts_with("b:"))["chat_msg_rate_rz"].to_list()[
+        :2
+    ] == [0.0, 0.0]
+
+
+def test_unsorted_interleaved_messages_give_the_same_features(lexicon: Lexicon) -> None:
+    windows = pl.concat([make_windows("a", 30.0), make_windows("b", 30.0)])
+    chat = pl.concat(
+        [
+            messages(*[(i * 1.7 % 30, f"u{i % 4}", "KEKW") for i in range(40)], video_id="a"),
+            messages(*[(i * 2.3 % 30, f"u{i % 3}", "W") for i in range(25)], video_id="b"),
+        ]
+    )
+
+    ordered = compute_chat_features(windows, chat.sort(["video_id", "offset_s"]), lexicon=lexicon)
+    shuffled = compute_chat_features(
+        windows.reverse(), chat.sample(fraction=1.0, shuffle=True, seed=7), lexicon=lexicon
+    )
+
+    assert ordered.equals(shuffled)
+
+
 def test_lead_and_lag_are_neighbours_z_and_zero_past_the_vod_edges(lexicon: Lexicon) -> None:
     rows = [
         (10.0 * w + i * 0.1, f"u{i}", "x") for w, n in enumerate([1, 4, 2, 8]) for i in range(n)
@@ -178,6 +219,7 @@ def test_clip_links_are_removed_before_counting(lexicon: Lexicon) -> None:
         (1.0, "a", "https://clips.twitch.tv/SyntheticClip01-abc"),
         (2.0, "b", "look twitch.tv/user_001/clip/AbcDef-123"),
         (3.0, "c", "user_001 created a clip"),
+        (3.5, "e", "https://m.twitch.tv/clip/AbcDef"),
         (4.0, "d", "clip it lol"),  # an ordinary reaction stays
     )
 
@@ -229,6 +271,13 @@ def test_repeats_count_messages_seen_in_the_last_10_seconds_across_windows(
         ("WTF was that", "shock"),
         ("D:", "shock"),
         ("someone clip it", "keyword"),
+        ("😂😂😂", "laugh"),
+        ("KEKW!", "laugh"),
+        ("LOLOL", "laugh"),
+        ("lmaooo", "laugh"),
+        ("W!", "hype"),
+        ("LETSGOOO", "hype"),
+        ("nooo way", "shock"),
     ],
 )
 def test_reaction_messages_are_counted_by_category(

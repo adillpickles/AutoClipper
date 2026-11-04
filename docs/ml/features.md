@@ -56,7 +56,7 @@ Ordinary reactions such as "clip it" remain eligible signals. Do not remove all 
 
 - A message counts in the window whose `[start_s, end_s)` holds its offset; rates divide by the window's real length (a short final window too). Messages after the last window aren't counted.
 - `chat_emote_frac` divides `n_emotes` by whitespace tokens (capped at 1); `chat_caps_frac` counts Unicode letters; `chat_repeat_frac` compares lowercased, whitespace-collapsed text with any chatter's message up to 10 s earlier, across window boundaries.
-- Lexicon `emotes` match whole tokens in exact case (`W` is hype, `w` isn't), `words` match in any case on word boundaries, `patterns` are regexes.
+- Lexicon `emotes` match whole tokens in exact case, optionally followed by punctuation (`W` and `W!` are hype, `w` isn't); emoji match anywhere (`😂😂😂`). `words` match in any case on word boundaries, `patterns` are regexes. A VOD with no messages in any window is logged as a warning (quiet stream or missing chat).
 - `chat_event_count` counts messages with bits plus subscription, gift and raid notices.
 - `_rz` needs at least two earlier windows of the VOD, otherwise 0. Lead/lag values past the VOD's edges are 0.
 
