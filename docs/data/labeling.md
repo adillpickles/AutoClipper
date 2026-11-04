@@ -44,7 +44,7 @@ Known biases to design around:
 
 `n_clips` counts **distinct clip IDs**, not distinct creators. A moment's strength comes from its clips' relative views (§ 6). Build moments from one pinned snapshot (the clip snapshot taken at ingest, § 7), never a mixture of observations.
 
-Use half-open intervals `[start_s, end_s)` for overlap; touching edges alone don't overlap (but they are within `GAP_S`, so they merge). `moment_id` is `{video_id}:m{index}`, with `index` 0-based in `start_s` order; merged moments never overlap, so starts are unique within a VOD. Synthetic tests cover gaps, touching edges, chains and ties.
+Implemented in `autoclipper.labels.moments.merge_clips_into_moments` (`clip_ids` in start order, then end, then ID; a clip listed twice with the same position counts once). Use half-open intervals `[start_s, end_s)` for overlap; touching edges alone don't overlap (but they are within `GAP_S`, so they merge). `moment_id` is `{video_id}:m{index}`, with `index` 0-based in `start_s` order; merged moments never overlap, so starts are unique within a VOD. Synthetic tests cover gaps, touching edges, chains and ties.
 
 ## 3. Windows
 
@@ -52,6 +52,7 @@ Use half-open intervals `[start_s, end_s)` for overlap; touching edges alone don
 - Default: `WINDOW_S = 10`, `STRIDE_S = 10` (non-overlapping). Overlapping windows are an experiment, not the default.
 - The last partial window is dropped if shorter than `WINDOW_S / 2`.
 - Windows overlapping a **muted segment** are flagged `is_muted` (audio features unreliable) and kept, not dropped.
+- Implemented in `autoclipper.labels.windows` (`make_windows` for one VOD, `windows_for_vods` for a `vods` table). A window ends at the VOD's end if cut short there.
 
 ## 4. Window labels
 
