@@ -12,9 +12,11 @@ Inputs are Polars frames:
   VOD by score count.
 - **moments:** the ``moments`` table (`autoclipper.labels.moments`) from the same clips snapshot.
 - **clips:** the ``clips`` table rows of that snapshot (``clip_id``, ``video_id``,
-  ``view_count``), for the 5 most-viewed clips per VOD.
+  ``view_count``), for the 5 most-viewed clips per VOD. A clip listed twice counts once, with
+  its higher view count.
 
-The VODs evaluated are those in `video_ids` (default: every VOD with candidates or moments). A
+The VODs evaluated are those in `video_ids` (the test VODs of the split), by default every VOD
+with candidates; moments of other VODs are ignored, so a dataset-wide moments table is fine. A
 VOD without moments is excluded from both metrics; a VOD whose clip snapshot is flagged
 (``flagged_video_ids``, labeling.md § 7) is excluded from top-clip recall only.
 """
@@ -84,7 +86,10 @@ def evaluate(
     """
     _check(candidates, CANDIDATE_COLUMNS, "candidates", unique="candidate_id")
     _check(moments, MOMENT_COLUMNS, "moments", unique="moment_id")
-    _check(clips, CLIP_COLUMNS[:1] + CLIP_COLUMNS[2:], "clips", unique="clip_id")
+    _check(clips, ("clip_id", "view_count"), "clips")
+    if "video_id" not in clips.columns:
+        raise ValueError("clips is missing columns: video_id")
+    _check_types(candidates, moments, clips)
     for name, frame in (("candidates", candidates), ("moments", moments)):
         bounds = frame.select("start_s", "end_s")
         if not (bounds.select(pl.all().is_finite().all()).row(0) == (True, True)):
@@ -94,15 +99,20 @@ def evaluate(
     if not candidates["score"].is_finite().all():
         raise ValueError("candidates has a score that isn't finite")
 
-    population = (
-        sorted(set(candidates["video_id"]) | set(moments["video_id"]))
-        if video_ids is None
-        else sorted(set(video_ids))
-    )
+    population = sorted(set(candidates["video_id"]) if video_ids is None else set(video_ids))
+    if not population:
+        raise ValueError("no VODs to evaluate: the candidates are empty and no video_ids given")
     flagged = set(flagged_video_ids)
     by_vod_candidates = candidates.partition_by("video_id", as_dict=True, include_key=True)
     by_vod_moments = moments.partition_by("video_id", as_dict=True, include_key=True)
-    views = dict(zip(clips["clip_id"].to_list(), clips["view_count"].to_list(), strict=True))
+    clip_views = (
+        clips.filter(pl.col("video_id").is_not_null())
+        .group_by("video_id", "clip_id")
+        .agg(pl.col("view_count").max())
+    )
+    views_by_vod: dict[str, dict[str, int]] = {}
+    for video_id, clip_id, views in clip_views.iter_rows():
+        views_by_vod.setdefault(video_id, {})[clip_id] = views
 
     rows: list[dict[str, object]] = []
     excluded: dict[str, str] = {}
@@ -126,7 +136,9 @@ def evaluate(
             reason = "clip snapshot flagged: excluded from view-weighted metrics"
         else:
             top = top_clip_moments(
-                {r["moment_id"]: r["clip_ids"] for r in vod_moment_rows}, views, n_clips=TOP_CLIPS
+                {r["moment_id"]: r["clip_ids"] for r in vod_moment_rows},
+                views_by_vod.get(video_id, {}),
+                n_clips=TOP_CLIPS,
             )
             recall = top_clip_recall_at_k(vod_candidates, vod_moments, top, k=k, tol_s=TOL_S)
             if recall is None:
@@ -170,6 +182,7 @@ def write_report(
     git_sha: str,
     seed: int,
     scorer: str,
+    split: str | None = None,
     inputs: Sequence[Path] = (),
     created_at: datetime | None = None,
 ) -> tuple[Path, Path]:
@@ -186,6 +199,7 @@ def write_report(
         "created_at": created.isoformat().replace("+00:00", "Z"),
         "scorer": scorer,
         "dataset_version": dataset_version,
+        "split": split,
         "git_sha": git_sha,
         "seed": seed,
         "k": TOP_K,
@@ -222,6 +236,7 @@ def _summary_markdown(metrics: dict[str, object]) -> str:
         "",
         f"- Scorer: `{metrics['scorer']}`",
         f"- Dataset version: `{metrics['dataset_version']}`",
+        f"- Split: {metrics['split'] or 'not given'}",
         f"- Git commit: `{metrics['git_sha']}`",
         f"- Seed: {metrics['seed']}",
         f"- Created: {metrics['created_at']}",
@@ -249,15 +264,33 @@ def _summary_markdown(metrics: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _check(frame: pl.DataFrame, columns: Sequence[str], name: str, *, unique: str) -> None:
+def _check(
+    frame: pl.DataFrame, columns: Sequence[str], name: str, *, unique: str | None = None
+) -> None:
     missing = sorted(set(columns) - set(frame.columns))
     if missing:
         raise ValueError(f"{name} is missing columns: {', '.join(missing)}")
     nulls = [c for c in columns if frame[c].null_count()]
     if nulls:
         raise ValueError(f"{name} has nulls in: {', '.join(nulls)}")
-    if frame[unique].n_unique() != frame.height:
+    if unique is not None and frame[unique].n_unique() != frame.height:
         raise ValueError(f"{name} lists a {unique} more than once")
+
+
+def _check_types(candidates: pl.DataFrame, moments: pl.DataFrame, clips: pl.DataFrame) -> None:
+    """IDs must be strings (Twitch IDs are never numbers here) and times and scores numeric."""
+    expected = [
+        (candidates, "candidates", ("video_id", "candidate_id"), ("start_s", "end_s", "score")),
+        (moments, "moments", ("video_id", "moment_id"), ("start_s", "end_s")),
+        (clips, "clips", ("clip_id", "video_id"), ("view_count",)),
+    ]
+    for frame, name, strings, numbers in expected:
+        for column in strings:
+            if frame.schema[column] != pl.String:
+                raise ValueError(f"{name}.{column} must be strings, got {frame.schema[column]}")
+        for column in numbers:
+            if not frame.schema[column].is_numeric():
+                raise ValueError(f"{name}.{column} must be numeric, got {frame.schema[column]}")
 
 
 def _empty(columns: Sequence[str]) -> pl.DataFrame:
@@ -279,9 +312,14 @@ def evaluate_files(
     scorer: str,
     seed: int,
     git_sha: str,
+    split: str | None = None,
+    video_ids: Iterable[str] | None = None,
+    flagged_video_ids: Iterable[str] = (),
     force: bool = False,
 ) -> tuple[EvalResult, Path, Path]:
     """Read the three Parquet tables, `evaluate` and `write_report` into `out_dir`.
+
+    `video_ids`, `flagged_video_ids` and `split` are passed through to `evaluate` and the report.
 
     Raises:
         FileNotFoundError: An input file doesn't exist.
@@ -298,7 +336,14 @@ def evaluate_files(
         candidates, moments, clips = (pl.read_parquet(path) for path in paths)
     except pl.exceptions.PolarsError as exc:
         raise ValueError(f"can't read the inputs as Parquet: {exc}") from exc
-    result = evaluate(candidates, moments, clips, seed=seed)
+    result = evaluate(
+        candidates,
+        moments,
+        clips,
+        seed=seed,
+        video_ids=video_ids,
+        flagged_video_ids=flagged_video_ids,
+    )
     metrics_path, summary_path = write_report(
         result,
         out_dir,
@@ -307,17 +352,22 @@ def evaluate_files(
         git_sha=git_sha,
         seed=seed,
         scorer=scorer,
+        split=split,
         inputs=paths,
     )
     return result, metrics_path, summary_path
 
 
-def current_git_sha(cwd: Path) -> str:
-    """The checked-out commit in `cwd`, or ``"unknown"`` outside a git checkout.
+def current_git_sha(cwd: Path | None = None) -> str:
+    """The commit of the checkout holding `cwd`, or ``"unknown"`` outside a git checkout.
+
+    `cwd` defaults to this package's own directory, so the SHA is that of the code running,
+    wherever the command is started from.
 
     ``-dirty`` is appended when tracked files have local changes, so a report never claims a
     commit it wasn't produced from.
     """
+    cwd = Path(__file__).resolve().parent if cwd is None else cwd
     try:
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"],

@@ -180,11 +180,34 @@ def evaluate(
             help="Report folder name. Default: eval-<scorer>-<UTC time>.", show_default=False
         ),
     ] = None,
+    vods: Annotated[
+        Path | None,
+        typer.Option(
+            help="Text file with the VOD IDs to evaluate (the split's test VODs), one per line. "
+            "Default: every VOD with candidates.",
+            show_default=False,
+        ),
+    ] = None,
+    flagged: Annotated[
+        Path | None,
+        typer.Option(
+            help="Text file with VOD IDs whose clip snapshot is flagged (left out of "
+            "top-clip recall), one per line.",
+            show_default=False,
+        ),
+    ] = None,
+    split: Annotated[
+        str | None,
+        typer.Option(help="Split file and fold, recorded in the report.", show_default=False),
+    ] = None,
     force: Annotated[bool, typer.Option(help="Replace an existing report.")] = False,
 ) -> None:
     """Score candidates against viewer-clip moments: hit rate@10 and top-clip recall@10."""
+    if not RUN_ID.fullmatch(scorer) or _is_reserved_name(scorer):
+        typer.echo("Error: --scorer must be a short name such as chat_spike", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
     name = run_id or default_run_id(scorer)
-    if not RUN_ID.fullmatch(name):
+    if not RUN_ID.fullmatch(name) or _is_reserved_name(name):
         typer.echo(
             "Error: --run-id must start with a letter or digit and use only letters, digits, "
             "'.', '_' and '-'",
@@ -193,6 +216,8 @@ def evaluate(
         raise typer.Exit(ExitCode.USER_ERROR)
     out_dir = get_settings().artifacts_dir / "reports" / name
     try:
+        video_ids = None if vods is None else _read_ids(vods)
+        flagged_ids = () if flagged is None else _read_ids(flagged)
         result, metrics_path, _ = evaluate_files(
             candidates,
             moments,
@@ -202,10 +227,13 @@ def evaluate(
             dataset_version=dataset_version,
             scorer=scorer,
             seed=seed,
-            git_sha=current_git_sha(Path.cwd()),
+            git_sha=current_git_sha(),
+            split=split,
+            video_ids=video_ids,
+            flagged_video_ids=flagged_ids,
             force=force,
         )
-    except (FileNotFoundError, ReportExistsError, ValueError) as exc:
+    except (FileNotFoundError, ReportExistsError, ValueError, UnicodeDecodeError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
     for metric, interval in result.summary.items():
@@ -216,3 +244,28 @@ def evaluate(
         )
         typer.echo(f"{metric}: {shown}")
     typer.echo(f"Wrote {metrics_path}")
+
+
+# Device names Windows refuses as file or folder names, with or without an extension.
+_RESERVED_NAMES = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{i}" for i in range(1, 10)),
+        *(f"lpt{i}" for i in range(1, 10)),
+    }
+)
+
+
+def _is_reserved_name(name: str) -> bool:
+    return name.split(".")[0].lower() in _RESERVED_NAMES
+
+
+def _read_ids(path: Path) -> list[str]:
+    """Non-blank lines of a UTF-8 text file, stripped; '#' starts a comment line."""
+    if not path.is_file():
+        raise FileNotFoundError(f"input not found: {path}")
+    lines = (line.strip() for line in path.read_text(encoding="utf-8").splitlines())
+    return [line for line in lines if line and not line.startswith("#")]

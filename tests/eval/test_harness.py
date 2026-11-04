@@ -52,9 +52,14 @@ def moments_frame(rows: list[tuple[str, str, float, float, list[str]]]) -> pl.Da
     )
 
 
-def clips_frame(views: dict[str, int]) -> pl.DataFrame:
+def clips_frame(views: dict[str, tuple[str, int]]) -> pl.DataFrame:
+    """Clips as {clip_id: (video_id, view_count)}."""
     return pl.DataFrame(
-        {"clip_id": list(views), "video_id": ["a"] * len(views), "view_count": list(views.values())}
+        {
+            "clip_id": list(views),
+            "video_id": [v for v, _ in views.values()],
+            "view_count": [n for _, n in views.values()],
+        }
     )
 
 
@@ -75,7 +80,7 @@ def inputs() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
             ("b", "b:m0", 100.0, 130.0, ["y1"]),
         ]
     )
-    return candidates, moments, clips_frame({"x1": 10, "x2": 50, "y1": 3})
+    return candidates, moments, clips_frame({"x1": ("a", 10), "x2": ("a", 50), "y1": ("b", 3)})
 
 
 def test_evaluate_scores_each_vod_and_averages_over_vods(
@@ -112,15 +117,52 @@ def test_a_vod_with_moments_but_no_candidates_scores_zero(
 ) -> None:
     candidates, moments, clips = inputs
 
-    result = evaluate(candidates.filter(pl.col("video_id") != "b"), moments, clips, seed=0)
+    result = evaluate(
+        candidates.filter(pl.col("video_id") != "b"), moments, clips, seed=0, video_ids=["a", "b"]
+    )
 
     row = result.per_vod.filter(pl.col("video_id") == "b").row(0, named=True)
     assert (row["hit_rate_at_10"], row["top_clip_recall_at_10"]) == (0.0, 0.0)
 
 
+def test_moments_of_vods_outside_the_population_are_ignored(
+    inputs: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame],
+) -> None:
+    candidates, moments, clips = inputs
+    training = moments_frame([("t", "t:m0", 0.0, 30.0, ["z"])])  # a training VOD's moment
+
+    result = evaluate(candidates, pl.concat([moments, training]), clips, seed=0)
+
+    assert set(result.per_vod["video_id"]) == {"a", "b", "c"}
+
+
+def test_a_clip_listed_twice_counts_once(
+    inputs: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame],
+) -> None:
+    candidates, moments, clips = inputs
+
+    result = evaluate(candidates, moments, pl.concat([clips, clips]), seed=0)
+
+    assert (
+        result.summary["top_clip_recall_at_10"]
+        == evaluate(*inputs, seed=0).summary["top_clip_recall_at_10"]
+    )
+
+
+def test_nothing_to_evaluate_is_an_error(
+    inputs: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame],
+) -> None:
+    candidates, moments, clips = inputs
+
+    with pytest.raises(ValueError, match="no VODs to evaluate"):
+        evaluate(candidates.clear(), moments, clips, seed=0)
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
+        (lambda c: c.with_columns(pl.col("video_id").cast(pl.Categorical)), "video_id must be"),
+        (lambda c: c.with_columns(pl.col("score").cast(pl.String)), "score must be numeric"),
         (lambda c: c.drop("score"), "missing columns: score"),
         (lambda c: pl.concat([c, c]), "candidate_id more than once"),
         (lambda c: c.with_columns(score=pl.lit(float("nan"))), "score"),
@@ -149,6 +191,7 @@ def test_report_records_dataset_commit_and_seed(
         git_sha="abc123",
         seed=3,
         scorer="chat_spike",
+        split="splits/v1.json fold 0",
         created_at=datetime(2026, 11, 4, 12, 0, tzinfo=UTC),
     )
 
@@ -156,6 +199,7 @@ def test_report_records_dataset_commit_and_seed(
     assert metrics["dataset_version"] == "v-synthetic"
     assert metrics["git_sha"] == "abc123"
     assert metrics["seed"] == 3
+    assert metrics["split"] == "splits/v1.json fold 0"
     assert metrics["created_at"] == "2026-11-04T12:00:00Z"
     assert metrics["metrics"]["hit_rate_at_10"]["mean"] == pytest.approx(0.75)
     assert metrics["metrics"]["hit_rate_at_10"]["n_vods"] == 2
@@ -197,6 +241,8 @@ def test_git_sha_is_the_commit_or_unknown(tmp_path: Path) -> None:
         ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
     ).stdout.strip()
     assert current_git_sha(repo).removesuffix("-dirty") == head
+    # By default the SHA is the running code's, wherever the command starts.
+    assert current_git_sha().removesuffix("-dirty") == head
 
 
 def test_default_run_id_names_the_scorer_and_utc_time() -> None:
@@ -270,3 +316,60 @@ def test_evaluate_command_rejects_a_bad_run_id_and_missing_files(tmp_path: Path)
     assert "run-id" in bad_id.output
     assert missing.exit_code == 1
     assert "input not found" in missing.output
+
+
+def test_evaluate_command_limits_vods_and_flags_snapshots(
+    tmp_path: Path, inputs: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]
+) -> None:
+    for name, frame in zip(("candidates", "moments", "clips"), inputs, strict=True):
+        frame.write_parquet(tmp_path / f"{name}.parquet")
+    (tmp_path / "test-vods.txt").write_text("# fold 0 test VODs\na\nb\n", encoding="utf-8")
+    (tmp_path / "flagged.txt").write_text("b\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "evaluate",
+            *("--candidates", str(tmp_path / "candidates.parquet")),
+            *("--moments", str(tmp_path / "moments.parquet")),
+            *("--clips", str(tmp_path / "clips.parquet")),
+            *("--dataset-version", "v", "--scorer", "s", "--run-id", "limited"),
+            *("--vods", str(tmp_path / "test-vods.txt")),
+            *("--flagged", str(tmp_path / "flagged.txt")),
+            *("--split", "fold 0"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    report = json.loads(
+        (tmp_path / "artifacts" / "reports" / "limited" / "metrics.json").read_text()
+    )
+    assert report["n_vods"] == 2
+    assert report["split"] == "fold 0"
+    assert report["metrics"]["top_clip_recall_at_10"]["n_vods"] == 1  # b is flagged
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "message"),
+    [
+        ("--scorer", "my scorer", "--scorer"),
+        ("--run-id", "CON", "--run-id"),
+        ("--run-id", "nul.txt", "--run-id"),
+    ],
+)
+def test_evaluate_command_rejects_unsafe_names(
+    tmp_path: Path, option: str, value: str, message: str
+) -> None:
+    args = {
+        "--candidates": "c.parquet",
+        "--moments": "m.parquet",
+        "--clips": "x.parquet",
+        "--dataset-version": "v",
+        "--scorer": "s",
+        option: value,
+    }
+
+    result = runner.invoke(app, ["evaluate", *[x for kv in args.items() for x in kv]])
+
+    assert result.exit_code == 1
+    assert message in result.output

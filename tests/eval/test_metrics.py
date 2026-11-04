@@ -94,10 +94,25 @@ def test_no_candidates_score_zero_and_no_moments_are_excluded() -> None:
 
 def test_top_clip_moments_hold_the_5_most_viewed_clips() -> None:
     members = {"m0": ["a", "b"], "m1": ["c"], "m2": ["d"], "m3": ["e", "f"], "m4": ["g"]}
-    views = {"a": 100, "b": 90, "c": 5, "d": 80, "e": 70, "f": 60, "g": 60, "x": 999}
+    views = {"a": 100, "b": 90, "c": 5, "d": 80, "e": 70, "f": 60, "g": 75, "x": 999}
 
-    # Top 5 clips: a, b, d, e, then f and g tie at 60 and f wins on ID. "x" is in no moment.
-    assert top_clip_moments(members, views) == {"m0", "m2", "m3"}
+    # Top 5 clips: x, a, b, d, g. "x" has no VOD offset (in no moment): it holds no moment and
+    # is not replaced by the 6th clip (e), so m3 is not a top-clip moment.
+    assert top_clip_moments(members, views) == {"m0", "m2", "m4"}
+
+
+def test_top_clip_view_ties_go_to_the_smaller_clip_id() -> None:
+    members = {"m0": ["a"], "m1": ["b"]}
+
+    assert top_clip_moments(members, {"b": 10, "a": 10}, n_clips=1) == {"m0"}
+
+
+def test_overlap_is_measured_against_the_widened_moment() -> None:
+    # Raw overlap favours A (10 s vs 9 s); with ±15 s, A spans [-15, 25) and B [30, 69), so the
+    # candidate [0, 100) overlaps A by 25 s and B by 39 s and claims B.
+    moments = [m("A", 0.0, 10.0), m("B", 45.0, 54.0)]
+
+    assert match_candidates([c("c", 0.0, 100.0, 1.0)], moments) == {"c": "B"}
 
 
 def test_top_clip_recall_counts_matched_top_moments() -> None:
@@ -121,6 +136,15 @@ def test_bootstrap_is_deterministic_and_brackets_the_mean() -> None:
     assert first.mean == pytest.approx(sum(values) / len(values))
     assert 0.0 <= first.low < first.mean < first.high <= 1.0
     assert (first.low, first.high) != (other.low, other.high)
+
+
+def test_bootstrap_interval_of_two_vods_by_hand() -> None:
+    # Resampling two VODs with values 0 and 1 gives means 0, 0.5 or 1 with probabilities 1/4,
+    # 1/2, 1/4, so the 2.5th and 97.5th percentiles of 1,000 resamples are 0 and 1.
+    interval = bootstrap_mean([0.0, 1.0], seed=0)
+
+    assert interval is not None
+    assert (interval.mean, interval.low, interval.high) == (0.5, 0.0, 1.0)
 
 
 def test_bootstrap_of_one_vod_is_a_point_and_of_none_is_none() -> None:

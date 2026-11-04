@@ -43,12 +43,12 @@ If a learned model does not beat chat + loudness, report that outcome for the ev
 
 Unit: the top 10 candidates of one test VOD. Metrics are averaged over test VODs.
 
-**Matching.** A candidate `[s, e)` matches an observed moment `[ms, me)` when the intervals overlap after widening the moment by `TOL_S = 15` s on each side: `s < me + 15` and `e > ms − 15`. Matching is one-to-one: process candidates in descending score (earlier start, then candidate ID breaks ties); each takes the unclaimed matching moment with the largest overlap (then earliest start, then `moment_id`). Each moment is matched at most once. Candidates are produced without ground-truth access.
+**Matching.** A candidate `[s, e)` matches an observed moment `[ms, me)` when the intervals overlap after widening the moment by `TOL_S = 15` s on each side: `s < me + 15` and `e > ms − 15`. Matching is one-to-one: process candidates in descending score (earlier start, then candidate ID breaks ties); each takes the unclaimed matching moment with the largest overlap with its widened interval `[ms − 15, me + 15)` (then earliest start, then `moment_id`). Each moment is matched at most once. Candidates are produced without ground-truth access.
 
 | Metric | Definition | Role |
 |---|---|---|
 | **Hit rate@10** | Fraction of the top 10 candidates per VOD that match an observed moment | **Primary** |
-| Top-clip recall@10 | Fraction of the moments holding the VOD's 5 most-viewed clips that the top 10 match | Secondary: do we find the *big* moments? |
+| Top-clip recall@10 | Fraction of the moments holding the VOD's 5 most-viewed clips that the top 10 match. The 5 are chosen among all of the VOD's clips (view ties to the smaller clip ID); one without a VOD offset holds no moment and isn't replaced | Secondary: do we find the *big* moments? |
 | NDCG@10 | Relevance of a candidate = strength of its matched moment (0 if none; [labeling § 6](../data/labeling.md#6-normalization-across-channels)); ideal DCG from the VOD's strongest moments | Secondary: ranking quality |
 | Recall@10 | Fraction of all observed moments matched by the top 10 | Diagnostic coverage; capped by 10 / number of moments |
 
@@ -118,8 +118,11 @@ Template table:
 
   ```bash
   uv run autoclipper evaluate --candidates c.parquet --moments moments.parquet --clips clips.parquet \
-      --dataset-version v1 --scorer chat_spike --seed 0 [--run-id <id>] [--force]
+      --dataset-version v1 --scorer chat_spike --seed 0 [--run-id <id>] [--force] \
+      [--vods test-vods.txt] [--flagged flagged.txt] [--split "<split file> fold 0"]
   ```
+
+  `--vods` lists the VODs to evaluate (the test streamer's), one ID per line; by default every VOD with candidates is evaluated and other VODs' moments are ignored. `--flagged` lists VODs whose clip snapshot is flagged (left out of top-clip recall). `--split` is recorded in the report. The git commit is that of the installed code, wherever the command runs from.
 
   Candidates have `video_id`, `candidate_id`, `start_s`, `end_s` and `score`; only each VOD's top 10 by score count. Moments and clips come from the same snapshot. Step 1 is implemented in `autoclipper.eval` (`metrics`, `bootstrap`, `harness`): hit rate@10 and top-clip recall@10 per VOD, averaged, with VOD-resampled 95% intervals. A VOD with moments but no candidates scores 0.
 - Bootstrap: 1,000 resamples of VODs with a fixed seed.

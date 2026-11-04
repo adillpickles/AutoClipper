@@ -5,7 +5,8 @@ All functions work on one VOD at a time. Times are seconds from VOD start.
 **Matching.** A candidate ``[s, e)`` matches a moment ``[ms, me)`` when ``s < me + TOL_S`` and
 ``e > ms - TOL_S``. Matching is one to one: candidates are taken in descending score (earlier
 start, then candidate ID, breaks ties); each claims the unclaimed matching moment with the
-largest overlap with its widened interval (then the earlier start, then ``moment_id``).
+largest overlap with its widened interval ``[ms - TOL_S, me + TOL_S)`` (then the earlier start,
+then ``moment_id``).
 """
 
 from collections.abc import Mapping, Sequence
@@ -95,18 +96,18 @@ def top_clip_moments(
 ) -> set[str]:
     """The moments holding the VOD's `n_clips` most-viewed clips.
 
-    Ties in views go to the smaller clip ID, so the set is deterministic. Clips not in any
-    moment (no VOD offset) are ignored.
+    The top clips are chosen among all of the VOD's clips in `clip_views` (ties in views go to
+    the smaller clip ID). A top clip in no moment (it has no VOD offset) holds no moment, so the
+    set can have fewer entries; it is never replaced by the next clip down.
 
     Args:
         moment_clip_ids: ``{moment_id: clip_ids}`` for the VOD's moments.
-        clip_views: ``{clip_id: view_count}``.
+        clip_views: ``{clip_id: view_count}`` for every clip of the VOD.
         n_clips: How many top clips to look at.
     """
     owner = {clip_id: m for m, ids in moment_clip_ids.items() for clip_id in ids}
-    placed = [c for c in owner if c in clip_views]
-    top = sorted(placed, key=lambda c: (-clip_views[c], c))[:n_clips]
-    return {owner[c] for c in top}
+    top = sorted(clip_views, key=lambda c: (-clip_views[c], c))[:n_clips]
+    return {owner[c] for c in top if c in owner}
 
 
 def top_clip_recall_at_k(
