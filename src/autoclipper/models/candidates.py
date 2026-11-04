@@ -321,3 +321,27 @@ def _checked_scores(scores: pl.DataFrame) -> pl.DataFrame:
     ).height:
         raise ValueError("score windows overlap or have no length")
     return windows
+
+
+def candidates_frame(video_id: str, candidates: Sequence[Candidate]) -> pl.DataFrame:
+    """The evaluation's input rows (`autoclipper.eval.harness`) for one VOD's candidates.
+
+    ``candidate_id`` is prefixed with the VOD (``<video_id>:c001``) so IDs stay unique when the
+    frames of several VODs are concatenated.
+    """
+    return pl.DataFrame(
+        {
+            "video_id": [video_id] * len(candidates),
+            "candidate_id": [f"{video_id}:{c.candidate_id}" for c in candidates],
+            "start_s": [c.start_s for c in candidates],
+            "end_s": [c.end_s for c in candidates],
+            "score": [c.score for c in candidates],
+        },
+        schema={
+            "video_id": pl.String,
+            "candidate_id": pl.String,
+            "start_s": pl.Float64,
+            "end_s": pl.Float64,
+            "score": pl.Float64,
+        },
+    )
