@@ -9,7 +9,7 @@
 
 ## Summary
 
-Scope, architecture and the plan are documented, with concrete defaults for building the MVP. The planned app has two outputs: ranked, captioned 9:16 clips and a 16:9 highlights video. The initial setup targets a laptop; collection/storage can be shared and hosted deployment remains an option. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client, viewer-clip fetching, a pseudonymizing chat replay parser, VOD audio download with 16 kHz mono normalization, vertical-MP4 export (cut, reframe, encode), VOD time windows and viewer-clip moments, chat and audio features per window, the step-1 evaluation, candidate generation in the `AnalysisResult` format, the four baselines, and a mock backend API (`autoclipper serve`). Python and frontend tooling run in CI. The Next.js frontend has the start and progress screens, running against a mock API client. **There is no real dataset, trained model or analysis pipeline yet; the backend runs mock jobs.** No results exist.
+Scope, architecture and the plan are documented, with concrete defaults for building the MVP. The planned app has two outputs: ranked, captioned 9:16 clips and a 16:9 highlights video. The initial setup targets a laptop; collection/storage can be shared and hosted deployment remains an option. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client, viewer-clip fetching, a pseudonymizing chat replay parser, VOD audio download with 16 kHz mono normalization, vertical-MP4 export (cut, reframe, encode), VOD time windows and viewer-clip moments, chat and audio features per window, the step-1 evaluation, candidate generation in the `AnalysisResult` format, the four baselines, and a mock backend API (`autoclipper serve`). Python and frontend tooling run in CI. The Next.js frontend has the start, progress and results screens, running against a mock API client. **There is no real dataset, trained model or analysis pipeline yet; the backend runs mock jobs.** No results exist.
 
 ## What exists
 
@@ -42,7 +42,7 @@ Scope, architecture and the plan are documented, with concrete defaults for buil
 | Export | 🟡 Cut and reframe only (#20) | `autoclipper.export`: exact source-interval cut (padding separate, clamped to where video and audio both have content, no lag shift), `center_crop` and `configured_region` layouts (the region set with `AUTOCLIPPER_EXPORT_REGION`), 1080×1920 H.264/AAC MP4 written atomically. Tested on generated media only. No captions (#21) and no CLI/API command (#32) yet. Details: [overview § 4.6](../architecture/overview.md#46-export) |
 | License | ✅ MIT | [`LICENSE`](../../LICENSE) |
 | Backend API (mock) | ✅ In place (#28) | `autoclipper serve` (FastAPI + uvicorn, `autoclipper.api`): every endpoint of the [API contract](../architecture/api-contract.md) with the § 11 mock scenarios, the error envelope, CORS for `AUTOCLIPPER_CORS_ORIGINS`, in-memory records, a FIFO analysis worker and a shared render worker. Exports and highlights are simulated and finish with generated sample MP4s (1080×1920, 1920×1080); preview serves a generated 360 s sample with Range support. Real analysis (#45) and rendering (#32, #72) come later |
-| Web app | 🟡 Start and progress screens (#29) | Next.js + TypeScript (strict) + Tailwind in `web/`. The start screen takes a VOD link and an optional local file path; the progress screen shows queued, each stage with a progress bar when measured, done (with warnings) and failed. The typed API client (`web/src/lib/api/`) runs in mock mode from the contract's examples and § 11 scenarios; Vitest covers its logic. No results screen (#30), editor (#31) or real API connection (#33) yet |
+| Web app | 🟡 Start, progress and results screens (#29, #30) | Next.js + TypeScript (strict) + Tailwind in `web/`. Start screen (VOD link, optional local file path); progress screen (queued, each stage with a progress bar when measured, done with warnings, failed). The results screen shows the top 10 as vertical clip cards (rank, a score bar scaled within the result, time in the stream, source badge, a reason from `top_signals`) and requests their exports (center crop, captions on), filling each card as it renders; download per card and "download all"; empty and no-media states. The typed API client (`web/src/lib/api/`) runs in mock mode from the contract's examples and § 11 scenarios; Vitest covers its logic. No editor (#31) or real API connection (#33) yet |
 
 ## Decisions
 
@@ -50,7 +50,7 @@ Everything needed for the MVP has a documented default: data sources, pilot chan
 
 ## Suggested next tasks
 
-Follow the week of Nov 2 in the [roadmap](../product/roadmap.md): captions (#21), the ingest command (#34) and the pilot download (#35), and the results screen (#30).
+Follow the week of Nov 2 in the [roadmap](../product/roadmap.md): captions (#21), the ingest command (#34) and the pilot download (#35), and the clip editor (#31).
 
 ## Known issues / caveats
 

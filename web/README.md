@@ -1,6 +1,6 @@
 # AutoClipper web app
 
-The Next.js frontend for AutoClipper ([app stack](../docs/decisions/0007-web-application-stack.md)). It has the start screen (`/`) and the progress screen (`/jobs/<job_id>`), running in **mock mode**: the typed API client answers from the [API contract](../docs/architecture/api-contract.md)'s examples and § 11 scenarios inside the browser, so no backend is needed yet (#33 connects the real one).
+The Next.js frontend for AutoClipper ([app stack](../docs/decisions/0007-web-application-stack.md)). It has the start screen (`/`), the progress screen (`/jobs/<job_id>`) and the results screen (`/jobs/<job_id>/results`), running in **mock mode**: the typed API client answers from the [API contract](../docs/architecture/api-contract.md)'s examples and § 11 scenarios inside the browser, so no backend is needed yet (#33 connects the real one).
 
 Stack: Next.js 16 (App Router, Turbopack), React 19, TypeScript (strict), Tailwind CSS 4, ESLint 9 and Prettier 3. npm is the package manager.
 
@@ -28,6 +28,7 @@ The same commands work in PowerShell. Full setup steps are in [docs/development/
 | `npm run format`       | Prettier: format every file, sorting Tailwind classes                   |
 | `npm run format:check` | Prettier: report unformatted files without changing them (what CI runs) |
 | `npm test`             | Vitest unit tests (`src/**/*.test.ts`)                                  |
+| `npm run mock-media`   | Generate the sample videos mock mode plays (needs FFmpeg)               |
 
 Before you push, run what CI runs ([`.github/workflows/web.yml`](../.github/workflows/web.yml)):
 
@@ -43,10 +44,10 @@ web/
 │   ├── app/                 # App Router: routes, layouts, global styles
 │   │   ├── layout.tsx       # root layout and page metadata
 │   │   ├── page.tsx         # start screen: VOD link and optional local file
-│   │   ├── jobs/[jobId]/    # progress screen
+│   │   ├── jobs/[jobId]/    # progress screen; results/ holds the results screen
 │   │   ├── icon.svg         # favicon
 │   │   └── globals.css      # Tailwind entry point and color tokens
-│   ├── components/          # start form, job progress, header
+│   ├── components/          # start form, job progress, results and clip cards, header
 │   └── lib/api/             # the typed API client: types, mock mode, fixtures
 ├── AGENTS.md           # maintained by Next.js; see below
 ├── eslint.config.mjs
@@ -65,6 +66,8 @@ New code follows the frontend conventions in [docs/development/conventions.md §
 - **Scenarios:** the VOD ID picks the outcome, as in the contract's § 11. For example, `9000000003` finishes with a chat warning, `9000000004` fails, `9000000006` finds nothing, and any other ID gets the example result.
 - **Storage:** jobs are kept in `localStorage`, so a reload or a new tab finds them.
 - **Fixtures:** the results are in `src/lib/api/fixtures/`.
+- **Exports:** the results screen asks for the top 10 exports (center crop, captions on). The mock renders them one at a time, each stage taking `MOCK_RENDER_STEP_MS` (0.8 s), so the cards fill in one by one.
+- **Sample videos:** previews and clips play generated test-pattern MP4s from `public/mock-media/`. They're git-ignored and need FFmpeg; create them once with `npm run mock-media`.
 
 ## Notes
 
