@@ -99,6 +99,9 @@ class Settings(BaseSettings):
             Twitch user IDs, or None if unset. Use `require_chat_hash_salt` to get it.
         log_level: ``AUTOCLIPPER_LOG_LEVEL``: minimum level of AutoClipper's own log records.
             Defaults to ``INFO``.
+        cors_origins: ``AUTOCLIPPER_CORS_ORIGINS``: browser origins the API (``autoclipper
+            serve``) accepts requests from, comma-separated. Defaults to the local Next.js dev
+            server, ``http://localhost:3000`` and ``http://127.0.0.1:3000``.
         export_region: ``AUTOCLIPPER_EXPORT_REGION``: the fixed part of the source frame that
             vertical exports show, as ``x,y,width,height`` in fractions (0-1) of the source
             width and height from the top-left corner, e.g. ``0.25,0,0.5,1``; a region that
@@ -142,6 +145,10 @@ class Settings(BaseSettings):
         default=None, validation_alias="AUTOCLIPPER_CHAT_HASH_SALT"
     )
     log_level: LogLevel = Field(default="INFO", validation_alias="AUTOCLIPPER_LOG_LEVEL")
+    cors_origins: Annotated[tuple[str, ...], NoDecode] = Field(
+        default=("http://localhost:3000", "http://127.0.0.1:3000"),
+        validation_alias="AUTOCLIPPER_CORS_ORIGINS",
+    )
     # NoDecode: the value is "x,y,width,height", not the JSON pydantic-settings expects for tuples.
     export_region: Annotated[tuple[float, float, float, float] | None, NoDecode] = Field(
         default=None, validation_alias="AUTOCLIPPER_EXPORT_REGION"
@@ -202,6 +209,20 @@ class Settings(BaseSettings):
     def _normalize_log_level(cls, value: object) -> object:
         # Accept "info" and stray spaces; the type then rejects anything that isn't a level name.
         return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _parse_origins(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        origins = tuple(part.strip().rstrip("/") for part in value.split(",") if part.strip())
+        for origin in origins:
+            if not origin.startswith(("http://", "https://")) or origin.count("/") != 2:
+                raise ValueError(
+                    "must be comma-separated origins like http://localhost:3000 (scheme, host and "
+                    "port, no path)"
+                )
+        return origins
 
     @field_validator("export_region", mode="before")
     @classmethod
