@@ -2,14 +2,14 @@
 
 > **The living "what exists right now" document.** Every agent session reads it first. Update it **in the same PR** that changes the state. Don't mark anything done unless it's merged to `main` and tested.
 
-**Last updated:** 2026-10-31
+**Last updated:** 2026-11-04
 **Current phase:** Building (week of Nov 2 in the [roadmap](../product/roadmap.md))
 **Next milestone:** M1 Data: pilot VODs downloaded and parsed
 **Key dates:** Demo of Demos Fri Dec 4, 2026 · Final presentations and demo night Fri Dec 11, 2026
 
 ## Summary
 
-Scope, architecture and the plan are documented, with concrete defaults for building the MVP. The planned app has two outputs: ranked, captioned 9:16 clips and a 16:9 highlights video. The initial setup targets a laptop; collection/storage can be shared and hosted deployment remains an option. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client and a pseudonymizing chat replay parser. Python and frontend tooling run in CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
+Scope, architecture and the plan are documented, with concrete defaults for building the MVP. The planned app has two outputs: ranked, captioned 9:16 clips and a 16:9 highlights video. The initial setup targets a laptop; collection/storage can be shared and hosted deployment remains an option. The Python package has a `synth` command for deterministic fake VOD datasets, configuration, logging, a shared FFmpeg runner, a Helix metadata client, a pseudonymizing chat replay parser and vertical-MP4 export (cut, reframe, encode). Python and frontend tooling run in CI. The Next.js frontend has a placeholder page. **There is no real dataset, model, analysis pipeline or backend yet.** No results exist.
 
 ## What exists
 
@@ -31,7 +31,8 @@ Scope, architecture and the plan are documented, with concrete defaults for buil
 | Twitch developer app | ✅ Registered (#4) | One shared team app; credentials supplied through untracked `.env` files or worker/deployment environment variables |
 | Data collection | ❌ Not started | Five pilot channels in [`configs/channels.yaml`](../../configs/channels.yaml); collect the VODs in `configs/pilot_vods.txt` (#35) once on a suitable machine or worker and reuse the outputs through shared storage ([data sources and delivery](../decisions/0011-data-sources-and-local-delivery.md)) |
 | Labels / features / models / eval | ❌ Not started | Approach decided: [modeling plan § 0](../ml/modeling-plan.md#0-the-plan-in-plain-english) |
-| Audio download / export | 🟡 Drafts only (#19/#20) | PR #59 (audio) and PR #60 (vertical export) are unmerged. Each has open review findings (listed in #19 and #20) and fails only the Ubuntu CI job, on FFmpeg-version-dependent tests. Their code is not on `main`. |
+| Audio download | 🟡 Draft only (#19) | PR #59 is unmerged; its code is not on `main`. |
+| Export | 🟡 Cut and reframe only (#20) | `autoclipper.export`: exact source-interval cut (padding separate, clamped to where video and audio both have content, no lag shift), `center_crop` and `fixed_region` layouts (the region set with `AUTOCLIPPER_EXPORT_REGION`), 1080×1920 H.264/AAC MP4 written atomically. Tested on generated media only. No captions (#21) and no CLI/API command (#32) yet. Details: [overview § 4.6](../architecture/overview.md#46-export) |
 | License | ✅ MIT | [`LICENSE`](../../LICENSE) |
 | Web app | 🟡 Scaffold only (#6) | Next.js + TypeScript (strict) + Tailwind in `web/` with ESLint, Prettier and its own CI workflow (`web.yml`); one placeholder page. No screens (#29–#31), API client (#33) or FastAPI backend (#28) yet. |
 
@@ -41,7 +42,7 @@ Everything needed for the MVP has a documented default: data sources, pilot chan
 
 ## Suggested next tasks
 
-Follow the week of Nov 2 in the [roadmap](../product/roadmap.md): fix and merge the audio and export drafts (PR #59, #60), fetch viewer clips (#17), the ingest command (#34) and the pilot download (#35), time windows (#22), chat and audio features (#23, #24), the backend with a fake job (#28) and the app screens (#29–#31).
+Follow the week of Nov 2 in the [roadmap](../product/roadmap.md): fix and merge the audio draft (PR #59), captions (#21), fetch viewer clips (#17), the ingest command (#34) and the pilot download (#35), time windows (#22), chat and audio features (#23, #24), the backend with a fake job (#28) and the app screens (#29–#31).
 
 ## Known issues / caveats
 
