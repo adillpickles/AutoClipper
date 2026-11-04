@@ -120,11 +120,16 @@ Subscriber-only VODs are skipped: the downloader tools can't fetch them without 
 ## 3. VOD media: yt-dlp or TwitchDownloader (unofficial)
 
 - **Repos:** <https://github.com/yt-dlp/yt-dlp>; TwitchDownloader (above) has an equivalent video download mode. The commands below are yt-dlp's (the audio download, #19, uses yt-dlp). The catalog `tool` column records which tool and version fetched each file.
-- **Audio only** for feature extraction. Twitch VODs usually expose an audio-only format:
+- **Audio only** for feature extraction. Twitch VODs usually expose an audio-only format. `autoclipper.ingest.media` downloads it through yt-dlp's Python API with the selector `bestaudio` to `data/raw/audio/<video_id>.<ext>`. There is no fallback to formats with video: a VOD without an audio-only format fails with `NoAudioOnlyFormatError`. A comparable CLI call:
 
   ```bash
-  yt-dlp -f "bestaudio" -o "data/raw/audio/%(id)s.%(ext)s" https://www.twitch.tv/videos/<video_id>
+  yt-dlp -f "bestaudio" --downloader native --fixup never -o "data/raw/audio/<video_id>.%(ext)s" https://www.twitch.tv/videos/<video_id>
   ```
+
+  Don't use `%(id)s` in the file name: for Twitch VODs yt-dlp's `id` is `v<video_id>`.
+- **No FFmpeg inside yt-dlp.** yt-dlp would otherwise run FFmpeg/FFprobe itself (an availability check, a remux of HLS downloads), outside `autoclipper.ffmpeg` and without a timeout. The download uses yt-dlp's native HLS downloader with fix-ups off, so the raw file is the HLS segments as served: MPEG-TS for Twitch, which yt-dlp still calls `mp4`. The file is renamed by the container ffprobe finds (`.ts`).
+- **Resuming and checks.** yt-dlp resumes an HLS download from its `.ytdl` file; a `.part` file without a readable `.ytdl` is deleted first, because yt-dlp would restart and append to it, duplicating audio. A finished download must play for the duration the source reports (within the larger of 2 s and 0.2 %), measured by reading the stream with FFmpeg rather than from ffprobe's container duration (which for MPEG-TS comes from the first and last timestamps and misses repeated segments); otherwise it is deleted.
+- **Errors:** yt-dlp has no error codes. `autoclipper.ingest.media.classify_download_error` sorts its failures into unavailable VOD, subscriber-only/login, no audio-only format, network and other tool errors by exception type and message wording, which can change between yt-dlp versions. Recheck those patterns when upgrading.
 
 - **Segments** for preview/export reduce download cost (⚠️ verify the tool's segment accuracy in the pilot):
 
@@ -132,7 +137,7 @@ Subscriber-only VODs are skipped: the downloader tools can't fetch them without 
   yt-dlp --download-sections "*<start>-<end>" -f "best[height<=1080]" -o "…" https://www.twitch.tv/videos/<video_id>
   ```
 
-- Audio is then normalized with FFmpeg to 16 kHz mono WAV for analysis.
+- Audio is then normalized with FFmpeg to 16 kHz mono 16-bit PCM WAV (`data/interim/audio/<video_id>.wav`) for analysis. Gaps in the audio's timestamps become silence (`aresample=async=1:first_pts=0`, and `-dts_delta_threshold 86400` so FFmpeg doesn't close MPEG-TS gaps over 10 s), so WAV time is VOD time; timestamp resets, which jump back (HLS `EXT-X-DISCONTINUITY`), are joined. Normalization fails if more than 1 % of the audio is damaged, because FFmpeg would quietly turn it into silence. Damage is counted three ways: frames that fail to decode (ffprobe's decoded frames against packets read, since FFmpeg 6.1 ignores `-max_error_rate` for audio), bytes outside intact MPEG-TS packets, and bytes of the AAC stream outside intact ADTS frames (a frame is intact when the next frame's header follows where its length says it ends). The WAV's duration must also match how long the source plays (and, for MP4, its index). The download check applies the same byte limit, so a damaged download is deleted and fetched again.
 - **Already-downloaded VOD:** a user who already has the VOD file passes its absolute path as the optional `video_path` when creating a job, together with the VOD link ([API contract § 3.1](../architecture/api-contract.md#31-create-a-job)). Preview and export read video from that file instead of downloading it, and the pipeline may take the audio from it too (#44). Metadata, viewer clips and chat still come from the link.
 - **Risks:** unofficial, and Twitch changes can break old versions. Keep yt-dlp up to date and record its version in the catalog.
 
