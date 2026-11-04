@@ -173,6 +173,58 @@ def evaluate(
     return EvalResult(per_vod, summary, len(population), excluded)
 
 
+def evaluate_mean(
+    runs: Sequence[pl.DataFrame],
+    moments: pl.DataFrame,
+    clips: pl.DataFrame,
+    *,
+    seed: int,
+    video_ids: Iterable[str] | None = None,
+    flagged_video_ids: Iterable[str] = (),
+    k: int = TOP_K,
+) -> EvalResult:
+    """Evaluate several candidate sets of one scorer and average them per VOD.
+
+    For a randomized scorer: the random baseline is reported as the mean over 100 seeds
+    (evaluation.md § 2). Each VOD's metric is the mean over `runs`; the bootstrap then resamples
+    VODs of those means, so the interval is still over VODs.
+
+    Raises:
+        ValueError: `runs` is empty, or as for `evaluate`.
+    """
+    if not runs:
+        raise ValueError("runs is empty")
+    population = sorted(set(video_ids) if video_ids is not None else set(runs[0]["video_id"]))
+    results = [
+        evaluate(
+            run,
+            moments,
+            clips,
+            seed=seed,
+            video_ids=population,
+            flagged_video_ids=flagged_video_ids,
+            k=k,
+        )
+        for run in runs
+    ]
+    stacked = pl.concat([r.per_vod for r in results])
+    per_vod = (
+        stacked.group_by("video_id", maintain_order=True)
+        .agg(
+            pl.col("n_candidates").mean().round().cast(pl.Int64),
+            pl.col("n_moments").first(),
+            *(pl.col(m).mean() for m in METRICS),
+            pl.col("excluded_reason").first(),
+        )
+        .sort("video_id")
+    )
+    summary = {
+        metric: bootstrap_mean(per_vod[metric].drop_nulls().to_list(), seed=seed)
+        for metric in METRICS
+    }
+    return EvalResult(per_vod, summary, results[0].n_vods, results[0].excluded)
+
+
 def write_report(
     result: EvalResult,
     out_dir: Path,
