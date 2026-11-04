@@ -78,6 +78,13 @@ Computed from 16 kHz mono audio with librosa/NumPy. Frame-level values are aggre
 | `audio_is_muted` | 1 if the window overlaps a Twitch muted segment | Audio features are unreliable when 1 |
 | `audio_rms_max_lead{1..2}` / `_lag{1..2}` | Neighbor context | |
 
+**Implementation:** `autoclipper.features.audio.compute_audio_features(windows, wav_path)` returns `features_audio` for one VOD (one Float64 row per window, never null, `feature_version` `audio-v1`). It uses NumPy only, not librosa: the features need RMS, zero crossings, an FFT and an onset envelope, and NumPy keeps the install light. Choices the table leaves open:
+
+- The WAV is read in blocks (never whole) and cut into 64 ms frames every 32 ms; a frame belongs to the window holding its centre. Windows past the end of the audio are 0 and logged.
+- `audio_spectral_centroid_mean` is in Hz (Hann-windowed magnitude spectrum). Onsets are peaks of the spectral-flux envelope (local maximum over ±3 frames, at least 0.07 above the ±10-frame mean, at most one per 3 frames), as in librosa's `onset_detect`. Silence is RMS below −60 dBFS.
+- `audio_rms_max_z` and `audio_rms_rz` divide by the standard deviation floored at −60 dBFS (`STD_FLOOR_RMS`) instead of zeroing below a tiny epsilon: near-constant stretches (muted or paused audio) would otherwise turn the next sound into a z-score in the thousands. A VOD where every window is alike still scores 0. Lead/lag columns are neighbouring windows' `audio_rms_max_z`, 0 past the edges.
+- Runtime: about 5 s per 30 minutes of audio here, so roughly a minute for a 6-hour VOD.
+
 ## Phase 2 features (after the MVP works)
 
 | Name | Definition | Notes |
