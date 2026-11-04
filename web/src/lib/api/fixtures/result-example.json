@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-10-19T15:02:41Z",
+  "vod": {
+    "video_id": "9000000001",
+    "title": "Synthetic stream 1",
+    "broadcaster_id": "9100000001",
+    "broadcaster_display_name": "user_001",
+    "duration_s": 360.0,
+    "created_at": "2026-10-12T18:00:00Z"
+  },
+  "scorer": { "kind": "mock", "name": "mock", "run_id": null },
+  "n_viewer_clips_total": 4,
+  "warnings": [],
+  "candidates": [
+    {
+      "candidate_id": "c001",
+      "rank": 1,
+      "score": 3.42,
+      "start_s": 118.0,
+      "end_s": 148.0,
+      "source": "both",
+      "n_viewer_clips": 3,
+      "top_signals": ["chat_msg_rate_z", "audio_rms_max_z"]
+    },
+    {
+      "candidate_id": "c002",
+      "rank": 2,
+      "score": 2.87,
+      "start_s": 251.5,
+      "end_s": 276.5,
+      "source": "discovered",
+      "n_viewer_clips": 0,
+      "top_signals": ["audio_rms_max_z"]
+    },
+    {
+      "candidate_id": "c003",
+      "rank": 3,
+      "score": 1.05,
+      "start_s": 40.0,
+      "end_s": 62.0,
+      "source": "viewer_clips",
+      "n_viewer_clips": 1,
+      "top_signals": []
+    }
+  ]
+}
