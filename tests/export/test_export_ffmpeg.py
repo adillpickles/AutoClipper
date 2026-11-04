@@ -294,18 +294,46 @@ def make_uneven_media(
     return path
 
 
-# The audio of the 9.8 s tone ends at 9.8 s in MP4 and MKV. MPEG-TS keeps the AAC encoder delay
-# and whole AAC frames, so its last packet ends at about 9.835 s, while ffprobe's metadata
-# estimates 9.579 s. MKV reports no stream durations at all.
+def content_end_s(path: Path) -> float:
+    """Where the earlier of the first video and audio streams' last packets ends.
+
+    Measured from the file's start time, the origin of VOD positions. Where the AAC encoder delay
+    and the last AAC frame end up depends on the muxer, which differs between FFmpeg builds (an
+    MKV's audio can start 21 ms before its video), so tests compare with the packets the
+    generated file actually holds instead of a fixed number.
+    """
+    command = ffprobe_command(
+        *("-print_format", "json", "-show_entries", "format=start_time:stream=index,codec_type"),
+        *("-show_entries", "packet=stream_index,pts_time,duration_time", path),
+    )
+    listing = json.loads(run_command(command, timeout_s=TIMEOUT_S).stdout)
+    ends: list[float] = []
+    for kind in ("video", "audio"):
+        index = next(s["index"] for s in listing["streams"] if s["codec_type"] == kind)
+        ends.append(
+            max(
+                float(packet["pts_time"]) + float(packet["duration_time"])
+                for packet in listing["packets"]
+                if packet["stream_index"] == index
+            )
+        )
+    return min(ends) - float(listing["format"]["start_time"])
+
+
+# The audio of the 9.8 s tone ends at about 9.8 s. MPEG-TS keeps the AAC encoder delay and whole
+# AAC frames, so its last packet ends at about 9.835 s, while ffprobe's metadata estimates
+# 9.579 s. MKV reports no stream durations at all.
 @pytest.mark.parametrize(
-    ("name", "audio_end_s"),
-    [("vod.mp4", 9.8), ("vod.mkv", 9.8), ("vod.ts", 9.835)],
+    "name",
+    ["vod.mp4", "vod.mkv", "vod.ts"],
     ids=["mp4", "mkv_without_stream_durations", "mpegts_with_estimated_durations"],
 )
 def test_export_at_the_end_of_a_vod_whose_audio_stops_first_ends_with_the_audio(
-    tmp_path: Path, name: str, audio_end_s: float
+    tmp_path: Path, name: str
 ) -> None:
     source = make_uneven_media(tmp_path / name, video_s=10.0, audio_s=9.8)
+    audio_end_s = content_end_s(source)
+    assert audio_end_s == pytest.approx(9.8, abs=0.05)  # the audio, not the 10 s video
 
     result = export_clip(ExportRequest(source, Interval(5.0, 10.0), tmp_path / "clip.mp4"))
 
@@ -551,11 +579,14 @@ def test_export_of_an_mkv_whose_timestamps_start_at_10_s_ends_with_its_content(
     # 8 s of content from 10 s on. MKV reports its duration as 18 s, counted from 0.
     source = make_uneven_media(tmp_path / "vod.mkv", video_s=8.0, audio_s=8.0, ts_offset_s=10.0)
 
+    end_s = content_end_s(source)
+    assert end_s == pytest.approx(8.0, abs=0.05)  # not 18 s
+
     result = export_clip(ExportRequest(source, Interval(5.0, 20.0), tmp_path / "clip.mp4"))
 
-    assert (result.start_s, result.end_s) == (5.0, pytest.approx(8.0, abs=0.01))
+    assert (result.start_s, result.end_s) == (5.0, pytest.approx(end_s, abs=0.01))
     assert result.cut.clamped_end
-    assert_vertical_h264_aac(result.output, 3.0)
+    assert_vertical_h264_aac(result.output, result.end_s - 5.0)
 
 
 @pytest.mark.parametrize(
