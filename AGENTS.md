@@ -21,7 +21,7 @@ Full scope (must / should / could / won't): [`docs/product/prd.md`](docs/product
 ## 2. Current state
 
 - [`docs/project/status.md`](docs/project/status.md) is the source of truth for what exists. Read it first.
-- **Built:** Python tooling and CI, config/logging, a shared FFmpeg runner, the `autoclipper synth` fake-data generator, the Twitch API client, viewer-clip fetching, the chat replay parser, VOD audio download with 16 kHz mono normalization, vertical-MP4 export (cut, reframe and burned-in captions), VOD time windows and viewer-clip moments, chat and audio features per window, the step-1 evaluation (`autoclipper evaluate`), candidate generation in the `AnalysisResult` format, the four baselines, and the mock backend API (`autoclipper serve`). The Next.js app has the start, progress and results screens in mock mode.
+- **Built:** Python tooling and CI, config/logging, a shared FFmpeg runner, the `autoclipper synth` fake-data generator, the Twitch API client, viewer-clip fetching, the chat replay parser, VOD audio download with 16 kHz mono normalization, vertical-MP4 export (cut, reframe and burned-in captions; `autoclipper export` and real export rendering in the backend), VOD time windows and viewer-clip moments, chat and audio features per window, the step-1 evaluation (`autoclipper evaluate`), candidate generation in the `AnalysisResult` format, the four baselines, and the mock backend API (`autoclipper serve`). The Next.js app has the start, progress and results screens in mock mode.
 - **Not built yet:** the analysis pipeline, the real backend job runner (the mock backend exists), the clip editor screen, a trained model and a real dataset.
 - **Work items** are GitHub issues. Pick any open issue whose **Depends on** items are merged.
 - **Decided:** everything needed to build the MVP. Stack and layout are in [`docs/decisions/`](docs/decisions/README.md); data sources, pilot channels, chat handling, the model target and delivery are in [data sources and delivery defaults](docs/decisions/0011-data-sources-and-local-delivery.md); the backend/frontend API, including the highlights video, is in [`docs/architecture/api-contract.md`](docs/architecture/api-contract.md). There is no list of open questions: when something isn't specified, make the engineering call (§ 10).
@@ -78,6 +78,7 @@ uv run pytest                  # tests; live tests are deselected (-m live runs 
 uv run autoclipper --help      # CLI entry point
 uv run autoclipper synth --seed 1   # fake dev dataset in data/synthetic/seed-1
 uv run autoclipper evaluate --help  # hit rate@10 report for a scorer's candidates
+uv run autoclipper export <video> --start 10 --end 40   # vertical clip in artifacts/exports/
 uv run autoclipper serve           # mock backend API on http://127.0.0.1:8000 (docs at /docs)
 ```
 

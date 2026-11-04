@@ -1,7 +1,9 @@
 """Tests for the mock backend against docs/architecture/api-contract.md (FastAPI test client)."""
 
+import itertools
 import time
 from collections.abc import Callable, Iterator
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -9,7 +11,10 @@ from fastapi.testclient import TestClient
 
 from autoclipper.api.app import create_app
 from autoclipper.api.service import MockService, SampleMedia, ensure_sample_media
-from autoclipper.ffmpeg import probe
+from autoclipper.export.captions import CaptioningError, Stage, Transcriber, Word
+from autoclipper.export.clip import ClipSpec, IntervalOutsideMediaError, SourceMissingError
+from autoclipper.export.errors import ExportError
+from autoclipper.ffmpeg import FFmpegExitError, ffmpeg_command, probe
 
 API = "/api/v1"
 
@@ -18,12 +23,48 @@ API = "/api/v1"
 def samples(tmp_path: Path) -> SampleMedia:
     """Stand-in sample files: the routes only serve bytes, they never decode them."""
     paths = []
-    for name in ("preview.mp4", "clip.mp4", "highlights.mp4"):
+    for name in ("preview.mp4", "highlights.mp4"):
         path = tmp_path / "samples" / name
         path.parent.mkdir(exist_ok=True)
         path.write_bytes(name.encode() * 1000)
         paths.append(path)
     return SampleMedia(*paths)
+
+
+class FakeRenderer:
+    """Stands in for `render_clip`: records each spec, reports the stages, writes a file."""
+
+    def __init__(self, error: Exception | None = None, *, delay_s: float = 0.0) -> None:
+        self.error = error
+        self.delay_s = delay_s
+        self.specs: list[ClipSpec] = []
+        self.stages: list[Stage] = []
+        self.regions: list[object] = []
+        self.on_stage_seen: Callable[[ClipSpec], None] | None = None
+
+    def __call__(
+        self,
+        spec: ClipSpec,
+        /,
+        *,
+        region: tuple[float, float, float, float] | None,
+        transcriber: Transcriber | None,
+        on_stage: Callable[[Stage], None],
+    ) -> object:
+        self.specs.append(spec)
+        self.regions.append(region)
+        stages: list[Stage] = ["transcribing", "rendering"] if spec.captions else ["rendering"]
+        for stage in stages:
+            on_stage(stage)
+            self.stages.append(stage)
+            time.sleep(self.delay_s)
+            if self.on_stage_seen is not None:
+                self.on_stage_seen(spec)
+        if self.error is not None:
+            raise self.error
+        spec.output.parent.mkdir(parents=True, exist_ok=True)
+        spec.output.write_bytes(b"rendered clip")
+        return None
 
 
 @pytest.fixture
@@ -39,6 +80,7 @@ def make_client(
             "step_s": 0.0,
             "synchronous": True,
             "probe_video": lambda path: path.suffix == ".mp4",
+            "render": FakeRenderer(),
         }
         options.update(kwargs)
         service = MockService(**options)  # type: ignore[arg-type]
@@ -344,7 +386,7 @@ def test_candidate_media_is_the_sample_video_with_full_bounds(client: TestClient
         "min_start_s": 0.0,
         "max_end_s": 360.0,
         "max_duration_s": 90.0,
-        "layouts": ["center_crop", "configured_region"],
+        "layouts": ["center_crop"],  # configured_region needs AUTOCLIPPER_EXPORT_REGION
     }
     file = client.get(preview["url"])
     assert file.status_code == 200
@@ -517,10 +559,151 @@ def test_a_removed_export_file_is_export_file_missing(client: TestClient, tmp_pa
     assert (response.status_code, error_code(response)) == (404, "export_file_missing")
 
 
+def test_the_export_renders_exactly_what_was_asked_from_the_sample_video(
+    make_client: Callable[..., tuple[TestClient, MockService]], samples: SampleMedia
+) -> None:
+    renderer = FakeRenderer()
+    client, _ = make_client(render=renderer)
+    job = done_job(client)
+
+    export = client.post(f"{API}/exports", json=export_body(job["job_id"])).json()
+
+    (spec,) = renderer.specs
+    assert spec.source == samples.preview  # no video_path: the mock's sample video
+    assert (spec.interval.start_s, spec.interval.end_s) == (115.5, 150.0)
+    assert (spec.layout, spec.captions, spec.overwrite) == ("center_crop", True, False)
+    assert spec.output.name == f"{export['export_id']}.mp4"
+    assert renderer.stages == ["transcribing", "rendering"]
+
+
+def test_an_export_of_a_job_with_a_video_path_renders_that_file(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    renderer = FakeRenderer()
+    client, _ = make_client(render=renderer)
+    video = tmp_path / "my vod.mp4"
+    video.write_bytes(b"x")
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(video)}).json()
+
+    client.post(f"{API}/exports", json=export_body(job["job_id"], captions=False))
+
+    assert renderer.specs[0].source == video
+    assert renderer.stages == ["rendering"]  # no transcribing without captions
+
+
+def test_export_progress_walks_the_three_stages(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    renderer = FakeRenderer()
+    client, service = make_client(render=renderer)
+    seen: list[tuple[str, int, int]] = []
+
+    def record(spec: ClipSpec) -> None:
+        export = service.get_export(spec.output.stem)
+        assert export.state == "running"
+        assert export.progress is not None
+        seen.append(
+            (export.progress.stage, export.progress.stage_index, export.progress.stage_count)
+        )
+
+    renderer.on_stage_seen = record
+    job = done_job(client)
+
+    client.post(f"{API}/exports", json=export_body(job["job_id"]))
+
+    assert seen == [("transcribing", 2, 3), ("rendering", 3, 3)]
+
+
+def test_configured_region_is_offered_and_passed_on_when_set(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    renderer = FakeRenderer()
+    region = (0.25, 0.0, 0.5, 1.0)
+    client, _ = make_client(render=renderer, export_region=region)
+    job = done_job(client)
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    created = client.post(
+        f"{API}/exports", json=export_body(job["job_id"], layout="configured_region")
+    )
+
+    assert media["export"]["layouts"] == ["center_crop", "configured_region"]
+    assert created.status_code == 201
+    assert renderer.specs[0].layout == "configured_region"
+    assert renderer.regions == [region]
+
+
+def test_configured_region_without_a_region_is_an_invalid_request(client: TestClient) -> None:
+    job = done_job(client)
+
+    response = client.post(
+        f"{API}/exports", json=export_body(job["job_id"], layout="configured_region")
+    )
+
+    assert (response.status_code, error_code(response)) == (422, "invalid_request")
+    assert response.json()["error"]["details"] == {"fields": ["layout"]}
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "message_part"),
+    [
+        (CaptioningError("transcription failed"), "captioning_failed", "export without captions"),
+        (ExportError("bad layout"), "render_failed", "couldn't be rendered"),
+        (
+            FFmpegExitError(ffmpeg_command("-version"), 1, b"boom"),
+            "render_failed",
+            "couldn't be rendered",
+        ),
+        (IntervalOutsideMediaError("short"), "render_failed", "doesn't cover this whole clip"),
+        (SourceMissingError("gone"), "media_unavailable", "missing or can't be read"),
+        (RuntimeError("a bug"), "internal_error", "Something went wrong"),
+    ],
+    ids=["captions", "export", "ffmpeg", "outside_media", "source_missing", "bug"],
+)
+def test_render_failures_get_the_contract_codes(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    error: Exception,
+    code: str,
+    message_part: str,
+) -> None:
+    client, _ = make_client(render=FakeRenderer(error))
+    job = done_job(client)
+
+    created = client.post(f"{API}/exports", json=export_body(job["job_id"])).json()
+    export = client.get(f"{API}/exports/{created['export_id']}").json()
+    file = client.get(f"{API}/exports/{created['export_id']}/file")
+
+    assert export["state"] == "failed"
+    assert export["error"]["code"] == code
+    assert message_part in export["error"]["message"]
+    assert export["download_url"] is None
+    assert (file.status_code, error_code(file)) == (409, "export_not_done")
+    if code == "media_unavailable":
+        assert export["error"]["details"] == {"reason": "local_file_missing"}
+
+
+def test_a_video_path_removed_after_the_analysis_is_local_file_missing(
+    client: TestClient, tmp_path: Path
+) -> None:
+    video = tmp_path / "vod.mp4"
+    video.write_bytes(b"x")
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(video)}).json()
+    video.unlink()
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    response = client.post(f"{API}/exports", json=export_body(job["job_id"]))
+
+    assert media["preview"]["reason"] == "local_file_missing"
+    assert media["export"]["status"] == "unavailable"
+    assert media["export"]["layouts"] == []
+    assert (response.status_code, error_code(response)) == (409, "media_unavailable")
+    assert response.json()["error"]["details"] == {"reason": "local_file_missing"}
+
+
 def test_a_running_export_dedupes_and_its_file_isnt_ready(
     make_client: Callable[..., tuple[TestClient, MockService]],
 ) -> None:
-    client, _ = make_client(synchronous=False, step_s=0.05)
+    client, _ = make_client(synchronous=False, step_s=0.05, render=FakeRenderer(delay_s=0.2))
     job = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()
     wait_until(lambda: client.get(f"{API}/jobs/{job['job_id']}").json()["state"] == "done")
 
@@ -542,6 +725,37 @@ def test_a_running_export_dedupes_and_its_file_isnt_ready(
 
     wait_until(done)
     assert "transcribing" in seen or "rendering" in seen
+
+
+def test_exports_and_highlights_share_one_render_queue(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    client, _ = make_client(synchronous=False, step_s=0.05, render=FakeRenderer(delay_s=0.1))
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()
+    wait_until(lambda: client.get(f"{API}/jobs/{job['job_id']}").json()["state"] == "done")
+
+    first = client.post(f"{API}/exports", json=export_body(job["job_id"])).json()
+    middle = client.post(f"{API}/highlights", json={"job_id": job["job_id"]}).json()
+    last = client.post(f"{API}/exports", json=export_body(job["job_id"], end_s=140.0)).json()
+    urls = [
+        f"{API}/exports/{first['export_id']}",
+        f"{API}/highlights/{middle['highlights_id']}",
+        f"{API}/exports/{last['export_id']}",
+    ]
+    running_at_once: list[int] = []
+
+    def all_done() -> bool:
+        states = [client.get(url).json()["state"] for url in urls]
+        running_at_once.append(states.count("running"))
+        return all(state == "done" for state in states)
+
+    wait_until(all_done)
+    finished = [client.get(url).json() for url in urls]
+    assert max(running_at_once) <= 1
+    # First in, first out: each render starts after the one before it finished.
+    for before, after in itertools.pairwise(finished):
+        started = datetime.fromisoformat(after["started_at"])
+        assert started >= datetime.fromisoformat(before["finished_at"])
 
 
 # --- Highlights --------------------------------------------------------------------------------
@@ -688,16 +902,51 @@ def test_cors_allows_the_local_frontend_only(client: TestClient) -> None:
 def test_sample_media_has_the_contract_sizes_and_is_reused(tmp_path: Path) -> None:
     samples = ensure_sample_media(tmp_path / "media", preview_duration_s=3.0)
 
-    preview, clip, highlights = (
-        probe(p) for p in (samples.preview, samples.clip, samples.highlights)
-    )
+    preview, highlights = (probe(p) for p in (samples.preview, samples.highlights))
     assert preview.duration_s == pytest.approx(3.0, abs=0.2)
-    assert (clip.video_streams[0].width, clip.video_streams[0].height) == (1080, 1920)
+    assert preview.audio_streams
     assert (highlights.video_streams[0].width, highlights.video_streams[0].height) == (1920, 1080)
-    assert clip.audio_streams
-    before = samples.clip.stat().st_mtime_ns
+    before = samples.highlights.stat().st_mtime_ns
     again = ensure_sample_media(tmp_path / "media", preview_duration_s=3.0)
-    assert again.clip.stat().st_mtime_ns == before  # not generated again
+    assert again.highlights.stat().st_mtime_ns == before  # not generated again
+
+
+class FixedWords:
+    def __call__(self, wav: Path, /) -> list[Word]:
+        return [Word("HELLO", 0.2, 0.8)]
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("captions", [False, True], ids=["plain", "captions"])
+def test_a_real_export_of_the_sample_video(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path, captions: bool
+) -> None:
+    samples = ensure_sample_media(tmp_path / "media", preview_duration_s=6.0)
+    # The real renderer; the transcriber is fixed so no model is needed.
+    client, _ = make_client(samples=samples, render=_real_render(), transcriber=FixedWords())
+    job = done_job(client)
+
+    created = client.post(
+        f"{API}/exports",
+        json=export_body(job["job_id"], start_s=1.25, end_s=4.0, captions=captions),
+    ).json()
+    export = client.get(f"{API}/exports/{created['export_id']}").json()
+
+    assert export["state"] == "done", export["error"]
+    file = client.get(export["download_url"])
+    out = tmp_path / "download.mp4"
+    out.write_bytes(file.content)
+    info = probe(out)
+    assert (info.video_streams[0].width, info.video_streams[0].height) == (1080, 1920)
+    assert info.video_streams[0].codec_name == "h264"
+    assert info.audio_streams[0].codec_name == "aac"
+    assert info.duration_s == pytest.approx(2.75, abs=0.05)
+
+
+def _real_render() -> object:
+    from autoclipper.export.clip import render_clip
+
+    return render_clip
 
 
 def test_a_500_keeps_its_cors_headers(
