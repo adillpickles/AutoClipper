@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Final, Protocol
 
 from autoclipper.ffmpeg import (
+    TIMELINE_OPTIONS,
     FFmpegExitError,
     FFmpegOutputError,
     MediaInfo,
@@ -83,12 +84,9 @@ READ_CHECK_TIMEOUT_S: Final = 600.0
 NORMALIZED_DURATION_TOLERANCE_S: Final = 0.5
 NORMALIZED_DURATION_TOLERANCE_FRACTION: Final = 0.001
 
-# How FFmpeg reads a source's timeline, both when checking a download and when normalizing.
-# FFmpeg joins MPEG-TS timestamps that jump back (an HLS discontinuity, or segments written
-# twice) onto the end, and by default also forward jumps of more than `-dts_delta_threshold`
-# (10 s), which would remove a long gap. A day keeps forward gaps as silence. The price: a
-# timestamp reset that jumps forward is also kept as silence.
-_TIMELINE_OPTIONS: Final = ("-dts_delta_threshold", "86400")
+# How FFmpeg reads a source's timeline; export reads sources the same way (see
+# `autoclipper.ffmpeg.TIMELINE_OPTIONS`), so a time here is the same time in an export.
+_TIMELINE_OPTIONS: Final = TIMELINE_OPTIONS
 
 # A download is rejected, and normalizing fails, when more than this fraction of the audio is
 # damaged, measured two ways: by frames FFmpeg fails to decode (-max_error_rate; it then exits

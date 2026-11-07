@@ -19,6 +19,11 @@ Encoding decisions (docs/architecture/overview.md §4.6):
   frame 0 therefore shows the source frame on screen at the start, even when the source has
   fewer frames per second than the output. ``fps`` never invents frames before the first decoded
   one, so a decode that begins after the start shows up in the output check instead.
+- **Timeline.** Times are seconds on the timeline analysis uses: the one FFmpeg reads when the
+  audio is normalized (`autoclipper.ingest.media`). FFmpeg reads the source with the same
+  `TIMELINE_OPTIONS`, and a source whose timestamps restart is cut from a corrected copy of the
+  part around the interval (`autoclipper.export.timeline`), so second t of the analysis audio is
+  second t of the export. Gaps in the audio's timestamps become silence.
 - **Media bounds.** The interval is clamped to the span that the video stream and the audio
   stream used both cover, measured from their last packets (`probe_stream_ends`), not from
   metadata durations, which are missing (MKV) or estimated (MPEG-TS): at the end of a VOD the
@@ -41,13 +46,15 @@ import logging
 import os
 import tempfile
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from autoclipper.export.cut import (
+    MIN_CLIP_DURATION_S,
     ContextPadding,
     CutPlan,
     Interval,
+    IntervalTooShortError,
     plan_cut,
 )
 from autoclipper.export.errors import ExportError
@@ -67,7 +74,9 @@ from autoclipper.export.seek import (
     probe_stream_times,
     seek_point,
 )
+from autoclipper.export.timeline import timeline_window
 from autoclipper.ffmpeg import (
+    TIMELINE_OPTIONS,
     AudioStream,
     FFmpegCommand,
     FFmpegOutputError,
@@ -277,10 +286,19 @@ def build_export_command(
         *video_filters,
         "format=yuv420p",
     )
-    audio_filters = (f"atrim=start={skip}", f"asetpts=PTS-{skip}/TB")
+    audio_filters = (
+        # Gaps in the audio's timestamps become silence (and so does missing audio at the start),
+        # as when the audio is normalized for analysis, so the clip's audio keeps its timeline
+        # in every player instead of relying on each one to honour the gap.
+        "aresample=async=1:first_pts=0",
+        f"atrim=start={skip}",
+        f"asetpts=PTS-{skip}/TB",
+    )
     inputs: list[str | Path] = [
         # Use the stored frame size, which is what `probe` reports and `reframe` is based on.
         "-noautorotate",
+        # Read the timeline as analysis does (no joining of long forward gaps).
+        *TIMELINE_OPTIONS,
         "-accurate_seek",
         "-ss",
         _seconds(seek_s),
@@ -368,13 +386,70 @@ def export_clip(
         ExportError: The output can't be moved into place without replacing (see
             `ExportRequest.overwrite`) because its file system has no hard links.
     """
-    encode = EncodeSettings() if settings is None else settings
     output = request.output.absolute()
     if output.exists() and not request.overwrite:
         raise FileExistsError(f"export output already exists (pass overwrite): {output}")
     if request.source.absolute().resolve() == output.resolve():
         raise UnsupportedSourceError(f"the output path is the source file: {output}")
+    if not request.source.is_file():
+        raise FileNotFoundError(f"media file not found: {request.source}")
+    # Times are on the timeline analysis uses. For a source whose timestamps restart, the cut
+    # comes from a corrected copy of the part around the interval (`autoclipper.export.timeline`).
+    span = Interval(
+        max(0.0, request.interval.start_s - request.padding.before_s),
+        request.interval.end_s + request.padding.after_s,
+    )
+    with timeline_window(request.source, span, runner=runner) as window:
+        if window.offset_s == 0.0 and window.path == request.source:
+            return _export(
+                request,
+                settings=settings,
+                video_filters=video_filters,
+                filters_for_cut=filters_for_cut,
+                runner=runner,
+                timeout_s=timeout_s,
+            )
+        local = replace(request, source=window.path, interval=window.local(request.interval))
 
+        def local_filters(actual: Interval) -> Sequence[str]:
+            assert filters_for_cut is not None
+            return filters_for_cut(window.corrected(actual))
+
+        try:
+            result = _export(
+                local,
+                settings=settings,
+                video_filters=video_filters,
+                filters_for_cut=None if filters_for_cut is None else local_filters,
+                runner=runner,
+                timeout_s=timeout_s,
+            )
+        except IntervalTooShortError as exc:
+            # The message would quote the temporary copy's own times; use the caller's.
+            interval = request.interval
+            raise IntervalTooShortError(
+                f"the interval {interval.start_s:g}-{interval.end_s:g} s leaves too little inside "
+                "the media: the video ends before it, or less than "
+                f"{MIN_CLIP_DURATION_S:g} s of it is left"
+            ) from exc
+    cut = replace(
+        result.cut, requested=request.interval, actual=window.corrected(result.cut.actual)
+    )
+    return replace(result, cut=cut)
+
+
+def _export(
+    request: ExportRequest,
+    *,
+    settings: EncodeSettings | None,
+    video_filters: Sequence[str],
+    filters_for_cut: Callable[[Interval], Sequence[str]] | None,
+    runner: Runner | None,
+    timeout_s: float | None,
+) -> ExportResult:
+    """`export_clip` for a source whose own times are the analysis timeline."""
+    encode = EncodeSettings() if settings is None else settings
+    output = request.output.absolute()
     info = probe(request.source, runner=runner)
     video, audio = _pick_streams(info)
     source_times = probe_stream_times(request.source, runner=runner)

@@ -36,7 +36,7 @@ import pyarrow.parquet as pq
 from pydantic import SecretStr
 
 from autoclipper import tables
-from autoclipper.ffmpeg import Runner
+from autoclipper.ffmpeg import Runner, probe
 from autoclipper.ingest import chat as chat_module
 from autoclipper.ingest.catalog import CatalogEntry, Status, read_catalog, record
 from autoclipper.ingest.catalog import write_table_atomically as _write_table
@@ -298,9 +298,23 @@ def ingest_vod(
     audio_entry = done_before("audio", wav.is_file())
     if audio_entry is not None and audio_entry.status == "unavailable" and media_file is not None:
         audio_entry = None  # the user's own file replaces a download Twitch refused
-    audio_tool = "local-file" if media_file is not None else _ytdlp_tool()
+    audio_tool = LOCAL_FILE_TOOL if media_file is not None else _ytdlp_tool()
     if audio_entry is not None:
-        skip("audio", audio_entry)
+        if audio_entry.status == "ok" and audio_entry.tool == LOCAL_FILE_TOOL and vod is not None:
+            # Audio from a local file is checked against the VOD's length, which an earlier run
+            # may not have known (its metadata step failed). Check the cached audio now, as a
+            # first run would, instead of keeping audio that may not be this VOD's.
+            try:
+                _check_media_length(
+                    probe(wav, runner=tools.runner).duration_s, vod.duration_s, media_file or wav
+                )
+            except Exception as exc:  # the wrong length, or unreadable: recorded, not fatal
+                wav.unlink(missing_ok=True)
+                finish("audio", "failed", LOCAL_FILE_TOOL, _describe(exc))
+            else:
+                skip("audio", audio_entry)
+        else:
+            skip("audio", audio_entry)
     elif vod_gone and media_file is None:
         finish("audio", "unavailable", audio_tool, gone)
     else:
@@ -329,6 +343,10 @@ def ingest_vod(
 
 
 # --- Steps -------------------------------------------------------------------------------------
+
+# The catalog's `tool` for audio converted from a file the user gave (`--media`).
+LOCAL_FILE_TOOL: Final = "local-file"
+
 
 # A local file may differ from Twitch's duration by this much (whichever is larger).
 MEDIA_LENGTH_TOLERANCE_S: Final = 5.0
