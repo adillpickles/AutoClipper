@@ -56,13 +56,14 @@ Always read: this file → `docs/project/status.md` → the issue. Then, by task
 ├── pyproject.toml, uv.lock
 ├── configs/               ← channels.yaml and other non-secret config
 ├── src/autoclipper/       ← the Python package; cli.py is the `autoclipper` CLI
+├── scripts/               ← one-off scripts (pilot selection, runner and report for #35)
 ├── tests/                 ← pytest suite
 ├── web/                   ← Next.js frontend
 ├── docs/                  ← product, architecture, data, ml, development, agents, decisions, project
 └── .github/               ← issue/PR templates, CI
 ```
 
-Also planned: `experiments/`, `notebooks/`, `scripts/`, and git-ignored `data/` and `artifacts/`. Create a directory when a task needs it.
+Also planned: `experiments/`, `notebooks/`, and git-ignored `data/` and `artifacts/`. Create a directory when a task needs it.
 
 ## 5. Commands
 

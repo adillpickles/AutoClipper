@@ -98,7 +98,9 @@ ban-relative-imports = "all"
 
 # --- Pyright (types) ---------------------------------------------------------
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
+# Tests import the helper scripts as modules (tests/scripts/).
+extraPaths = ["scripts"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 
@@ -110,6 +112,8 @@ testpaths = ["tests"]
 # test files mirror the package layout (e.g. tests/ingest/test_chat.py and
 # tests/features/test_chat.py) without __init__.py files.
 addopts = ["-ra", "--import-mode=importlib"]
+# Lets tests/scripts/ import the helper scripts in scripts/ by module name.
+pythonpath = ["scripts"]
 # Unknown markers, config keys and duplicate parametrize ids are errors; xfail is strict.
 strict = true
 markers = [

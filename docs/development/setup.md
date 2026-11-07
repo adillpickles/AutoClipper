@@ -13,7 +13,7 @@
 | Python | 3.12 (pinned in `.python-version`) | Pipeline and ML | Nothing to install: `uv sync` uses an installed 3.12 or downloads one |
 | uv | latest (the lockfile was made with 0.13) | Python package/env manager | Windows: `winget install --id astral-sh.uv -e` · macOS: `brew install uv` · [all options](https://docs.astral.sh/uv/getting-started/installation/) |
 | FFmpeg | 6+ | Audio/video processing | Windows: `winget install Gyan.FFmpeg` · macOS: `brew install ffmpeg` · Linux: package manager |
-| yt-dlp | Deferred to #19 | VOD audio download (unmerged draft) | Not installed by the current `uv sync`; follow #19 when it is ready to merge |
+| yt-dlp | 2026.8.19 or later (locked) | VOD audio download | Nothing to install: a Python dependency, installed by `uv sync` |
 | TwitchDownloaderCLI | 1.56.5 | Chat replay | Download the pinned release from <https://github.com/lay295/TwitchDownloader/releases/tag/1.56.5> and put it on `PATH` |
 | Node.js | 24 LTS (pinned in `web/.nvmrc`) | Web app in `web/` | <https://nodejs.org/> or a version manager (fnm, nvm, nvm-windows, Volta). npm comes with it. See [Frontend](#frontend-web). |
 | GitHub CLI | optional | Issues/PRs from the terminal | <https://cli.github.com/> |
@@ -176,7 +176,6 @@ Code that pseudonymizes gets the salt with `get_settings().require_chat_hash_sal
 | `uv: command not found` / `'uv' is not recognized` | Not on `PATH` yet. Open a new terminal after installing uv (see the Windows note above). |
 | ``The lockfile at `uv.lock` needs to be updated, but `--locked` was provided`` (CI or locally) | `pyproject.toml` changed without a new lock. Run `uv lock` and commit `uv.lock` with `pyproject.toml`. |
 | uv warns `Failed to hardlink files; falling back to full copy` | Harmless. The clone and uv's cache are on different drives. Set the environment variable `UV_LINK_MODE=copy` to silence it. |
-| `uv run pytest -m live` reports `no tests ran` (exit code 5) | No live tests exist yet; there's nothing to select. |
 | `npm warn EBADENGINE` in `web/` | You're not on Node 24. Switch versions (see [Frontend](#frontend-web)). |
 | npm warns that `unrs-resolver` install scripts were blocked (seen with npm 11.19 and 12.2) | Harmless. Its native binary comes from an optional dependency; the blocked script is only a fallback. Don't approve it unless something breaks. |
 | `npm audit` reports high-severity `braces` advisories in `web/` | Comes from the lint toolchain (`eslint-config-next` → `fast-glob`), not from app code, and has no fixed version yet. Don't run `npm audit fix --force`: it downgrades `eslint-config-next` to v14. |
