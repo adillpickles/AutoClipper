@@ -117,6 +117,4 @@ uv run pytest -m "not live and not ffmpeg"   # also leave out tests that run the
 uv run pytest --cov=autoclipper     # with a coverage report (branch coverage, missing lines)
 ```
 
-`uv run pytest -m live` exits with code 5 ("no tests ran") while no live tests exist.
-
 Coverage target: ≥ 80% for `labels/`, `features/` and `eval/`. No hard target elsewhere. Meaningful tests beat a coverage number.

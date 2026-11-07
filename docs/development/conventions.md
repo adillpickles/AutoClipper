@@ -24,11 +24,12 @@ src/autoclipper/
 ├── export/               # cut.py, reframe.py, captions.py, encode.py, highlights.py
 ├── api/                  # FastAPI app started by `autoclipper serve`
 └── synthetic/            # deterministic fake dataset for development (`autoclipper synth`)
-tests/                    # mirrors src/autoclipper/ structure
+tests/                    # mirrors src/autoclipper/ structure; tests/scripts/ tests scripts/
 experiments/              # configs + results write-ups (see docs/ml/experiments.md)
 configs/                  # channels.yaml, lexicons, default params
 notebooks/                # exploration only; see §8
-scripts/                  # one-off/maintenance scripts (not imported by the package)
+scripts/                  # one-off/maintenance scripts (not imported by the package; tests import
+                          #   them by module name through pytest's pythonpath)
 web/                      # Next.js web app
 ```
 
