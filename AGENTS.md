@@ -77,6 +77,8 @@ uv run pyright                 # type check
 uv run pytest                  # tests; live tests are deselected (-m live runs only those)
 uv run autoclipper --help      # CLI entry point
 uv run autoclipper synth --seed 1   # fake dev dataset in data/synthetic/seed-1
+uv run autoclipper synth --pilot --seed 1 --no-video  # five fake streamers for dataset builds
+uv run autoclipper build-dataset --data-dir data/synthetic/pilot-seed-1 --dataset-version smoke-v1 --seed 42
 uv run autoclipper evaluate --help  # hit rate@10 report for a scorer's candidates
 uv run autoclipper ingest <vod link>  # metadata, clips, chat and audio for one VOD into data/
 uv run autoclipper export <video> --start 10 --end 40   # vertical clip in artifacts/exports/

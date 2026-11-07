@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Adopted as the starting rules (`v0`). Tune the numbers (window size, lag, buffers) from the pilot data and bump the version when they change. |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-06 |
 
 Viewer clips are **noisy, incomplete positive labels**: a clip says viewers cared about a stretch of the VOD; no clip doesn't mean nobody would. These rules turn clips into training and evaluation labels. Analyzing a new VOD never needs them.
 
@@ -68,6 +68,24 @@ Positive windows are weighted in training by the strength of their `label_moment
 
 Missing clip collection/ground truth is not `label_pos=False`. New-VOD inference uses unlabeled windows; annotated weak-label datasets require a pinned snapshot and coverage record ([data model](../architecture/data-model.md#windows)).
 
+`autoclipper.labels.annotations.label_windows` keeps every covered window, including the
+buffer, in `window_labels`. `train_eligible` means it may be used for training **when its
+fold role is `train`**; it does not grant permission to train on validation/test rows.
+The distance is the shortest interval-to-interval gap, with exactly 60 s eligible.
+Moment overlap includes any small gap retained during merging, so a positive can have
+`label_n_clips = 0`. Choose the moment with most member clips, then earliest start.
+
+The initial weight configuration is `one-plus-log1p-relviews-v1`: positive weight
+`1 + log1p(moment_strength)`, confident-negative weight 1. `moment_strength` is
+`max_views / max(channel_median_views, 1)`. The denominator floor handles all-zero
+view counts; the added 1 keeps zero-view positives useful. The median includes
+unplaced clips of that broadcaster in the **same selected snapshot**, never other
+channels or historical captures. For ingest's per-VOD snapshots this is a per-capture
+baseline; the combined synthetic snapshot includes all of its channel's clips.
+Buffer rows have null `sample_weight`. Immature captures retain binary annotations
+but have null strengths/weights and no training-eligible rows. This weighting fills
+in the previously configurable v0 default; binary label rules remain v0.
+
 ## 5. Chat lag
 
 Chat reacts **after** the event: viewers see the stream with a delay, then type. Expect a lag of several seconds up to roughly 15 s. ⚠️ Estimate it from data by cross-correlating chat rate with moment starts.
@@ -104,6 +122,14 @@ Adjacent windows are highly correlated, so **random window-level splits leak**. 
 
 **The test streamer's data is touched only for final reported numbers.** Day-to-day iteration uses validation.
 
+Implementation: sort broadcaster IDs, shuffle with `random.Random(seed)`, and let
+fold i test streamer i and validate on streamer i+1 (wrapping). The other three train.
+Exactly five distinct streamers with VODs are required. A new version is refused if
+either its output directory or saved split already exists; there is no overwrite flag.
+Read the saved folds to select alternate roles; `window_labels.split` is fold 0 only.
+The secondary temporal check is an experiment-level holdout within the training
+channels, not an additional assignment in these primary folds.
+
 ## 9. Label rules versioning
 
 All parameters above are bundled as `label_rules_version` (currently `v0`). When a change affects labels or existing results, increment the label and dataset versions and update this document with the implementation. Explain the change in the PR so earlier runs remain reproducible.
@@ -116,3 +142,47 @@ All parameters above are bundled as `label_rules_version` (currently `v0`). When
 - Chat coverage: % of windows with ≥ 1 message
 - Positive rate per split (should be similar across splits)
 - Manual spot-check: watch 10 random positives and 10 random confident negatives per dataset version, and record the findings in the dataset's README.
+
+## 11. Building a dataset
+
+From the repo root, after ingesting five streamers:
+
+```bash
+uv run autoclipper build-dataset --dataset-version v1 --seed 42
+# Optional: --data-dir <root> --lexicon configs/lexicon.yaml
+# If a VOD has several captures, select one with repeated --snapshot <snapshot_id>.
+```
+
+The command reads `processed/vods.parquet`, clip capture Parquets with adjacent JSON
+manifests, `interim/chat/<video_id>.parquet` and `interim/audio/<video_id>.wav`.
+All VODs need chat and normalized audio; an absent file fails the build. A missing
+clip manifest or `complete=false` capture leaves that VOD unlabeled (features/windows
+are still saved). A complete empty snapshot supplies observed-negative labels.
+Multiple captures for one VOD fail unless explicitly selected. Capture age is
+computed from its start and VOD creation time; no alternative snapshot is substituted.
+
+The builder writes `processed/datasets/<version>/` with `vods`, `windows`, `moments`,
+`window_labels`, `features_chat`, `features_audio` and the selected `clips` observations
+as Parquet. It also writes `quality.json`, `manifest.json` and a `README.md` for manual
+review. `splits/<version>.json` pins folds, parameters, coverage/maturity, source hashes,
+feature/weight versions and output hashes. Inputs are rechecked before publication;
+changed inputs abort the build. Outputs are staged, with the split file published last.
+Use one writer per data root, as with collection.
+
+Every quality check above is printed as JSON. Chat coverage uses eligible messages
+after the feature extractor's clip-link filter. The report includes all five folds'
+positive rates, null-offset counts and the >20% alert, moment lengths and channel
+densities, plus seeded review samples (up to ten of each class). Manual review starts
+as **pending**, with findings to be recorded by the reviewer; generation is not a
+substitute for watching the samples.
+
+For an offline smoke test with five fake streamers (the normal generator has only two):
+
+```bash
+uv run autoclipper synth --pilot --seed 1 --no-video
+uv run autoclipper build-dataset --data-dir data/synthetic/pilot-seed-1 --dataset-version smoke-v1 --seed 42
+```
+
+The synthetic generator manifest pins its single combined capture and explicitly
+covers the generated no-clips VOD. No real data is fetched. Real dataset assembly
+and review remain #40.

@@ -40,7 +40,7 @@ from autoclipper.synthetic.scenario import BASE_TIME, Scenario, build_scenario
 log = logging.getLogger(__name__)
 
 GENERATOR = "autoclipper.synthetic"
-GENERATOR_VERSION = "2"
+GENERATOR_VERSION = "3"
 """Bump when the same seed would give different output (scenario, schemas or file layout)."""
 
 MANIFEST = "manifest.json"
@@ -78,6 +78,7 @@ def generate_dataset(
     out_dir: Path,
     *,
     seed: int,
+    pilot: bool = False,
     video: VideoOptions | None = None,
     force: bool = False,
     runner: Runner | None = None,
@@ -94,6 +95,7 @@ def generate_dataset(
             holds an earlier synthetic dataset and nothing else (only files its manifest lists).
             Any other content is never deleted, so a mistaken path can't clobber real data.
         seed: Non-negative seed; the same seed gives the same data.
+        pilot: Generate six VODs from five fake streamers for the 3/1/1 split smoke test.
         video: Generate a video per VOD with FFmpeg using these options; None for no video.
         force: Replace an earlier synthetic dataset in `out_dir`.
         runner: Runs FFmpeg; defaults to `autoclipper.ffmpeg.run_subprocess`.
@@ -109,7 +111,7 @@ def generate_dataset(
     """
     out_dir = out_dir.absolute()
     _check_output_dir(out_dir, force=force)
-    scenario = build_scenario(seed)
+    scenario = build_scenario(seed, pilot=pilot)
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
         tempfile.mkdtemp(prefix=f".{out_dir.name}-", suffix=".partial", dir=out_dir.parent)
@@ -246,6 +248,7 @@ def _write_all(
         "generator_version": GENERATOR_VERSION,
         "autoclipper_version": __version__,
         "seed": scenario.seed,
+        "profile": "pilot" if len(scenario.broadcasters) == 5 else "standard",
         "note": NOTE,
         "environment": environment,
         "video": None if video is None else asdict(video),

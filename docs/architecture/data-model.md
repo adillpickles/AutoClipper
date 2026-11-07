@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Current. Schemas support the [labeling rules](../data/labeling.md) and [Parquet storage](../decisions/0005-local-storage-parquet-duckdb.md). |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-06 |
 
 These are the tables that pipeline stages exchange. Update this document with schema changes and version any change that affects existing datasets or results. Explain the rationale in the PR and make the doc updates with the implementation ([AGENTS.md § Engineering basics](../../AGENTS.md#6-engineering-basics)).
 
@@ -144,6 +144,13 @@ Separate annotations keyed by `window_id`, derived from a pinned observed-clips 
 | `label_n_clips` | int | Graded label: clips overlapping this window |
 | `label_moment_id` | str, *nullable* | |
 | `split` | str | `train`, `val` or `test` in the dataset version's primary split (fold 0). Splits are a leave-one-streamer-out rotation over the five pilot streamers (3 train / 1 val / 1 test per fold); the other folds read their split from the saved split file ([labeling § 8](../data/labeling.md#8-splits)) |
+| `train_eligible` | bool | Positive or at least 60 s from any moment, with a mature capture. Training must also select the fold's `train` streamers; this flag applies to all roles |
+| `moment_strength` | float, *nullable* | Positive moment's max views / max(channel median views, 1), within the selected snapshot; null for negatives and immature captures |
+| `sample_weight` | float, *nullable* | `1 + log1p(moment_strength)` for eligible positives, 1 for eligible negatives; null for buffer/immature rows. Weight version recorded in the manifest |
+
+These additions make the v0 sampling and default weighting explicit; see
+[dataset-build decisions](../decisions/0012-labeled-dataset-build.md). Evaluation keeps
+buffer annotations; it must not silently filter on `train_eligible`.
 
 ## `features_<family>`
 
@@ -197,3 +204,16 @@ Candidate generation rules (peaks, 20–45 s default length, a shortlist of the 
 ## Dataset versioning
 
 A **dataset version** (e.g. `v1`) pins: VOD IDs, immutable snapshot IDs/manifests, capture times and coverage, label/feature/preprocessing versions, retained source availability and the saved split. It's recorded in `data/splits/<dataset_version>.json` with counts. Inference runs record their inputs and stage versions without inventing a training split. Experiments always cite a dataset version; bump it when any pinned input or contract changes, never edit one in place.
+
+`autoclipper build-dataset` saves derived tables under
+`data/processed/datasets/<dataset_version>/`, with a copy of the split/lineage document
+as `manifest.json`, QC as `quality.json`, and a review `README.md`. The copied
+`clips.parquet` combines selected observations with an additional non-null string
+`snapshot_id` column: its key is `(snapshot_id, clip_id)`, not `clip_id` alone.
+This file is omitted if no captures are available. All other clip fields retain the
+source schema. A consumer must select the VOD's pinned snapshot from `coverage`
+before joining clip labels or evaluating; never mix repeated observations.
+The split JSON includes `dataset_version`, `seed`, `primary_fold`, five `folds`
+(each maps `train`/`val`/`test` to broadcaster IDs), label and weight versions,
+parameters, feature versions, environment versions, per-VOD `coverage`, `inputs`
+and `outputs` (`path`, SHA-256), and `quality` counts/review samples.

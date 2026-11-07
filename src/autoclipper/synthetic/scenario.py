@@ -9,7 +9,7 @@ comes from generators seeded with the seed and a purpose string, never from the 
 
 import random
 import string
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
 from pydantic import SecretStr
@@ -34,10 +34,19 @@ _BROADCASTERS = (
     # broadcaster_id, login, display_name, broadcaster_type
     ("9000000001", "user_001", "User_001", "partner"),
     ("9000000002", "user_002", "User_002", "affiliate"),
+    ("9000000003", "user_003", "User_003", "partner"),
+    ("9000000004", "user_004", "User_004", "affiliate"),
+    ("9000000005", "user_005", "User_005", "partner"),
 )
 _CHATTER_IDS = tuple(f"93{n:08d}" for n in range(1, 81))
 # Each broadcaster's chat community; the 20 chatters in both pools chat on both channels.
-_CHATTER_POOLS = (_CHATTER_IDS[:50], _CHATTER_IDS[30:])
+_CHATTER_POOLS = (
+    _CHATTER_IDS[:50],
+    _CHATTER_IDS[30:],
+    _CHATTER_IDS[:50],
+    _CHATTER_IDS[15:65],
+    _CHATTER_IDS[30:],
+)
 _NATIVE_EMOTES = {"Kappa": "9500000001", "LUL": "9500000002", "PogChamp": "9500000003"}
 _THIRD_PARTY_EMOTES = ("KEKW", "OMEGALUL", "Pog", "monkaS")  # counted in n_emotes only
 _CALM_LINES = (
@@ -112,6 +121,14 @@ VOD_PLANS = (
 )  # fmt: skip
 """The scenario. Positions keep bursts, quiet stretches and muted audio apart for any seed."""
 
+PILOT_VOD_PLANS = tuple(
+    replace(
+        VOD_PLANS[0], video_id=f"910000000{i + 2}", broadcaster=i, stream_id=f"920000000{i + 2}"
+    )
+    for i in range(2, 5)
+)
+"""Three additional fake channels for the five-streamer dataset smoke test."""
+
 
 @dataclass(frozen=True, slots=True)
 class PlantedEvent:
@@ -160,7 +177,7 @@ def rng_for(seed: int, purpose: str) -> random.Random:
     return random.Random(f"autoclipper.synthetic:{seed}:{purpose}")
 
 
-def build_scenario(seed: int) -> Scenario:
+def build_scenario(seed: int, *, pilot: bool = False) -> Scenario:
     """Generate every table's rows for `seed`. The same seed always gives the same rows.
 
     Raises:
@@ -170,9 +187,12 @@ def build_scenario(seed: int) -> Scenario:
         raise ValueError(f"seed must be a non-negative integer, got {seed}")
     scenario = Scenario(seed=seed, snapshot_id=f"synthetic-seed-{seed}")
     rng = rng_for(seed, "metadata")
-    for vod_index, plan in enumerate(VOD_PLANS):
+    plans = VOD_PLANS
+    if pilot:
+        plans += PILOT_VOD_PLANS
+    for vod_index, plan in enumerate(plans):
         duration_s = float(plan.base_duration_s + rng.randint(-8, 8))
-        created_at = BASE_TIME + timedelta(days=vod_index, minutes=rng.randint(0, 120))
+        created_at = BASE_TIME + timedelta(days=vod_index % 3, minutes=rng.randint(0, 120))
         events: list[PlantedEvent] = []
         for event in plan.events:
             time_s = float(event.base_s + rng.randint(-3, 3))
@@ -198,7 +218,9 @@ def build_scenario(seed: int) -> Scenario:
     scenario.clips[-1]["video_id"] = None
     scenario.clips[-1]["is_featured"] = None
     _finish_snapshot(scenario)
-    for index, (broadcaster_id, login, display_name, kind) in enumerate(_BROADCASTERS):
+    for index, (broadcaster_id, login, display_name, kind) in enumerate(
+        _BROADCASTERS if pilot else _BROADCASTERS[:2]
+    ):
         fetched_at = BASE_TIME + timedelta(days=9, seconds=index)
         scenario.broadcasters.append(
             {

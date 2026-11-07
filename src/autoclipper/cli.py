@@ -5,6 +5,7 @@ parses its arguments, calls one library function and turns failures into an `Exi
 Subcommands are verbs (``ingest``, ``export``, ...) registered on `app` with ``@app.command()``.
 """
 
+import json
 import re
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -28,6 +29,7 @@ from autoclipper.eval.harness import (
     evaluate_files,
 )
 from autoclipper.ffmpeg import FFmpegError
+from autoclipper.labels.dataset import build_dataset as build_labeled_dataset
 from autoclipper.logging import configure_logging
 from autoclipper.synthetic import (
     OutputDirError,
@@ -139,6 +141,9 @@ def synth(
         ),
     ] = None,
     seed: Annotated[int, typer.Option(min=0, help="The same seed gives the same data.")] = 0,
+    pilot: Annotated[
+        bool, typer.Option(help="Generate six VODs from five fake streamers for dataset builds.")
+    ] = False,
     video: Annotated[
         bool, typer.Option(help="Generate a test-pattern video per VOD (needs FFmpeg).")
     ] = True,
@@ -151,10 +156,13 @@ def synth(
     ] = False,
 ) -> None:
     """Generate a deterministic synthetic dataset of fake VODs, clips, chat, audio and video."""
-    out_dir = out if out is not None else default_output_dir(get_settings().data_dir, seed)
+    default = default_output_dir(get_settings().data_dir, seed)
+    if pilot:
+        default = default.with_name(f"pilot-seed-{seed}")
+    out_dir = out if out is not None else default
     options = VideoOptions(duration_s=video_duration) if video else None
     try:
-        dataset = generate_dataset(out_dir, seed=seed, video=options, force=force)
+        dataset = generate_dataset(out_dir, seed=seed, pilot=pilot, video=options, force=force)
     except OutputDirError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
@@ -162,6 +170,40 @@ def synth(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
     typer.echo(f"Wrote {len(dataset.files)} files to {dataset.out_dir}")
+
+
+@app.command()
+def build_dataset(
+    data_dir: Annotated[Path | None, typer.Option(help="Ingest/synth data root.")] = None,
+    dataset_version: Annotated[str, typer.Option(help="New immutable dataset version.")] = "v0",
+    seed: Annotated[
+        int, typer.Option(min=0, help="Seed for streamer folds and review samples.")
+    ] = 0,
+    lexicon: Annotated[Path, typer.Option(help="Versioned chat lexicon.")] = Path(
+        "configs/lexicon.yaml"
+    ),
+    snapshot: Annotated[
+        list[str] | None, typer.Option(help="Pinned snapshot ID; repeat to select several.")
+    ] = None,
+) -> None:
+    """Label windows, extract features and freeze five 3/1/1 streamer folds."""
+    root = data_dir if data_dir is not None else get_settings().data_dir
+    try:
+        path = build_labeled_dataset(
+            root,
+            version=dataset_version,
+            seed=seed,
+            lexicon_path=lexicon,
+            snapshot_ids=snapshot,
+        )
+    except (ValueError, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    typer.echo(json.dumps(manifest["quality"], indent=2, sort_keys=True))
+    if manifest["quality"]["null_offset_alert"]:
+        typer.echo("ALERT: more than 20% of clips lack a VOD offset", err=True)
+    typer.echo(f"Saved dataset and frozen splits: {path}")
 
 
 @app.command()
