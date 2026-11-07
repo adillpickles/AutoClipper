@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from autoclipper.ffmpeg import FFmpegCommand, ffmpeg_command
-from autoclipper.synthetic.scenario import VOD_PLANS, SyntheticVod
+from autoclipper.synthetic.scenario import PILOT_VOD_PLANS, VOD_PLANS, SyntheticVod
 
 SAMPLE_RATE_HZ = 16_000
 """Sample rate of the synthetic WAVs, matching ``data/interim/audio`` (16 kHz mono 16-bit PCM)."""
@@ -57,7 +57,7 @@ def render_audio(vod: SyntheticVod, seed: int) -> np.ndarray:
     Returns:
         A 1-D little-endian ``int16`` array of ``round(duration_s * SAMPLE_RATE_HZ)`` samples.
     """
-    rng = np.random.default_rng([seed, VOD_PLANS.index(vod.plan)])
+    rng = np.random.default_rng([seed, (VOD_PLANS + PILOT_VOD_PLANS).index(vod.plan)])
     n_samples = round(vod.duration_s * SAMPLE_RATE_HZ)
     # A 150 Hz voice with a harmonic, modulated at a syllable rate of 4 Hz, and a 600 Hz scream.
     # Both repeat every 0.5 s, so one period is computed and tiled.
