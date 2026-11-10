@@ -21,8 +21,8 @@ Full scope (must / should / could / won't): [`docs/product/prd.md`](docs/product
 ## 2. Current state
 
 - [`docs/project/status.md`](docs/project/status.md) is the source of truth for what exists. Read it first.
-- **Built:** Python tooling and CI, config/logging, a shared FFmpeg runner, the `autoclipper synth` fake-data generator, the Twitch API client, viewer-clip fetching, the chat replay parser, the `autoclipper ingest` command (metadata, clip snapshot, chat and audio for one VOD, with a catalog), VOD audio download with 16 kHz mono normalization, vertical-MP4 export (cut, reframe and burned-in captions; `autoclipper export` and real export rendering in the backend), VOD time windows and viewer-clip moments, chat and audio features per window, the step-1 evaluation (`autoclipper evaluate`), candidate generation in the `AnalysisResult` format, the four baselines, and the mock backend API (`autoclipper serve`). The Next.js app has the start, progress and results screens in mock mode.
-- **Not built yet:** the analysis pipeline, the real backend job runner (the mock backend exists), the clip editor screen, a trained model and a real dataset.
+- **Built:** Python tooling and CI, config/logging, a shared FFmpeg runner, the `autoclipper synth` fake-data generator, the Twitch API client, viewer-clip fetching, the chat replay parser, the `autoclipper ingest` command (metadata, clip snapshot, chat and audio for one VOD, with a catalog), VOD audio download with 16 kHz mono normalization, vertical-MP4 export (cut, reframe and burned-in captions; `autoclipper export` and real export rendering in the backend), VOD time windows and viewer-clip moments, chat and audio features per window, the step-1 evaluation (`autoclipper evaluate`), candidate generation in the `AnalysisResult` format, the four baselines, the `autoclipper train` command (logistic regression and LightGBM scorers), and the mock backend API (`autoclipper serve`). The Next.js app has the start, progress and results screens in mock mode.
+- **Not built yet:** the analysis pipeline, the real backend job runner (the mock backend exists), the clip editor screen, and a real dataset with models trained on it.
 - **Work items** are GitHub issues. Pick any open issue whose **Depends on** items are merged.
 - **Decided:** everything needed to build the MVP. Stack and layout are in [`docs/decisions/`](docs/decisions/README.md); data sources, pilot channels, chat handling, the model target and delivery are in [data sources and delivery defaults](docs/decisions/0011-data-sources-and-local-delivery.md); the backend/frontend API, including the highlights video, is in [`docs/architecture/api-contract.md`](docs/architecture/api-contract.md). There is no list of open questions: when something isn't specified, make the engineering call (§ 10).
 
@@ -80,6 +80,7 @@ uv run autoclipper --help      # CLI entry point
 uv run autoclipper synth --seed 1   # fake dev dataset in data/synthetic/seed-1
 uv run autoclipper synth --pilot --seed 1 --no-video  # five fake streamers for dataset builds
 uv run autoclipper build-dataset --data-dir data/synthetic/pilot-seed-1 --dataset-version smoke-v1 --seed 42
+uv run autoclipper train --config configs/train-synthetic.yaml  # train logreg/LightGBM into artifacts/models/
 uv run autoclipper evaluate --help  # hit rate@10 report for a scorer's candidates
 uv run autoclipper ingest <vod link>  # metadata, clips, chat and audio for one VOD into data/
 uv run autoclipper export <video> --start 10 --end 40   # vertical clip in artifacts/exports/
