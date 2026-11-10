@@ -288,6 +288,55 @@ def evaluate(
     typer.echo(f"Wrote {metrics_path}")
 
 
+@app.command()
+def train(
+    config: Annotated[Path, typer.Option(help="YAML training config (dataset, fold, model).")],
+    run_id: Annotated[
+        str | None,
+        typer.Option(
+            help="Model folder name. Default: train-<model>-<UTC time>.", show_default=False
+        ),
+    ] = None,
+    force: Annotated[bool, typer.Option(help="Replace an existing run.")] = False,
+) -> None:
+    """Train logistic regression or LightGBM on a built dataset and save the run."""
+    # Imported here: scikit-learn and LightGBM would slow down every other command.
+    from autoclipper.models.train import RunExistsError, load_config
+    from autoclipper.models.train import train as train_model
+
+    try:
+        settings = load_config(config)
+        name = run_id or f"train-{settings.model}-{default_run_id('x').rsplit('-', 1)[1]}"
+        if not RUN_ID.fullmatch(name) or _is_reserved_name(name):
+            typer.echo(
+                "Error: --run-id must start with a letter or digit and use only letters, "
+                "digits, '.', '_' and '-'",
+                err=True,
+            )
+            raise typer.Exit(ExitCode.USER_ERROR)
+        runtime = get_settings()
+        out = train_model(
+            settings,
+            data_dir=runtime.data_dir,
+            artifacts_dir=runtime.artifacts_dir,
+            run_id=name,
+            force=force,
+        )
+    except (ValueError, OSError, RunExistsError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    run = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    for split, metrics in run["metrics"].items():
+        ap, rate = metrics["average_precision"], metrics["positive_rate"]
+        shown = (
+            "n/a (needs positive and negative windows)"
+            if ap is None
+            else f"{ap:.3f} (chance {rate:.3f})"
+        )
+        typer.echo(f"{split} average precision: {shown}")
+    typer.echo(f"Saved model run: {out}")
+
+
 # Device names Windows refuses as file or folder names, with or without an extension.
 _RESERVED_NAMES = frozenset(
     {

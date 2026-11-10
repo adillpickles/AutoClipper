@@ -61,6 +61,16 @@ Start with the baselines and a simple trained model. Add complexity only for a m
 
 The app ships whichever of these scores best on validation hit rate@10 ([evaluation](evaluation.md#3-top-10-metrics)), even if it's a baseline. Include genuine trained-ML work and meaningful signal ablations either way.
 
+**Implementation:** `autoclipper train --config <yaml>` (`autoclipper.models.train`, scorers in `autoclipper.models.trained`) trains `logreg` or `lightgbm` on one saved fold and writes `artifacts/models/<run_id>/` ([experiments](experiments.md)). Choices the plan leaves open:
+
+- **Training windows:** the fold's training streamers' `train_eligible` windows only, labeled `label_pos`, weighted by `sample_weight`. Buffer windows and immature captures are never used. The test streamer's windows are not read.
+- **Class imbalance:** weights are rescaled so positives and negatives carry equal total weight (the view-based weights still order windows within a class). Metrics are PR-AUC (average precision) next to the positive rate, which is what random ranking scores; `run.json` leaves it `null` for a split with only one class.
+- **Features:** every `features_chat` and `features_audio` column, or the families in `feature_families` minus `exclude_features` (the chat ablation, or dropping `chat_msg_rate_lead*` for a live experiment). The list is saved with the model and scoring requires exactly those columns.
+- **Logistic regression:** L2, scikit-learn `LogisticRegression`; each feature is standardized with the training windows' mean and standard deviation (saved with the model), and a missing value counts as the mean. The standardized coefficients are in `run.json` (`feature_importance`).
+- **LightGBM:** `LGBMClassifier`, defaults 200 trees, learning rate 0.05, 15 leaves, 80% row and column sampling, one thread and deterministic histograms, so a seed gives the same model. Missing values are handled natively; importances are total split gain.
+- **Scores** are raw log-odds, so candidate generation treats them like the baselines' z-score sums. No hyperparameter search yet; the config's `params` records what was used.
+- **Datasets with dense highlights:** an eligible negative needs a window 60 s from any moment, so a fold with no such window can't be trained (the command says so). The synthetic pilot has one such VOD; `configs/train-synthetic.yaml` picks a fold that trains on it.
+
 ## 3. Candidate generation
 
 Window scores → candidate moments. These rules apply to every scorer, baselines included:

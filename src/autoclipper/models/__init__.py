@@ -5,3 +5,4 @@ and `make_scorer` find them whichever module is imported first.
 """
 
 from autoclipper.models import baselines as baselines
+from autoclipper.models import trained as trained

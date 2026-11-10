@@ -1,0 +1,15 @@
+# Smoke-test config for `autoclipper train` on the synthetic pilot dataset:
+#   uv run autoclipper synth --pilot --seed 1 --no-video
+#   uv run autoclipper build-dataset --data-dir data/synthetic/pilot-seed-1 \
+#       --dataset-version smoke-v1 --seed 42
+#   uv run autoclipper train --config configs/train-synthetic.yaml
+# The planted highlights are dense, so only folds that train on streamer 2 (the one VOD without
+# viewer clips) have un-clipped negative windows: fold 3 does for seed 42.
+dataset_version: smoke-v1
+data_dir: data/synthetic/pilot-seed-1
+model: lightgbm        # logreg | lightgbm
+params: {}             # the model's constructor arguments; empty = defaults
+fold: 3                # 0 is the primary split on a real dataset
+seed: 0
+feature_families: [chat, audio]
+exclude_features: []   # e.g. [chat_msg_rate_lead1, chat_msg_rate_lead2, chat_msg_rate_lead3]
