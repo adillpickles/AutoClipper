@@ -33,20 +33,24 @@ Logs and exception messages carry counts, reasons, IDs of videos and version num
 content or tool output (which may contain chat content).
 """
 
+import contextlib
 import json
 import logging
 import math
+import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import unicodedata
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import groupby
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Literal, TypeGuard
+from typing import Final, Literal, Protocol, TypeGuard
 
 from pydantic import SecretStr
 
@@ -170,26 +174,107 @@ class CommandResult:
     stderr: str
 
 
-CommandRunner = Callable[[Sequence[str]], CommandResult]
-"""Runs a command given as an argument list. Tests pass a fake that records the commands."""
+class CommandRunner(Protocol):
+    """Runs a command given as an argument list, ending it after its timeout.
+
+    Tests pass a fake that records the commands instead of running anything; a fake that
+    wants to act out a stalled tool raises `subprocess.TimeoutExpired`, as the real runner
+    does after it has killed the process.
+    """
+
+    def __call__(self, args: Sequence[str], /, *, timeout_s: float | None = None) -> CommandResult:
+        """Run ``args`` and return its result whatever the exit code was.
+
+        When ``timeout_s`` is set and the command is still running after that many seconds,
+        the process — with any processes it started — is ended.
+        """
+        ...
 
 
-def run_command(args: Sequence[str]) -> CommandResult:
+# How long to wait for a killed process's pipes to close; a grandchild of the tool could
+# still hold them.
+REAP_TIMEOUT_S: Final = 5.0
+
+DEFAULT_CHAT_TIMEOUT_S: Final = 60 * 60.0
+"""A generous fixed bound on one chat download, for callers without the VOD's length."""
+
+CHAT_TIMEOUT_BASE_S: Final = 15 * 60.0
+CHAT_TIMEOUT_PER_VOD_HOUR_S: Final = 5 * 60.0
+
+
+def chat_download_timeout_s(vod_duration_s: float | None) -> float:
+    """A generous bound on one chat download: a base plus a share per VOD-hour.
+
+    Real downloads finish in minutes; the bound exists so a tool that stops making progress
+    ends the step instead of hanging the caller forever. Without the VOD's length (the
+    metadata step failed), the fixed `DEFAULT_CHAT_TIMEOUT_S` applies.
+    """
+    if vod_duration_s is None:
+        return DEFAULT_CHAT_TIMEOUT_S
+    return CHAT_TIMEOUT_BASE_S + CHAT_TIMEOUT_PER_VOD_HOUR_S * (vod_duration_s / 3600.0)
+
+
+def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
     """Run ``args`` without a shell and with no stdin, and capture its output.
+
+    Args:
+        args: The command as an argument list; ``args[0]`` names or paths the program.
+        timeout_s: Seconds the command may run. When they elapse, the process — with any
+            processes it started — is ended and `ChatDownloadError` is raised. None waits
+            for as long as the command runs; callers that can should always give a bound.
 
     Raises:
         OSError: The program could not be started.
+        ChatDownloadError: ``timeout_s`` elapsed before the command finished.
     """
-    completed = subprocess.run(
+    process = subprocess.Popen(
         list(args),
-        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
-        stdin=subprocess.DEVNULL,
-        check=False,
     )
-    return CommandResult(completed.returncode, completed.stdout, completed.stderr)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        _end_process_tree(process)
+        # Reap the killed process so nothing of it is left running when the error is raised.
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.communicate(timeout=REAP_TIMEOUT_S)
+        raise ChatDownloadError(
+            f"{Path(args[0]).name} did not finish within {timeout_s:g} s and was killed"
+        ) from None
+    assert process.returncode is not None  # communicate() waited for the process
+    return CommandResult(process.returncode, stdout, stderr)
+
+
+def _end_process_tree(process: subprocess.Popen[str]) -> None:
+    """End a process and any processes it started, best effort, so a stalled tool can't linger.
+
+    On Windows the whole tree is ended with ``taskkill``. Elsewhere the child gets
+    ``SIGKILL``, and its process group too when it leads its own (children started here share
+    the caller's group, so normally only the child is ended; killing the caller's own group
+    would end this process as well).
+    """
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+        )
+    else:
+        try:
+            group = os.getpgid(process.pid)
+        except ProcessLookupError:
+            group = None
+        if group is not None and group != os.getpgrp():
+            with contextlib.suppress(OSError):
+                os.killpg(group, signal.SIGKILL)
+    with contextlib.suppress(OSError):  # it may already be gone
+        process.kill()
 
 
 def find_twitchdownloader(binary: str | Path | None = None) -> Path:
@@ -241,6 +326,7 @@ def download_chat(
     salt: SecretStr,
     binary: str | Path | None = None,
     runner: CommandRunner = run_command,
+    timeout_s: float | None = DEFAULT_CHAT_TIMEOUT_S,
     embed_images: bool = False,
     keep_raw: bool = False,
 ) -> ChatReplay:
@@ -256,6 +342,9 @@ def download_chat(
         salt: The HMAC key for ``user_hash`` (``get_settings().require_chat_hash_salt()``).
         binary: The TwitchDownloaderCLI executable; see `find_twitchdownloader`.
         runner: Runs the command; the default starts a subprocess.
+        timeout_s: Seconds the download may run before the tool is ended and the step fails.
+            The default is a generous fixed cap; pass `chat_download_timeout_s` of the VOD's
+            length to scale it. None waits indefinitely (not recommended).
         embed_images: Pass ``--embed-images`` so third-party emotes can be counted.
         keep_raw: Keep the raw file after a successful parse.
 
@@ -264,8 +353,8 @@ def download_chat(
 
     Raises:
         ValueError: ``video_id``, ``raw_path`` or ``salt`` is invalid. Nothing is run.
-        ChatDownloadError: The tool is missing, fails, does not report its version or writes no
-            file, or the file is not a chat replay this parser supports.
+        ChatDownloadError: The tool is missing, fails, times out, does not report its version
+            or writes no file, or the file is not a chat replay this parser supports.
     """
     _check_video_id(video_id)
     _check_output_path(raw_path)
@@ -274,9 +363,16 @@ def download_chat(
         find_twitchdownloader(binary), video_id, raw_path, embed_images=embed_images
     )
     raw_path.parent.mkdir(parents=True, exist_ok=True)
-    log.info("downloading chat replay video_id=%s", video_id)
+    log.info("downloading chat replay video_id=%s timeout_s=%s", video_id, timeout_s)
     try:
-        result = runner(command)
+        result = runner(command, timeout_s=timeout_s)
+    except subprocess.TimeoutExpired as exc:
+        # The runner ended the tool itself; the default runner raises ChatDownloadError
+        # with the same shape.
+        limit = timeout_s if timeout_s is not None else float(exc.timeout or 0.0)
+        raise ChatDownloadError(
+            f"{TOOL_NAME} chatdownload timed out after {limit:g} s and was killed"
+        ) from None
     except OSError as exc:
         raise ChatDownloadError(f"could not start {command[0]}: {exc.strerror}") from None
     if result.returncode != 0:

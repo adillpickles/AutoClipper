@@ -11,8 +11,11 @@ in the catalog (`autoclipper.ingest.catalog`):
    7 days old at capture (docs/data/labeling.md § 7). A snapshot is immutable: once taken, a
    re-run never takes another.
 3. ``chat``: the chat replay (`download_chat`), saved pseudonymized as
-   ``interim/chat/<video_id>.parquet``. The raw file with usernames is deleted after parsing,
-   and also when the download or the parse fails, so no username stays on disk.
+   ``interim/chat/<video_id>.parquet``. The download is bounded by `chat_download_timeout_s`
+   (a base plus a share per VOD-hour, or a fixed cap when the metadata isn't available), so
+   a stalled tool is killed and recorded as ``failed`` instead of hanging the run. The raw
+   file with usernames is deleted after parsing, and also when the download or the parse
+   fails or times out, so no username stays on disk.
 4. ``audio``: the audio (`prepare_vod_audio`), or a video or audio file the user already has
    (`normalize_audio`), as ``interim/audio/<video_id>.wav``.
 
@@ -106,7 +109,8 @@ class IngestTools:
         helix: The Twitch API client, or None when no credentials are configured (the metadata
             and clip steps then fail with `missing_helix`).
         salt: The chat hash salt, or None when it isn't configured (clips and chat fail).
-        chat_runner: Runs TwitchDownloaderCLI.
+        chat_runner: Runs TwitchDownloaderCLI; `ingest_vod` bounds it by a timeout computed
+            from the VOD's length.
         chat_binary: The TwitchDownloaderCLI executable (default: looked up on PATH).
         downloader: Downloads the audio (default yt-dlp).
         runner: Executes FFmpeg and FFprobe.
@@ -276,6 +280,9 @@ def ingest_vod(
                     salt=tools.salt,
                     binary=tools.chat_binary,
                     runner=tools.chat_runner,
+                    timeout_s=chat_module.chat_download_timeout_s(
+                        None if vod is None else vod.duration_s
+                    ),
                 )
                 _write_chat(chat_file, replay)
             finally:

@@ -4,7 +4,10 @@ import copy
 import gzip
 import json
 import logging
+import os
+import subprocess
 import sys
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -14,12 +17,16 @@ import pytest
 from pydantic import SecretStr
 
 from autoclipper.ingest.chat import (
+    CHAT_TIMEOUT_BASE_S,
+    CHAT_TIMEOUT_PER_VOD_HOUR_S,
+    DEFAULT_CHAT_TIMEOUT_S,
     PINNED_TOOL_VERSION,
     ChatDownloadError,
     ChatMessage,
     ChatReplay,
     CommandResult,
     build_chatdownload_command,
+    chat_download_timeout_s,
     download_chat,
     find_twitchdownloader,
     parse_chat_json,
@@ -402,9 +409,11 @@ class FakeRunner:
         self.payload = payload
         self.result = CommandResult(returncode, stdout, stderr)
         self.commands: list[list[str]] = []
+        self.timeouts: list[float | None] = []
 
-    def __call__(self, args: Sequence[str]) -> CommandResult:
+    def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
         self.commands.append(list(args))
+        self.timeouts.append(timeout_s)
         if self.payload is not None:
             Path(args[args.index("--output") + 1]).write_bytes(self.payload)
         return self.result
@@ -521,7 +530,7 @@ def test_download_keeps_the_raw_file_when_parsing_fails(fake_binary: Path, raw_p
 
 
 def test_download_reports_a_tool_that_cannot_start(fake_binary: Path, raw_path: Path) -> None:
-    def runner(args: Sequence[str]) -> CommandResult:
+    def runner(args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
         raise PermissionError(13, "Permission denied")
 
     with pytest.raises(ChatDownloadError, match="could not start"):
@@ -581,3 +590,107 @@ def test_run_command_captures_exit_code_and_output() -> None:
     result = run_command([sys.executable, "-c", script])
 
     assert result == CommandResult(3, "out\n", "err\n")
+
+
+# --- The download timeout (issue #89) -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("vod_duration_s", "expected_s"),
+    [
+        pytest.param(None, DEFAULT_CHAT_TIMEOUT_S, id="no-metadata"),
+        pytest.param(0.0, CHAT_TIMEOUT_BASE_S, id="empty-vod"),
+        pytest.param(3600.0, CHAT_TIMEOUT_BASE_S + CHAT_TIMEOUT_PER_VOD_HOUR_S, id="one-hour"),
+        pytest.param(
+            4 * 3600.0,
+            CHAT_TIMEOUT_BASE_S + 4 * CHAT_TIMEOUT_PER_VOD_HOUR_S,
+            id="four-hours",
+        ),
+    ],
+)
+def test_the_chat_timeout_scales_with_the_vod_length(
+    vod_duration_s: float | None, expected_s: float
+) -> None:
+    assert chat_download_timeout_s(vod_duration_s) == expected_s
+
+
+def test_the_timeout_reaches_the_runner(fake_binary: Path, raw_path: Path) -> None:
+    runner = FakeRunner(payload=_dump(_fixture()))
+
+    download_chat(VIDEO_ID, raw_path, salt=SALT, binary=fake_binary, runner=runner, timeout_s=12.5)
+
+    assert runner.timeouts == [12.5]
+
+
+def test_a_download_without_a_limit_of_its_own_still_uses_the_default_cap(
+    fake_binary: Path, raw_path: Path
+) -> None:
+    runner = FakeRunner(payload=_dump(_fixture()))
+
+    download_chat(VIDEO_ID, raw_path, salt=SALT, binary=fake_binary, runner=runner)
+
+    assert runner.timeouts == [DEFAULT_CHAT_TIMEOUT_S]
+
+
+def test_a_runner_timeout_becomes_a_clean_chat_download_error(
+    fake_binary: Path, raw_path: Path
+) -> None:
+    def stalled(args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
+        raise subprocess.TimeoutExpired(list(args), timeout_s or 0.25)
+
+    with pytest.raises(ChatDownloadError) as excinfo:
+        download_chat(
+            VIDEO_ID, raw_path, salt=SALT, binary=fake_binary, runner=stalled, timeout_s=12.0
+        )
+
+    assert "timed out after 12 s" in str(excinfo.value)
+    _assert_clean_error(excinfo.value)
+
+
+def _process_ended(pid: int) -> bool:
+    """True when no live process has ``pid`` (a killed child was reaped, or is gone for good)."""
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        return False
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return True  # the process id no longer exists
+    try:
+        exit_code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return True
+        return exit_code.value != STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def test_run_command_kills_a_timed_out_child_and_does_not_wait_for_it(
+    tmp_path: Path,
+) -> None:
+    pid_file = tmp_path / "child.pid"
+    script = (
+        f"import os, time\nopen({str(pid_file)!r}, 'w').write(str(os.getpid()))\ntime.sleep(60)\n"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(ChatDownloadError, match="did not finish within 1 s and was killed"):
+        run_command([sys.executable, "-c", script], timeout_s=1.0)
+
+    # Killed rather than waited out (the child would sleep for 60 s) ...
+    assert time.monotonic() - started < 30
+    # ... and really gone, not just forgotten.
+    pid = int(pid_file.read_text(encoding="ascii"))
+    deadline = time.monotonic() + 15.0
+    while not _process_ended(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert _process_ended(pid)

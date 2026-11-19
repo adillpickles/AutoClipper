@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -17,7 +18,13 @@ from typer.testing import CliRunner
 from autoclipper.cli import ExitCode, app
 from autoclipper.config import TwitchCredentials
 from autoclipper.ingest.catalog import catalog_path, read_catalog
-from autoclipper.ingest.chat import PINNED_TOOL_VERSION, CommandResult
+from autoclipper.ingest.chat import (
+    DEFAULT_CHAT_TIMEOUT_S,
+    PINNED_TOOL_VERSION,
+    ChatDownloadError,
+    CommandResult,
+    chat_download_timeout_s,
+)
 from autoclipper.ingest.media import (
     DownloadedMedia,
     DownloadRequest,
@@ -125,9 +132,11 @@ class FakeChatTool:
         )
         self.returncode = returncode
         self.calls = 0
+        self.timeouts: list[float | None] = []
 
-    def __call__(self, args: Sequence[str]) -> CommandResult:
+    def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
         self.calls += 1
+        self.timeouts.append(timeout_s)
         Path(args[list(args).index("--output") + 1]).write_bytes(self.payload)
         return CommandResult(self.returncode, BANNER, "")
 
@@ -408,14 +417,76 @@ def test_an_interrupted_chat_download_leaves_no_raw_file(tmp_path: Path, chat_bi
     data = tmp_path / "data"
 
     class Interrupted(FakeChatTool):
-        def __call__(self, args: Sequence[str]) -> CommandResult:
-            super().__call__(args)  # the raw file, with usernames, is on disk now
+        def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
+            super().__call__(args, timeout_s=timeout_s)  # the raw file is on disk now
             raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
         ingest_vod(VIDEO_ID, data_dir=data, tools=tools(chat_binary, chat=Interrupted()))
 
     assert not raw_chat_path(data, VIDEO_ID).exists()
+
+
+@pytest.mark.ffmpeg
+def test_a_timed_out_chat_download_fails_the_step_deletes_the_raw_file_and_moves_on(
+    tmp_path: Path, chat_binary: Path, audio_source: Path
+) -> None:
+    data = tmp_path / "data"
+
+    class Stalled(FakeChatTool):
+        """Writes part of the raw file, then stops making progress until the timeout."""
+
+        def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
+            super().__call__(args, timeout_s=timeout_s)  # records the call, writes the fixture
+            # Overwrite it with a partial file, as a download cut short leaves.
+            Path(args[list(args).index("--output") + 1]).write_bytes(b'{"comments": [')
+            raise subprocess.TimeoutExpired(list(args), timeout_s or 0.0)
+
+    stalled = Stalled()
+
+    report = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, chat=stalled, downloader=FakeDownloader(audio_source)),
+    )
+
+    # The VOD in the fake metadata is 1 h long, so the bound scales with it.
+    assert stalled.timeouts == [chat_download_timeout_s(3600.0)]
+    assert outcomes(report) == {"vod_meta": "ok", "clips": "ok", "chat": "failed", "audio": "ok"}
+    error = read_catalog(data)[("chat", VIDEO_ID)].error or ""
+    assert "timed out after 1200 s" in error
+    # The partial raw file, which holds usernames, is gone.
+    assert not raw_chat_path(data, VIDEO_ID).exists()
+    assert not chat_path(data, VIDEO_ID).exists()
+
+
+def test_the_chat_timeout_falls_back_to_the_fixed_cap_without_the_vods_length(
+    tmp_path: Path, chat_binary: Path
+) -> None:
+    data = tmp_path / "data"
+
+    class Stalled(FakeChatTool):
+        def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
+            super().__call__(args, timeout_s=timeout_s)  # records the call
+            raise subprocess.TimeoutExpired(list(args), timeout_s or 0.0)
+
+    stalled = Stalled()
+
+    # No Helix client, so the metadata step fails and the VOD's length is unknown.
+    no_helix = IngestTools(
+        helix=None,
+        salt=SALT,
+        chat_runner=stalled,
+        chat_binary=chat_binary,
+        downloader=FakeDownloader(None, RuntimeError("offline")),
+        clock=lambda: NOW,
+    )
+
+    report = ingest_vod(VIDEO_ID, data_dir=data, tools=no_helix)
+
+    assert stalled.timeouts == [DEFAULT_CHAT_TIMEOUT_S]
+    assert outcomes(report)["chat"] == "failed"
+    assert "timed out after 3600 s" in (read_catalog(data)[("chat", VIDEO_ID)].error or "")
 
 
 def test_a_leftover_raw_chat_file_is_removed_even_when_chat_is_done(
@@ -655,6 +726,37 @@ def test_the_cli_reports_steps_and_fails_without_credentials(
     assert "TWITCH_CLIENT_ID" in result.output
     assert "run the same command again" in result.output
     assert read_catalog(tmp_path / "data")[("chat", VIDEO_ID)].status == "failed"
+
+
+def test_the_cli_reports_a_chat_timeout_and_still_runs_the_other_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = tmp_path / "data"
+    monkeypatch.setenv("AUTOCLIPPER_DATA_DIR", str(data))
+    monkeypatch.setenv("AUTOCLIPPER_CHAT_HASH_SALT", "test-salt")
+    monkeypatch.setenv("PATH", str(tmp_path))  # no TwitchDownloaderCLI, no yt-dlp network
+
+    def no_network(*_: object, **__: object) -> object:
+        raise RuntimeError("no network in tests")
+
+    monkeypatch.setattr("autoclipper.ingest.vod.prepare_vod_audio", no_network)
+
+    def stalled(*_: object, **__: object) -> object:
+        raise ChatDownloadError(
+            "TwitchDownloaderCLI chatdownload timed out after 3600 s and was killed"
+        )
+
+    monkeypatch.setattr("autoclipper.ingest.chat.download_chat", stalled)
+
+    result = runner.invoke(app, ["ingest", VIDEO_ID])
+
+    assert result.exit_code == ExitCode.EXTERNAL_FAILURE
+    assert "chat: failed" in result.output
+    assert "timed out after 3600 s" in result.output
+    # The audio step ran after the chat step failed; it failed too, on its own network error.
+    assert "audio: failed" in result.output
+    error = read_catalog(data)[("chat", VIDEO_ID)].error or ""
+    assert "timed out after 3600 s" in error
 
 
 # --- Live --------------------------------------------------------------------------------------
