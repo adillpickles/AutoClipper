@@ -15,14 +15,14 @@ progress as each stage begins and the warnings found so far, and fails the job w
 Exports are real: the render worker cuts the requested interval from the job's ``video_path``,
 or from the sample preview video when the job has none, and renders it with
 `autoclipper.export.clip.render_clip` (exact interval, layout, optional captions), one file per
-export. Highlights videos are still simulated: they step through their stages and finish with a
-copy of a pre-generated sample MP4 (#72 replaces that).
+export. Highlights videos are real too (#72): the worker joins the job's resolved segments with
+`autoclipper.export.highlights.render_highlights` (exact cuts, the source's own framing at
+1920x1080, fades, optional captions) from the same source, one file per highlights video.
 """
 
 import logging
 import queue
 import secrets
-import shutil
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -45,6 +45,15 @@ from autoclipper.export.clip import (
 )
 from autoclipper.export.cut import Interval, IntervalTooShortError
 from autoclipper.export.errors import ExportError
+from autoclipper.export.highlights import (
+    HighlightsRequest,
+    HighlightsResult,
+    Segment,
+    render_highlights,
+)
+from autoclipper.export.highlights import (
+    Stage as HighlightsStage,
+)
 from autoclipper.features.chat import Lexicon
 from autoclipper.ffmpeg import FFmpegError, ffmpeg_command, probe, run_command
 from autoclipper.ingest.vod import IngestTools
@@ -93,6 +102,21 @@ class ClipRenderer(Protocol):
         on_stage: Callable[[Stage], None],
     ) -> object:
         """Write `spec.output` or raise."""
+        ...
+
+
+class HighlightsRenderer(Protocol):
+    """Renders one highlights video; `render_highlights` is the real one, tests pass a fake."""
+
+    def __call__(
+        self,
+        request: HighlightsRequest,
+        /,
+        *,
+        transcriber: Transcriber | None,
+        on_stage: Callable[[HighlightsStage], None],
+    ) -> HighlightsResult:
+        """Write `request.output` and return the result, or raise."""
         ...
 
 
@@ -149,7 +173,6 @@ class SampleMedia:
     """The mock's pre-generated files (§ 5, § 11)."""
 
     preview: Path
-    highlights: Path
 
 
 PREVIEW_DURATION_S: Final = 360.0  # the longest mock VOD
@@ -159,46 +182,49 @@ _SAMPLE_TIMEOUT_S: Final = 600.0
 def ensure_sample_media(
     directory: Path, *, preview_duration_s: float = PREVIEW_DURATION_S
 ) -> SampleMedia:
-    """Generate the sample MP4s into `directory` unless they are already there and readable.
+    """Generate the sample MP4 into `directory` unless it is already there and readable.
 
-    The preview is a 640x360 test pattern with a tone, `preview_duration_s` long (exports of a
-    job without a ``video_path`` are cut from it); the highlights sample is 1920x1080, 5 s. All
-    go through the shared FFmpeg runner.
+    The preview is a 640x360 test pattern with a tone, `preview_duration_s` long; exports and
+    highlights videos of a job without a ``video_path`` are cut from it. It goes through the
+    shared FFmpeg runner.
 
     Raises:
         FFmpegError: FFmpeg is missing or failed.
     """
     directory.mkdir(parents=True, exist_ok=True)
-    specs = {
-        "preview": ("preview.mp4", 640, 360, preview_duration_s),
-        "highlights": ("highlights-1920x1080.mp4", 1920, 1080, 5.0),
-    }
-    paths: dict[str, Path] = {}
-    for name, (filename, width, height, duration_s) in specs.items():
-        path = directory / filename
-        paths[name] = path
-        if path.is_file():
-            try:
-                info = probe(path)
-                if info.duration_s >= duration_s - 0.5 and info.video_streams:
-                    continue
-            except FFmpegError:
-                pass  # damaged: generate it again
-        partial = path.with_name(f"{path.stem}.part.mp4")
-        command = ffmpeg_command(
-            "-y",
-            *("-f", "lavfi", "-i", f"testsrc2=size={width}x{height}:rate=10:duration={duration_s}"),
-            *("-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={duration_s}"),
-            *("-c:v", "libx264", "-preset", "ultrafast", "-crf", "32", "-pix_fmt", "yuv420p"),
-            *("-c:a", "aac", "-movflags", "+faststart", "-shortest", partial),
-        )
+    path = directory / "preview.mp4"
+    if path.is_file():
         try:
-            run_command(command, timeout_s=_SAMPLE_TIMEOUT_S)
-            partial.replace(path)
-        finally:
-            partial.unlink(missing_ok=True)
-        log.info("generated mock sample media path=%s", path)
-    return SampleMedia(paths["preview"], paths["highlights"])
+            info = probe(path)
+            if info.duration_s >= preview_duration_s - 0.5 and info.video_streams:
+                return SampleMedia(path)
+        except FFmpegError:
+            pass  # damaged: generate it again
+    partial = path.with_name(f"{path.stem}.part.mp4")
+    command = ffmpeg_command(
+        "-y",
+        *(
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc2=size=640x360:rate=10:duration={preview_duration_s}",
+        ),
+        *(
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:sample_rate=48000:duration={preview_duration_s}",
+        ),
+        *("-c:v", "libx264", "-preset", "ultrafast", "-crf", "32", "-pix_fmt", "yuv420p"),
+        *("-c:a", "aac", "-movflags", "+faststart", "-shortest", partial),
+    )
+    try:
+        run_command(command, timeout_s=_SAMPLE_TIMEOUT_S)
+        partial.replace(path)
+    finally:
+        partial.unlink(missing_ok=True)
+    log.info("generated mock sample media path=%s", path)
+    return SampleMedia(path)
 
 
 # --- Records -----------------------------------------------------------------------------------
@@ -343,6 +369,7 @@ class MockService:
     export_region: tuple[float, float, float, float] | None = None
     transcriber: Transcriber | None = None
     render: ClipRenderer = render_clip
+    highlights_render: HighlightsRenderer = render_highlights
     job_runner: Literal["mock", "pipeline"] = "mock"
     data_dir: Path | None = None
     artifacts_dir: Path | None = None
@@ -926,47 +953,71 @@ class MockService:
         if record.kind == "export":
             self._run_export(record)
             return
-        stages = [
-            (index, stage)
-            for index, stage in enumerate(RENDER_STAGES, start=1)
-            if stage != "transcribing" or record.captions  # skipped stages are passed over
-        ]
-        for position, (index, stage) in enumerate(stages):
-            message = _RENDER_MESSAGES.get(stage, "Rendering the highlights video")
-            with self._lock:
-                now = self.clock()
-                if position == 0:  # running and its first progress together (§ 3.4)
-                    record.state = "running"
-                    record.times.started_at = now
-                record.progress = Progress(
-                    stage=stage,
-                    stage_index=index,
-                    stage_count=len(RENDER_STAGES),
-                    stage_fraction=None,
-                    message=message,
-                )
-                record.times.updated_at = now
-            self._sleep()
-        sample = self.samples.highlights
-        folder = self.output_dir / "highlights"
-        folder.mkdir(parents=True, exist_ok=True)
-        target = folder / f"{render_id}.mp4"
-        partial = folder / f"{render_id}.part"
-        try:  # never leave a truncated file under the final name
-            shutil.copyfile(sample, partial)
-            partial.replace(target)
-        finally:
-            partial.unlink(missing_ok=True)
+        self._run_highlights(record)
+
+    def _run_highlights(self, record: _RenderRecord) -> None:
+        """Render one highlights video for real (§ 7.3): obtain the media, transcribe, join."""
+        self._set_render_stage(record, "obtaining_media")
         with self._lock:
-            now = self.clock()
-            record.file = target
-            record.state = "done"
-            record.progress = None
-            record.times.updated_at = record.times.finished_at = now
+            video_path = self._jobs[record.job_id].video_path
+        source = Path(video_path) if video_path is not None else self.samples.preview
+        if not source.is_file():
+            self._finish_render(
+                record,
+                error=ApiError(
+                    code="media_unavailable",
+                    message=_LOCAL_FILE_MISSING,
+                    details={"reason": "local_file_missing"},
+                ),
+            )
+            return
+        folder = self.output_dir / "highlights"
+        target = folder / f"{record.render_id}.mp4"
+        request = HighlightsRequest(
+            source=source,
+            segments=[
+                Segment(segment.candidate_id, segment.start_s, segment.end_s)
+                for segment in record.segments
+            ],
+            output=target,
+            order=record.order,
+            captions=record.captions,
+            overwrite=True,
+        )
+        try:
+            result = self.highlights_render(
+                request,
+                transcriber=self.transcriber,
+                on_stage=lambda stage: self._set_render_stage(record, stage),
+            )
+        except CaptioningError as exc:
+            log.warning("highlights captions failed id=%s: %s", record.render_id, exc)
+            self._finish_render(record, error=_CAPTIONING_FAILED)
+            return
+        except (SourceMissingError, FileNotFoundError):
+            self._finish_render(
+                record,
+                error=ApiError(
+                    code="media_unavailable",
+                    message=_LOCAL_FILE_MISSING,
+                    details={"reason": "local_file_missing"},
+                ),
+            )
+            return
+        except (ExportError, FFmpegError, OSError) as exc:
+            log.warning("highlights render failed id=%s: %s", record.render_id, exc)
+            self._finish_render(record, error=_RENDER_FAILED)
+            return
+        # The finished file's probed duration replaces the planned total, published together
+        # with the done state (§ 7.2).
+        self._finish_render(record, file=result.output, duration_s=result.duration_s)
 
     def _set_render_stage(self, record: _RenderRecord, stage: str) -> None:
         index = RENDER_STAGES.index(stage) + 1
-        message = _RENDER_MESSAGES.get(stage, "Rendering the clip")
+        final = (
+            "Rendering the clip" if record.kind == "export" else "Rendering the highlights video"
+        )
+        message = _RENDER_MESSAGES.get(stage, final)
         with self._lock:
             now = self.clock()
             if record.state == "queued":  # running and its first progress together (§ 3.4)
@@ -982,7 +1033,12 @@ class MockService:
             record.times.updated_at = now
 
     def _finish_render(
-        self, record: _RenderRecord, *, file: Path | None = None, error: ApiError | None = None
+        self,
+        record: _RenderRecord,
+        *,
+        file: Path | None = None,
+        error: ApiError | None = None,
+        duration_s: float | None = None,
     ) -> None:
         with self._lock:
             now = self.clock()
@@ -991,6 +1047,10 @@ class MockService:
             record.error = error
             if error is None:
                 record.progress = None
+                # Published with the state, so a status read never sees done with the
+                # planned duration still in place (§ 7.2; the highlights probed it).
+                if duration_s is not None:
+                    record.duration_s = duration_s
             record.times.updated_at = record.times.finished_at = now
 
     def _run_export(self, record: _RenderRecord) -> None:

@@ -4,6 +4,7 @@ import { ApiRequestError } from "@/lib/api/errors";
 import {
   createMockClient,
   exportAt,
+  highlightsAt,
   jobAt,
   MOCK_RENDER_STEP_MS,
   MOCK_STEP_MS,
@@ -311,5 +312,293 @@ describe("exportAt", () => {
     expect(exportAt(exports.exp_a, at, starts.get("exp_a")).state).toBe(
       "running",
     );
+  });
+});
+
+describe("highlightsAt", () => {
+  const item = (id: string, createdMs: number, captions = false) => ({
+    highlights: {
+      highlights_id: id,
+      job_id: "job_x",
+      video_id: "9000000001",
+      segments: [
+        { candidate_id: "c001", start_s: 118, end_s: 148 },
+        { candidate_id: "c003", start_s: 40, end_s: 62 },
+      ],
+      order: "chronological" as const,
+      captions,
+      created_at: "2026-11-04T12:00:00Z",
+    },
+    created_ms: createdMs,
+  });
+
+  it("is queued first, then walks its stages, then is done with the total duration", () => {
+    const stored = item("hl_x", T0);
+    expect(highlightsAt(stored, T0).state).toBe("queued");
+    expect(highlightsAt(stored, T0).duration_s).toBeNull();
+    expect(
+      highlightsAt(stored, T0 + MOCK_RENDER_STEP_MS).progress,
+    ).toMatchObject({
+      stage: "obtaining_media",
+      stage_index: 1,
+      stage_count: 3,
+    });
+    expect(
+      highlightsAt(stored, T0 + MOCK_RENDER_STEP_MS).progress?.message,
+    ).toBe("Getting the video");
+    expect(
+      highlightsAt(stored, T0 + 2 * MOCK_RENDER_STEP_MS).progress?.stage,
+    ).toBe("rendering");
+    const done = highlightsAt(stored, T0 + 3 * MOCK_RENDER_STEP_MS);
+    expect(done.state).toBe("done");
+    expect(done.progress).toBeNull();
+    expect(done.download_url).toBe("/mock-media/highlights.mp4");
+    expect(done.duration_s).toBeCloseTo(52); // 30 s + 22 s
+  });
+
+  it("transcribes between obtaining and rendering when captions are on", () => {
+    const stored = item("hl_c", T0, true);
+    expect(
+      highlightsAt(stored, T0 + 2 * MOCK_RENDER_STEP_MS).progress?.stage,
+    ).toBe("transcribing");
+    expect(highlightsAt(stored, T0 + 4 * MOCK_RENDER_STEP_MS).state).toBe(
+      "done",
+    );
+  });
+
+  it("shares one render queue with exports, first in, first out", () => {
+    const exports = {
+      exp_a: {
+        export: {
+          export_id: "exp_a",
+          job_id: "job_x",
+          candidate_id: "c001",
+          video_id: "9000000001",
+          start_s: 0,
+          end_s: 30,
+          layout: "center_crop",
+          captions: true,
+          created_at: "2026-11-04T12:00:00Z",
+        },
+        created_ms: T0,
+      },
+    };
+    const highlights = { hl_a: item("hl_a", T0 + 1) };
+    const starts = renderSchedule(exports, highlights);
+    expect(starts.get("exp_a")).toBe(T0 + MOCK_RENDER_STEP_MS);
+    // after the export's three stages
+    expect(starts.get("hl_a")).toBe(T0 + 4 * MOCK_RENDER_STEP_MS);
+  });
+});
+
+describe("createMockClient highlights", () => {
+  beforeEach(() => resetMockStore());
+
+  it("makes a highlights video from the top candidates and walks to done", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const { job } = await client.createJob({ vod: "9000000001" });
+    now += 12 * MOCK_STEP_MS;
+
+    const { highlights: created } = await client.createHighlights({
+      job_id: job.job_id,
+    });
+    expect(created.state).toBe("queued");
+    expect(created.segments.map((s) => s.candidate_id)).toEqual([
+      "c003",
+      "c001",
+      "c002",
+    ]); // stream order
+    now += 3 * MOCK_RENDER_STEP_MS;
+    const done = await client.getHighlights(created.highlights_id);
+    expect(done.state).toBe("done");
+    expect(done.download_url).toBe("/mock-media/highlights.mp4");
+    expect(done.duration_s).toBeCloseTo(77); // 22 + 30 + 25
+  });
+
+  it("puts the best first with rank order and honours explicit trims", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const { job } = await client.createJob({ vod: "9000000001" });
+    now += 12 * MOCK_STEP_MS;
+
+    const { highlights } = await client.createHighlights({
+      job_id: job.job_id,
+      order: "rank",
+      count: 2,
+    });
+    expect(highlights.segments.map((s) => s.candidate_id)).toEqual([
+      "c001",
+      "c002",
+    ]);
+
+    const trimmed = await client.createHighlights({
+      job_id: job.job_id,
+      segments: [{ candidate_id: "c001", start_s: 120, end_s: 140 }],
+    });
+    expect(trimmed.highlights.segments).toEqual([
+      { candidate_id: "c001", start_s: 120, end_s: 140 },
+    ]);
+    expect(trimmed.highlights.state).toBe("queued");
+    now += 5 * MOCK_RENDER_STEP_MS; // behind the earlier request on the shared queue
+    const done = await client.getHighlights(trimmed.highlights.highlights_id);
+    expect(done.duration_s).toBeCloseTo(20);
+  });
+
+  it("returns the running video instead of making the same one twice", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const { job } = await client.createJob({ vod: "9000000001" });
+    now += 12 * MOCK_STEP_MS;
+    const first = await client.createHighlights({ job_id: job.job_id });
+    const again = await client.createHighlights({
+      job_id: job.job_id,
+      segments: first.highlights.segments,
+    });
+    expect(again.created).toBe(false);
+    expect(again.highlights.highlights_id).toBe(first.highlights.highlights_id);
+  });
+
+  it("rejects the same bad requests the contract does", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const empty = (await client.createJob({ vod: "9000000006" })).job;
+    const normal = (await client.createJob({ vod: "9000000011" })).job;
+    now += 24 * MOCK_STEP_MS; // both jobs, one after the other
+
+    await expect(
+      client.createHighlights({ job_id: empty.job_id }),
+    ).rejects.toMatchObject({
+      status: 422,
+      error: {
+        code: "invalid_highlights_bounds",
+        details: { segment_index: null },
+      },
+    });
+    await expect(
+      client.createHighlights({
+        job_id: normal.job_id,
+        segments: [{ candidate_id: "c999", start_s: 0, end_s: 30 }],
+      }),
+    ).rejects.toMatchObject({
+      status: 404,
+      error: { code: "candidate_not_found" },
+    });
+    await expect(
+      client.createHighlights({
+        job_id: normal.job_id,
+        segments: [{ candidate_id: "c001", start_s: 0, end_s: 120 }],
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      error: {
+        code: "invalid_highlights_bounds",
+        details: { segment_index: 0 },
+      },
+    });
+  });
+
+  it("reports bounds by ordered index and candidates before bounds", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const { job } = await client.createJob({ vod: "9000000011" });
+    now += 12 * MOCK_STEP_MS;
+
+    // An unknown candidate is reported even when an earlier segment breaks the bounds.
+    await expect(
+      client.createHighlights({
+        job_id: job.job_id,
+        segments: [
+          { candidate_id: "c001", start_s: 0, end_s: 120 },
+          { candidate_id: "c999", start_s: 0, end_s: 30 },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      status: 404,
+      error: { code: "candidate_not_found" },
+    });
+    // The offending segment's index is into the resolved, ordered list (§ 7.1): c001's
+    // over-long trim is input index 0 but ordered index 1, after c003's earlier start.
+    await expect(
+      client.createHighlights({
+        job_id: job.job_id,
+        segments: [
+          { candidate_id: "c001", start_s: 200, end_s: 320 },
+          { candidate_id: "c003", start_s: 40, end_s: 62 },
+          { candidate_id: "c002", start_s: 251.5, end_s: 276.5 },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      error: {
+        code: "invalid_highlights_bounds",
+        details: { segment_index: 1 },
+      },
+    });
+  });
+
+  it("checks every candidate before any media availability", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const noMedia = (await client.createJob({ vod: "9000000007" })).job;
+    now += 12 * MOCK_STEP_MS;
+
+    // c001 has no media in this scenario and c999 doesn't exist: the contract's check
+    // order still answers candidate_not_found first (§ 7.1).
+    await expect(
+      client.createHighlights({
+        job_id: noMedia.job_id,
+        segments: [
+          { candidate_id: "c001", start_s: 0, end_s: 30 },
+          { candidate_id: "c999", start_s: 0, end_s: 30 },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      status: 404,
+      error: { code: "candidate_not_found" },
+    });
+  });
+
+  it("keeps one first-in-first-out queue across exports and highlights", async () => {
+    resetMockStore();
+    let now = T0;
+    const client = createMockClient(() => now);
+    const { job } = await client.createJob({ vod: "9000000041" });
+    now += 12 * MOCK_STEP_MS;
+    // Three renders in the same millisecond: two exports, then a highlights video.
+    const ids: string[] = [];
+    for (const [id, start] of [
+      ["c001", 118],
+      ["c002", 251.5],
+    ] as const) {
+      const { export: created } = await client.createExport({
+        job_id: job.job_id,
+        candidate_id: id,
+        start_s: start,
+        end_s: start + 20,
+        layout: "center_crop",
+        captions: false,
+      });
+      ids.push(created.export_id);
+    }
+    const { highlights } = await client.createHighlights({
+      job_id: job.job_id,
+    });
+
+    now += 4 * MOCK_RENDER_STEP_MS; // the first export is done, the second is rendering
+    const states = await Promise.all([
+      client.getExport(ids[0]).then((e) => e.state),
+      client.getExport(ids[1]).then((e) => e.state),
+      client.getHighlights(highlights.highlights_id).then((v) => v.state),
+    ]);
+    expect(states).toEqual(["done", "running", "queued"]); // the video doesn't jump the queue
+  });
+
+  it("answers an unknown highlights video with highlights_not_found", async () => {
+    const error = await createMockClient(() => T0)
+      .getHighlights("hl_missing")
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiRequestError);
+    expect((error as ApiRequestError).error.code).toBe("highlights_not_found");
   });
 });

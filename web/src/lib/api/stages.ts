@@ -22,3 +22,10 @@ export const EXPORT_STAGES: readonly StageInfo[] = [
   { stage: "transcribing", message: "Generating captions" },
   { stage: "rendering", message: "Rendering the clip" },
 ];
+
+/** The three highlights stages, in order (§ 7.3). */
+export const HIGHLIGHTS_STAGES: readonly StageInfo[] = [
+  { stage: "obtaining_media", message: "Getting the video" },
+  { stage: "transcribing", message: "Generating captions" },
+  { stage: "rendering", message: "Rendering the highlights video" },
+];

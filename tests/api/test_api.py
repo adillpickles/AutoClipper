@@ -24,6 +24,15 @@ from autoclipper.export.captions import CaptioningError, Stage, Transcriber, Wor
 from autoclipper.export.clip import ClipSpec, IntervalOutsideMediaError, SourceMissingError
 from autoclipper.export.cut import IntervalTooShortError
 from autoclipper.export.errors import ExportError
+from autoclipper.export.highlights import (
+    HighlightsRequest,
+    HighlightsResult,
+    Segment,
+    render_highlights,
+)
+from autoclipper.export.highlights import (
+    Stage as HighlightsStage,
+)
 from autoclipper.features.chat import Lexicon, load_lexicon
 from autoclipper.ffmpeg import FFmpegExitError, ffmpeg_command, probe
 from autoclipper.ingest.chat import PINNED_TOOL_VERSION, CommandResult
@@ -36,14 +45,11 @@ API = "/api/v1"
 
 @pytest.fixture
 def samples(tmp_path: Path) -> SampleMedia:
-    """Stand-in sample files: the routes only serve bytes, they never decode them."""
-    paths = []
-    for name in ("preview.mp4", "highlights.mp4"):
-        path = tmp_path / "samples" / name
-        path.parent.mkdir(exist_ok=True)
-        path.write_bytes(name.encode() * 1000)
-        paths.append(path)
-    return SampleMedia(*paths)
+    """A stand-in sample file: the routes only serve bytes, they never decode them."""
+    path = tmp_path / "samples" / "preview.mp4"
+    path.parent.mkdir(exist_ok=True)
+    path.write_bytes(b"preview.mp4" * 1000)
+    return SampleMedia(path)
 
 
 class FakeRenderer:
@@ -82,6 +88,60 @@ class FakeRenderer:
         return None
 
 
+class FakeHighlightsRenderer:
+    """Stands in for `render_highlights`: records each request, reports the stages, writes."""
+
+    def __init__(
+        self,
+        error: Exception | None = None,
+        *,
+        delay_s: float = 0.0,
+        duration_s: float | None = None,
+    ) -> None:
+        self.error = error
+        self.delay_s = delay_s
+        self.duration_s = duration_s
+        self.requests: list[HighlightsRequest] = []
+        self.stages: list[HighlightsStage] = []
+
+    def __call__(
+        self,
+        request: HighlightsRequest,
+        /,
+        *,
+        transcriber: Transcriber | None,
+        on_stage: Callable[[HighlightsStage], None],
+    ) -> HighlightsResult:
+        del transcriber  # the fake writes no captions; the stages show whether they were asked
+        self.requests.append(request)
+        stages: list[HighlightsStage] = (
+            ["obtaining_media", "transcribing", "rendering"]
+            if request.captions
+            else ["obtaining_media", "rendering"]
+        )
+        for stage in stages:
+            on_stage(stage)
+            self.stages.append(stage)
+            time.sleep(self.delay_s)
+        if self.error is not None:
+            raise self.error
+        request.output.parent.mkdir(parents=True, exist_ok=True)
+        request.output.write_bytes(b"rendered highlights")
+        return HighlightsResult(
+            output=request.output,
+            segments=tuple(request.segments),
+            order=request.order,
+            captions=request.captions,
+            duration_s=self.duration_s
+            if self.duration_s is not None
+            else sum(segment.end_s - segment.start_s for segment in request.segments),
+            width=1920,
+            height=1080,
+            video_codec="h264",
+            audio_codec="aac",
+        )
+
+
 @pytest.fixture
 def make_client(
     tmp_path: Path, samples: SampleMedia
@@ -96,6 +156,7 @@ def make_client(
             "synchronous": True,
             "probe_video": lambda path: path.suffix == ".mp4",
             "render": FakeRenderer(),
+            "highlights_render": FakeHighlightsRenderer(),
         }
         options.update(kwargs)
         service = MockService(**options)  # type: ignore[arg-type]
@@ -897,6 +958,109 @@ def test_highlights_errors_for_unknown_ids(client: TestClient) -> None:
     assert error_code(file) == "highlights_not_found"
 
 
+def test_the_highlights_render_gets_the_job_and_reports_its_stages(
+    make_client: Callable[..., tuple[TestClient, MockService]], samples: SampleMedia
+) -> None:
+    """The worker passes the resolved segments and the job's (or sample's) source to the
+    renderer, and the renderer's stages reach the record (#72)."""
+    fake = FakeHighlightsRenderer()
+    client, _ = make_client(highlights_render=fake)
+    job = done_job(client)
+
+    plain = client.post(f"{API}/highlights", json={"job_id": job["job_id"], "count": 1}).json()
+    captioned = client.post(
+        f"{API}/highlights",
+        json={"job_id": job["job_id"], "count": 1, "captions": True, "order": "rank"},
+    ).json()
+
+    plain_request, captioned_request = fake.requests
+    assert fake.stages == [
+        "obtaining_media",
+        "rendering",
+        "obtaining_media",
+        "transcribing",
+        "rendering",
+    ]
+    assert plain_request.source == samples.preview == captioned_request.source
+    assert plain_request.output.name == f"{plain['highlights_id']}.mp4"
+    assert plain_request.segments == [Segment("c001", 118.0, 148.0)]  # count 1: the best
+    assert plain_request.order == "chronological"
+    assert not plain_request.captions
+    assert captioned_request.captions
+    assert captioned_request.order == "rank"
+    plain = client.get(f"{API}/highlights/{plain['highlights_id']}").json()
+    captioned = client.get(f"{API}/highlights/{captioned['highlights_id']}").json()
+    assert plain["state"] == "done"
+    assert captioned["state"] == "done"
+    assert plain["duration_s"] == pytest.approx(30.0)  # the rendered file's duration
+    assert captioned["duration_s"] == pytest.approx(30.0)
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (CaptioningError("no captions extra"), "captioning_failed"),
+        (SourceMissingError("gone"), "media_unavailable"),
+        (ExportError("boom"), "render_failed"),
+        (OSError("disk"), "render_failed"),
+    ],
+    ids=["captions", "missing", "render", "os"],
+)
+def test_a_failing_highlights_render_keeps_the_contract_code(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    error: Exception,
+    code: str,
+) -> None:
+    fake = FakeHighlightsRenderer(error)
+    client, _ = make_client(highlights_render=fake)
+    job = done_job(client)
+
+    created = client.post(f"{API}/highlights", json={"job_id": job["job_id"]})
+
+    video = client.get(f"{API}/highlights/{created.json()['highlights_id']}").json()
+    assert video["state"] == "failed"
+    assert video["error"]["code"] == code
+    assert video["download_url"] is None
+
+
+def test_a_done_highlights_video_carries_the_renderers_duration(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    """`duration_s` is the finished file's, published together with the done state (§ 7.2):
+    the read that first sees done already carries it, never the planned total."""
+    fake = FakeHighlightsRenderer(duration_s=123.4)
+    client, _ = make_client(synchronous=False, highlights_render=fake)
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()
+    wait_until(lambda: client.get(f"{API}/jobs/{job['job_id']}").json()["state"] == "done")
+
+    created = client.post(f"{API}/highlights", json={"job_id": job["job_id"]})
+
+    deadline = time.monotonic() + 10.0
+    while True:
+        video = client.get(f"{API}/highlights/{created.json()['highlights_id']}").json()
+        assert video["state"] != "failed", video["error"]
+        if video["state"] == "done":
+            break
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
+    assert video["duration_s"] == pytest.approx(123.4)  # never the planned 77 s
+
+
+def test_a_highlights_video_of_a_job_without_its_local_file_is_rejected(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A job whose video_path was deleted is rejected at creation, like an export (§ 7.1)."""
+    video = tmp_path / "vod.mp4"
+    video.write_bytes(b"x")
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(video)}).json()
+    video.unlink()
+
+    response = client.post(f"{API}/highlights", json={"job_id": job["job_id"]})
+
+    assert (response.status_code, error_code(response)) == (409, "media_unavailable")
+    assert response.json()["error"]["details"] == {"reason": "local_file_missing"}
+
+
 # --- CORS --------------------------------------------------------------------------------------
 
 
@@ -923,16 +1087,15 @@ def test_cors_allows_the_local_frontend_only(client: TestClient) -> None:
 
 
 @pytest.mark.ffmpeg
-def test_sample_media_has_the_contract_sizes_and_is_reused(tmp_path: Path) -> None:
+def test_sample_media_has_the_contract_size_and_is_reused(tmp_path: Path) -> None:
     samples = ensure_sample_media(tmp_path / "media", preview_duration_s=3.0)
 
-    preview, highlights = (probe(p) for p in (samples.preview, samples.highlights))
+    preview = probe(samples.preview)
     assert preview.duration_s == pytest.approx(3.0, abs=0.2)
     assert preview.audio_streams
-    assert (highlights.video_streams[0].width, highlights.video_streams[0].height) == (1920, 1080)
-    before = samples.highlights.stat().st_mtime_ns
+    before = samples.preview.stat().st_mtime_ns
     again = ensure_sample_media(tmp_path / "media", preview_duration_s=3.0)
-    assert again.highlights.stat().st_mtime_ns == before  # not generated again
+    assert again.preview.stat().st_mtime_ns == before  # not generated again
 
 
 class FixedWords:
@@ -971,6 +1134,42 @@ def _real_render() -> object:
     from autoclipper.export.clip import render_clip
 
     return render_clip
+
+
+@pytest.mark.ffmpeg
+def test_a_real_highlights_video_of_the_sample_video(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    """The endpoints render a highlights video for real (#72): two short segments of the
+    sample, joined at 1920x1080 with the source's framing, served for download."""
+    samples = ensure_sample_media(tmp_path / "media", preview_duration_s=6.0)
+    client, _ = make_client(samples=samples, highlights_render=render_highlights)
+    job = done_job(client)
+
+    created = client.post(
+        f"{API}/highlights",
+        json={
+            "job_id": job["job_id"],
+            "segments": [
+                {"candidate_id": "c003", "start_s": 0.5, "end_s": 2.0},
+                {"candidate_id": "c001", "start_s": 3.0, "end_s": 4.5},
+            ],
+            "order": "chronological",
+        },
+    )
+
+    assert created.status_code == 201
+    video = client.get(f"{API}/highlights/{created.json()['highlights_id']}").json()
+    assert video["state"] == "done", video["error"]
+    assert video["duration_s"] == pytest.approx(3.0, abs=0.1)  # the finished file's duration
+    file = client.get(video["download_url"])
+    out = tmp_path / "download.mp4"
+    out.write_bytes(file.content)
+    info = probe(out)
+    assert (info.video_streams[0].width, info.video_streams[0].height) == (1920, 1080)
+    assert info.video_streams[0].codec_name == "h264"
+    assert info.audio_streams[0].codec_name == "aac"
+    assert info.duration_s == pytest.approx(3.0, abs=0.1)
 
 
 def test_a_500_keeps_its_cors_headers(
@@ -1061,7 +1260,9 @@ def test_a_running_job_always_has_progress(
 def test_a_null_segments_request_dedupes_with_its_explicit_equivalent(
     make_client: Callable[..., tuple[TestClient, MockService]],
 ) -> None:
-    client, _ = make_client(synchronous=False, step_s=0.05)
+    client, _ = make_client(
+        synchronous=False, step_s=0.05, highlights_render=FakeHighlightsRenderer(delay_s=0.5)
+    )
     job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
     wait_until(lambda: client.get(f"{API}/jobs/{job_id}").json()["state"] == "done")
     explicit = [

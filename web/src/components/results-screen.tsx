@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { ClipCard, type ClipExport } from "@/components/clip-card";
+import { HighlightsDialog } from "@/components/highlights-dialog";
 import {
   ApiRequestError,
   getApiClient,
@@ -68,6 +69,7 @@ export function ResultsScreen() {
   const { jobId } = useParams<{ jobId: string }>();
   const [view, setView] = useState<View>({ kind: "loading" });
   const [clips, setClips] = useState<Record<string, ClipExport>>({});
+  const [highlightsOpen, setHighlightsOpen] = useState(false);
   const downloads = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -365,6 +367,13 @@ export function ResultsScreen() {
             </div>
             <button
               type="button"
+              onClick={() => setHighlightsOpen(true)}
+              className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-zinc-900 ring-1 ring-zinc-300 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none dark:bg-zinc-900 dark:text-zinc-100 dark:ring-zinc-700 dark:hover:bg-zinc-800"
+            >
+              Make highlights video
+            </button>
+            <button
+              type="button"
               onClick={downloadAll}
               disabled={ready.length === 0}
               className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
@@ -390,6 +399,16 @@ export function ResultsScreen() {
             </ol>
           </div>
         </section>
+      )}
+
+      {highlightsOpen && (
+        <HighlightsDialog
+          jobId={jobId}
+          videoId={vod.video_id}
+          vodDurationS={vod.duration_s}
+          candidates={top}
+          onClose={() => setHighlightsOpen(false)}
+        />
       )}
     </div>
   );

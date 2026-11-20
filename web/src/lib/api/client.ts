@@ -8,8 +8,10 @@ import type {
   AnalysisResult,
   CandidateMedia,
   CreateExportRequest,
+  CreateHighlightsRequest,
   CreateJobRequest,
   Export,
+  HighlightsVideo,
   Job,
 } from "@/lib/api/types";
 
@@ -31,6 +33,13 @@ export interface ApiClient {
   ): Promise<{ export: Export; created: boolean }>;
   /** `GET /exports/{export_id}`. */
   getExport(exportId: string): Promise<Export>;
+  /** `POST /highlights`: `created` is false when a queued or running video for the same
+   * request came back. */
+  createHighlights(
+    request: CreateHighlightsRequest,
+  ): Promise<{ highlights: HighlightsVideo; created: boolean }>;
+  /** `GET /highlights/{highlights_id}`. */
+  getHighlights(highlightsId: string): Promise<HighlightsVideo>;
   /** Resolve a root-relative URL from a response against the API origin (§ 1). */
   resolveUrl(url: string): string;
 }

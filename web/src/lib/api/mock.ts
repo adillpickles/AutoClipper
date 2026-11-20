@@ -16,12 +16,15 @@ import type {
   ApiError,
   CandidateMedia,
   CreateExportRequest,
+  CreateHighlightsRequest,
   CreateJobRequest,
   Export,
+  HighlightsSegment,
+  HighlightsVideo,
   Job,
   Progress,
 } from "@/lib/api/types";
-import { EXPORT_STAGES, JOB_STAGES } from "@/lib/api/stages";
+import { EXPORT_STAGES, HIGHLIGHTS_STAGES, JOB_STAGES } from "@/lib/api/stages";
 import { INVALID_VOD_MESSAGE, looksAbsolute, parseVod } from "@/lib/api/vod";
 
 /** Length of one mock step (queued, then each stage). */
@@ -32,6 +35,7 @@ const NO_MEDIA_VIDEO_ID = "9000000007";
 /** Sample files the results screen (#30) serves from `public/mock-media/`. */
 const PREVIEW_URL = "/mock-media/preview.mp4";
 const CLIP_URL = "/mock-media/clip.mp4";
+const HIGHLIGHTS_URL = "/mock-media/highlights.mp4";
 
 interface Scenario {
   result?: AnalysisResult;
@@ -124,17 +128,45 @@ interface StoredExport {
   seq?: number;
 }
 
+interface StoredHighlights {
+  highlights: Omit<
+    HighlightsVideo,
+    | "state"
+    | "progress"
+    | "error"
+    | "download_url"
+    | "duration_s"
+    | "started_at"
+    | "updated_at"
+    | "finished_at"
+  >;
+  created_ms: number;
+  /** Creation order within highlights videos; renders interleave with exports by time (§ 9.3). */
+  seq?: number;
+}
+
 interface Store {
   jobs: Record<string, StoredJob>;
   exports: Record<string, StoredExport>;
+  highlights: Record<string, StoredHighlights>;
+  /** One enqueue counter across both render kinds, so equal timestamps stay first in, first out. */
+  next_seq: number;
 }
 
-let memory: Store = { jobs: {}, exports: {} };
+let memory: Store = { jobs: {}, exports: {}, highlights: {}, next_seq: 0 };
 
 function load(): Store {
   try {
     const text = window.localStorage.getItem(STORAGE_KEY);
-    if (text) memory = JSON.parse(text) as Store;
+    if (text) {
+      const parsed = JSON.parse(text) as Partial<Store>;
+      memory = {
+        jobs: parsed.jobs ?? {},
+        exports: parsed.exports ?? {},
+        highlights: parsed.highlights ?? {},
+        next_seq: parsed.next_seq ?? 0,
+      };
+    }
   } catch {
     // No localStorage (blocked, server render): keep the in-memory copy.
   }
@@ -399,26 +431,59 @@ function renderStages(captions: boolean) {
   );
 }
 
+function highlightsStages(captions: boolean) {
+  return HIGHLIGHTS_STAGES.map((s, i) => ({ ...s, index: i + 1 })).filter(
+    (s) => s.stage !== "transcribing" || captions,
+  );
+}
+
+/** One queued render of either kind: what the shared render worker (§ 9.3) needs to plan. */
+interface RenderSlot {
+  id: string;
+  created_ms: number;
+  seq: number;
+  steps: number;
+}
+
+function renderSlots(
+  exports: Record<string, StoredExport>,
+  highlights: Record<string, StoredHighlights>,
+): RenderSlot[] {
+  return [
+    ...Object.values(exports).map((item) => ({
+      id: item.export.export_id,
+      created_ms: item.created_ms,
+      seq: item.seq ?? 0,
+      steps: renderStages(item.export.captions).length,
+    })),
+    ...Object.values(highlights).map((item) => ({
+      id: item.highlights.highlights_id,
+      created_ms: item.created_ms,
+      seq: item.seq ?? 0,
+      steps: highlightsStages(item.highlights.captions).length,
+    })),
+  ];
+}
+
 /**
- * When each export starts rendering: one render at a time, first in first out (§ 9.3), after
- * being queued for at least one step.
+ * When each render starts: one render at a time, first in first out across exports and
+ * highlights videos (§ 9.3), after being queued for at least one step.
  */
 export function renderSchedule(
   exports: Record<string, StoredExport>,
+  highlights: Record<string, StoredHighlights> = {},
   stepMs = MOCK_RENDER_STEP_MS,
 ): Map<string, number> {
   const starts = new Map<string, number>();
   let free = -Infinity;
-  const ordered = Object.values(exports).sort(
+  const ordered = renderSlots(exports, highlights).sort(
     (a, b) =>
-      a.created_ms - b.created_ms ||
-      (a.seq ?? 0) - (b.seq ?? 0) ||
-      a.export.export_id.localeCompare(b.export.export_id),
+      a.created_ms - b.created_ms || a.seq - b.seq || a.id.localeCompare(b.id),
   );
-  for (const item of ordered) {
-    const start = Math.max(item.created_ms + stepMs, free);
-    starts.set(item.export.export_id, start);
-    free = start + renderStages(item.export.captions).length * stepMs;
+  for (const slot of ordered) {
+    const start = Math.max(slot.created_ms + stepMs, free);
+    starts.set(slot.id, start);
+    free = start + slot.steps * stepMs;
   }
   return starts;
 }
@@ -480,7 +545,85 @@ export function exportAt(
 function exportNow(store: Store, exportId: string, now: number): Export | null {
   const stored = store.exports[exportId];
   if (!stored) return null;
-  return exportAt(stored, now, renderSchedule(store.exports).get(exportId));
+  return exportAt(
+    stored,
+    now,
+    renderSchedule(store.exports, store.highlights).get(exportId),
+  );
+}
+
+/** The highlights video as the mock server would report it at `now` (§ 7.2). */
+export function highlightsAt(
+  stored: StoredHighlights,
+  now: number,
+  startMs = stored.created_ms + MOCK_RENDER_STEP_MS,
+  stepMs = MOCK_RENDER_STEP_MS,
+): HighlightsVideo {
+  const stages = highlightsStages(stored.highlights.captions);
+  const base = stored.highlights;
+  if (now < startMs) {
+    return {
+      ...base,
+      state: "queued",
+      progress: null,
+      error: null,
+      download_url: null,
+      duration_s: null,
+      started_at: null,
+      updated_at: base.created_at,
+      finished_at: null,
+    };
+  }
+  const step = Math.floor((now - startMs) / stepMs);
+  if (step < stages.length) {
+    const current = stages[step];
+    return {
+      ...base,
+      state: "running",
+      progress: {
+        stage: current.stage,
+        stage_index: current.index,
+        stage_count: HIGHLIGHTS_STAGES.length,
+        stage_fraction: null,
+        message: current.message,
+      },
+      error: null,
+      download_url: null,
+      duration_s: null,
+      started_at: iso(startMs),
+      updated_at: iso(now),
+      finished_at: null,
+    };
+  }
+  const finishedAt = iso(startMs + stages.length * stepMs);
+  return {
+    ...base,
+    state: "done",
+    progress: null,
+    error: null,
+    download_url: HIGHLIGHTS_URL,
+    duration_s: base.segments.reduce(
+      (sum, segment) => sum + (segment.end_s - segment.start_s),
+      0,
+    ),
+    started_at: iso(startMs),
+    updated_at: finishedAt,
+    finished_at: finishedAt,
+  };
+}
+
+function highlightsNow(
+  store: Store,
+  highlightsId: string,
+  now: number,
+): HighlightsVideo | null {
+  const stored = store.highlights[highlightsId];
+  if (!stored) return null;
+  return highlightsAt(
+    stored,
+    now,
+    renderSchedule(store.exports, store.highlights).get(highlightsId),
+  );
 }
 
 export function createMockClient(now: () => number = Date.now): ApiClient {
@@ -608,6 +751,7 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
           return { export: current, created: false };
         }
       }
+      const seq = (store.next_seq ?? 0) + 1;
       const created: StoredExport = {
         export: {
           export_id: randomId("exp"),
@@ -616,10 +760,11 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
           ...request,
         },
         created_ms: at,
-        seq: Object.keys(store.exports).length + 1,
+        seq,
       };
       const next = {
         ...store,
+        next_seq: seq,
         exports: { ...store.exports, [created.export.export_id]: created },
       };
       save(next);
@@ -640,13 +785,202 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       return exportNow(load(), exportId, now()) as Export;
     },
 
+    async createHighlights(request: CreateHighlightsRequest) {
+      const { stored, result } = doneJob(request.job_id, now());
+      const order = request.order ?? "chronological";
+      const count = request.count ?? 10;
+      if (count < 1 || count > 20) {
+        throw new ApiRequestError(422, {
+          code: "invalid_request",
+          message: "The request is invalid: count must be between 1 and 20.",
+          details: { fields: ["count"] },
+        });
+      }
+      let segments: HighlightsSegment[];
+      if (request.segments != null) {
+        if (request.segments.length === 0) {
+          throw new ApiRequestError(422, {
+            code: "invalid_request",
+            message: "The request is invalid: segments can't be empty.",
+            details: { fields: ["segments"] },
+          });
+        }
+        if (request.segments.length > 20) {
+          throw new ApiRequestError(422, {
+            code: "invalid_request",
+            message:
+              "The request is invalid: a highlights video needs 1 to 20 segments.",
+            details: { fields: ["segments"] },
+          });
+        }
+        segments = [...request.segments];
+      } else {
+        segments = result.candidates.slice(0, count).map((candidate) => ({
+          candidate_id: candidate.candidate_id,
+          start_s: candidate.start_s,
+          end_s: candidate.end_s,
+        }));
+        if (segments.length === 0) {
+          throw new ApiRequestError(422, {
+            code: "invalid_highlights_bounds",
+            message:
+              "This analysis has no moments to put in a highlights video.",
+            details: {
+              segment_index: null,
+              max_duration_s: 90,
+              max_total_duration_s: 900,
+            },
+          });
+        }
+      }
+      // The contract's check order (§ 7.1): every segment's candidate, then export
+      // availability for those candidates, then the bounds on the resolved, ordered list.
+      const byId = new Map(result.candidates.map((c) => [c.candidate_id, c]));
+      for (const segment of segments) {
+        if (!byId.has(segment.candidate_id)) {
+          throw notFound(
+            "candidate_not_found",
+            `The analysis has no candidate ${segment.candidate_id}.`,
+          );
+        }
+      }
+      for (const segment of segments) {
+        const media = mediaFor(stored, result, segment.candidate_id).export;
+        if (media.status !== "available") {
+          throw new ApiRequestError(409, {
+            code: "media_unavailable",
+            message: media.message ?? "",
+            details: { reason: media.reason },
+          });
+        }
+      }
+      const rank = (id: string) =>
+        byId.get(id)?.rank ?? Number.MAX_SAFE_INTEGER;
+      segments.sort((a, b) =>
+        order === "rank"
+          ? rank(a.candidate_id) - rank(b.candidate_id) || a.start_s - b.start_s
+          : a.start_s - b.start_s ||
+            a.end_s - b.end_s ||
+            rank(a.candidate_id) - rank(b.candidate_id),
+      );
+      for (const [index, segment] of segments.entries()) {
+        const media = mediaFor(stored, result, segment.candidate_id).export;
+        const min = media.min_start_s ?? 0;
+        const max = media.max_end_s ?? 0;
+        const longest = media.max_duration_s ?? 0;
+        if (!(
+          min <= segment.start_s &&
+          segment.start_s < segment.end_s &&
+          segment.end_s <= max &&
+          segment.end_s - segment.start_s <= longest
+        )) {
+          throw new ApiRequestError(422, {
+            code: "invalid_highlights_bounds",
+            message:
+              "Each moment can be at most 90 seconds long and must stay inside the video. " +
+              "Adjust the selection and try again.",
+            details: {
+              segment_index: index,
+              max_duration_s: longest,
+              max_total_duration_s: 900,
+            },
+          });
+        }
+      }
+      const total = segments.reduce(
+        (sum, segment) => sum + (segment.end_s - segment.start_s),
+        0,
+      );
+      if (total > 900) {
+        throw new ApiRequestError(422, {
+          code: "invalid_highlights_bounds",
+          message:
+            "The moments run over 15 minutes together. Untick some and try again.",
+          details: {
+            segment_index: null,
+            max_duration_s: 90,
+            max_total_duration_s: 900,
+          },
+        });
+      }
+      const captions = request.captions ?? false;
+      const store = load();
+      const at = now();
+      for (const existing of Object.values(store.highlights)) {
+        const same =
+          existing.highlights.job_id === request.job_id &&
+          existing.highlights.order === order &&
+          existing.highlights.captions === captions &&
+          existing.highlights.segments.length === segments.length &&
+          existing.highlights.segments.every(
+            (segment, i) =>
+              segment.candidate_id === segments[i].candidate_id &&
+              segment.start_s === segments[i].start_s &&
+              segment.end_s === segments[i].end_s,
+          );
+        const current = highlightsNow(
+          store,
+          existing.highlights.highlights_id,
+          at,
+        ) as HighlightsVideo;
+        if (
+          same &&
+          (current.state === "queued" || current.state === "running")
+        ) {
+          return { highlights: current, created: false };
+        }
+      }
+      const seq = (store.next_seq ?? 0) + 1;
+      const created: StoredHighlights = {
+        highlights: {
+          highlights_id: randomId("hl"),
+          job_id: request.job_id,
+          video_id: stored.video_id,
+          segments,
+          order,
+          captions,
+          created_at: iso(at),
+        },
+        created_ms: at,
+        seq,
+      };
+      const next = {
+        ...store,
+        next_seq: seq,
+        highlights: {
+          ...store.highlights,
+          [created.highlights.highlights_id]: created,
+        },
+      };
+      save(next);
+      return {
+        highlights: highlightsNow(
+          next,
+          created.highlights.highlights_id,
+          at,
+        ) as HighlightsVideo,
+        created: true,
+      };
+    },
+
+    async getHighlights(highlightsId: string) {
+      const video = highlightsNow(load(), highlightsId, now());
+      if (!video) {
+        throw notFound(
+          "highlights_not_found",
+          "This highlights video no longer exists. The server may have restarted; make it again.",
+        );
+      }
+      return video;
+    },
+
     resolveUrl(url: string) {
       return url; // the mock's files are served by the app itself
     },
   };
 }
 
-/** Forget every mock job and export (tests). */
+/** Forget every mock job, export and highlights video (tests). */
 export function resetMockStore(): void {
-  save({ jobs: {}, exports: {} });
+  save({ jobs: {}, exports: {}, highlights: {}, next_seq: 0 });
 }
