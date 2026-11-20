@@ -446,6 +446,17 @@ def test_the_no_usable_signals_precedence() -> None:
     assert "loudness" in retriable.message
 
 
+def test_which_steps_a_scorer_needs() -> None:
+    """The retry advice depends on the scorer's own inputs, not on every step."""
+    from autoclipper.analyze import _needed_steps
+    from autoclipper.models.baselines import ChatLoudness, ChatSpike, Loudness, RandomScorer
+
+    assert _needed_steps(ChatSpike()) == ("chat",)
+    assert _needed_steps(Loudness()) == ("audio",)
+    assert _needed_steps(ChatLoudness()) == ("audio", "chat")
+    assert _needed_steps(RandomScorer(seed=1)) == ()
+
+
 def test_a_named_scorer_without_its_signal_fails_with_the_precedence_codes(
     tmp_path: Path, chat_binary: Path, audio_source: Path, lexicon: Lexicon
 ) -> None:
@@ -646,6 +657,49 @@ def test_a_local_video_of_another_length_is_video_mismatch(
 
     assert excinfo.value.code == "video_mismatch"
     assert "is 60.0 s long but the VOD is 3600.0 s" in excinfo.value.message
+
+
+@pytest.mark.ffmpeg
+def test_an_unreadable_snapshot_degrades_with_recovery_advice(
+    tmp_path: Path, chat_binary: Path, audio_source: Path, lexicon: Lexicon
+) -> None:
+    """A damaged clip snapshot (bad manifest or bad Parquet) is a warning, not a crash, and
+    the warning says what to remove, because ingest never re-takes a snapshot it considers
+    present."""
+    data = tmp_path / "data"
+    analyze_vod(
+        VIDEO_ID,
+        data_dir=data,
+        artifacts_dir=tmp_path / "artifacts",
+        tools=tools(chat_binary, downloader=FakeDownloader(audio_source)),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+    (manifest,) = (tmp_path / "data" / "processed" / "clips").glob(f"{VIDEO_ID}-*.json")
+    (parquet,) = (tmp_path / "data" / "processed" / "clips").glob(f"{VIDEO_ID}-*.parquet")
+
+    for damaged in (manifest, parquet):
+        keep = damaged.read_bytes()
+        damaged.write_bytes(b"corrupt file, not the format it claims" * 8)
+
+        result = analyze_vod(
+            VIDEO_ID,
+            data_dir=data,
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(chat_binary, downloader=FakeDownloader(audio_source)),
+            lexicon=lexicon,
+            clock=lambda: NOW,
+        )
+
+        assert "viewer_clips_missing" in warning_codes(result)
+        advice = next(
+            warning.message for warning in result.warnings if warning.code == "viewer_clips_missing"
+        )
+        assert "couldn't be read" in advice
+        assert "processed" in advice  # names where the broken snapshot lives
+        assert result.n_viewer_clips_total is None
+        assert all(candidate.source == "discovered" for candidate in result.candidates)
+        damaged.write_bytes(keep)
 
 
 @pytest.mark.ffmpeg

@@ -153,10 +153,8 @@ def analyze_vod(
     validate_video_id(video_id)
     # The chosen scorer is validated before anything is downloaded: a bad name or model
     # directory is an input error, not something minutes of fetching should precede.
-    if model_dir is not None:
-        load_scorer(model_dir)
-    else:
-        make_scorer(baseline)
+    chosen = load_scorer(model_dir) if model_dir is not None else make_scorer(baseline)
+    del chosen  # _score_windows builds the scorer it runs; here it only had to be validated
     video_info = _probe_video_file(video_file, tools.runner)
 
     def check_vod(vod: Vod | None) -> None:
@@ -262,13 +260,15 @@ def analyze_vod(
             )
     else:
         if clips_entry is not None and clips_entry.status == "ok":
-            # The snapshot is recorded done but can't be read; ingest never re-takes a
-            # snapshot it considers present, so say what to do instead of "try again".
+            # The snapshot is recorded done but can't be read. Ingest considers a snapshot
+            # with both files present done and never re-takes it, so the warning names what
+            # to remove rather than suggesting a plain retry.
             warnings.append(
                 AnalysisWarning(
                     code="viewer_clips_missing",
-                    message="the clip snapshot on disk couldn't be read; re-ingest the VOD to "
-                    "take a fresh one",
+                    message="the clip snapshot on disk couldn't be read; remove the "
+                    f"{video_id}-* files from {clips_dir(data_dir)} and analyze again to "
+                    "re-take it",
                 )
             )
         else:
@@ -306,7 +306,10 @@ def analyze_vod(
         else None
     )
     # § 3.5 precedence step 3, whatever scorer was chosen: with neither signal family and
-    # no viewer-clip moment, no scorer — random included — has anything to rank.
+    # no viewer-clip moment, no scorer — random included — has anything to rank. The
+    # contract's rule is scorer-independent here: a retry is worth it when ANY missing
+    # input failed transiently. (A chosen scorer whose OWN inputs are missing, but which
+    # could have run, is classified through _ScorerUnavailable below instead.)
     if chat_features is None and audio_features is None and not moments:
         raise _nothing_to_rank(catalog, video_id)
     try:
@@ -430,7 +433,12 @@ def _read_snapshot(data_dir: Path, video_id: str) -> _Snapshot | None:
         if not isinstance(data, dict):
             log.warning("clip snapshot manifest malformed path=%s", manifest)
             continue
-        return _Snapshot(pl.read_parquet(parquet), data)
+        try:
+            clips = pl.read_parquet(parquet)
+        except Exception as exc:  # polars raises ComputeError and more on damaged files
+            log.warning("clip snapshot parquet unreadable path=%s error=%s", parquet, exc)
+            continue
+        return _Snapshot(clips, data)
     return None
 
 
