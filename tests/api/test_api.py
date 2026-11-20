@@ -35,7 +35,7 @@ from autoclipper.export.highlights import (
     Stage as HighlightsStage,
 )
 from autoclipper.features.chat import Lexicon, load_lexicon
-from autoclipper.ffmpeg import FFmpegExitError, ffmpeg_command, probe
+from autoclipper.ffmpeg import FFmpegExitError, ffmpeg_command, probe, run_command
 from autoclipper.ingest.chat import PINNED_TOOL_VERSION, CommandResult
 from autoclipper.ingest.media import (
     DownloadedMedia,
@@ -1237,9 +1237,10 @@ def test_unsatisfiable_and_malformed_ranges(client: TestClient) -> None:
     assert malformed.status_code == 400
 
 
-def test_9000000007_with_a_local_file_has_media(client: TestClient, tmp_path: Path) -> None:
-    video = tmp_path / "vod.mp4"
-    video.write_bytes(b"x")
+def test_9000000007_with_a_local_file_has_media(
+    client: TestClient, make_test_media: Callable[..., Path], tmp_path: Path
+) -> None:
+    video = make_test_media("vod.mp4", duration_s=3.0)
     created = client.post(f"{API}/jobs", json={"vod": "9000000007", "video_path": str(video)})
 
     media = client.get(f"{API}/jobs/{created.json()['job_id']}/candidates/c001/media").json()
@@ -1668,11 +1669,12 @@ BANNER = f"TwitchDownloaderCLI {PINNED_TOOL_VERSION} Copyright (c) lay295 and co
 
 
 class FakeSegmentFetcher:
-    """Plays `download_video_segment` (#46): copies a generated video per requested range.
+    """Plays the segment fetcher (#46): copies a generated video per requested range.
 
-    `gate`, when set, parks the fetch until the test releases it, so a `preparing` response is
-    observed deterministically. `duration_s` is the "probed" length the fake reports; None
-    means the requested length.
+    `gate`, when set, parks the fetch until the test releases it, so a `preparing` response
+    is observed deterministically; `gate_span` narrows that to one range, so a render's own
+    fetch of a different span proceeds. `duration_s` is the "probed" length the fake reports;
+    None means the requested length.
     """
 
     def __init__(
@@ -1683,17 +1685,19 @@ class FakeSegmentFetcher:
         duration_s: float | None = None,
         error: Exception | None = None,
         gate: threading.Event | None = None,
+        gate_span: tuple[float, float] | None = None,
     ) -> None:
         self.source = source
         self.output_dir = output_dir
         self.duration_s = duration_s
         self.error = error
         self.gate = gate
+        self.gate_span = gate_span
         self.calls: list[tuple[str, float, float]] = []
 
     def __call__(self, video_id: str, begin_s: float, end_s: float, /) -> VideoSegment:
         self.calls.append((video_id, begin_s, end_s))
-        if self.gate is not None:
+        if self.gate is not None and (self.gate_span is None or (begin_s, end_s) == self.gate_span):
             self.gate.wait(timeout=10.0)
         if self.error is not None:
             raise self.error
@@ -2056,11 +2060,12 @@ def test_a_highlights_video_fetches_one_span_and_shifts_all_segments(
     assert video_done["state"] == "done", video_done["error"]
 
 
-def test_a_jobs_own_video_file_is_served_for_preview(client: TestClient, tmp_path: Path) -> None:
+def test_a_jobs_own_video_file_is_served_for_preview(
+    client: TestClient, make_test_media: Callable[..., Path], tmp_path: Path
+) -> None:
     """A job with a `video_path` previews that file, not the sample (§ 5: the server reads it
     and downloads no video)."""
-    video = tmp_path / "my vod.mp4"
-    video.write_bytes(b"the user's own VOD file")
+    video = make_test_media("my vod.mp4", duration_s=3.0)
     job = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(video)}).json()
 
     media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
@@ -2068,4 +2073,125 @@ def test_a_jobs_own_video_file_is_served_for_preview(client: TestClient, tmp_pat
     assert media["preview"]["status"] == "available"
     assert media["preview"]["media_start_s"] == 0.0
     served = client.get(str(media["preview"]["url"]))
-    assert served.content == b"the user's own VOD file"
+    assert served.status_code == 200
+    assert served.headers["content-type"] == "video/mp4"
+    # Already playable, so the file itself is served without a copy.
+    assert served.content == video.read_bytes()
+
+
+def test_a_jobs_own_video_file_that_cant_play_is_served_as_a_playable_copy(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    """The preview URL must be playable in a browser (§ 5.1): a file that FFmpeg reads but a
+    browser can't (MPEG-4 in an AVI container) is served as a prepared H.264/AAC MP4, while
+    renders keep cutting the original (#46)."""
+    source = tmp_path / "old capture.avi"
+    run_command(
+        ffmpeg_command(
+            "-y",
+            *("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=10:duration=3"),
+            *("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3"),
+            *("-c:v", "mpeg4", "-c:a", "mp3", "-shortest", source),
+        ),
+        timeout_s=60,
+    )
+    client, _ = make_client(probe_video=lambda path: path.suffix in {".mp4", ".avi"})
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(source)}).json()
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+
+    assert media["preview"]["status"] == "available"
+    served = client.get(str(media["preview"]["url"]))
+    out = tmp_path / "served.mp4"
+    out.write_bytes(served.content)
+    info = probe(out)
+    assert info.video_streams[0].codec_name == "h264"
+    assert info.audio_streams[0].codec_name == "aac"
+    assert info.duration_s == pytest.approx(3.0, abs=0.2)
+
+
+def test_a_late_preview_failure_never_disables_usable_media(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A render's segment survives the preview's own fetch failing afterwards (#46): usable
+    media is never overwritten by a late failure."""
+    video = make_test_media("vod.mp4", duration_s=40.0)
+    gate = threading.Event()
+    planned = FakeSegmentFetcher(
+        video, tmp_path / "raw" / "video", gate=gate, gate_span=(88.0, 178.0)
+    )
+    renderer = FakeRenderer()
+    client, _ = segment_client(
+        make_client, tmp_path, planned, render=renderer, synchronous=False, step_s=0.05
+    )
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()
+    wait_until(lambda: client.get(f"{API}/jobs/{job['job_id']}").json()["state"] == "done")
+
+    # The preview's planned-span fetch parks (the worker sleeps on the gate).
+    client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    # A render meanwhile fetches its own (different) span and installs usable media.
+    made = client.post(
+        f"{API}/exports", json=export_body(job["job_id"], start_s=120.0, end_s=130.0)
+    )
+    assert made.status_code == 201
+    wait_until(
+        lambda: client.get(f"{API}/exports/{made.json()['export_id']}").json()["state"] == "done"
+    )
+
+    # The parked preview fetch now fails; the render's segment must survive.
+    planned.error = VodAccessRestrictedError("9000000001", "subscriber-only")
+    gate.set()
+    wait_until(lambda: len(planned.calls) >= 2)  # the planned span's fetch has run and failed
+    time.sleep(0.1)  # let the worker apply the failure
+
+    media = wait_until_media(client, job["job_id"], "c001")
+    assert media["preview"]["status"] == "available"
+    assert media["preview"]["media_end_s"] == pytest.approx(160.0)  # the render's span
+    assert media["export"]["max_end_s"] == pytest.approx(160.0)
+
+
+def test_a_trims_segment_never_replaces_the_candidates_preview(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A trim whose span doesn't cover the candidate renders fine but never becomes the
+    candidate's preview (#46, § 5: coverage must contain the candidate's own bounds)."""
+    video = make_test_media("vod.mp4", duration_s=40.0)
+    gate = threading.Event()
+    fetcher = FakeSegmentFetcher(
+        video, tmp_path / "raw" / "video", gate=gate, gate_span=(88.0, 178.0)
+    )
+    renderer = FakeRenderer()
+    client, _ = segment_client(
+        make_client, tmp_path, fetcher, render=renderer, synchronous=False, step_s=0.05
+    )
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()
+    wait_until(lambda: client.get(f"{API}/jobs/{job['job_id']}").json()["state"] == "done")
+
+    # The preview's planned fetch (88-178) parks on the gate.
+    client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    # A trim at the very start of the advertised bounds: its span (58-120) excludes the
+    # candidate's last 28 seconds, so it may not become the preview.
+    made = client.post(f"{API}/exports", json=export_body(job["job_id"], start_s=88.0, end_s=90.0))
+    assert made.status_code == 201
+    wait_until(
+        lambda: client.get(f"{API}/exports/{made.json()['export_id']}").json()["state"] == "done"
+    )
+    (spec,) = renderer.specs
+    assert (spec.interval.start_s, spec.interval.end_s) == (30.0, 32.0)  # shifted by 58
+
+    # The preview still reports its planned span, not the trim's narrow one.
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["status"] == "preparing"
+    assert media["export"]["min_start_s"] == 88.0
+
+    # The planned fetch lands: coverage keeps containing the candidate.
+    gate.set()
+    media = wait_until_media(client, job["job_id"], "c001")
+    assert media["preview"]["status"] == "available"
+    assert media["preview"]["media_start_s"] == 88.0
+    assert media["preview"]["media_end_s"] == pytest.approx(178.0)
+    assert media["preview"]["media_start_s"] <= 118.0 < 148.0 <= media["preview"]["media_end_s"]

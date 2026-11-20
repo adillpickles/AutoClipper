@@ -44,6 +44,7 @@ from autoclipper.export.clip import (
     render_clip,
 )
 from autoclipper.export.cut import Interval, IntervalTooShortError
+from autoclipper.export.encode import encode_timeout_s
 from autoclipper.export.errors import ExportError
 from autoclipper.export.highlights import (
     HighlightsRequest,
@@ -96,6 +97,10 @@ _FETCH_FAILED_PREVIEW: Final = (
 _FETCH_FAILED_EXPORT: Final = (
     "Export isn't available: downloading the video failed. Trying again later may work."
 )
+OUTPUT_PLAYABLE_VIDEO: Final = "h264"
+OUTPUT_PLAYABLE_AUDIO: Final = "aac"
+"""What a browser's ``<video>`` element reliably plays (§ 5.1: the preview must be playable)."""
+OUTPUT_PLAYABLE_VIDEO_LIB: Final = "libx264"
 RENDER_STAGES: Final = ("obtaining_media", "transcribing", "rendering")
 _RENDER_MESSAGES: Final = {
     "obtaining_media": "Getting the video",
@@ -443,7 +448,12 @@ class MockService:
     _media: dict[str, Path] = field(default_factory=dict, init=False)
     _preview_media_id: str = field(default="", init=False)
     _job_media: dict[str, str] = field(default_factory=dict, init=False)
+    _job_media_failed: set[str] = field(default_factory=set, init=False)
     _segments: dict[tuple[str, str], _SegmentState] = field(default_factory=dict, init=False)
+    _fetching: set[tuple[str, float, float]] = field(default_factory=set, init=False)
+    _fetch_done: threading.Condition = field(
+        default_factory=lambda: threading.Condition(), init=False
+    )
     _analysis_queue: "queue.Queue[str | None]" = field(default_factory=queue.Queue, init=False)
     _render_queue: "queue.Queue[str | None]" = field(default_factory=queue.Queue, init=False)
     _fetch_queue: "queue.Queue[tuple[str, str] | None]" = field(
@@ -555,12 +565,38 @@ class MockService:
                 span = self._segment_span(record, candidate.start_s, candidate.end_s)
                 self._segments[(job_id, candidate_id)] = _SegmentState("preparing", *span)
                 fetch = True
+            own_file = record.video_path
         if fetch:  # enqueued outside the lock, like every worker item
             self._enqueue(self._fetch_queue, (job_id, candidate_id), self._run_fetch_safely)
+        if (
+            own_file is not None
+            and job_id not in self._job_media
+            and job_id not in self._job_media_failed
+        ):
+            # A preview must be playable in the browser (§ 5.1); making it so can run FFmpeg,
+            # so it happens outside the lock, once per job (#46).
+            self._prepare_file_media(job_id, own_file)
         with self._lock:
             record = self._jobs[job_id]
             candidate = self._candidate(record, candidate_id)
             return self._media_for(record, candidate)
+
+    def _prepare_file_media(self, job_id: str, video_path: str) -> None:
+        """Register a playable copy of the job's own video file under a media ID (#46)."""
+        source = Path(video_path)
+        if not source.is_file():
+            return  # _media_for reports local_file_missing
+        media_id = new_id("med")
+        try:
+            playable = _playable_copy(source, self.output_dir / "media" / f"{media_id}.mp4")
+        except Exception as exc:  # the preview can't be made playable; renders still cut the file
+            log.warning("preview preparation failed job_id=%s: %s", job_id, exc)
+            with self._lock:
+                self._job_media_failed.add(job_id)
+            return
+        with self._lock:
+            self._media[media_id] = playable
+            self._job_media[job_id] = media_id
 
     def _needs_segment(self, job: _JobRecord) -> bool:
         """Whether this job's media comes from a downloaded segment (#46)."""
@@ -842,20 +878,31 @@ class MockService:
         elif job.video_path is not None:
             # The server reads the user's file and downloads no video (§ 5); it is the whole
             # VOD (checked against the VOD's length at ingest), so its time 0 is VOD time 0.
+            # The preview serves a playable copy prepared by `candidate_media` (#46, § 5.1).
             media_id = self._job_media.get(job.job_id)
-            if media_id is None:
-                media_id = new_id("med")
-                self._media[media_id] = Path(job.video_path)
-                self._job_media[job.job_id] = media_id
-            preview = PreviewMedia(
-                status="available",
-                kind="video_file",
-                url=f"/api/v1/media/{media_id}",
-                media_start_s=0.0,
-                media_end_s=duration_s,
-                reason=None,
-                message=None,
-            )
+            if job.job_id in self._job_media_failed or media_id is None:
+                preview = PreviewMedia(
+                    status="unavailable",
+                    kind=None,
+                    url=None,
+                    media_start_s=None,
+                    media_end_s=None,
+                    reason="fetch_failed",
+                    message=(
+                        "Preview isn't available: this file couldn't be prepared for playback. "
+                        "Exports still cut it directly."
+                    ),
+                )
+            else:
+                preview = PreviewMedia(
+                    status="available",
+                    kind="video_file",
+                    url=f"/api/v1/media/{media_id}",
+                    media_start_s=0.0,
+                    media_end_s=duration_s,
+                    reason=None,
+                    message=None,
+                )
             export = self._whole_vod_export(duration_s)
         elif self._needs_segment(job):
             return self._segment_media(job, candidate)
@@ -1161,6 +1208,7 @@ class MockService:
         assert self.segment_fetcher is not None  # pipeline mode validates it
         with self._lock:
             job = self._jobs[job_id]
+            candidate = self._candidate(job, candidate_id)
             state = self._segments[(job_id, candidate_id)]
             video_id, begin, end = job.video_id, state.planned_begin_s, state.planned_end_s
         self._sleep()
@@ -1172,7 +1220,7 @@ class MockService:
             end,
         )
         try:
-            segment = self.segment_fetcher(video_id, begin, end)
+            segment = self._fetch_coordinated(video_id, begin, end)
         except Exception as exc:  # the downloader's typed errors (§ 5.2 reasons)
             reason = (
                 "source_unavailable"
@@ -1180,23 +1228,21 @@ class MockService:
                 else "fetch_failed"
             )
             log.warning("video segment failed job_id=%s reason=%s: %s", job_id, reason, exc)
-            with self._lock:
-                self._segments[(job_id, candidate_id)] = replace(
-                    state, status="failed", reason=reason
-                )
+            self._store_segment(job, candidate, replace(state, status="failed", reason=reason))
             return
-        media_id = new_id("med")
-        with self._lock:
-            self._media[media_id] = segment.path
-            self._segments[(job_id, candidate_id)] = _SegmentState(
+        self._store_segment(
+            job,
+            candidate,
+            _SegmentState(
                 "ready",
                 planned_begin_s=state.planned_begin_s,
                 planned_end_s=state.planned_end_s,
                 path=segment.path,
                 begin_s=segment.begin_s,
                 end_s=segment.end_s,
-                media_id=media_id,
-            )
+                media_id=self._register_segment_media(segment),
+            ),
+        )
         log.info(
             "video segment ready job_id=%s video_id=%s range=%.0f-%.0f path=%s",
             job_id,
@@ -1206,33 +1252,100 @@ class MockService:
             segment.path,
         )
 
+    def _fetch_coordinated(self, video_id: str, begin_s: float, end_s: float) -> VideoSegment:
+        """One fetch per (VOD, range) at a time.
+
+        A caller for a range already in flight waits for it (bounded) and then fetches again,
+        which the segment cache serves at once.
+
+        Raises:
+            TimeoutError: A fetch of the same range is taking longer than `FETCH_WAIT_S`.
+        """
+        assert self.segment_fetcher is not None  # pipeline mode validates it
+        key = (video_id, begin_s, end_s)
+        with self._fetch_done:
+            while key in self._fetching:
+                if not self._fetch_done.wait(timeout=FETCH_WAIT_S):
+                    raise TimeoutError(f"still fetching {video_id} {begin_s:g}-{end_s:g} s")
+            self._fetching.add(key)
+        try:
+            return self.segment_fetcher(video_id, begin_s, end_s)
+        finally:
+            with self._fetch_done:
+                self._fetching.discard(key)
+                self._fetch_done.notify_all()
+
     def _fetch_segment(self, job: _JobRecord, begin_s: float, end_s: float) -> VideoSegment:
         """Fetch a video segment inline, a render's first stage (#46, § 6.3 and § 7.3).
 
         Raises:
-            _MediaUnavailable: The segment couldn't be downloaded; the reason is the
-                contract's (§ 5.2).
+            _MediaUnavailable: The segment couldn't be downloaded, or a fetch of the same range
+                is taking longer than `FETCH_WAIT_S`; the reason is the contract's (§ 5.2).
         """
         assert self.segment_fetcher is not None  # pipeline mode validates it
         span = self._segment_span(job, begin_s, end_s)
         try:
-            segment = self.segment_fetcher(job.video_id, *span)
+            return self._fetch_coordinated(job.video_id, *span)
         except Exception as exc:
             if isinstance(exc, VodUnavailableError | VodAccessRestrictedError):
                 raise _MediaUnavailable("source_unavailable", _SOURCE_EXPORT_UNAVAILABLE) from None
             log.warning("video segment fetch failed video_id=%s: %s", job.video_id, exc)
             raise _MediaUnavailable("fetch_failed", _FETCH_FAILED_EXPORT) from None
-        return segment
+
+    def _store_segment(self, job: _JobRecord, candidate: Candidate, new: _SegmentState) -> None:
+        """Record a candidate's segment state, never letting it regress (#46).
+
+        A `failed` fetch never overwrites usable media (a render may have installed a segment
+        while the preview's own fetch failed), a `ready` segment never replaces one that
+        already covers the candidate as well or better, and a segment that doesn't cover the
+        candidate's own bounds never becomes its preview at all.
+        """
+        key = (job.job_id, candidate.candidate_id)
+        with self._lock:
+            current = self._segments.get(key)
+            if new.status == "ready":
+                if (
+                    new.begin_s is None
+                    or new.end_s is None
+                    or not new.begin_s <= candidate.start_s
+                    or not candidate.end_s <= new.end_s
+                ):
+                    return  # the render's narrow span: keep the preview's own coverage
+                if (
+                    current is not None
+                    and current.status == "ready"
+                    and current.begin_s is not None
+                    and current.end_s is not None
+                    and current.begin_s <= new.begin_s
+                    and new.end_s <= current.end_s
+                ):
+                    return  # no better than what is already served
+            elif new.status == "failed" and current is not None and current.status == "ready":
+                return  # usable media beats a late failure
+            self._segments[key] = new
+
+    def _register_segment_media(self, segment: VideoSegment) -> str:
+        """A media ID whose file a browser can play (§ 5.1), for preview serving (#46)."""
+        media_id = new_id("med")
+        try:
+            playable = _playable_copy(segment.path, self.output_dir / "media" / f"{media_id}.mp4")
+        except Exception as exc:
+            log.warning("segment preview preparation failed: %s", exc)
+            self._media[media_id] = segment.path  # better than nothing; cut files stay exact
+            return media_id
+        self._media[media_id] = playable
+        return media_id
 
     def _segment_for_render(
-        self, job: _JobRecord, candidate_id: str, begin_needed_s: float, end_needed_s: float
+        self, job: _JobRecord, candidate: Candidate, begin_needed_s: float, end_needed_s: float
     ) -> VideoSegment:
         """The segment a render cuts from.
 
-        The candidate's own segment if it covers the trim, else a fresh fetch that also
-        becomes the candidate's segment (#46).
+        The candidate's own segment if it covers the trim; else a fresh fetch. A fetched span
+        that covers the candidate also becomes its preview segment (#46); a narrower one (a
+        trim far inside the candidate) never shrinks the preview's coverage.
         """
-        key = (job.job_id, candidate_id)
+        key = (job.job_id, candidate.candidate_id)
         with self._lock:
             state = self._segments.get(key)
         if state is not None and state.status == "failed":
@@ -1254,22 +1367,23 @@ class MockService:
             assert state.path is not None
             return VideoSegment(state.path, state.begin_s, state.end_s)
         segment = self._fetch_segment(job, begin_needed_s, end_needed_s)
-        media_id = new_id("med")
-        with self._lock:
-            self._media[media_id] = segment.path
-            self._segments[key] = _SegmentState(
+        self._store_segment(
+            job,
+            candidate,
+            _SegmentState(
                 "ready",
                 planned_begin_s=segment.begin_s,
                 planned_end_s=segment.end_s,
                 path=segment.path,
                 begin_s=segment.begin_s,
                 end_s=segment.end_s,
-                media_id=media_id,
-            )
+                media_id=self._register_segment_media(segment),
+            ),
+        )
         return segment
 
     def _render_source(
-        self, job: _JobRecord, candidate_id: str, begin_needed_s: float, end_needed_s: float
+        self, job: _JobRecord, candidate: Candidate, begin_needed_s: float, end_needed_s: float
     ) -> tuple[Path, float]:
         """The file a render cuts from, and the VOD time at that file's time 0 (#46).
 
@@ -1283,7 +1397,7 @@ class MockService:
             return source, 0.0
         if not self._needs_segment(job):
             return self.samples.preview, 0.0
-        segment = self._segment_for_render(job, candidate_id, begin_needed_s, end_needed_s)
+        segment = self._segment_for_render(job, candidate, begin_needed_s, end_needed_s)
         return segment.path, segment.begin_s
 
     def _run_render_safely(self, render_id: str) -> None:
@@ -1319,7 +1433,9 @@ class MockService:
                 video = self._fetch_segment(job, begin, end)
                 source, offset_s = video.path, video.begin_s
             else:
-                source, offset_s = self._render_source(job, "", 0.0, 0.0)
+                # No per-candidate span here: the job's file or the sample.
+                first = self._candidate(job, record.segments[0].candidate_id)
+                source, offset_s = self._render_source(job, first, 0.0, 0.0)
         except _MediaUnavailable as exc:
             self._finish_render(
                 record,
@@ -1423,10 +1539,9 @@ class MockService:
         self._set_render_stage(record, "obtaining_media")
         with self._lock:
             job = self._jobs[record.job_id]
+            candidate = self._candidate(job, request.candidate_id)
         try:
-            source, offset_s = self._render_source(
-                job, request.candidate_id, request.start_s, request.end_s
-            )
+            source, offset_s = self._render_source(job, candidate, request.start_s, request.end_s)
         except _MediaUnavailable as exc:
             self._finish_render(
                 record,
@@ -1520,6 +1635,60 @@ def _within(export: ExportAvailability, start_s: float, end_s: float) -> bool:
         export.min_start_s <= start_s < end_s <= export.max_end_s
         and end_s - start_s <= export.max_duration_s
     )
+
+
+# How long a render waits for a fetch of the same range that is already running (#46):
+# far more than a segment download needs, bounded so a render never hangs forever.
+FETCH_WAIT_S: Final = 600.0
+
+
+def _playable_copy(source: Path, target: Path) -> Path:
+    """An H.264/AAC MP4 a browser can play, from `source` (#46, § 5.1).
+
+    The preview URL feeds an HTML ``<video>`` element. The source itself is returned when it
+    already is playable; the same codecs in another container (MPEG-TS, AVI) are remuxed,
+    which only rewrites the container; anything else is transcoded once into `target` (named
+    for its media ID, so it is made at most once per media). The original is kept for
+    rendering.
+
+    Raises:
+        FFmpegError: FFmpeg or FFprobe failed (not installed, timed out); nothing is written.
+    """
+    info = probe(source)
+    video = info.video_streams[0] if info.video_streams else None
+    audio = info.audio_streams[0] if info.audio_streams else None
+    if (
+        video is not None
+        and audio is not None
+        and video.codec_name == OUTPUT_PLAYABLE_VIDEO
+        and audio.codec_name == OUTPUT_PLAYABLE_AUDIO
+    ):
+        if "mp4" in info.format_name.split(","):
+            return source
+        codecs: tuple[str, ...] = ("-c", "copy")  # h264/aac in another container: remux only
+    else:
+        codecs = (
+            "-c:v",
+            OUTPUT_PLAYABLE_VIDEO_LIB,
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-c:a",
+            OUTPUT_PLAYABLE_AUDIO,
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(f"{target.stem}.part.mp4")
+    try:
+        run_command(
+            ffmpeg_command("-y", "-i", source, *codecs, "-movflags", "+faststart", partial),
+            timeout_s=encode_timeout_s(info.duration_s),
+        )
+        partial.replace(target)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    return target
 
 
 def _bounds_message(export: ExportAvailability, start_s: float, end_s: float, what: str) -> str:

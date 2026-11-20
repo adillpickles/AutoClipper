@@ -13,6 +13,7 @@ import os
 import random
 import shutil
 import subprocess
+import sys
 import wave
 from array import array
 from collections.abc import Callable, Iterator, Mapping
@@ -40,11 +41,11 @@ from autoclipper.ffmpeg import (
     ffprobe_command,
     probe,
     run_command,
+    run_subprocess,
 )
 from autoclipper.ingest.media import (
     AUDIO_FORMAT_SELECTOR,
     MAX_RETRY_SLEEP_S,
-    VIDEO_FORMAT_SELECTOR,
     AudioDownloadError,
     ByteDamage,
     DownloadedMedia,
@@ -57,6 +58,7 @@ from autoclipper.ingest.media import (
     VodAccessRestrictedError,
     VodUnavailableError,
     YtDlpDownloader,
+    build_videodownload_command,
     download_audio,
     download_video_segment,
     normalize_audio,
@@ -1701,112 +1703,220 @@ def test_live_download_and_normalize_a_real_vod(tmp_path: Path) -> None:
 # --- Video segments (#46) ------------------------------------------------------------------------
 
 
-def test_section_requests_change_the_ytdlp_options() -> None:
-    """A segment request asks for the video format and the time range; the audio default
-    stays exactly as it was."""
-    plain = DownloadRequest(vod_url(VIDEO_ID), Path("out"), STEM)
-    section = DownloadRequest(vod_url(VIDEO_ID), Path("out"), STEM, sections=(50, 60))
+class FakeVideoTool:
+    """Plays TwitchDownloaderCLI videodownload: records each command, copies `source` to the
+    command's ``-o`` path, and can be told to fail. Every other command (the probes and
+    duration reads) runs for real, so the checks exercise the actual FFmpeg."""
 
-    assert ytdlp_options(plain)["format"] == AUDIO_FORMAT_SELECTOR
-    assert "download_ranges" not in ytdlp_options(plain)
-    options = ytdlp_options(section)
-    assert options["format"] == VIDEO_FORMAT_SELECTOR == "best[height<=1080]"
-    # yt-dlp's own range callback (the CLI's --download-sections parser).
-    assert options["download_ranges"].ranges == [(50, 60)]  # type: ignore[attr-defined]
+    def __init__(self, source: Path, *, error: Exception | None = None) -> None:
+        self.source = source
+        self.error = error
+        self.commands: list[FFmpegCommand] = []
+        self.timeouts: list[float] = []
+
+    def __call__(self, command: FFmpegCommand, /, *, timeout_s: float) -> CommandResult:
+        if "videodownload" not in command.args:
+            return run_subprocess(command, timeout_s=timeout_s)
+        self.commands.append(command)
+        self.timeouts.append(timeout_s)
+        if self.error is not None:
+            raise self.error
+        args = list(command.args)
+        output = Path(args[args.index("-o") + 1])
+        shutil.copyfile(self.source, output)
+        return CommandResult(0)
 
 
-def test_a_segment_range_is_validated_before_anything_is_run(tmp_path: Path) -> None:
-    downloader = FakeDownloader()
+@pytest.fixture
+def video_tool_binary(tmp_path: Path) -> Path:
+    """A fake TwitchDownloaderCLI on PATH (shutil.which needs the execute bit on POSIX)."""
+    name = "TwitchDownloaderCLI.exe" if sys.platform == "win32" else "TwitchDownloaderCLI"
+    binary = tmp_path / "bin" / name
+    binary.parent.mkdir(exist_ok=True)
+    binary.write_bytes(b"")
+    binary.chmod(0o755)
+    return binary
+
+
+def test_the_videodownload_command(tmp_path: Path) -> None:
+    """One segment's command: the tool, the VOD, TimeSpans, overwrite and the output."""
+    binary = tmp_path / "TwitchDownloaderCLI.exe"
+    output = tmp_path / "segment.mp4"
+
+    command = build_videodownload_command(binary, VIDEO_ID, output, begin_s=50, end_s=3660)
+
+    assert list(command.args) == [
+        str(binary),
+        "videodownload",
+        "--id",
+        VIDEO_ID,
+        "--begin",
+        "00:00:50",
+        "--end",
+        "01:01:00",
+        "--collision",
+        "Overwrite",
+        "-o",
+        str(output),
+    ]
+    with pytest.raises(ValueError, match="digits"):
+        build_videodownload_command(binary, "v123", output, begin_s=0, end_s=10)
+    with pytest.raises(ValueError, match="range"):
+        build_videodownload_command(binary, VIDEO_ID, output, begin_s=10, end_s=10)
+
+
+def test_a_segment_range_is_validated_before_anything_is_run(
+    tmp_path: Path, video_tool_binary: Path
+) -> None:
+    tool = FakeVideoTool(tmp_path / "vod.mp4")
 
     for begin, end in ((60.0, 50.0), (-1.0, 50.0), (100.2, 100.4)):  # reversed, negative,
         # and one that rounds to empty whole seconds
         with pytest.raises(ValueError, match="segment range"):
             download_video_segment(
-                VIDEO_ID, begin_s=begin, end_s=end, output_dir=tmp_path, downloader=downloader
+                VIDEO_ID, begin_s=begin, end_s=end, output_dir=tmp_path, runner=tool
             )
     with pytest.raises(InvalidVideoIdError):
         download_video_segment(
-            "not-a-vod", begin_s=0.0, end_s=10.0, output_dir=tmp_path, downloader=downloader
+            "not-a-vod", begin_s=0.0, end_s=10.0, output_dir=tmp_path, runner=tool
         )
-    assert downloader.requests == []
+    assert tool.commands == []
 
 
-def test_a_segment_download_failure_keeps_the_typed_errors(tmp_path: Path) -> None:
-    class Boom:
-        def __call__(self, request: DownloadRequest, /) -> DownloadedMedia:
-            raise VodAccessRestrictedError(VIDEO_ID, "subscriber-only")
+def test_a_missing_video_tool_explains_how_to_install_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without TwitchDownloaderCLI on PATH the fetch says so, as the chat download does."""
+    empty_path = tmp_path / "empty"  # a directory without the binary
+    empty_path.mkdir()
+    monkeypatch.setenv("PATH", str(empty_path))
 
-    class Bug:
-        def __call__(self, request: DownloadRequest, /) -> DownloadedMedia:
-            raise RuntimeError("a downloader bug")
-
-    with pytest.raises(VodAccessRestrictedError):
+    with pytest.raises(DownloadToolError, match="TwitchDownloaderCLI"):
         download_video_segment(
-            VIDEO_ID, begin_s=0.0, end_s=10.0, output_dir=tmp_path, downloader=Boom()
-        )
-    with pytest.raises(DownloadToolError):
-        download_video_segment(
-            VIDEO_ID, begin_s=0.0, end_s=10.0, output_dir=tmp_path, downloader=Bug()
+            VIDEO_ID,
+            begin_s=0.0,
+            end_s=10.0,
+            output_dir=tmp_path / "out",
+            runner=FakeVideoTool(tmp_path / "vod.mp4"),
         )
 
 
 @pytest.mark.ffmpeg
 def test_a_video_segment_is_downloaded_named_and_cached(
-    data_dir: Path, make_test_media: Callable[..., Path]
+    data_dir: Path, make_test_media: Callable[..., Path], video_tool_binary: Path
 ) -> None:
-    """The segment is verified and renamed by range, and a second call reuses it (#46)."""
+    """The tool's MP4 is verified, renamed by range, and a second call reuses it (#46)."""
     video = make_test_media("vod.mp4", duration_s=20.0)
-    downloader = FakeDownloader(extension="mp4", source=video)
+    tool = FakeVideoTool(video)
     directory = raw_video_dir(data_dir) / VIDEO_ID
 
-    segment = download_video_segment(
-        VIDEO_ID, begin_s=50.0, end_s=60.0, output_dir=directory, downloader=downloader
-    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("PATH", str(video_tool_binary.parent) + os.pathsep + os.environ["PATH"])
+        segment = download_video_segment(
+            VIDEO_ID, begin_s=50.0, end_s=60.0, output_dir=directory, runner=tool
+        )
 
-    (request,) = downloader.requests
-    assert request.url == vod_url(VIDEO_ID)
-    assert request.sections == (50, 60)
+    (command,) = tool.commands
+    assert command.args[command.args.index("--begin") + 1] == "00:00:50"
+    assert command.args[command.args.index("--end") + 1] == "00:01:00"
     assert segment.path == directory / "segment-50-60.mp4"
     assert segment.begin_s == 50.0  # the file's own time 0 is VOD time 50
     assert segment.end_s == pytest.approx(70.0, abs=0.5)  # 50 + the probed 20 s
 
-    again = download_video_segment(
-        VIDEO_ID, begin_s=50.0, end_s=60.0, output_dir=directory, downloader=downloader
-    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("PATH", str(video_tool_binary.parent) + os.pathsep + os.environ["PATH"])
+        again = download_video_segment(
+            VIDEO_ID, begin_s=50.0, end_s=60.0, output_dir=directory, runner=tool
+        )
     assert again == segment
-    assert len(downloader.requests) == 1  # the cached file was reused
+    assert len(tool.commands) == 1  # the cached file was reused
     assert sorted(p.name for p in directory.iterdir()) == ["segment-50-60.mp4"]
 
 
 @pytest.mark.ffmpeg
+def test_staging_files_never_pass_as_complete_downloads(
+    data_dir: Path, make_test_media: Callable[..., Path], video_tool_binary: Path
+) -> None:
+    """An interrupted download's staging file and checkpoint don't shadow a fresh fetch; the
+    tool runs again and only its verified output is kept (#46)."""
+    video = make_test_media("vod.mp4", duration_s=20.0)
+    tool = FakeVideoTool(video)
+    directory = raw_video_dir(data_dir) / VIDEO_ID
+    directory.mkdir(parents=True)
+    (directory / "segment-50-60.download.mp4").write_bytes(b"half a download")
+    (directory / "segment-50-60.download.mp4.ytdl").write_bytes(b"{}")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("PATH", str(video_tool_binary.parent) + os.pathsep + os.environ["PATH"])
+        segment = download_video_segment(
+            VIDEO_ID, begin_s=50.0, end_s=60.0, output_dir=directory, runner=tool
+        )
+
+    assert len(tool.commands) == 1  # the staging file was not mistaken for a complete one
+    assert segment.path == directory / "segment-50-60.mp4"
+    assert segment.path.read_bytes() == video.read_bytes()
+    # The planted checkpoint is inert test junk; only the verified file is served.
+
+
+@pytest.mark.ffmpeg
+def test_a_failing_video_tool_is_a_download_tool_error(
+    data_dir: Path, video_tool_binary: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autoclipper.ffmpeg import FFmpegCommand as _Command
+    from autoclipper.ffmpeg import FFmpegExitError
+
+    tool = FakeVideoTool(
+        data_dir / "vod.mp4",
+        error=FFmpegExitError(_Command(("tool",)), 1, b"the VOD's video is gone"),
+    )
+    directory = raw_video_dir(data_dir) / VIDEO_ID
+    monkeypatch.setenv("PATH", str(video_tool_binary.parent) + os.pathsep + os.environ["PATH"])
+
+    with pytest.raises(DownloadToolError, match="video download failed"):
+        download_video_segment(
+            VIDEO_ID, begin_s=50.0, end_s=60.0, output_dir=directory, runner=tool
+        )
+
+    assert not directory.exists() or not any(directory.iterdir())
+
+
+@pytest.mark.ffmpeg
 def test_a_segment_that_ignores_the_range_is_rejected(
-    data_dir: Path, make_test_media: Callable[..., Path]
+    data_dir: Path,
+    make_test_media: Callable[..., Path],
+    video_tool_binary: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A file far longer than the range means the range was ignored: its VOD time would be
     unknown, so it is deleted instead of kept (#46)."""
     video = make_test_media("vod.mp4", duration_s=60.0)
-    downloader = FakeDownloader(extension="mp4", source=video)
+    tool = FakeVideoTool(video)
     directory = raw_video_dir(data_dir) / VIDEO_ID
+    monkeypatch.setenv("PATH", str(video_tool_binary.parent) + os.pathsep + os.environ["PATH"])
 
     with pytest.raises(DownloadIntegrityError, match="range looks ignored"):
         download_video_segment(
-            VIDEO_ID, begin_s=100.0, end_s=110.0, output_dir=directory, downloader=downloader
+            VIDEO_ID, begin_s=100.0, end_s=110.0, output_dir=directory, runner=tool
         )
 
-    assert not any(directory.iterdir())  # the staging files were cleaned up
+    assert not any(directory.iterdir())  # the staging file was cleaned up
 
 
 @pytest.mark.ffmpeg
 def test_a_segment_far_shorter_than_requested_is_rejected(
-    data_dir: Path, make_test_media: Callable[..., Path]
+    data_dir: Path,
+    make_test_media: Callable[..., Path],
+    video_tool_binary: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     video = make_test_media("vod.mp4", duration_s=12.0)
-    downloader = FakeDownloader(extension="mp4", source=video)
+    tool = FakeVideoTool(video)
     directory = raw_video_dir(data_dir) / VIDEO_ID
+    monkeypatch.setenv("PATH", str(video_tool_binary.parent) + os.pathsep + os.environ["PATH"])
 
     with pytest.raises(DownloadIntegrityError, match="plays for only"):
         download_video_segment(
-            VIDEO_ID, begin_s=100.0, end_s=160.0, output_dir=directory, downloader=downloader
+            VIDEO_ID, begin_s=100.0, end_s=160.0, output_dir=directory, runner=tool
         )
 
     assert not any(directory.iterdir())
