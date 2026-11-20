@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
+from autoclipper.ingest import chat as chat_module
 from autoclipper.ingest.chat import (
     CHAT_TIMEOUT_BASE_S,
     CHAT_TIMEOUT_PER_VOD_HOUR_S,
@@ -811,3 +812,30 @@ def test_run_command_ends_the_tree_when_interrupted_after_the_tool_exits(
     )
     assert _ended_within(child_pid)
     assert _ended_within(grandchild_pid)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="tests the Windows startup window")
+@pytest.mark.parametrize("stage", ["join", "resume"])
+def test_a_startup_interrupt_ends_the_suspended_child(
+    monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    """An interrupt in the Windows setup window — the child exists but is not in its job
+    yet, so closing the job can't end it — must still kill it, not leave it suspended."""
+    captured: list[int] = []
+
+    def interrupted(*setup_args: object) -> None:
+        # Both setup calls end with the child's pid; capture it before "the interrupt".
+        pid = setup_args[-1]
+        assert isinstance(pid, int)
+        captured.append(pid)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        chat_module, "_join_job" if stage == "join" else "_resume_suspended_process", interrupted
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_command([sys.executable, "-c", "import time; time.sleep(60)"], timeout_s=5.0)
+
+    (pid,) = captured
+    assert _ended_within(pid)  # killed, not left suspended forever

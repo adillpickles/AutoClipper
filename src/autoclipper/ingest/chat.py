@@ -236,52 +236,60 @@ def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> Comma
             (POSIX: it runs in its own group, so the terminal's interrupt didn't reach it).
     """
     job: object | None = None
+    process: subprocess.Popen[str] | None = None
     try:
-        if sys.platform == "win32":
-            job = _create_kill_on_close_job()
-            process = subprocess.Popen(
-                list(args),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                # Suspended until it is in the job, so it can't leave a process outside it.
-                creationflags=_CREATE_SUSPENDED,
-            )
-            try:
-                _join_job(job, process.pid)
-            except OSError:
-                process.kill()  # still suspended: it never ran
-                raise
-            _resume_suspended_process(process.pid)
-        else:
-            process = subprocess.Popen(
-                list(args),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                # The child leads its own process group, so one killpg ends the whole tree.
-                process_group=0,
-            )
         try:
+            if sys.platform == "win32":
+                job = _create_kill_on_close_job()
+                process = subprocess.Popen(
+                    list(args),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    # Suspended until it is in the job, so it can't leave a process outside it.
+                    creationflags=_CREATE_SUSPENDED,
+                )
+                try:
+                    _join_job(job, process.pid)
+                    _resume_suspended_process(process.pid)
+                except BaseException:
+                    # Until the suspended child is in the job, ending the job can't end it
+                    # (an interrupt during setup must not leave it alive forever).
+                    with contextlib.suppress(Exception):
+                        process.kill()
+                    _reap(process)
+                    raise
+            else:
+                process = subprocess.Popen(
+                    list(args),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    # The child leads its own process group, so one killpg ends the whole tree.
+                    process_group=0,
+                )
             stdout, stderr = process.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
+            assert process is not None  # communicate() was running a child
             _end_process_tree(process, job)
             _reap(process)
             raise ChatDownloadError(
                 f"{Path(args[0]).name} did not finish within {timeout_s:g} s and was killed"
             ) from None
         except KeyboardInterrupt:
-            # The child runs in its own group, so the terminal's Ctrl+C didn't reach it:
-            # end the tree here, then let the caller's interrupt handling continue.
-            _end_process_tree(process, job)
-            _reap(process)
+            # The child runs outside our signal's reach (own group on POSIX, a job on
+            # Windows), so end the tree here, then let the caller's interrupt continue.
+            if process is not None:
+                _end_process_tree(process, job)
+                _reap(process)
             raise
+        assert process is not None  # a child ran; Popen only returns one
         assert process.returncode is not None  # communicate() waited for the process
         return CommandResult(process.returncode, stdout, stderr)
     finally:
@@ -336,6 +344,7 @@ if sys.platform == "win32":
     _PROCESS_TERMINATE: Final = 0x0001
     _THREAD_SUSPEND_RESUME: Final = 0x0002
     _TH32CS_SNAPTHREAD: Final = 0x00000004
+    _INVALID_HANDLE: Final = ctypes.c_void_p(-1).value
 
     class _IOCounters(ctypes.Structure):
         _fields_ = [
@@ -448,7 +457,8 @@ if sys.platform == "win32":
     def _resume_suspended_process(pid: int) -> None:
         """Resume the threads of a process created suspended (it has one)."""
         snapshot = _CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
-        if not snapshot:
+        # Failure is NULL or INVALID_HANDLE_VALUE (the latter is truthy, so test for it).
+        if snapshot is None or snapshot == _INVALID_HANDLE:
             raise ctypes.WinError(ctypes.get_last_error(), "CreateToolhelp32Snapshot")
         resumed = 0
         try:
