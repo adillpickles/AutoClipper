@@ -328,20 +328,23 @@ def _end_process_tree(process: subprocess.Popen[str], job: object | None) -> Non
 
 
 def _reap(process: subprocess.Popen[str]) -> None:
-    """Collect the ended process so nothing of it is left running when control returns.
+    """Collect the ended process: no zombie, and no pipe of it left open.
 
-    A leftover process holding the output pipes (Windows before the job ends it, or a
-    POSIX child the tool left behind) only holds the call up for `REAP_TIMEOUT_S`; then
-    our ends of the pipes are closed and the call returns.
+    The wait is on the process itself, not on its output pipes: a tool that closed its own
+    stdout still has to be waited for, and stderr may still be open. The pipes are drained
+    for `REAP_TIMEOUT_S` for late output; a leftover process holding them (Windows before
+    the job ends it, or a POSIX child the tool left behind) only holds the call up that
+    long, then our ends are closed and the leftover finishes on its own.
     """
-    if process.stdout is not None and process.stdout.closed:
-        return  # an earlier pass collected the process and closed the pipes
-    try:
-        process.communicate(timeout=REAP_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        for stream in (process.stdout, process.stderr):
-            if stream is not None:
-                stream.close()
+    if process.returncode is None:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=REAP_TIMEOUT_S)
+    if process.stdout is not None and not process.stdout.closed:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.communicate(timeout=REAP_TIMEOUT_S)
+    for stream in (process.stdout, process.stderr):
+        if stream is not None and not stream.closed:
+            stream.close()
 
 
 @contextlib.contextmanager

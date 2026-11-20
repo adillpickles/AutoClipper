@@ -130,10 +130,10 @@ RETRYABLE_ERRORS: Final = frozenset(
     }
 )
 # ChatDownloadError covers a failed or timed-out tool run (a stall can pass) and an
-# unsupported file (it can't).
+# unsupported file (it can't). The bound scales with the VOD's length, so it isn't whole.
 _CHAT_TOOL_FAILED: Final = re.compile(
     r"chatdownload failed for video_id=\d+ with exit code"
-    r"|chatdownload timed out after \d+ s and was killed"
+    r"|chatdownload timed out after \d+(?:\.\d+)? s and was killed"
 )
 _ERROR_TYPE: Final = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*): ")
 

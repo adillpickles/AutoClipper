@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import SecretStr
@@ -777,6 +777,35 @@ def test_a_leftover_process_holding_the_pipes_does_not_hang_the_timeout(
     assert time.monotonic() - started < 30
     child_pid, _ = (int(part) for part in pids_file.read_text(encoding="ascii").split(","))
     assert _ended_within(child_pid)
+
+
+def test_a_tool_that_closes_its_own_stdout_is_still_collected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tool that closes its stdout but keeps running: the timeout still ends it, the
+    process is waited for (no zombie) and our ends of both pipes are closed."""
+    captured: list[object] = []
+    real_popen = subprocess.Popen
+    # The tool closes its stdout end and keeps going, so the caller sees EOF early.
+    script = "import os, time\nos.close(1)\ntime.sleep(60)\n"
+
+    def spying_popen(*popen_args: object, **popen_kwargs: object) -> object:
+        process = real_popen(*popen_args, **popen_kwargs)  # type: ignore[arg-type]
+        captured.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", spying_popen)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_command([sys.executable, "-c", script], timeout_s=2.0)
+
+    (raw,) = captured
+    process = cast("subprocess.Popen[str]", raw)
+    assert process.returncode is not None  # waited for, not a zombie
+    assert process.stdout is not None
+    assert process.stderr is not None
+    assert process.stdout.closed
+    assert process.stderr.closed
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="sends a POSIX signal to the parent")
