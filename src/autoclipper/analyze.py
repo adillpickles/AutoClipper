@@ -100,12 +100,13 @@ type FailureCode = Literal[
 INPUT_STEPS: Final = ("clips", "chat", "audio")
 
 # An ingest step's completion is the next analysis stage's beginning (api-contract.md § 3.4);
-# a skipped step completes too, so cached stages are passed over.
+# a skipped step completes too, so cached stages are passed over. The audio step is absent:
+# the inputs are classified between it and the features (an expired VOD fails the run before
+# anything is computed), so `computing_features` begins at its explicit call below instead.
 _STEP_TO_STAGE: Final = {
     "vod_meta": "fetching_clips",
     "clips": "downloading_chat",
     "chat": "downloading_audio",
-    "audio": "computing_features",
 }
 """The stage that begins when each ingest step completes (`on_step` in `ingest_vod`)."""
 
@@ -157,9 +158,10 @@ def analyze_vod(
         on_stage: Called with each of the six analysis stage names of api-contract.md § 3.4
             as the stage begins, including stages the ingest skips over. An exception it
             raises propagates and fails the run. The API worker uses it for job progress.
-        on_warnings: Called once with the warnings found so far, after the inputs are known
-            and before the features are computed. The API worker uses it so a running job's
-            ``warnings`` field means "degradations found so far", per § 3.5.
+        on_warnings: Called with the warnings found so far (§ 3.5), each time a new one is
+            known: an input step that failed or was refused (while the next download still
+            runs), then the full set once the inputs are classified. The API worker uses it
+            so a running job's ``warnings`` field means "degradations found so far".
 
     Returns:
         The written `AnalysisResult`, ranked candidates first.
@@ -199,10 +201,32 @@ def analyze_vod(
                 f"{vod.duration_s:.1f} s; pass a file of the whole VOD, starting at its start",
             )
 
+    # Warnings are published as they are found (§ 3.5's "found so far"), starting with the
+    # input steps: a failed download is known while the next one still runs.
+    warnings: list[AnalysisWarning] = []
+
+    def publish_warnings() -> None:
+        if on_warnings is not None:
+            on_warnings(tuple(warnings))
+
+    def add_warning(code: str, message: str) -> None:
+        if all(warning.code != code for warning in warnings):
+            warnings.append(AnalysisWarning(code=code, message=message))
+            publish_warnings()
+
     def step_stage(step: StepResult) -> None:
         # The next analysis stage begins when an ingest step completes (a skipped step
         # completes too, so cached stages are passed over, § 3.4).
-        stage(_STEP_TO_STAGE[step.step])
+        if step.step in _STEP_TO_STAGE:
+            stage(_STEP_TO_STAGE[step.step])
+        # An input that didn't arrive is a degradation the job can already report (§ 3.5),
+        # published before the next download runs. A skipped step never publishes: it stands
+        # for an earlier ok (nothing to report) or an earlier unavailable (the classification
+        # follows in moments, with no long download left to hide behind).
+        if step.step in ("chat", "audio") and step.outcome in ("failed", "unavailable"):
+            add_warning(
+                f"{step.step}_missing", _missing_message(step.step, step.outcome, step.detail)
+            )
 
     _timed(
         "ingest",
@@ -212,11 +236,32 @@ def analyze_vod(
             tools=tools,
             media_file=video_file,
             after_vod_meta=check_vod,
-            on_step=None if on_stage is None else step_stage,
+            on_step=None if (on_stage is None and on_warnings is None) else step_stage,
         ),
     )
     catalog = read_catalog(data_dir)
     started = time.monotonic()
+
+    # --- Warnings: which inputs arrived (§ 3.5, published before the classification can raise,
+    # so a job that fails on a fresh or a cached catalog carries what was already found) --------
+    chat_entry = catalog.get(("chat", video_id))
+    chat_ok = chat_entry is not None and chat_entry.status == "ok"
+    if not chat_ok:
+        add_warning("chat_missing", _missing_reason("chat", chat_entry))
+    audio_entry = catalog.get(("audio", video_id))
+    audio_ok = audio_entry is not None and audio_entry.status == "ok"
+    if not audio_ok:
+        add_warning("audio_missing", _missing_reason("audio", audio_entry))
+        # The audio step is `unavailable` only when the download tool was refused the media
+        # (deleted, expired or subscriber-only; `VodUnavailableError`, `VodAccessRestrictedError`),
+        # so without a user-provided file the VOD itself isn't accessible (§ 3.5).
+        if audio_entry is not None and audio_entry.status == "unavailable" and video_file is None:
+            raise AnalyzeError(
+                "vod_unavailable",
+                "Twitch has no accessible video with this ID: its media is deleted, expired "
+                "or not publicly viewable (e.g. subscriber-only); pass a file of the VOD you "
+                "already have with --video to analyze it anyway",
+            )
 
     # --- The VOD itself (§ 3.5: resolving it is required) --------------------------------------
     meta = catalog.get(("vod_meta", video_id))
@@ -231,31 +276,6 @@ def analyze_vod(
     if vod is None:  # the catalog says ok, so this row exists; a guard against corruption
         raise AnalyzeError(
             "upstream_unavailable", f"the VOD's row is missing from {data_dir / 'processed'}"
-        )
-
-    # --- Warnings: which signals arrived (§ 3.5) -----------------------------------------------
-    warnings: list[AnalysisWarning] = []
-    chat_entry = catalog.get(("chat", video_id))
-    chat_ok = chat_entry is not None and chat_entry.status == "ok"
-    if not chat_ok:
-        warnings.append(
-            AnalysisWarning(code="chat_missing", message=_missing_reason("chat", chat_entry))
-        )
-    audio_entry = catalog.get(("audio", video_id))
-    audio_ok = audio_entry is not None and audio_entry.status == "ok"
-    if not audio_ok:
-        # The audio step is `unavailable` only when the download tool was refused the media
-        # (deleted, expired or subscriber-only; `VodUnavailableError`, `VodAccessRestrictedError`),
-        # so without a user-provided file the VOD itself isn't accessible (§ 3.5).
-        if audio_entry is not None and audio_entry.status == "unavailable" and video_file is None:
-            raise AnalyzeError(
-                "vod_unavailable",
-                "Twitch has no accessible video with this ID: its media is deleted, expired "
-                "or not publicly viewable (e.g. subscriber-only); pass a file of the VOD you "
-                "already have with --video to analyze it anyway",
-            )
-        warnings.append(
-            AnalysisWarning(code="audio_missing", message=_missing_reason("audio", audio_entry))
         )
     if vod.muted_segments:
         spans = ", ".join(f"{s.offset_s:.0f}s+{s.duration_s:.0f}s" for s in vod.muted_segments)
@@ -311,8 +331,7 @@ def analyze_vod(
                 )
             )
 
-    if on_warnings is not None:
-        on_warnings(tuple(warnings))
+    publish_warnings()  # the full set, including the snapshot-based warnings
 
     # --- Features and scoring ------------------------------------------------------------------
     stage("computing_features")
@@ -440,10 +459,16 @@ def _probe_video_file(video_file: Path | None, runner: Runner | None) -> MediaIn
 
 def _missing_reason(what: str, entry: CatalogEntry | None) -> str:
     """A `*_missing` warning message: what happened, and whether a retry may help."""
-    if entry is None or entry.status == "unavailable":
+    return _missing_message(
+        what, None if entry is None else entry.status, None if entry is None else entry.error
+    )
+
+
+def _missing_message(what: str, status: str | None, error: str | None) -> str:
+    """The same message, from a step's outcome and detail as well as a catalog entry."""
+    if status is None or status == "unavailable":
         return f"{what} couldn't be obtained for this VOD; trying again later won't help"
-    detail = entry.error or "no details"
-    return f"{what} failed: {detail}; trying again later may help"
+    return f"{what} failed: {error or 'no details'}; trying again later may help"
 
 
 @dataclass(frozen=True, slots=True)

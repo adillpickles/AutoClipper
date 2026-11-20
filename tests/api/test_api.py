@@ -27,7 +27,7 @@ from autoclipper.export.errors import ExportError
 from autoclipper.features.chat import Lexicon, load_lexicon
 from autoclipper.ffmpeg import FFmpegExitError, ffmpeg_command, probe
 from autoclipper.ingest.chat import PINNED_TOOL_VERSION, CommandResult
-from autoclipper.ingest.media import DownloadedMedia, DownloadRequest
+from autoclipper.ingest.media import DownloadedMedia, DownloadRequest, VodAccessRestrictedError
 from autoclipper.ingest.twitch_api import HelixClient
 from autoclipper.ingest.vod import IngestTools
 
@@ -1346,7 +1346,14 @@ def test_pipeline_jobs_need_their_configuration(samples: SampleMedia, tmp_path: 
 
 
 class FakeHelix:
-    """Answers the token, Get Users, Get Videos and Get Clips requests."""
+    """Answers the token, Get Users, Get Videos and Get Clips requests.
+
+    `vod_type` plays the video's kind: `archive` (a past broadcast, analyzable) or anything
+    else (e.g. `highlight`), which the pipeline rejects as `vod_unsupported`.
+    """
+
+    def __init__(self, vod_type: str = "archive") -> None:
+        self.vod_type = vod_type
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == "id.twitch.tv":
@@ -1388,7 +1395,7 @@ class FakeHelix:
                             "viewable": "public",
                             "view_count": 10,
                             "language": "en",
-                            "type": "archive",
+                            "type": self.vod_type,
                             "duration": "1h0m0s",
                             "muted_segments": [{"duration": 30, "offset": 120}],
                         }
@@ -1496,3 +1503,102 @@ def test_a_real_pipeline_job_from_the_api(
         )
     )
     assert served == written
+
+
+def test_a_non_archive_vod_fails_where_it_was_rejected(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    """A highlight isn't an archive: the job fails with `vod_unsupported` while its
+    progress still says `resolving_vod` (§ 3.4), and nothing was downloaded (§ 3.5)."""
+    credentials = TwitchCredentials(SecretStr("fake-client-id"), SecretStr("fake-client-secret"))
+    clock = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
+
+    def refuse_chat(args: Sequence[str]) -> CommandResult:
+        raise AssertionError("the chat step should never run for a rejected VOD")
+
+    def refuse_download(request: DownloadRequest, /) -> DownloadedMedia:
+        raise AssertionError("the audio step should never run for a rejected VOD")
+
+    def tools_for() -> IngestTools:
+        http = httpx.Client(transport=httpx.MockTransport(FakeHelix(vod_type="highlight")))
+        return IngestTools(
+            helix=HelixClient(credentials, http_client=http, clock=lambda: clock),
+            salt=SecretStr("fake-salt-5b1e"),
+            chat_runner=refuse_chat,
+            downloader=refuse_download,
+        )
+
+    client, _ = make_client(
+        job_runner="pipeline",
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=tools_for,
+    )  # analyze: the real `analyze_vod`
+
+    job = done_job(client, PIPELINE_VIDEO_ID)
+
+    assert job["state"] == "failed"
+    assert job["error"]["code"] == "vod_unsupported"
+    assert job["progress"] is not None  # failed keeps the last value (§ 3.4)
+    assert job["progress"]["stage"] == "resolving_vod"
+    assert job["progress"]["stage_index"] == 1
+    assert job["warnings"] == []
+
+
+def test_an_expired_vod_fails_where_the_audio_stopped_and_keeps_found_warnings(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    """A refused media download fails the job at `downloading_audio` (§ 3.4), and the
+    earlier chat failure is already on the job as a warning found so far (§ 3.5)."""
+    chat_binary = tmp_path / "bin" / "TwitchDownloaderCLI.exe"
+    chat_binary.parent.mkdir(parents=True)
+    chat_binary.write_bytes(b"")
+    credentials = TwitchCredentials(SecretStr("fake-client-id"), SecretStr("fake-client-secret"))
+    clock = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
+
+    def failing_chat(args: Sequence[str]) -> CommandResult:
+        return CommandResult(1, BANNER, "TwitchDownloaderCLI: the video does not exist")
+
+    def refused_download(request: DownloadRequest, /) -> DownloadedMedia:
+        del request  # the refusal below is the point, not the request
+        raise VodAccessRestrictedError(PIPELINE_VIDEO_ID, "the video is not publicly accessible")
+
+    def tools_for() -> IngestTools:
+        http = httpx.Client(transport=httpx.MockTransport(FakeHelix()))
+        return IngestTools(
+            helix=HelixClient(credentials, http_client=http, clock=lambda: clock),
+            salt=SecretStr("fake-salt-5b1e"),
+            chat_runner=failing_chat,
+            chat_binary=chat_binary,
+            downloader=refused_download,
+        )
+
+    client, _ = make_client(
+        job_runner="pipeline",
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=tools_for,
+    )  # analyze: the real `analyze_vod`
+
+    job = done_job(client, PIPELINE_VIDEO_ID)
+
+    assert job["state"] == "failed"
+    assert job["error"]["code"] == "vod_unavailable"
+    assert job["progress"] is not None  # failed keeps the last value (§ 3.4)
+    assert job["progress"]["stage"] == "downloading_audio"
+    assert job["progress"]["stage_index"] == 4
+    assert [warning["code"] for warning in job["warnings"]] == ["chat_missing", "audio_missing"]
+
+    # The same request again runs against the cached catalog: the refused audio step is
+    # skipped (it publishes nothing itself), so the classification must still deliver
+    # `audio_missing` before the run fails (§ 3.5's "found so far").
+    again = done_job(client, PIPELINE_VIDEO_ID)
+
+    assert again["state"] == "failed"
+    assert again["error"]["code"] == "vod_unavailable"
+    assert again["progress"] is not None
+    assert again["progress"]["stage"] == "downloading_audio"
+    assert again["progress"]["stage_index"] == 4
+    assert [warning["code"] for warning in again["warnings"]] == ["chat_missing", "audio_missing"]
