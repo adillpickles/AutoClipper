@@ -55,6 +55,7 @@ from autoclipper.analysis import (
     ScorerInfo,
     VodSummary,
 )
+from autoclipper.export.timeline import corrected_duration_s
 from autoclipper.features.audio import FEATURE_COLUMNS as AUDIO_FEATURE_COLUMNS
 from autoclipper.features.audio import compute_audio_features
 from autoclipper.features.chat import FEATURE_COLUMNS as CHAT_FEATURE_COLUMNS
@@ -192,14 +193,26 @@ def analyze_vod(
             raise AnalyzeError(
                 "vod_unsupported", f"the video is a {vod.type}, not a past broadcast"
             )
-        if video_info is not None and abs(video_info.duration_s - vod.duration_s) > (
-            VIDEO_MISMATCH_TOLERANCE_S
-        ):
-            raise AnalyzeError(
-                "video_mismatch",
-                f"{video_file} is {video_info.duration_s:.1f} s long but the VOD is "
-                f"{vod.duration_s:.1f} s; pass a file of the whole VOD, starting at its start",
-            )
+        if video_info is not None:
+            assert video_file is not None
+            # ffprobe's container duration spans the first to the last raw timestamp, so a
+            # source whose timestamps restart reports only its first span; re-measure on the
+            # analysis timeline only when the cheap ffprobe duration disagrees (#95).
+            duration_s = video_info.duration_s
+            if abs(duration_s - vod.duration_s) > VIDEO_MISMATCH_TOLERANCE_S:
+                try:
+                    duration_s = corrected_duration_s(video_file, runner=tools.runner)
+                except FFmpegError as exc:
+                    raise AnalyzeError(
+                        "invalid_video_path",
+                        f"{video_file} is not a readable video file: {exc}",
+                    ) from None
+            if abs(duration_s - vod.duration_s) > VIDEO_MISMATCH_TOLERANCE_S:
+                raise AnalyzeError(
+                    "video_mismatch",
+                    f"{video_file} is {duration_s:.1f} s long but the VOD is "
+                    f"{vod.duration_s:.1f} s; pass a file of the whole VOD, starting at its start",
+                )
 
     # Warnings are published as they are found (§ 3.5's "found so far"), starting with the
     # input steps: a failed download is known while the next one still runs.
