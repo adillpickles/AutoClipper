@@ -123,19 +123,24 @@ def read_reset_timeline(source: Path, *, runner: Runner | None = None) -> ResetT
 def corrected_duration_s(source: Path, *, runner: Runner | None = None) -> float:
     """How long FFmpeg reads `source` to be on the corrected timeline (the analysis one).
 
-    ffprobe's container duration spans the first to the last raw timestamp, so a source whose
-    timestamps restart reports only its first span. FFmpeg, reading the file, moves timestamps
-    that jump back to the end (`TIMELINE_OPTIONS`), exactly as analysis reads it (ingest's
-    duration check reads its audio the same way). Reads the whole file but decodes nothing.
+    Analysis reads the audio, so the reference is the audio stream when one exists and the
+    video otherwise (`_read` chooses the same): FFmpeg's corrections at a reset follow the
+    first mapped stream, and mapping both would follow the video's accumulation, which drifts
+    from the audio's with every reset. ffprobe's container duration spans the first to the
+    last raw timestamp, so a source whose timestamps restart reports only its first span.
+    FFmpeg, reading the file, moves timestamps that jump back to the end (`TIMELINE_OPTIONS`),
+    exactly as analysis reads it (ingest's duration check reads its audio the same way). Reads
+    the whole file but decodes nothing.
 
     Raises:
         FFmpegOutputError: FFmpeg reported no progress while reading.
         FFmpegError: FFmpeg failed.
     """
+    reference = "0:a:0" if probe(source, runner=runner).audio_streams else "0:v:0"
     result = run_command(
         ffmpeg_command(
             *TIMELINE_OPTIONS,
-            *("-progress", "pipe:1", "-i", source, "-map", "0:v:0", "-map", "0:a:0?"),
+            *("-progress", "pipe:1", "-i", source, "-map", reference),
             *("-c", "copy", "-f", "null", "-"),
         ),
         timeout_s=FULL_READ_TIMEOUT_S,

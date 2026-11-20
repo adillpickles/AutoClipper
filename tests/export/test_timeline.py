@@ -19,6 +19,7 @@ from autoclipper.export.captions import (
 from autoclipper.export.clip import ClipSpec, render_clip
 from autoclipper.export.cut import Interval, IntervalTooShortError
 from autoclipper.export.encode import EncodeSettings, ExportRequest, export_clip
+from autoclipper.export.timeline import corrected_duration_s
 from autoclipper.ffmpeg import ffmpeg_command, run_command
 from autoclipper.ingest.media import normalize_audio
 
@@ -153,6 +154,38 @@ def test_caption_audio_after_a_reset_comes_from_the_right_segment(tmp_path: Path
 
     assert dominant_hz(read_wav(wav)) == pytest.approx(880, abs=20)
     assert wav_seconds(wav) == pytest.approx(1.0, abs=0.05)
+
+
+def test_corrected_duration_follows_the_audio_timeline_across_repeated_resets(
+    tmp_path: Path,
+) -> None:
+    """The corrected duration is the one analysis reads (the audio's), not the video's.
+
+    FFmpeg's corrections at a reset follow the first mapped stream, so a read that maps both
+    follows the video's accumulation and drifts from the audio's with every reset. Four parts
+    whose video is 1.0 s but whose audio is 1.5 s make the two references differ by 2 s.
+    """
+    parts = []
+    for index in range(4):
+        part = tmp_path / f"part{index}.ts"
+        run_command(
+            ffmpeg_command(
+                "-y",
+                *("-f", "lavfi", "-i", "color=black:size=320x180:rate=25:duration=1.0"),
+                *("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1.5"),
+                *("-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-c:a", "aac"),
+                *("-output_ts_offset", "0", "-f", "mpegts", part),
+            ),
+            timeout_s=60,
+        )
+        parts.append(part.read_bytes())
+    source = tmp_path / "repeated.ts"
+    source.write_bytes(b"".join(parts))
+
+    analysis = normalize_audio(source, "9000000009", data_dir=tmp_path / "data")
+
+    assert analysis.duration_s == pytest.approx(6.0, abs=0.5)  # 4 x the 1.5 s audio
+    assert corrected_duration_s(source) == pytest.approx(analysis.duration_s, abs=0.25)
 
 
 def test_a_reset_source_exports_from_its_very_start(tmp_path: Path) -> None:
