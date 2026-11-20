@@ -4,7 +4,10 @@ import copy
 import gzip
 import json
 import logging
+import os
+import subprocess
 import sys
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -14,12 +17,14 @@ import pytest
 from pydantic import SecretStr
 
 from autoclipper.ingest.chat import (
+    CHAT_TIMEOUT_UNKNOWN_VOD_S,
     PINNED_TOOL_VERSION,
     ChatDownloadError,
     ChatMessage,
     ChatReplay,
     CommandResult,
     build_chatdownload_command,
+    chat_download_timeout_s,
     download_chat,
     find_twitchdownloader,
     parse_chat_json,
@@ -402,9 +407,11 @@ class FakeRunner:
         self.payload = payload
         self.result = CommandResult(returncode, stdout, stderr)
         self.commands: list[list[str]] = []
+        self.last_timeout_s: float | None = None
 
-    def __call__(self, args: Sequence[str]) -> CommandResult:
+    def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
         self.commands.append(list(args))
+        self.last_timeout_s = timeout_s
         if self.payload is not None:
             Path(args[args.index("--output") + 1]).write_bytes(self.payload)
         return self.result
@@ -521,11 +528,99 @@ def test_download_keeps_the_raw_file_when_parsing_fails(fake_binary: Path, raw_p
 
 
 def test_download_reports_a_tool_that_cannot_start(fake_binary: Path, raw_path: Path) -> None:
-    def runner(args: Sequence[str]) -> CommandResult:
+    def runner(args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
         raise PermissionError(13, "Permission denied")
 
     with pytest.raises(ChatDownloadError, match="could not start"):
         download_chat(VIDEO_ID, raw_path, salt=SALT, binary=fake_binary, runner=runner)
+
+
+def _pid_is_running(pid: int) -> bool:
+    """Whether a process with this pid exists, without signaling or killing it."""
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and (
+                code.value == 259  # STILL_ACTIVE
+            )
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True  # PermissionError: it exists, run by someone else
+
+
+def test_run_command_ends_a_stalled_child(tmp_path: Path) -> None:
+    """A run over its `timeout_s` is killed and waited for (#89): the bound, not the child,
+    decides when the call returns."""
+    pid_file = tmp_path / "child.pid"
+    script = (
+        "import os, sys, time, pathlib\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+        "time.sleep(60)\n"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_command([sys.executable, "-c", script, str(pid_file)], timeout_s=1.0)
+
+    assert time.monotonic() - started < 10.0  # it did not wait out the child's 60 s
+    assert not _pid_is_running(int(pid_file.read_text()))  # killed and reaped by then
+
+
+def test_a_timed_out_download_fails_with_a_clear_message_and_no_raw_file(
+    fake_binary: Path, raw_path: Path
+) -> None:
+    """A stalled tool is reported as a timeout, and the partial raw file it wrote (which holds
+    usernames) is deleted (#89)."""
+
+    class Stalled(FakeRunner):
+        def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
+            super().__call__(args)  # a partial download's leftovers are on disk now
+            raise subprocess.TimeoutExpired(list(args), 2.0)
+
+    with pytest.raises(ChatDownloadError, match="timed out after 2 s and was killed") as excinfo:
+        download_chat(
+            VIDEO_ID,
+            raw_path,
+            salt=SALT,
+            binary=fake_binary,
+            runner=Stalled(payload=b"{}"),
+            timeout_s=2.0,
+        )
+
+    assert f"video_id={VIDEO_ID}" in str(excinfo.value)
+    assert not raw_path.exists()
+    _assert_clean_error(excinfo.value)
+
+
+def test_the_bound_scales_with_the_vods_length() -> None:
+    """The chatdownload bound is generous, grows with the VOD and falls back when unknown."""
+    assert chat_download_timeout_s(None) == CHAT_TIMEOUT_UNKNOWN_VOD_S
+    assert chat_download_timeout_s(3600.0) == pytest.approx(1200.0)  # 15 min + 5 min/hour
+    assert chat_download_timeout_s(7200.0) == pytest.approx(1500.0)
+
+
+def test_a_download_without_an_explicit_bound_still_gets_one(
+    fake_binary: Path, raw_path: Path
+) -> None:
+    """A direct `download_chat` caller that passes no timeout still runs bounded (#89): the
+    default is the one-hour cap, and an explicit timeout is forwarded unchanged."""
+    runner = FakeRunner(payload=_dump(_fixture()))
+
+    download_chat(VIDEO_ID, raw_path, salt=SALT, binary=fake_binary, runner=runner)
+    assert runner.last_timeout_s == CHAT_TIMEOUT_UNKNOWN_VOD_S
+
+    download_chat(VIDEO_ID, raw_path, salt=SALT, binary=fake_binary, runner=runner, timeout_s=2.5)
+    assert runner.last_timeout_s == 2.5
 
 
 @pytest.mark.parametrize(

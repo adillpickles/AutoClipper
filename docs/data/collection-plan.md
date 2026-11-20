@@ -49,7 +49,7 @@ The pilot runs `autoclipper ingest` (#34) once for each VOD in `configs/pilot_vo
 
 1. Fetches the VOD metadata (Helix Get Videos) and checks the VOD's age.
 2. Takes the viewer-clip snapshot (Helix Get Clips, chunked by time range) and records its capture time and coverage.
-3. Downloads and parses the chat replay (TwitchDownloader), then deletes the raw file.
+3. Downloads and parses the chat replay (TwitchDownloader), then deletes the raw file. The run is bounded: a chatdownload that exceeds its limit (15 min plus 5 min per VOD-hour, an hour when the VOD's length is unknown) is killed and recorded like any step failure.
 4. Downloads the audio (yt-dlp or TwitchDownloader).
 5. Records each step's status and tool versions in the catalog.
 

@@ -86,6 +86,7 @@ Subscriber-only VODs are skipped: the downloader tools can't fetch them without 
   ```
 
   Optional `--embed-images` also embeds the BTTV/FFZ/7TV emote lists (with images), the only way the file reveals third-party emotes.
+- **Timeout (#89):** the wrapper ends the tool when a run exceeds `chat_download_timeout_s` (15 min plus 5 min per VOD-hour, an hour when the VOD's length is unknown), deletes the partial raw file and raises `ChatDownloadError`, so ingest records a failed step instead of waiting forever. `chatdownload` is a single process, so ending it ends the download.
 - **Fields we read** (all from [`ChatRoot.cs`][td-root] unless noted; how the downloader fills them: [`ChatDownloader.cs`][td-dl]):
 
   | JSON field | Becomes | Source |

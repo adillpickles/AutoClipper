@@ -173,7 +173,7 @@ class FakeChatTool:
         self.returncode = returncode
         self.calls = 0
 
-    def __call__(self, args: Sequence[str]) -> CommandResult:
+    def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
         self.calls += 1
         Path(args[args.index("--output") + 1]).write_bytes(self.payload)
         return CommandResult(self.returncode, BANNER, "")
