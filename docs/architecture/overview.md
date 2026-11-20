@@ -146,7 +146,7 @@ Analytical results stay usable when video is unavailable (VOD deleted, subscribe
 
 - **CLI** (`autoclipper …`) is the primary interface for development and data work. Planned subcommands: `ingest`, `build-dataset`, `features`, `train`, `evaluate`, `analyze`, `export`, `highlights`, `serve`.
 - **Web API** (FastAPI, [web stack](../decisions/0007-web-application-stack.md)), versioned under `/api/v1` and started by `autoclipper serve` on localhost: jobs, results, per-candidate media, clip exports and the highlights video, as specified in the [API contract](api-contract.md). Analysis jobs run the real pipeline by default (`--jobs pipeline`); `--jobs mock` keeps the built-in scenarios for frontend work, and the health endpoint says which is running. Long-running work runs in an in-process background worker with bounded concurrency and explicit failure states; that's enough for a local single-user app.
-- **Web app** (Next.js + TypeScript + Tailwind): start → progress → ranked clip cards → preview and trim → download, plus "Make highlights video". Built early against mock data; preview plays local files.
+- **Web app** (Next.js + TypeScript + Tailwind): start → progress → ranked clip cards → preview and trim → download, plus "Make highlights video" (the moments picker with trims, order and captions, then progress and download; #72). Built early against mock data; preview plays local files.
 - **Distribution** (stretch, #70): a project website with a packaged app download, and a link to a hosted app if deployed. Local execution is the first supported setup; hosting can extend it as needed.
 
 ## 5. Storage layout

@@ -17,6 +17,7 @@ mkdirSync(out, { recursive: true });
 
 const samples = [
   { name: "clip.mp4", size: "1080x1920", seconds: 15 },
+  { name: "highlights.mp4", size: "1920x1080", seconds: 15 },
   { name: "preview.mp4", size: "640x360", seconds: 360 },
 ];
 
