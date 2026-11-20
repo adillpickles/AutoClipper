@@ -1750,9 +1750,10 @@ def test_the_videodownload_command(tmp_path: Path) -> None:
         "videodownload",
         "--id",
         VIDEO_ID,
-        "--begin",
+        # The pinned 1.56.5 release names them --beginning/--ending (VideoDownloadArgs.cs).
+        "--beginning",
         "00:00:50",
-        "--end",
+        "--ending",
         "01:01:00",
         "--collision",
         "Overwrite",
@@ -1817,8 +1818,8 @@ def test_a_video_segment_is_downloaded_named_and_cached(
         )
 
     (command,) = tool.commands
-    assert command.args[command.args.index("--begin") + 1] == "00:00:50"
-    assert command.args[command.args.index("--end") + 1] == "00:01:00"
+    assert command.args[command.args.index("--beginning") + 1] == "00:00:50"
+    assert command.args[command.args.index("--ending") + 1] == "00:01:00"
     assert segment.path == directory / "segment-50-60.mp4"
     assert segment.begin_s == 50.0  # the file's own time 0 is VOD time 50
     assert segment.end_s == pytest.approx(70.0, abs=0.5)  # 50 + the probed 20 s

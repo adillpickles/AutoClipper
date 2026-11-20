@@ -10,7 +10,7 @@ normally ``get_settings().data_dir``:
 - ``raw/video/<video_id>/segment-<begin>-<end>.<ext>``: a downloaded video segment of the VOD
   (#46), covering ``[begin, end)`` of VOD time (the file's own time 0 is VOD time ``begin``),
   for the API's preview and export media. Fetched with TwitchDownloaderCLI ``videodownload
-  --begin --end`` (the pinned tool the chat replay already uses); yt-dlp's
+  --beginning --ending`` (the pinned tool the chat replay already uses); yt-dlp's
   ``--download-sections`` would need FFmpeg inside yt-dlp, which this package never allows.
 
 Downloading VOD media through yt-dlp is unofficial (docs/data/data-sources.md § 3). Only public
@@ -734,9 +734,10 @@ def build_videodownload_command(
 ) -> FFmpegCommand:
     """Return the TwitchDownloaderCLI ``videodownload`` argument list for one VOD segment.
 
-    ``--begin`` and ``--end`` are TimeSpans (``hh:mm:ss``; the ranges are whole seconds) and
-    ``--collision Overwrite`` keeps the tool from prompting (stdin is closed), like the chat
-    download. The tool writes one MP4 of the VOD's own video and audio.
+    ``--beginning`` and ``--ending`` are TimeSpans (``hh:mm:ss``; the ranges are whole
+    seconds; those are the argument names of the pinned 1.56.5 release) and ``--collision
+    Overwrite`` keeps the tool from prompting (stdin is closed), like the chat download. The
+    tool writes one MP4 of the VOD's own video and audio.
 
     Raises:
         ValueError: ``video_id`` is not all digits, or the range isn't ``0 <= begin < end``.
@@ -751,9 +752,9 @@ def build_videodownload_command(
             "videodownload",
             "--id",
             video_id,
-            "--begin",
+            "--beginning",
             _timespan(begin_s),
-            "--end",
+            "--ending",
             _timespan(end_s),
             "--collision",
             "Overwrite",
@@ -789,7 +790,7 @@ def download_video_segment(
     yt-dlp's ``--download-sections`` can fetch ranges too, but only by running FFmpeg itself
     (docs/data/data-sources.md § 3), which this package forbids: every FFmpeg run goes through
     `autoclipper.ffmpeg`. TwitchDownloaderCLI's ``videodownload``, the pinned tool the chat
-    replay already uses, takes ``--begin``/``--end`` directly.
+    replay already uses, takes ``--beginning``/``--ending`` directly.
 
     A new download is checked before it is kept, like the audio: it must have a video and an
     audio stream, no more than `MAX_DECODE_ERROR_RATE` of damaged bytes, and play for roughly

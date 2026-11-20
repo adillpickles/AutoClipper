@@ -97,10 +97,16 @@ _FETCH_FAILED_PREVIEW: Final = (
 _FETCH_FAILED_EXPORT: Final = (
     "Export isn't available: downloading the video failed. Trying again later may work."
 )
+_SEGMENT_PREVIEW_FAILED: Final = (
+    "Preview isn't available: this moment's video couldn't be prepared for playback. "
+    "Exporting it still works."
+)
 OUTPUT_PLAYABLE_VIDEO: Final = "h264"
 OUTPUT_PLAYABLE_AUDIO: Final = "aac"
 """What a browser's ``<video>`` element reliably plays (§ 5.1: the preview must be playable)."""
 OUTPUT_PLAYABLE_VIDEO_LIB: Final = "libx264"
+OUTPUT_PLAYABLE_PIX_FMTS: Final = frozenset({"yuv420p", "yuvj420p"})
+"""8-bit 4:2:0 H.264: browsers decode it everywhere; 4:4:4 and 10-bit may not (#46)."""
 RENDER_STAGES: Final = ("obtaining_media", "transcribing", "rendering")
 _RENDER_MESSAGES: Final = {
     "obtaining_media": "Getting the video",
@@ -449,8 +455,10 @@ class MockService:
     _preview_media_id: str = field(default="", init=False)
     _job_media: dict[str, str] = field(default_factory=dict, init=False)
     _job_media_failed: set[str] = field(default_factory=set, init=False)
+    _file_media_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _segments: dict[tuple[str, str], _SegmentState] = field(default_factory=dict, init=False)
-    _fetching: set[tuple[str, float, float]] = field(default_factory=set, init=False)
+    _fetching: set[tuple[str, int, int]] = field(default_factory=set, init=False)
+    _fetches_done: int = field(default=0, init=False)
     _fetch_done: threading.Condition = field(
         default_factory=lambda: threading.Condition(), init=False
     )
@@ -582,21 +590,29 @@ class MockService:
             return self._media_for(record, candidate)
 
     def _prepare_file_media(self, job_id: str, video_path: str) -> None:
-        """Register a playable copy of the job's own video file under a media ID (#46)."""
+        """Register a playable copy of the job's own video file under a media ID (#46).
+
+        Serialized by `_file_media_lock` so concurrent requests prepare at most one copy per
+        job, and a success is never overwritten by a failure observed concurrently.
+        """
         source = Path(video_path)
         if not source.is_file():
             return  # _media_for reports local_file_missing
-        media_id = new_id("med")
-        try:
-            playable = _playable_copy(source, self.output_dir / "media" / f"{media_id}.mp4")
-        except Exception as exc:  # the preview can't be made playable; renders still cut the file
-            log.warning("preview preparation failed job_id=%s: %s", job_id, exc)
+        with self._file_media_lock:
             with self._lock:
-                self._job_media_failed.add(job_id)
-            return
-        with self._lock:
-            self._media[media_id] = playable
-            self._job_media[job_id] = media_id
+                if job_id in self._job_media or job_id in self._job_media_failed:
+                    return  # already prepared (or already known unprepareable)
+            media_id = new_id("med")
+            try:
+                playable = _playable_copy(source, self.output_dir / "media" / f"{media_id}.mp4")
+            except Exception as exc:  # the preview can't be made; renders still cut the file
+                log.warning("preview preparation failed job_id=%s: %s", job_id, exc)
+                with self._lock:
+                    self._job_media_failed.add(job_id)
+                return
+            with self._lock:
+                self._media[media_id] = playable
+                self._job_media[job_id] = media_id
 
     def _needs_segment(self, job: _JobRecord) -> bool:
         """Whether this job's media comes from a downloaded segment (#46)."""
@@ -1001,8 +1017,20 @@ class MockService:
                 preview=preview,
                 export=export,
             )
-        preview = (
-            PreviewMedia(
+        if state.status == "ready" and state.media_id is None:
+            # The segment exists for cuts, but no playable preview could be prepared from it
+            # (#46): report that instead of serving unverified bytes (§ 5.1).
+            preview = PreviewMedia(
+                status="unavailable",
+                kind=None,
+                url=None,
+                media_start_s=None,
+                media_end_s=None,
+                reason="fetch_failed",
+                message=_SEGMENT_PREVIEW_FAILED,
+            )
+        elif state.status == "ready":
+            preview = PreviewMedia(
                 status="available",
                 kind="video_file",
                 url=f"/api/v1/media/{state.media_id}",
@@ -1011,8 +1039,8 @@ class MockService:
                 reason=None,
                 message=None,
             )
-            if state.status == "ready"
-            else PreviewMedia(
+        else:
+            preview = PreviewMedia(
                 status="preparing",
                 kind=None,
                 url=None,
@@ -1021,7 +1049,6 @@ class MockService:
                 reason=None,
                 message=_PREPARING_MESSAGE,
             )
-        )
         # While preparing the bounds are the planned span; once ready, the probed coverage.
         begin = state.planned_begin_s if state.status == "preparing" else state.begin_s
         end = state.planned_end_s if state.status == "preparing" else state.end_s
@@ -1229,6 +1256,8 @@ class MockService:
             )
             log.warning("video segment failed job_id=%s reason=%s: %s", job_id, reason, exc)
             self._store_segment(job, candidate, replace(state, status="failed", reason=reason))
+            with self._lock:
+                self._fetches_done += 1
             return
         self._store_segment(
             job,
@@ -1243,6 +1272,8 @@ class MockService:
                 media_id=self._register_segment_media(segment),
             ),
         )
+        with self._lock:
+            self._fetches_done += 1
         log.info(
             "video segment ready job_id=%s video_id=%s range=%.0f-%.0f path=%s",
             job_id,
@@ -1262,7 +1293,9 @@ class MockService:
             TimeoutError: A fetch of the same range is taking longer than `FETCH_WAIT_S`.
         """
         assert self.segment_fetcher is not None  # pipeline mode validates it
-        key = (video_id, begin_s, end_s)
+        # The downloader rounds ranges to whole seconds, and ranges that round together write
+        # the same files: coordinate on the rounded key (#46).
+        key = (video_id, round(begin_s), round(end_s))
         with self._fetch_done:
             while key in self._fetching:
                 if not self._fetch_done.wait(timeout=FETCH_WAIT_S):
@@ -1324,16 +1357,20 @@ class MockService:
                 return  # usable media beats a late failure
             self._segments[key] = new
 
-    def _register_segment_media(self, segment: VideoSegment) -> str:
-        """A media ID whose file a browser can play (§ 5.1), for preview serving (#46)."""
+    def _register_segment_media(self, segment: VideoSegment) -> str | None:
+        """Return a playable media ID (§ 5.1), or None if preparation fails (#46).
+
+        When preparation fails the preview reports unavailable instead of serving unverified
+        bytes, while exports keep cutting the original segment.
+        """
         media_id = new_id("med")
         try:
             playable = _playable_copy(segment.path, self.output_dir / "media" / f"{media_id}.mp4")
         except Exception as exc:
             log.warning("segment preview preparation failed: %s", exc)
-            self._media[media_id] = segment.path  # better than nothing; cut files stay exact
-            return media_id
-        self._media[media_id] = playable
+            return None
+        with self._lock:
+            self._media[media_id] = playable
         return media_id
 
     def _segment_for_render(
@@ -1657,12 +1694,14 @@ def _playable_copy(source: Path, target: Path) -> Path:
     info = probe(source)
     video = info.video_streams[0] if info.video_streams else None
     audio = info.audio_streams[0] if info.audio_streams else None
-    if (
+    # 8-bit yuv420p is what browsers reliably decode; 4:4:4 and 10-bit H.264 may be
+    # technically playable by some, but a preview must just work everywhere (#46).
+    browser_video = (
         video is not None
-        and audio is not None
         and video.codec_name == OUTPUT_PLAYABLE_VIDEO
-        and audio.codec_name == OUTPUT_PLAYABLE_AUDIO
-    ):
+        and (video.pix_fmt in OUTPUT_PLAYABLE_PIX_FMTS)
+    )
+    if browser_video and audio is not None and audio.codec_name == OUTPUT_PLAYABLE_AUDIO:
         if "mp4" in info.format_name.split(","):
             return source
         codecs: tuple[str, ...] = ("-c", "copy")  # h264/aac in another container: remux only
@@ -1674,6 +1713,8 @@ def _playable_copy(source: Path, target: Path) -> Path:
             "veryfast",
             "-crf",
             "23",
+            "-pix_fmt",
+            "yuv420p",
             "-c:a",
             OUTPUT_PLAYABLE_AUDIO,
         )
