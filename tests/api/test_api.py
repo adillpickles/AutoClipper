@@ -1,21 +1,35 @@
 """Tests for the mock backend against docs/architecture/api-contract.md (FastAPI test client)."""
 
 import itertools
+import json
+import shutil
 import time
-from collections.abc import Callable, Iterator
-from datetime import datetime
+from collections.abc import Callable, Iterator, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
+from autoclipper.analysis import AnalysisResult, AnalysisWarning
+from autoclipper.analyze import AnalyzeError
+from autoclipper.api import mock
 from autoclipper.api.app import create_app
 from autoclipper.api.service import MockService, SampleMedia, ensure_sample_media
+from autoclipper.config import TwitchCredentials
 from autoclipper.export.captions import CaptioningError, Stage, Transcriber, Word
 from autoclipper.export.clip import ClipSpec, IntervalOutsideMediaError, SourceMissingError
 from autoclipper.export.cut import IntervalTooShortError
 from autoclipper.export.errors import ExportError
+from autoclipper.features.chat import Lexicon, load_lexicon
 from autoclipper.ffmpeg import FFmpegExitError, ffmpeg_command, probe
+from autoclipper.ingest.chat import PINNED_TOOL_VERSION, CommandResult
+from autoclipper.ingest.media import DownloadedMedia, DownloadRequest
+from autoclipper.ingest.twitch_api import HelixClient
+from autoclipper.ingest.vod import IngestTools
 
 API = "/api/v1"
 
@@ -100,7 +114,7 @@ def client(make_client: Callable[..., tuple[TestClient, MockService]]) -> TestCl
     return make_client()[0]
 
 
-def done_job(client: TestClient, vod: str = "9000000001") -> dict[str, object]:
+def done_job(client: TestClient, vod: str = "9000000001") -> dict[str, Any]:
     response = client.post(f"{API}/jobs", json={"vod": vod})
     assert response.status_code == 201, response.text
     job = client.get(f"{API}/jobs/{response.json()['job_id']}").json()
@@ -1111,13 +1125,374 @@ def test_serve_starts_uvicorn_with_the_mock_app(
 
     def run(api: object, **kwargs: object) -> None:
         calls.append({"api": api, **kwargs})
-        with TestClient(api):  # type: ignore[arg-type]  # runs the lifespan, which stops the workers
+        with TestClient(api):  # type: ignore[arg-type]  # runs the lifespan, stops the workers
             pass
 
     monkeypatch.setattr(uvicorn, "run", run)
 
-    result = CliRunner().invoke(cli, ["serve", "--port", "8123"])
+    result = CliRunner().invoke(cli, ["serve", "--jobs", "mock", "--port", "8123"])
 
     assert result.exit_code == 0, result.output
     assert calls[0]["host"] == "127.0.0.1"
     assert calls[0]["port"] == 8123
+
+
+def test_serve_starts_the_pipeline_app_and_names_missing_credentials(
+    monkeypatch: pytest.MonkeyPatch, samples: SampleMedia
+) -> None:
+    import uvicorn
+    from typer.testing import CliRunner
+
+    from autoclipper.api import service as service_module
+    from autoclipper.cli import app as cli
+
+    monkeypatch.setattr(service_module, "ensure_sample_media", lambda directory: samples)
+
+    def run(api: object, **kwargs: object) -> None:
+        with TestClient(api):  # type: ignore[arg-type]  # runs the lifespan, stops the workers
+            pass
+
+    monkeypatch.setattr(uvicorn, "run", run)
+    lexicon = Path(__file__).parents[2] / "configs" / "lexicon.yaml"
+
+    result = CliRunner().invoke(cli, ["serve", "--lexicon", str(lexicon)])
+
+    assert result.exit_code == 0, result.output
+    assert "pipeline" in result.output  # the default runner
+    assert "TWITCH_CLIENT_ID" in result.output  # the missing-credentials note
+    assert "(mock jobs) on http" not in result.output  # no longer branded mock-only
+
+
+# --- Pipeline jobs (#45) ------------------------------------------------------------------------
+
+
+LEXICON_PATH = Path(__file__).parents[2] / "configs" / "lexicon.yaml"
+PIPELINE_VIDEO_ID = "9000000100"  # the chat fixture's VOD
+
+
+class PipelineProbe:
+    """A fake `analyze_vod` that drives the service's stage callbacks like the real one.
+
+    After each stage it reads the job record the service updates, so the test sees the
+    progress the API would report while the job runs.
+    """
+
+    def __init__(self, result: AnalysisResult, error: AnalyzeError | None = None) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[dict[str, object]] = []
+        self.service: MockService | None = None
+
+    def __call__(
+        self,
+        video_id: str,
+        *,
+        data_dir: Path,
+        artifacts_dir: Path,
+        tools: IngestTools,
+        lexicon: Lexicon,
+        video_file: Path | None,
+        baseline: str,
+        clock: Callable[[], datetime],
+        on_stage: Callable[[str], None],
+        on_warnings: Callable[[Sequence[AnalysisWarning]], None],
+    ) -> AnalysisResult:
+        del lexicon, clock  # unused by the fake; the call records the rest
+        assert self.service is not None
+        call: dict[str, object] = {
+            "video_id": video_id,
+            "data_dir": data_dir,
+            "artifacts_dir": artifacts_dir,
+            "tools": tools,
+            "video_file": video_file,
+            "baseline": baseline,
+        }
+        self.calls.append(call)
+        (record,) = list(self.service._jobs.values())
+        seen: list[tuple[str, int]] = []
+        for index, (name, _) in enumerate(mock.JOB_STAGES, start=1):
+            on_stage(name)
+            assert record.progress is not None
+            seen.append((record.progress.stage, record.progress.stage_index))
+            if self.error is not None and index == 2:  # fail in the stage it reached
+                call["progress_seen"] = seen
+                raise self.error
+        call["progress_seen"] = seen
+        on_warnings((mock.CHAT_MISSING,))
+        call["warnings_seen"] = record.warnings
+        return self.result
+
+
+def _scenario_result(video_id: str) -> AnalysisResult:
+    """A done scenario's result, asserted non-None for the type checker."""
+    scenario = mock.scenario_for(video_id)
+    assert scenario.result is not None
+    return scenario.result
+
+
+def pipeline_client(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    probe: PipelineProbe,
+    tmp_path: Path,
+) -> tuple[TestClient, MockService]:
+    client, service = make_client(
+        job_runner="pipeline",
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=IngestTools,
+        analyze=probe,
+    )
+    probe.service = service
+    return client, service
+
+
+def test_the_health_endpoint_reports_the_pipeline_runner(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    probe = PipelineProbe(_scenario_result("9000000001"))
+    client, _ = pipeline_client(make_client, probe, tmp_path)
+
+    response = client.get(f"{API}/health")
+
+    assert response.json() == {
+        "status": "ok",
+        "schema_version": "1.0",
+        "job_runner": "pipeline",
+    }
+
+
+def test_a_pipeline_job_reports_each_stage_and_finishes(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    result = _scenario_result("9000000001").model_copy(update={"warnings": (mock.CHAT_MISSING,)})
+    probe = PipelineProbe(result)
+    client, _ = pipeline_client(make_client, probe, tmp_path)
+
+    job = done_job(client, PIPELINE_VIDEO_ID)
+
+    assert job["state"] == "done"
+    (call,) = probe.calls
+    assert call["video_id"] == PIPELINE_VIDEO_ID
+    assert call["data_dir"] == tmp_path / "data"
+    assert call["artifacts_dir"] == tmp_path / "artifacts"
+    assert call["video_file"] is None
+    assert call["baseline"] == "chat_loudness"
+    assert isinstance(call["tools"], IngestTools)  # the service builds the tools per job
+    assert call["progress_seen"] == [
+        (name, index) for index, (name, _) in enumerate(mock.JOB_STAGES, start=1)
+    ]
+    assert call["warnings_seen"] == (mock.CHAT_MISSING,)
+    assert job["progress"] is None
+    assert job["error"] is None
+    assert [warning["code"] for warning in job["warnings"]] == ["chat_missing"]
+    served = client.get(f"{API}/jobs/{job['job_id']}/result").json()
+    assert served == json.loads(result.model_dump_json())  # both as the wire format
+
+
+def test_a_pipeline_failure_keeps_the_contract_code_and_its_last_stage(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    expired = AnalyzeError(
+        "vod_unavailable", "Twitch has no published video with this ID (it may have expired)"
+    )
+    probe = PipelineProbe(_scenario_result("9000000001"), error=expired)
+    client, _ = pipeline_client(make_client, probe, tmp_path)
+
+    job = done_job(client, PIPELINE_VIDEO_ID)
+
+    assert job["state"] == "failed"
+    assert job["error"] == {
+        "code": "vod_unavailable",
+        "message": "Twitch has no published video with this ID (it may have expired)",
+        "details": None,
+    }
+    assert job["progress"] is not None  # failed keeps the last value (§ 3.4)
+    assert job["progress"]["stage"] == "fetching_clips"
+    assert job["progress"]["stage_index"] == 2
+
+
+def test_the_pipeline_receives_the_jobs_video_path(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    probe = PipelineProbe(_scenario_result("9000000001"))
+    client, _ = pipeline_client(make_client, probe, tmp_path)
+    video = tmp_path / "vod.mp4"
+    video.write_bytes(b"x")
+
+    created = client.post(f"{API}/jobs", json={"vod": PIPELINE_VIDEO_ID, "video_path": str(video)})
+
+    assert created.status_code == 201
+    (call,) = probe.calls
+    assert call["video_file"] == video
+
+
+def test_pipeline_jobs_need_their_configuration(samples: SampleMedia, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="lexicon"):
+        MockService(
+            samples=samples,
+            output_dir=tmp_path / "artifacts",
+            step_s=0.0,
+            synchronous=True,
+            job_runner="pipeline",
+            data_dir=tmp_path / "data",
+            artifacts_dir=tmp_path / "artifacts",
+            tools_for=IngestTools,
+        )
+
+
+# The fakes for the real-pipeline test: a scripted Helix, the chat fixture as the tool's
+# output, and a downloader that copies a generated audio file into place.
+
+
+class FakeHelix:
+    """Answers the token, Get Users, Get Videos and Get Clips requests."""
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host == "id.twitch.tv":
+            return httpx.Response(
+                200,
+                json={"access_token": "fake-token", "expires_in": 3600, "token_type": "bearer"},
+            )
+        if request.url.path == "/helix/users":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "9000000000",
+                            "login": "streamer_000",
+                            "display_name": "Streamer_000",
+                            "broadcaster_type": "partner",
+                        }
+                    ]
+                },
+            )
+        if request.url.path == "/helix/videos":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": PIPELINE_VIDEO_ID,
+                            "stream_id": "9200000100",
+                            "user_id": "9000000000",
+                            "user_login": "streamer_000",
+                            "user_name": "Streamer_000",
+                            "title": "Synthetic test stream",
+                            "description": "",
+                            "created_at": "2026-10-01T18:00:00Z",
+                            "published_at": "2026-10-01T18:00:00Z",
+                            "url": f"https://www.twitch.tv/videos/{PIPELINE_VIDEO_ID}",
+                            "thumbnail_url": "",
+                            "viewable": "public",
+                            "view_count": 10,
+                            "language": "en",
+                            "type": "archive",
+                            "duration": "1h0m0s",
+                            "muted_segments": [{"duration": 30, "offset": 120}],
+                        }
+                    ],
+                    "pagination": {},
+                },
+            )
+        assert request.url.path == "/helix/clips"
+        clips = [
+            {
+                "id": f"SyntheticClip{index:03d}",
+                "broadcaster_id": "9000000000",
+                "creator_id": f"{9300000000 + index}",
+                "video_id": PIPELINE_VIDEO_ID,
+                "game_id": "509658",
+                "language": "en",
+                "title": f"synthetic clip {index}",
+                "view_count": 10 * index,
+                "created_at": "2026-10-01T18:01:00Z",
+                "duration": 30.0,
+                "vod_offset": 60 * index,
+                "is_featured": False,
+            }
+            for index in (1, 2)
+        ]
+        return httpx.Response(200, json={"data": clips, "pagination": {}})
+
+
+class FakeChatTool:
+    """Plays TwitchDownloaderCLI: writes the chat fixture to --output."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, args: Sequence[str]) -> "CommandResult":
+        self.calls += 1
+        Path(args[args.index("--output") + 1]).write_bytes(CHAT_FIXTURE.read_bytes())
+        return CommandResult(0, BANNER, "")
+
+
+class FakeFileDownloader:
+    """Copies a generated audio file into place like yt-dlp."""
+
+    def __init__(self, source: Path) -> None:
+        self.source = source
+
+    def __call__(self, request: DownloadRequest, /) -> DownloadedMedia:
+        path = request.output_dir / f"{request.stem}.m4a"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self.source, path)
+        return DownloadedMedia(path, 3.0)
+
+
+CHAT_FIXTURE = Path(__file__).parents[1] / "ingest" / "fixtures" / "chat_replay.json"
+BANNER = f"TwitchDownloaderCLI {PINNED_TOOL_VERSION} Copyright (c) lay295 and contributors\n"
+
+
+@pytest.mark.ffmpeg
+def test_a_real_pipeline_job_from_the_api(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """The worker runs the real `analyze_vod` against fake Twitch and chat tools, end to
+    end: one POST produces a genuinely computed result with the § 3.5 warnings."""
+    chat_binary = tmp_path / "bin" / "TwitchDownloaderCLI.exe"
+    chat_binary.parent.mkdir(parents=True)
+    chat_binary.write_bytes(b"")
+    audio = make_test_media("source.m4a", duration_s=3.0, video_size=None)
+    credentials = TwitchCredentials(SecretStr("fake-client-id"), SecretStr("fake-client-secret"))
+    clock = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
+
+    def tools_for() -> IngestTools:
+        http = httpx.Client(transport=httpx.MockTransport(FakeHelix()))
+        return IngestTools(
+            helix=HelixClient(credentials, http_client=http, clock=lambda: clock),
+            salt=SecretStr("fake-salt-5b1e"),
+            chat_runner=FakeChatTool(),
+            chat_binary=chat_binary,
+            downloader=FakeFileDownloader(audio),
+        )
+
+    client, _ = make_client(
+        job_runner="pipeline",
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=tools_for,
+    )  # analyze: the real `analyze_vod`
+
+    job = done_job(client, PIPELINE_VIDEO_ID)
+
+    assert job["state"] == "done", job["error"]
+    assert [warning["code"] for warning in job["warnings"]] == ["audio_partly_muted"]
+    served = client.get(f"{API}/jobs/{job['job_id']}/result").json()
+    assert served["vod"]["video_id"] == PIPELINE_VIDEO_ID
+    assert served["vod"]["broadcaster_display_name"] == "Streamer_000"
+    assert served["scorer"] == {"kind": "heuristic", "name": "chat_loudness", "run_id": None}
+    assert served["n_viewer_clips_total"] == 2
+    assert served["candidates"], "the planted signals should rank"
+    # The pipeline also wrote the result file the highlights command reads (#71).
+    written = json.loads(
+        (tmp_path / "artifacts" / "analysis" / f"{PIPELINE_VIDEO_ID}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert served == written

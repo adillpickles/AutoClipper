@@ -164,6 +164,7 @@ def ingest_vod(
     tools: IngestTools,
     media_file: Path | None = None,
     after_vod_meta: Callable[[Vod | None], None] | None = None,
+    on_step: Callable[[StepResult], None] | None = None,
 ) -> IngestReport:
     """Run the four ingest steps for one VOD, skipping the ones already done.
 
@@ -178,6 +179,10 @@ def ingest_vod(
             raises propagates and the remaining steps are skipped without catalog rows, so a
             later run picks them up. `analyze_vod` uses it to reject a non-archive video or a
             mismatched ``--video`` file before fetching anything (api-contract.md § 3.5).
+        on_step: Called with each step's result as the step completes, in step order (a
+            skipped step completes too). The API worker uses it to report job progress
+            (api-contract.md § 3.4); an exception it raises propagates like
+            ``after_vod_meta``'s.
 
     Raises:
         InvalidVideoIdError: `video_id` isn't a Twitch video ID.
@@ -205,11 +210,16 @@ def ingest_vod(
         log.info("ingest step=%s video_id=%s status=%s", step, video_id, status)
         result = StepResult(step, status, detail)
         results.append(result)
+        if on_step is not None:
+            on_step(result)
         return result
 
     def skip(step: StepName, entry: CatalogEntry) -> None:
         detail = "done in an earlier run" if entry.status == "ok" else f"unavailable: {entry.error}"
-        results.append(StepResult(step, "skipped", detail))
+        result = StepResult(step, "skipped", detail)
+        results.append(result)
+        if on_step is not None:
+            on_step(result)
 
     # 1. Metadata.
     vod: Vod | None = None

@@ -65,6 +65,7 @@ from autoclipper.ingest.media import normalized_audio_path, validate_video_id
 from autoclipper.ingest.twitch_api import Vod
 from autoclipper.ingest.vod import (
     IngestTools,
+    StepResult,
     chat_path,
     clips_dir,
     ingest_vod,
@@ -98,6 +99,16 @@ type FailureCode = Literal[
 # errors count as transient, so their failure makes a rankless result upstream_unavailable).
 INPUT_STEPS: Final = ("clips", "chat", "audio")
 
+# An ingest step's completion is the next analysis stage's beginning (api-contract.md § 3.4);
+# a skipped step completes too, so cached stages are passed over.
+_STEP_TO_STAGE: Final = {
+    "vod_meta": "fetching_clips",
+    "clips": "downloading_chat",
+    "chat": "downloading_audio",
+    "audio": "computing_features",
+}
+"""The stage that begins when each ingest step completes (`on_step` in `ingest_vod`)."""
+
 
 class AnalyzeError(Exception):
     """The analysis can't produce a meaningful result (api-contract.md § 3.5).
@@ -125,6 +136,8 @@ def analyze_vod(
     model_dir: Path | None = None,
     out_path: Path | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(tz=UTC),
+    on_stage: Callable[[str], None] | None = None,
+    on_warnings: Callable[[Sequence[AnalysisWarning]], None] | None = None,
 ) -> AnalysisResult:
     """Run the whole pipeline for one VOD and write its ranked candidates.
 
@@ -141,6 +154,12 @@ def analyze_vod(
         model_dir: A saved model run (``artifacts/models/<run_id>``); overrides `baseline`.
         out_path: Where to write the result JSON instead of the default under `artifacts_dir`.
         clock: Returns the current time as an aware UTC datetime (``generated_at``).
+        on_stage: Called with each of the six analysis stage names of api-contract.md § 3.4
+            as the stage begins, including stages the ingest skips over. An exception it
+            raises propagates and fails the run. The API worker uses it for job progress.
+        on_warnings: Called once with the warnings found so far, after the inputs are known
+            and before the features are computed. The API worker uses it so a running job's
+            ``warnings`` field means "degradations found so far", per § 3.5.
 
     Returns:
         The written `AnalysisResult`, ranked candidates first.
@@ -156,6 +175,12 @@ def analyze_vod(
     chosen = load_scorer(model_dir) if model_dir is not None else make_scorer(baseline)
     del chosen  # _score_windows builds the scorer it runs; here it only had to be validated
     video_info = _probe_video_file(video_file, tools.runner)
+
+    def stage(name: str) -> None:
+        if on_stage is not None:
+            on_stage(name)
+
+    stage("resolving_vod")
 
     def check_vod(vod: Vod | None) -> None:
         """§ 3.5's `resolving_vod` checks, before any other step downloads anything."""
@@ -174,6 +199,11 @@ def analyze_vod(
                 f"{vod.duration_s:.1f} s; pass a file of the whole VOD, starting at its start",
             )
 
+    def step_stage(step: StepResult) -> None:
+        # The next analysis stage begins when an ingest step completes (a skipped step
+        # completes too, so cached stages are passed over, § 3.4).
+        stage(_STEP_TO_STAGE[step.step])
+
     _timed(
         "ingest",
         lambda: ingest_vod(
@@ -182,6 +212,7 @@ def analyze_vod(
             tools=tools,
             media_file=video_file,
             after_vod_meta=check_vod,
+            on_step=None if on_stage is None else step_stage,
         ),
     )
     catalog = read_catalog(data_dir)
@@ -280,7 +311,11 @@ def analyze_vod(
                 )
             )
 
+    if on_warnings is not None:
+        on_warnings(tuple(warnings))
+
     # --- Features and scoring ------------------------------------------------------------------
+    stage("computing_features")
     windows = _timed(
         "windows",
         lambda: make_windows(
@@ -312,6 +347,7 @@ def analyze_vod(
     # could have run, is classified through _ScorerUnavailable below instead.)
     if chat_features is None and audio_features is None and not moments:
         raise _nothing_to_rank(catalog, video_id)
+    stage("ranking")
     try:
         scored = _timed(
             "scoring",

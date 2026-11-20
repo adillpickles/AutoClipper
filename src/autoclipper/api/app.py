@@ -155,7 +155,7 @@ def create_app(
 
     @app.get(f"{API_PREFIX}/health", response_model=Health)
     def health() -> Response:
-        return _json(Health(job_runner="mock"))
+        return _json(Health(job_runner=service.job_runner))
 
     @app.post(f"{API_PREFIX}/jobs", response_model=Job, status_code=201)
     def create_job(request: CreateJobRequest) -> Response:

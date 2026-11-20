@@ -786,6 +786,13 @@ def analyze(
     typer.echo(f"Wrote {result_path(settings.artifacts_dir, video_id, out)}")
 
 
+class JobRunner(StrEnum):
+    """Who runs analysis jobs (api-contract.md § 9.5)."""
+
+    MOCK = "mock"
+    PIPELINE = "pipeline"
+
+
 @app.command()
 def serve(
     host: Annotated[str, typer.Option(help="Address to listen on.")] = "127.0.0.1",
@@ -793,8 +800,18 @@ def serve(
     step_s: Annotated[
         float, typer.Option(min=0.0, help="Seconds each mock job or render stage takes.")
     ] = 0.5,
+    jobs: Annotated[
+        JobRunner,
+        typer.Option(
+            help="mock runs the built-in scenarios (frontend work, no credentials); "
+            "pipeline runs the real analysis per job."
+        ),
+    ] = JobRunner.PIPELINE,
+    lexicon: Annotated[Path, typer.Option(help="Versioned chat lexicon (pipeline jobs).")] = Path(
+        "configs/lexicon.yaml"
+    ),
 ) -> None:
-    """Run the backend API with the mock job runner (open /docs for the endpoints)."""
+    """Run the backend API (open /docs for the endpoints)."""
     import uvicorn  # Deferred: only this command needs the web server.
 
     from autoclipper.api.app import create_app
@@ -807,12 +824,50 @@ def serve(
     except FFmpegError as exc:
         typer.echo(f"Error: can't generate the sample videos: {exc}", err=True)
         raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+    options: dict[str, Any] = {"job_runner": jobs.value, "step_s": step_s}
+    if jobs == JobRunner.PIPELINE:
+        from autoclipper.config import MissingSettingError
+        from autoclipper.features.chat import LexiconError, load_lexicon
+        from autoclipper.ingest.twitch_api import HelixClient
+        from autoclipper.ingest.vod import IngestTools
+
+        try:
+            options["lexicon"] = load_lexicon(lexicon)
+        except LexiconError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(ExitCode.USER_ERROR) from None
+
+        def tools_for() -> IngestTools:
+            # One client per job: the worker closes it when the job ends.
+            built: dict[str, Any] = {}
+            try:
+                built["salt"] = settings.require_chat_hash_salt()
+            except MissingSettingError as exc:
+                built["missing_salt"] = str(exc)
+            helix: HelixClient | None = None
+            try:
+                helix = HelixClient(settings.require_twitch_credentials())
+            except MissingSettingError as exc:
+                built["missing_helix"] = str(exc)
+            return IngestTools(helix=helix, **built)
+
+        options.update(
+            data_dir=settings.data_dir,
+            artifacts_dir=settings.artifacts_dir,
+            tools_for=tools_for,
+        )
+        if not (settings.twitch_client_id and settings.twitch_client_secret):
+            typer.echo(
+                "Note: TWITCH_CLIENT_ID/SECRET are not set; pipeline jobs will fail with "
+                "upstream_unavailable until they are (--jobs mock for the built-in scenarios).",
+                err=True,
+            )
     service = MockService(
         samples=samples,
         output_dir=settings.artifacts_dir,
-        step_s=step_s,
         export_region=settings.export_region,
+        **options,
     )
     api = create_app(service, cors_origins=settings.cors_origins)
-    typer.echo(f"AutoClipper API (mock) on http://{host}:{port} (docs at /docs)")
+    typer.echo(f"AutoClipper API ({jobs.value} jobs) on http://{host}:{port} (docs at /docs)")
     uvicorn.run(api, host=host, port=port, log_level="warning")
