@@ -133,7 +133,7 @@ Subscriber-only VODs are skipped: the downloader tools can't fetch them without 
 - **Resuming and checks.** yt-dlp resumes an HLS download from its `.ytdl` file; a `.part` file without a readable `.ytdl` is deleted first, because yt-dlp would restart and append to it, duplicating audio. A finished download must play for the duration the source reports (within the larger of 2 s and 0.2 %), measured by reading the stream with FFmpeg rather than from ffprobe's container duration (which for MPEG-TS comes from the first and last timestamps and misses repeated segments); otherwise it is deleted.
 - **Errors:** yt-dlp has no error codes. `autoclipper.ingest.media.classify_download_error` sorts its failures into unavailable VOD, subscriber-only/login, no audio-only format, network and other tool errors by exception type and message wording, which can change between yt-dlp versions. Recheck those patterns when upgrading.
 
-- **Segments** for preview/export reduce download cost (⚠️ verify the tool's segment accuracy in the pilot):
+- **Segments** for preview/export reduce download cost (⚠️ verify the tool's segment accuracy in the pilot). Implemented in `autoclipper.ingest.media.download_video_segment` (#46): ranges are rounded to whole seconds, cached by range under `data/raw/video/<video_id>/segment-<begin>-<end>.<ext>` (delete to fetch again), and a kept segment must have both streams and play for roughly the requested length (a much shorter file is a broken download; a much longer one means the range was ignored, so the file's VOD time would be unknown):
 
   ```bash
   yt-dlp --download-sections "*<start>-<end>" -f "best[height<=1080]" -o "…" https://www.twitch.tv/videos/<video_id>

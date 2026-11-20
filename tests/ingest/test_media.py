@@ -44,6 +44,7 @@ from autoclipper.ffmpeg import (
 from autoclipper.ingest.media import (
     AUDIO_FORMAT_SELECTOR,
     MAX_RETRY_SLEEP_S,
+    VIDEO_FORMAT_SELECTOR,
     AudioDownloadError,
     ByteDamage,
     DownloadedMedia,
@@ -57,10 +58,12 @@ from autoclipper.ingest.media import (
     VodUnavailableError,
     YtDlpDownloader,
     download_audio,
+    download_video_segment,
     normalize_audio,
     normalized_audio_path,
     prepare_vod_audio,
     raw_audio_dir,
+    raw_video_dir,
     scan_adts,
     scan_mpegts,
     validate_video_id,
@@ -1693,3 +1696,117 @@ def test_live_download_and_normalize_a_real_vod(tmp_path: Path) -> None:
     audio = prepare_vod_audio(video_id, data_dir=tmp_path / "data")
 
     assert audio.duration_s > 0
+
+
+# --- Video segments (#46) ------------------------------------------------------------------------
+
+
+def test_section_requests_change_the_ytdlp_options() -> None:
+    """A segment request asks for the video format and the time range; the audio default
+    stays exactly as it was."""
+    plain = DownloadRequest(vod_url(VIDEO_ID), Path("out"), STEM)
+    section = DownloadRequest(vod_url(VIDEO_ID), Path("out"), STEM, sections=(50, 60))
+
+    assert ytdlp_options(plain)["format"] == AUDIO_FORMAT_SELECTOR
+    assert "download_ranges" not in ytdlp_options(plain)
+    options = ytdlp_options(section)
+    assert options["format"] == VIDEO_FORMAT_SELECTOR == "best[height<=1080]"
+    # yt-dlp's own range callback (the CLI's --download-sections parser).
+    assert options["download_ranges"].ranges == [(50, 60)]  # type: ignore[attr-defined]
+
+
+def test_a_segment_range_is_validated_before_anything_is_run(tmp_path: Path) -> None:
+    downloader = FakeDownloader()
+
+    for begin, end in ((60.0, 50.0), (-1.0, 50.0), (100.2, 100.4)):  # reversed, negative,
+        # and one that rounds to empty whole seconds
+        with pytest.raises(ValueError, match="segment range"):
+            download_video_segment(
+                VIDEO_ID, begin_s=begin, end_s=end, output_dir=tmp_path, downloader=downloader
+            )
+    with pytest.raises(InvalidVideoIdError):
+        download_video_segment(
+            "not-a-vod", begin_s=0.0, end_s=10.0, output_dir=tmp_path, downloader=downloader
+        )
+    assert downloader.requests == []
+
+
+def test_a_segment_download_failure_keeps_the_typed_errors(tmp_path: Path) -> None:
+    class Boom:
+        def __call__(self, request: DownloadRequest, /) -> DownloadedMedia:
+            raise VodAccessRestrictedError(VIDEO_ID, "subscriber-only")
+
+    class Bug:
+        def __call__(self, request: DownloadRequest, /) -> DownloadedMedia:
+            raise RuntimeError("a downloader bug")
+
+    with pytest.raises(VodAccessRestrictedError):
+        download_video_segment(
+            VIDEO_ID, begin_s=0.0, end_s=10.0, output_dir=tmp_path, downloader=Boom()
+        )
+    with pytest.raises(DownloadToolError):
+        download_video_segment(
+            VIDEO_ID, begin_s=0.0, end_s=10.0, output_dir=tmp_path, downloader=Bug()
+        )
+
+
+@pytest.mark.ffmpeg
+def test_a_video_segment_is_downloaded_named_and_cached(
+    data_dir: Path, make_test_media: Callable[..., Path]
+) -> None:
+    """The segment is verified and renamed by range, and a second call reuses it (#46)."""
+    video = make_test_media("vod.mp4", duration_s=20.0)
+    downloader = FakeDownloader(extension="mp4", source=video)
+    directory = raw_video_dir(data_dir) / VIDEO_ID
+
+    segment = download_video_segment(
+        VIDEO_ID, begin_s=50.0, end_s=60.0, output_dir=directory, downloader=downloader
+    )
+
+    (request,) = downloader.requests
+    assert request.url == vod_url(VIDEO_ID)
+    assert request.sections == (50, 60)
+    assert segment.path == directory / "segment-50-60.mp4"
+    assert segment.begin_s == 50.0  # the file's own time 0 is VOD time 50
+    assert segment.end_s == pytest.approx(70.0, abs=0.5)  # 50 + the probed 20 s
+
+    again = download_video_segment(
+        VIDEO_ID, begin_s=50.0, end_s=60.0, output_dir=directory, downloader=downloader
+    )
+    assert again == segment
+    assert len(downloader.requests) == 1  # the cached file was reused
+    assert sorted(p.name for p in directory.iterdir()) == ["segment-50-60.mp4"]
+
+
+@pytest.mark.ffmpeg
+def test_a_segment_that_ignores_the_range_is_rejected(
+    data_dir: Path, make_test_media: Callable[..., Path]
+) -> None:
+    """A file far longer than the range means the range was ignored: its VOD time would be
+    unknown, so it is deleted instead of kept (#46)."""
+    video = make_test_media("vod.mp4", duration_s=60.0)
+    downloader = FakeDownloader(extension="mp4", source=video)
+    directory = raw_video_dir(data_dir) / VIDEO_ID
+
+    with pytest.raises(DownloadIntegrityError, match="range looks ignored"):
+        download_video_segment(
+            VIDEO_ID, begin_s=100.0, end_s=110.0, output_dir=directory, downloader=downloader
+        )
+
+    assert not any(directory.iterdir())  # the staging files were cleaned up
+
+
+@pytest.mark.ffmpeg
+def test_a_segment_far_shorter_than_requested_is_rejected(
+    data_dir: Path, make_test_media: Callable[..., Path]
+) -> None:
+    video = make_test_media("vod.mp4", duration_s=12.0)
+    downloader = FakeDownloader(extension="mp4", source=video)
+    directory = raw_video_dir(data_dir) / VIDEO_ID
+
+    with pytest.raises(DownloadIntegrityError, match="plays for only"):
+        download_video_segment(
+            VIDEO_ID, begin_s=100.0, end_s=160.0, output_dir=directory, downloader=downloader
+        )
+
+    assert not any(directory.iterdir())

@@ -7,10 +7,14 @@ normally ``get_settings().data_dir``:
   extension names the container ffprobe finds: ``ts`` (MPEG-TS) for Twitch's HLS segments,
   otherwise the one yt-dlp reports.
 - ``interim/audio/<video_id>.wav``: 16 kHz mono 16-bit PCM for feature extraction.
+- ``raw/video/<video_id>/segment-<begin>-<end>.<ext>``: a downloaded video segment of the VOD
+  (#46), covering ``[begin, end)`` of VOD time (the file's own time 0 is VOD time ``begin``),
+  for the API's preview and export media.
 
 Downloading VOD media through yt-dlp is unofficial (docs/data/data-sources.md § 3). Only public
-VODs and audio-only formats are downloaded: no cookies or login are passed, and there is no
-fallback to formats with video.
+VODs and audio-only formats are downloaded for features: no cookies or login are passed, and
+there is no fallback to formats with video. Video segments (#46) do ask for a video format (up
+to 1080p) and a time range, again without cookies or login.
 
 yt-dlp only downloads: its own FFmpeg use (remuxing, fix-ups, FFmpeg as HLS downloader) is turned
 off, so every FFmpeg and FFprobe run goes through `autoclipper.ffmpeg`, with a timeout.
@@ -20,7 +24,8 @@ while in progress, which it resumes on the next run). A partial download that ca
 safely is deleted first (`YtDlpDownloader`). A finished download is probed, checked for damaged
 bytes and against the duration the source reports, and only then renamed to
 ``<video_id>.<ext>``. A file with that name is therefore a complete, checked download, and it is
-never fetched again. Delete it to download again.
+never fetched again. Delete it to download again. Video segments follow the same staging and
+checking, and a segment file with its final name is a complete, checked download of that range.
 
 Download failures raise a subclass of `AudioDownloadError`, so the CLI can map them to exit codes
 (docs/development/conventions.md §7). yt-dlp has no error codes, so `classify_download_error`
@@ -63,6 +68,10 @@ VOD_URL_TEMPLATE: Final = "https://www.twitch.tv/videos/{video_id}"
 # normally offer one. There is deliberately no fallback to formats with video (#19 is audio only,
 # and data governance asks for minimal downloads): without one, NoAudioOnlyFormatError.
 AUDIO_FORMAT_SELECTOR: Final = "bestaudio"
+
+VIDEO_FORMAT_SELECTOR: Final = "best[height<=1080]"
+"""The best video format up to 1080p (docs/data/data-sources.md § 3): segments are watched and
+cut, not mastered."""
 
 # yt-dlp's API defaults to 0 fragment retries (its CLI uses 10); a VOD is thousands of HLS
 # fragments, so retry each one with capped exponential backoff (conventions §6).
@@ -173,6 +182,11 @@ def vod_url(video_id: str) -> str:
 def raw_audio_dir(data_dir: Path) -> Path:
     """Return the directory that holds downloaded audio: ``<data_dir>/raw/audio``."""
     return data_dir / "raw" / "audio"
+
+
+def raw_video_dir(data_dir: Path) -> Path:
+    """Return the directory that holds downloaded video segments: ``<data_dir>/raw/video``."""
+    return data_dir / "raw" / "video"
 
 
 def normalized_audio_path(data_dir: Path, video_id: str) -> Path:
@@ -359,11 +373,33 @@ class DownloadRequest:
         output_dir: The directory to write into.
         stem: The file name without extension; the downloader appends ``.<ext>``. Every file the
             downloader writes, partial ones included, is named ``<stem>.<something>``.
+        sections: A ``(begin_s, end_s)`` VOD-time range to download instead of the whole video
+            (#46), yt-dlp's ``--download-sections``, in whole seconds; the file's own time 0 is
+            ``begin_s``. None downloads everything (the audio path).
+        format: The yt-dlp format selector; None uses the audio default, and a request with
+            `sections` defaults to `VIDEO_FORMAT_SELECTOR`.
     """
 
     url: str
     output_dir: Path
     stem: str
+    sections: tuple[int, int] | None = None
+    format: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VideoSegment:
+    """One downloaded video segment of a VOD (#46), for preview and export media.
+
+    Attributes:
+        path: The complete, checked MP4/TS file.
+        begin_s: The VOD time at the file's own time 0.
+        end_s: The VOD time at the end of the file: `begin_s` plus the duration ffprobe reads.
+    """
+
+    path: Path
+    begin_s: float
+    end_s: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,8 +434,13 @@ def ytdlp_options(request: DownloadRequest) -> dict[str, object]:
     Names and meanings are from the ``YoutubeDL`` class docstring and
     ``yt_dlp/downloader/common.py`` / ``fragment.py`` of yt-dlp 2026.08.19.
     """
-    return {
-        "format": AUDIO_FORMAT_SELECTOR,
+    options: dict[str, object] = {
+        # A section request is a video download (#46); everything else is audio.
+        "format": request.format
+        if request.format is not None
+        else VIDEO_FORMAT_SELECTOR
+        if request.sections is not None
+        else AUDIO_FORMAT_SELECTOR,
         # The directory goes in `paths`, not in the template, so `%(...)s` in it isn't a field.
         # yt-dlp still expands environment variables in it; YtDlpDownloader rejects those.
         "paths": {"home": str(request.output_dir)},
@@ -427,6 +468,14 @@ def ytdlp_options(request: DownloadRequest) -> dict[str, object]:
         "color": "never",
         "logger": _YtDlpLogger(),
     }
+    if request.sections is not None:
+        # ``--download-sections``: yt-dlp's own range callback (the CLI's parser); the native
+        # downloader keeps only the HLS fragments of the range, so the file's time 0 is the
+        # range's start. Segment accuracy still needs a pilot check (data sources § 3).
+        from yt_dlp.utils import download_range_func  # Deferred: yt-dlp imports slowly.
+
+        options["download_ranges"] = download_range_func([], [request.sections])
+    return options
 
 
 def _retry_sleep_s(n: int) -> float:
@@ -687,6 +736,148 @@ def download_audio(
     media.path.replace(final)
     log.info("downloaded audio video_id=%s path=%s", video_id, final)
     return final
+
+
+# A segment far shorter than asked for is unusable, and one much longer means the range was
+# ignored (the whole VOD would have the wrong time 0 for preview and cuts).
+SEGMENT_MIN_PLAYED_FRACTION: Final = 0.25
+SEGMENT_MAX_OVERSHOOT_S: Final = 30.0
+
+
+def download_video_segment(
+    video_id: str,
+    *,
+    begin_s: float,
+    end_s: float,
+    output_dir: Path,
+    downloader: Downloader | None = None,
+    runner: Runner | None = None,
+) -> VideoSegment:
+    """Download one video segment of a VOD with yt-dlp (#46), to ``<output_dir>``.
+
+    The segment covers ``[begin_s, end_s)`` of VOD time (both finite, ``0 <= begin < end``);
+    the downloaded file's own time 0 is ``begin_s``. Segments are cached by range: a complete,
+    checked file for the same range is never fetched again (delete it to download again), and
+    the file name carries the range, ``segment-<begin>-<end>.<ext>``.
+
+    A new download is checked before it is kept, like the audio: it must have a video and an
+    audio stream, no more than `MAX_DECODE_ERROR_RATE` of damaged bytes, and play for roughly
+    the requested length (a much shorter file is a broken download; a much longer one means
+    the range was ignored). The returned `VideoSegment.end_s` is the *probed* duration, not
+    the requested one, so preview coverage and export bounds stay honest.
+
+    Args:
+        video_id: The Twitch video ID, digits only.
+        begin_s: Where the segment starts, in seconds from the VOD's start.
+        end_s: Where the segment ends (exclusive), in seconds from the VOD's start.
+        output_dir: The segment's directory, normally ``raw_video_dir(data_dir)/<video_id>``.
+        downloader: Does the download. Defaults to `YtDlpDownloader`; tests pass a fake.
+        runner: Executes FFmpeg and FFprobe for the check. Defaults to the real binaries; tests
+            pass a fake.
+
+    Returns:
+        The complete, checked segment.
+
+    Raises:
+        InvalidVideoIdError: `video_id` is not a Twitch video ID. Checked before anything else.
+        ValueError: `begin_s` or `end_s` is not a finite ``0 <= begin < end`` range.
+        VodUnavailableError, VodAccessRestrictedError, DownloadNetworkError, DownloadToolError:
+            The download failed; see `classify_download_error`.
+        DownloadIntegrityError: The finished segment was damaged or the wrong length; it has
+            been deleted.
+        FFmpegError: FFmpeg or FFprobe could not run (not installed, timed out).
+    """
+    validate_video_id(video_id)
+    if not (math.isfinite(begin_s) and math.isfinite(end_s) and 0.0 <= begin_s < end_s):
+        raise ValueError(f"the segment range must be 0 <= begin < end, got {begin_s!r}-{end_s!r}")
+    # yt-dlp's section ranges are whole seconds; the caller's margin (the fetch spans more
+    # than the candidate) absorbs the sub-second rounding.
+    begin, end = round(begin_s), round(end_s)
+    if not begin < end:
+        raise ValueError(f"the segment range rounds empty: {begin_s!r}-{end_s!r}")
+    requested_s = end - begin
+    name = f"segment-{begin:g}-{end:g}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    existing = sorted(output_dir.glob(f"{name}.*"))
+    existing = [
+        path for path in existing if path.suffix != ".part" and ".no-ffmpeg" not in path.name
+    ]
+    if existing:
+        log.info(
+            "video segment already downloaded video_id=%s range=%g-%g path=%s",
+            video_id,
+            begin,
+            end,
+            existing[0],
+        )
+        info = probe(existing[0], runner=runner)
+        return VideoSegment(existing[0], float(begin), begin + info.duration_s)
+
+    stem = f"{name}{_STAGING_SUFFIX}"
+    request = DownloadRequest(vod_url(video_id), output_dir, stem, sections=(begin, end))
+    download = YtDlpDownloader() if downloader is None else downloader
+    log.info(
+        "downloading video segment video_id=%s range=%g-%g url=%s",
+        video_id,
+        begin,
+        end,
+        request.url,
+    )
+    try:
+        media = download(request)
+    except Exception as exc:  # Every downloader failure becomes a typed error (module docs).
+        raise classify_download_error(exc, video_id) from exc
+
+    extension = _staged_extension(media.path, output_dir, stem)
+    if extension is None:
+        raise DownloadToolError(
+            video_id, f"the downloader returned {media.path}, expected an existing {stem}.<ext>"
+        )
+    try:
+        info = probe(media.path, runner=runner)
+        problem = _segment_problem(info, requested_s, runner)
+    except (FFmpegExitError, FFmpegOutputError) as exc:
+        _delete_staging_files(output_dir, stem)
+        raise DownloadIntegrityError(video_id, f"FFmpeg can't read it: {exc}") from exc
+    if problem is not None:
+        _delete_staging_files(output_dir, stem)
+        raise DownloadIntegrityError(video_id, problem)
+
+    final = output_dir / f"{name}.{_container_extension(info) or extension}"
+    media.path.replace(final)
+    log.info(
+        "downloaded video segment video_id=%s range=%g-%g path=%s",
+        video_id,
+        begin,
+        end,
+        final,
+    )
+    return VideoSegment(final, float(begin), begin + info.duration_s)
+
+
+def _segment_problem(info: MediaInfo, requested_s: float, runner: Runner | None) -> str | None:
+    """Why a downloaded segment can't be kept, or None if it is fine (#46)."""
+    if not info.video_streams:
+        return f"{info.path.name} has no video stream"
+    if not info.audio_streams:
+        return f"{info.path.name} has no audio stream"
+    damage = _byte_damage(info)
+    if damage is not None and damage.fraction > MAX_DECODE_ERROR_RATE:
+        return f"{info.path.name} is damaged: {damage}"
+    undecoded = _undecoded_fraction(info.path, runner, timeout_s=READ_CHECK_TIMEOUT_S)
+    if undecoded > MAX_DECODE_ERROR_RATE:
+        return f"{info.path.name} is damaged: {undecoded:.1%} of its audio frames fail to decode"
+    played_s = _played_duration_s(info.path, runner)
+    if played_s < max(2.0, SEGMENT_MIN_PLAYED_FRACTION * requested_s):
+        return (
+            f"{info.path.name} plays for only {played_s:.1f} s of the requested {requested_s:g} s"
+        )
+    if played_s > requested_s + SEGMENT_MAX_OVERSHOOT_S:
+        return (
+            f"{info.path.name} plays for {played_s:.1f} s, far past the requested "
+            f"{requested_s:g} s: the time range looks ignored, so its VOD time is unknown"
+        )
+    return None
 
 
 def _download_problem(
