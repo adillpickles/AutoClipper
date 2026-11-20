@@ -240,6 +240,7 @@ def build_export_command(
     seek_s: float,
     settings: EncodeSettings | None = None,
     video_filters: Sequence[str] = (),
+    audio_filters: Sequence[str] = (),
 ) -> FFmpegCommand:
     """Build the FFmpeg command that cuts, reframes and encodes one interval.
 
@@ -255,10 +256,12 @@ def build_export_command(
             before `interval.start_s` (`autoclipper.export.seek.seek_point`). Everything between
             it and the start is decoded and dropped.
         settings: Encoder settings; defaults to `EncodeSettings()`.
-        video_filters: Extra FFmpeg filters applied to the 1080x1920 frame after reframing and
-            before encoding, e.g. burned-in subtitles. Each entry is one complete filter, escaped
-            as FFmpeg's filtergraph syntax requires. Their timestamps are clip time: 0 is
-            `interval.start_s`.
+        video_filters: Extra FFmpeg filters applied to the reframed frame before encoding,
+            e.g. burned-in subtitles. Each entry is one complete filter, escaped as FFmpeg's
+            filtergraph syntax requires. Their timestamps are clip time: 0 is `interval.start_s`.
+        audio_filters: Extra FFmpeg filters applied to the audio once its timeline is the clip's,
+            with the same clip-time timestamps (the highlights video fades each segment's sound
+            in and out this way).
 
     Returns:
         The command; nothing runs until it is passed to `run_command`.
@@ -286,13 +289,14 @@ def build_export_command(
         *video_filters,
         "format=yuv420p",
     )
-    audio_filters = (
+    audio_chain = (
         # Gaps in the audio's timestamps become silence (and so does missing audio at the start),
         # as when the audio is normalized for analysis, so the clip's audio keeps its timeline
         # in every player instead of relying on each one to honour the gap.
         "aresample=async=1:first_pts=0",
         f"atrim=start={skip}",
         f"asetpts=PTS-{skip}/TB",
+        *audio_filters,
     )
     inputs: list[str | Path] = [
         # Use the stored frame size, which is what `probe` reports and `reframe` is based on.
@@ -321,7 +325,7 @@ def build_export_command(
         "-filter:v",
         ",".join(filters),
         "-filter:a",
-        ",".join(audio_filters),
+        ",".join(audio_chain),
         "-c:v",
         "libx264",
         "-preset",
@@ -518,7 +522,7 @@ def _export(
         result = _check_output(
             probe(temp, runner=runner), probe_stream_times(temp, runner=runner), cut, encode
         )
-        _publish(temp, output, overwrite=request.overwrite)
+        publish_output(temp, output, overwrite=request.overwrite)
     except BaseException:
         # Keep the original error even if the temporary file can't be removed.
         with contextlib.suppress(OSError):
@@ -540,8 +544,13 @@ def _export(
     )
 
 
-def _publish(temp: Path, output: Path, *, overwrite: bool) -> None:
-    """Move the finished export to `output`; replace an existing file only with `overwrite`."""
+def publish_output(temp: Path, output: Path, *, overwrite: bool) -> None:
+    """Move the finished export to `output`; replace an existing file only with `overwrite`.
+
+    The last step of an export: `temp` is a finished, checked file on the same file system.
+    Without ``overwrite`` the move never replaces a file, even one created during the
+    export.
+    """
     if overwrite:
         temp.replace(output)
         return

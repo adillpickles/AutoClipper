@@ -434,6 +434,156 @@ def export(
     typer.echo(f"Wrote {result.output} ({result.duration_s:.2f} s, {result.width}x{result.height})")
 
 
+class HighlightsOrder(StrEnum):
+    """The highlights video's segment orders (api-contract.md § 7.1)."""
+
+    CHRONOLOGICAL = "chronological"
+    RANK = "rank"
+
+
+@app.command()
+def highlights(
+    result: Annotated[
+        Path, typer.Argument(help="A saved AnalysisResult JSON (autoclipper analyze's output).")
+    ],
+    video: Annotated[
+        Path, typer.Argument(help="The VOD's video file; it must start at the VOD's start.")
+    ],
+    count: Annotated[int, typer.Option(min=1, max=20, help="Top candidates to include.")] = 10,
+    order: Annotated[
+        HighlightsOrder, typer.Option(help="chronological (stream order) or rank (best first).")
+    ] = HighlightsOrder.CHRONOLOGICAL,
+    captions: Annotated[
+        bool, typer.Option(help="Burn in captions of each segment's speech.")
+    ] = False,
+    segments: Annotated[
+        Path | None,
+        typer.Option(
+            help="A JSON file with a 'segments' list (candidate_id, start_s, end_s) instead of "
+            "the result's own bounds.",
+            show_default=False,
+        ),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Where to write the MP4. Default: <artifacts dir>/highlights/"
+            "autoclipper_<video_id>_highlights.mp4.",
+            show_default=False,
+        ),
+    ] = None,
+    overwrite: Annotated[bool, typer.Option(help="Replace an existing output file.")] = False,
+) -> None:
+    """Join an analysis result's top moments into one 16:9 highlights video."""
+    import json
+
+    from pydantic import ValidationError
+
+    from autoclipper.analysis import AnalysisResult
+    from autoclipper.export.captions import CaptioningError
+    from autoclipper.export.errors import ExportError
+    from autoclipper.export.highlights import (
+        HighlightsRequest,
+        InvalidHighlightsBoundsError,
+        Segment,
+        render_highlights,
+        resolve_segments,
+    )
+
+    if not result.is_file():
+        typer.echo(f"Error: analysis result not found: {result}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    if not video.is_file():
+        typer.echo(f"Error: video file not found: {video}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    try:
+        analysis = AnalysisResult.model_validate_json(result.read_text(encoding="utf-8"))
+    except ValidationError as exc:
+        typer.echo(f"Error: {result} is not a valid analysis result: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    explicit: list[Segment] | None = None
+    if segments is not None:
+        try:
+            loaded: object = json.loads(segments.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            typer.echo(f"Error: can't read {segments}: {exc}", err=True)
+            raise typer.Exit(ExitCode.USER_ERROR) from None
+        rows = loaded.get("segments") if isinstance(loaded, dict) else None
+        if not isinstance(rows, list):
+            typer.echo(f"Error: {segments} has no 'segments' list", err=True)
+            raise typer.Exit(ExitCode.USER_ERROR)
+        try:
+            explicit = [
+                Segment(str(row["candidate_id"]), float(row["start_s"]), float(row["end_s"]))
+                for row in rows
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            typer.echo(
+                f"Error: {segments} has a segment without candidate_id, start_s and end_s: {exc}",
+                err=True,
+            )
+            raise typer.Exit(ExitCode.USER_ERROR) from None
+    settings = get_settings()
+    video_id = analysis.vod.video_id
+    target = out or settings.artifacts_dir / "highlights" / f"autoclipper_{video_id}_highlights.mp4"
+    try:
+        chosen = resolve_segments(
+            analysis,
+            count=count,
+            segments=explicit,
+            order=order.value,  # type: ignore[arg-type]
+        )
+        from autoclipper.ffmpeg import probe
+
+        try:
+            # The same video_mismatch check as the API's job worker (api-contract.md § 3.1).
+            duration_s = probe(video).duration_s
+        except FFmpegError as exc:
+            typer.echo(
+                f"Error: invalid_video_path: {video} is not a readable video file: {exc}", err=True
+            )
+            raise typer.Exit(ExitCode.USER_ERROR) from None
+        if abs(duration_s - analysis.vod.duration_s) > 2.0:
+            typer.echo(
+                f"Error: video_mismatch: {video} is {duration_s:.1f} s long but the VOD is "
+                f"{analysis.vod.duration_s:.1f} s; pass a file of the whole VOD, starting at "
+                "its start",
+                err=True,
+            )
+            raise typer.Exit(ExitCode.USER_ERROR) from None
+        request = HighlightsRequest(
+            source=video,
+            segments=chosen,
+            output=target,
+            order=order.value,  # type: ignore[arg-type]
+            captions=captions,
+            overwrite=overwrite,
+        )
+        rendered = render_highlights(request)
+    except InvalidHighlightsBoundsError as exc:
+        typer.echo(f"Error: invalid_highlights_bounds: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    except ValueError as exc:  # a segment naming a candidate that isn't in the result
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    except CaptioningError as exc:  # a missing install or a failing model: an external tool
+        typer.echo(f"Error: captioning_failed: {exc}", err=True)
+        raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+    except FileExistsError:
+        typer.echo(f"Error: {target} exists; pass --overwrite to replace it", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    except ExportError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    except FFmpegError as exc:
+        typer.echo(f"Error: render_failed: {exc}", err=True)
+        raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+    typer.echo(
+        f"Wrote {rendered.output} ({rendered.duration_s:.2f} s, "
+        f"{len(rendered.segments)} segments, {rendered.width}x{rendered.height})"
+    )
+
+
 def _export_name(video: Path, start: float, end: float) -> str:
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", video.stem).strip("._") or "clip"
     # The floats as given (like the API's download name), never rounded: two trims of a long

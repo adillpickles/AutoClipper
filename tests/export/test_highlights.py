@@ -1,0 +1,394 @@
+"""Tests for the highlights video (#71): resolution, order, duration, fades, captions."""
+
+import json
+from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from autoclipper.analysis import (
+    AnalysisResult,
+    AnalysisWarning,
+    Candidate,
+    ScorerInfo,
+    VodSummary,
+)
+from autoclipper.cli import ExitCode, app
+from autoclipper.export.captions import Word
+from autoclipper.export.encode import EncodeSettings
+from autoclipper.export.errors import ExportError
+from autoclipper.export.highlights import (
+    HIGHLIGHTS_HEIGHT,
+    HIGHLIGHTS_WIDTH,
+    MAX_SEGMENT_DURATION_S,
+    HighlightsRequest,
+    InvalidHighlightsBoundsError,
+    Segment,
+    render_highlights,
+    resolve_segments,
+)
+from autoclipper.ffmpeg import ffmpeg_command, probe, run_command
+
+pytestmark = pytest.mark.ffmpeg
+
+TIMEOUT_S = 240.0
+TOLERANCE_S = EncodeSettings().duration_tolerance_s
+
+# A luma ramp, like tests/export/test_export_ffmpeg.py: every frame's brightness (Y, 16-235)
+# encodes its source time, so a cut's exactness, its order and its fades all read back
+# from the output's pixels. Lossless encoding keeps the values exact.
+LUMA_AT_0 = 16
+LUMA_PER_S = 10
+RAMP_DURATION_S = 20.0
+LOSSLESS = EncodeSettings(crf=0, preset="ultrafast")
+
+
+def make_ramp_video(path: Path, width: int = 320, height: int = 180) -> Path:
+    """A silent 16:9 (or other) video whose brightness rises with time, 20 s."""
+    ramp = (
+        f"nullsrc=size={width}x{height}:rate=25:duration={RAMP_DURATION_S},"
+        f"geq=lum='{LUMA_AT_0}+{LUMA_PER_S}*T':cb=128:cr=128"
+    )
+    run_command(
+        ffmpeg_command("-n", "-f", "lavfi", "-i", ramp, "-c:v", "libx264", "-qp", "0", path),
+        timeout_s=TIMEOUT_S,
+    )
+    return path
+
+
+def frame_luma(video: Path, index: int, crop_x: int = 0, crop_y: int = 0) -> float:
+    """The luma (Y, 16-235) of frame `index`, averaged over a 16x16 block at (crop_x, crop_y)."""
+    pixels = video.with_name(f"{video.stem}-{index}-{crop_x}-{crop_y}.yuv")
+    run_command(
+        ffmpeg_command(
+            "-n",
+            "-i",
+            video,
+            "-vf",
+            f"select=eq(n\\,{index}),crop=16:16:{crop_x}:{crop_y}",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p",
+            pixels,
+        ),
+        timeout_s=TIMEOUT_S,
+    )
+    return sum(pixels.read_bytes()[:256]) / 256
+
+
+def black_video_with_tone(path: Path, seconds: float = 12.0) -> Path:
+    """A black 16:9 video carrying a 440 Hz tone, like tests/export/test_captions.py's."""
+    command = ffmpeg_command(
+        "-y",
+        *("-f", "lavfi", "-i", f"color=black:size=640x360:rate=25:duration={seconds}"),
+        *(
+            "-f",
+            "lavfi",
+            "-i",
+            f"aevalsrc='0.5*sin(2*PI*440*t)':sample_rate=48000:duration={seconds}",
+        ),
+        *("-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac"),
+        "-shortest",
+        path,
+    )
+    run_command(command, timeout_s=TIMEOUT_S)
+    return path
+
+
+def bright_pixels(video: Path, at_s: float, tmp_path: Path) -> int:
+    """Pixels brighter than 200 in the lower half of the frame at `at_s` (white caption text)."""
+    gray = tmp_path / f"frame-{at_s:.2f}.gray"
+    run_command(
+        ffmpeg_command(
+            "-y",
+            *("-ss", f"{at_s:.3f}", "-i", video, "-frames:v", "1"),
+            *("-vf", "crop=iw:ih/2:0:ih/2,format=gray", "-f", "rawvideo", gray),
+        ),
+        timeout_s=TIMEOUT_S,
+    )
+    return sum(1 for value in gray.read_bytes() if value > 200)
+
+
+def analysis_result(
+    candidates: list[tuple[str, float, float]],
+    *,
+    duration_s: float = RAMP_DURATION_S,
+) -> AnalysisResult:
+    """A minimal valid AnalysisResult whose candidates are given in rank order (best first)."""
+    return AnalysisResult(
+        generated_at=datetime(2026, 11, 19, 12, 0, tzinfo=UTC),
+        vod=VodSummary(
+            video_id="9000000100",
+            title="Synthetic test stream",
+            broadcaster_id="9000000000",
+            broadcaster_display_name="Streamer_000",
+            duration_s=duration_s,
+            created_at=datetime(2026, 10, 1, 18, 0, tzinfo=UTC),
+        ),
+        scorer=ScorerInfo(kind="heuristic", name="chat_loudness"),
+        n_viewer_clips_total=0,
+        warnings=(AnalysisWarning(code="chat_missing", message="x"),),
+        candidates=tuple(
+            Candidate(
+                candidate_id=candidate_id,
+                rank=rank,
+                score=float(-rank),
+                start_s=start_s,
+                end_s=end_s,
+                source="discovered",
+                n_viewer_clips=0,
+                top_signals=(),
+            )
+            for rank, (candidate_id, start_s, end_s) in enumerate(candidates, start=1)
+        ),
+    )
+
+
+# --- Resolving and ordering (§ 7.1) --------------------------------------------------------------
+
+
+def test_resolution_orders_generated_and_explicit_segments() -> None:
+    # The best candidate starts later in the stream, so rank and stream order differ.
+    result = analysis_result([("c002", 6.0, 9.0), ("c001", 1.0, 4.0)])
+
+    chronological = resolve_segments(result, count=2, segments=None, order="chronological")
+    assert [s.candidate_id for s in chronological] == ["c001", "c002"]
+
+    rank = resolve_segments(result, count=1, segments=None, order="rank")
+    assert [(s.candidate_id, s.start_s, s.end_s) for s in rank] == [("c002", 6.0, 9.0)]
+
+    explicit = resolve_segments(
+        result,
+        count=2,
+        segments=[Segment("c002", 6.5, 8.0), Segment("c001", 1.0, 4.0)],
+        order="chronological",
+    )
+    assert [(s.candidate_id, s.start_s) for s in explicit] == [("c001", 1.0), ("c002", 6.5)]
+
+
+def test_resolution_rejects_unknown_candidates_and_empty_results() -> None:
+    result = analysis_result([("c001", 1.0, 4.0)])
+
+    with pytest.raises(ValueError, match="c009"):
+        resolve_segments(result, count=2, segments=[Segment("c009", 1.0, 2.0)], order="rank")
+
+    empty = analysis_result([])
+    with pytest.raises(InvalidHighlightsBoundsError) as excinfo:
+        resolve_segments(empty, count=2, segments=None, order="chronological")
+    assert excinfo.value.details == {"segment_index": None}
+
+
+def test_bounds_name_the_offending_segment_and_the_limits() -> None:
+    too_long = [Segment("c001", 0.0, MAX_SEGMENT_DURATION_S + 0.5)]
+    with pytest.raises(InvalidHighlightsBoundsError) as excinfo:
+        render_highlights(
+            HighlightsRequest(
+                source=Path("never-opened.mp4"), segments=too_long, output=Path("out.mp4")
+            )
+        )
+    assert excinfo.value.details == {
+        "segment_index": 0,
+        "max_duration_s": MAX_SEGMENT_DURATION_S,
+        "max_total_duration_s": 900.0,
+    }
+
+    # Every segment fits; together they don't. Nothing is opened to find out.
+    total_too_long = [Segment(f"c{i:02d}", i * 90.0, i * 90.0 + 82.0) for i in range(11)]
+    with pytest.raises(InvalidHighlightsBoundsError) as total:
+        render_highlights(
+            HighlightsRequest(
+                source=Path("never-opened.mp4"),
+                segments=total_too_long,
+                output=Path("out.mp4"),
+            )
+        )
+    assert total.value.details["segment_index"] is None
+    assert total.value.details["max_total_duration_s"] == 900.0
+
+
+# --- Rendering (order, duration, resolution, fades) -----------------------------------------------
+
+
+def test_rank_order_cuts_each_segment_exactly_and_fades_between_them(
+    tmp_path: Path,
+) -> None:
+    """The segments appear in the requested order, each starting exactly where asked, with
+    a 0.5 s fade through black at the join and the whole video lasting their sum."""
+    source = make_ramp_video(tmp_path / "ramp.mp4")
+    # The best candidate (c002) starts later, so rank order is the reverse of stream order.
+    result = analysis_result([("c002", 6.0, 9.0), ("c001", 1.0, 4.0)])
+    chosen = resolve_segments(result, count=2, segments=None, order="rank")
+
+    rendered = render_highlights(
+        HighlightsRequest(
+            source=source, segments=chosen, output=tmp_path / "out.mp4", order="rank"
+        ),
+        settings=LOSSLESS,
+    )
+
+    assert (rendered.width, rendered.height) == (HIGHLIGHTS_WIDTH, HIGHLIGHTS_HEIGHT)
+    assert (rendered.video_codec, rendered.audio_codec) == ("h264", "aac")
+    assert [s.candidate_id for s in rendered.segments] == ["c002", "c001"]
+    frame_rate = LOSSLESS.frame_rate
+    assert rendered.duration_s == pytest.approx(6.0, abs=2 * TOLERANCE_S)
+
+    # Segment 1 (c002) starts exactly at 6.0 s: frame 0 shows the source's ramp there.
+    assert frame_luma(rendered.output, 0) == pytest.approx(LUMA_AT_0 + LUMA_PER_S * 6.0, abs=1)
+    # Mid-segment, unfaded: 1.5 s into a 3 s segment starting at 6.0.
+    assert frame_luma(rendered.output, int(1.5 * frame_rate)) == pytest.approx(
+        LUMA_AT_0 + LUMA_PER_S * 7.5, abs=1
+    )
+
+    # The last 0.25 s of segment 1 fades to black; the boundary frame is fully dark.
+    boundary = int(3.0 * frame_rate)
+    assert frame_luma(rendered.output, boundary - 1) < LUMA_AT_0 + LUMA_PER_S * 6.0 + 10
+    assert frame_luma(rendered.output, boundary) == pytest.approx(LUMA_AT_0, abs=2)
+    # The first 0.25 s of segment 2 fades back in; after it, its own exact start (1.0 s).
+    assert frame_luma(rendered.output, int(3.3 * frame_rate)) == pytest.approx(
+        LUMA_AT_0 + LUMA_PER_S * 1.3, abs=1
+    )
+    # The video's very start and end are not faded (only neighbours fade).
+    assert frame_luma(rendered.output, int(5.7 * frame_rate)) == pytest.approx(
+        LUMA_AT_0 + LUMA_PER_S * 3.7, abs=1
+    )
+
+
+def test_a_non_16_9_source_is_letterboxed_not_stretched(tmp_path: Path) -> None:
+    """A 4:3 source keeps its shape: pillarboxed with black bars left and right."""
+    source = make_ramp_video(tmp_path / "ramp.mp4", width=320, height=240)
+    chosen = [Segment("c001", 1.0, 4.0)]
+
+    rendered = render_highlights(
+        HighlightsRequest(source=source, segments=chosen, output=tmp_path / "out.mp4"),
+        settings=LOSSLESS,
+    )
+
+    assert (rendered.width, rendered.height) == (HIGHLIGHTS_WIDTH, HIGHLIGHTS_HEIGHT)
+    # The bars: black columns where the 4:3 frame doesn't reach (scaled to 1440x1080).
+    assert frame_luma(rendered.output, int(1.5 * LOSSLESS.frame_rate)) == pytest.approx(16, abs=2)
+    # The content: the ramp's value at 2.5 s, in the middle of the frame.
+    assert frame_luma(
+        rendered.output, int(1.5 * LOSSLESS.frame_rate), crop_x=952, crop_y=532
+    ) == pytest.approx(LUMA_AT_0 + LUMA_PER_S * 2.5, abs=1)
+
+
+def test_captions_are_burned_into_each_segment(tmp_path: Path) -> None:
+    """With captions on, each segment's speech is burned into the lower half of the 16:9
+    frame at its own time in the video; nothing shows where nobody speaks."""
+
+    class FakeTranscriber:
+        def __call__(self, wav: Path) -> list[Word]:
+            return [Word(start_s=0.4, end_s=1.4, text="HIGHLIGHTS CAPTION TEST")]
+
+    source = black_video_with_tone(tmp_path / "vod.mp4")
+    chosen = [Segment("c001", 1.0, 4.0), Segment("c002", 6.0, 9.0)]
+
+    rendered = render_highlights(
+        HighlightsRequest(
+            source=source, segments=chosen, output=tmp_path / "out.mp4", captions=True
+        ),
+        transcriber=FakeTranscriber(),
+    )
+
+    # The word at 0.4-1.4 s of each 3 s segment: 0.4-1.4 and 3.4-4.4 in the video.
+    assert bright_pixels(rendered.output, 0.8, tmp_path) > 1000
+    assert bright_pixels(rendered.output, 3.8, tmp_path) > 1000
+    assert bright_pixels(rendered.output, 2.6, tmp_path) == 0
+
+
+def test_a_segment_the_video_does_not_cover_is_invalid(
+    tmp_path: Path, make_test_media: Callable[..., Path]
+) -> None:
+    source = make_test_media("vod.mp4", duration_s=6.0, video_size=(640, 360))
+    outside = [Segment("c001", 10.0, 12.0)]  # past the 6 s video
+
+    with pytest.raises(InvalidHighlightsBoundsError, match="isn't covered"):
+        render_highlights(
+            HighlightsRequest(source=source, segments=outside, output=tmp_path / "out.mp4")
+        )
+
+
+def test_a_source_without_video_is_rejected(
+    tmp_path: Path, make_test_media: Callable[..., Path]
+) -> None:
+    audio_only = make_test_media("voice.m4a", duration_s=6.0, video_size=None)
+
+    with pytest.raises(ExportError, match="no video stream"):
+        render_highlights(
+            HighlightsRequest(
+                source=audio_only,
+                segments=[Segment("c001", 0.0, 2.0)],
+                output=tmp_path / "out.mp4",
+            )
+        )
+
+
+# --- The CLI ----------------------------------------------------------------------------------
+
+
+runner = CliRunner()
+
+
+def test_the_cli_rejects_missing_inputs(
+    tmp_path: Path, make_test_media: Callable[..., Path]
+) -> None:
+    video = make_test_media("vod.mp4", duration_s=6.0)
+    missing_result = runner.invoke(app, ["highlights", "missing.json", str(video)])
+    result = tmp_path / "result.json"
+    result.write_text("{}", encoding="utf-8")
+    bad_result = runner.invoke(app, ["highlights", str(result), str(video)])
+    segments = tmp_path / "segments.json"
+    segments.write_text(
+        json.dumps({"segments": [{"candidate_id": "c001", "start_s": 0.0, "end_s": 91.0}]}),
+        encoding="utf-8",
+    )
+
+    assert missing_result.exit_code == ExitCode.USER_ERROR
+    assert bad_result.exit_code == ExitCode.USER_ERROR
+    assert "not a valid analysis result" in bad_result.output
+
+    analysis = analysis_result([("c001", 0.0, 3.0), ("c002", 3.5, 5.5)], duration_s=6.0)
+    result.write_text(analysis.model_dump_json(), encoding="utf-8")
+    bounds = runner.invoke(
+        app,
+        ["highlights", str(result), str(video), "--segments", str(segments)],
+    )
+
+    assert bounds.exit_code == ExitCode.USER_ERROR
+    assert "invalid_highlights_bounds" in bounds.output
+    assert "at most 90" in bounds.output
+
+
+def test_the_cli_writes_the_highlights_video(
+    tmp_path: Path,
+    make_test_media: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    video = make_test_media("vod.mp4", duration_s=6.0, video_size=(640, 360))
+    result = analysis_result([("c002", 3.5, 5.5), ("c001", 1.0, 3.0)], duration_s=6.0)
+    result_path = tmp_path / "result.json"
+    result_path.write_text(result.model_dump_json(), encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("AUTOCLIPPER_ARTIFACTS_DIR", str(artifacts))
+
+    done = runner.invoke(
+        app, ["highlights", str(result_path), str(video), "--count", "2", "--overwrite"]
+    )
+
+    assert done.exit_code == ExitCode.SUCCESS, done.output
+    expected = artifacts / "highlights" / "autoclipper_9000000100_highlights.mp4"
+    assert expected.is_file()
+    info = probe(expected)
+    assert (info.video_streams[0].width, info.video_streams[0].height) == (1920, 1080)
+    assert info.duration_s == pytest.approx(4.0, abs=2 * TOLERANCE_S)
+    assert "Wrote" in done.output
+
+    # The default output name is fixed; a second run needs --overwrite.
+    again = runner.invoke(app, ["highlights", str(result_path), str(video), "--count", "2"])
+    assert again.exit_code == ExitCode.USER_ERROR
+    assert "exists" in again.output
