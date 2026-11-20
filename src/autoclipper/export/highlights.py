@@ -447,7 +447,14 @@ def _render_segment(
             source_times, used_streams, info.duration_s, stream_ends_s
         )
         try:
-            cut = plan_cut(local, media_end_s, media_start_s=media_start_s)
+            cut = plan_cut(
+                local,
+                media_end_s,
+                media_start_s=media_start_s,
+                # The contract bounds a segment only by start_s < end_s (§ 7.1); the clip
+                # exporter's 0.5 s floor would reject covered moments it allows.
+                min_duration_s=0.0,
+            )
         except IntervalTooShortError as exc:
             raise InvalidHighlightsBoundsError(
                 f"segment {index} ({segment.candidate_id}) isn't covered by the video: {exc}",

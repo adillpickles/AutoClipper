@@ -545,11 +545,17 @@ def highlights(
             segments=explicit,
             order=order.value,  # type: ignore[arg-type]
         )
+        from autoclipper.export.timeline import corrected_duration_s
         from autoclipper.ffmpeg import probe
 
         try:
             # The same video_mismatch check as the API's job worker (api-contract.md § 3.1).
+            # ffprobe's container duration spans the first to the last raw timestamp, so a
+            # source whose timestamps restart reports only its first span; a disagreement is
+            # re-measured on the analysis timeline before the file is rejected.
             duration_s = probe(video).duration_s
+            if abs(duration_s - analysis.vod.duration_s) > 2.0:
+                duration_s = corrected_duration_s(video)
         except FFmpegError as exc:
             typer.echo(
                 f"Error: invalid_video_path: {video} is not a readable video file: {exc}", err=True

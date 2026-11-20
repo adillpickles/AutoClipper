@@ -498,6 +498,25 @@ def test_captions_on_a_silent_source_render_without_speech(
     assert bright_pixels(rendered.output, 1.5, tmp_path) == 0  # no captions burned
 
 
+def test_a_covered_quarter_second_segment_renders(
+    tmp_path: Path, make_test_media: Callable[..., Path]
+) -> None:
+    """The contract bounds a segment only by start_s < end_s (§ 7.1): a fully covered
+    0.25 s moment renders, without the clip exporter's 0.5 s floor."""
+    source = make_test_media("vod.mp4", duration_s=6.0, video_size=(640, 360))
+
+    rendered = render_highlights(
+        HighlightsRequest(
+            source=source,
+            segments=[Segment("c001", 1.0, 1.25)],
+            output=tmp_path / "out.mp4",
+        ),
+        settings=LOSSLESS,
+    )
+
+    assert rendered.duration_s == pytest.approx(0.25, abs=2 * TOLERANCE_S)
+
+
 # --- The CLI ----------------------------------------------------------------------------------
 
 
@@ -605,6 +624,25 @@ def test_the_cli_writes_the_highlights_video(
     )
     assert again.exit_code == ExitCode.USER_ERROR
     assert "exists" in again.output
+
+
+def test_the_cli_accepts_a_source_whose_timestamps_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ffprobe reports only the first span of a reset source, so the video_mismatch check
+    re-measures on the analysis timeline; a segment after the reset then renders."""
+    video = _reset_source(tmp_path)  # two 4 s parts joined; ffprobe calls it ~4 s
+    result = analysis_result([("c001", 5.0, 7.0)], duration_s=8.0)
+    result_path = tmp_path / "result.json"
+    result_path.write_text(result.model_dump_json(), encoding="utf-8")
+    monkeypatch.setenv("AUTOCLIPPER_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+
+    done = runner.invoke(app, ["highlights", str(result_path), "--video", str(video)])
+
+    assert done.exit_code == ExitCode.SUCCESS, done.output
+    expected = tmp_path / "artifacts" / "highlights" / "autoclipper_9000000100_highlights.mp4"
+    assert expected.is_file()
+    assert probe(expected).duration_s == pytest.approx(2.0, abs=2 * TOLERANCE_S)
 
 
 def test_the_cli_reports_unexpected_failures_as_internal_error(
