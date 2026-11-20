@@ -46,7 +46,7 @@ import subprocess
 import sys
 import unicodedata
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import groupby
 from pathlib import Path
@@ -241,17 +241,26 @@ def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> Comma
         try:
             if sys.platform == "win32":
                 job = _create_kill_on_close_job()
-                process = subprocess.Popen(
-                    list(args),
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    # Suspended until it is in the job, so it can't leave a process outside it.
-                    creationflags=_CREATE_SUSPENDED,
-                )
+                # A Ctrl+C that lands inside the Popen constructor would leave the just
+                # created, still suspended child with no handle to end it and no job
+                # holding it — so for those few instructions it can't be interrupted
+                # (`_ctrl_c_ignored`; a press in that moment is dropped, the next one
+                # works). On POSIX the same window is unavoidable without leaking an
+                # ignored or blocked SIGINT into the child, and there the child runs and
+                # ends on its own instead of hanging suspended.
+                with _ctrl_c_ignored():
+                    process = subprocess.Popen(
+                        list(args),
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        # Suspended until it is in the job, so it can't leave a process
+                        # outside it.
+                        creationflags=_CREATE_SUSPENDED,
+                    )
                 try:
                     _join_job(job, process.pid)
                     _resume_suspended_process(process.pid)
@@ -321,6 +330,24 @@ def _reap(process: subprocess.Popen[str]) -> None:
     """Collect the killed process so nothing of it is left running when control returns."""
     with contextlib.suppress(subprocess.TimeoutExpired):
         process.communicate(timeout=REAP_TIMEOUT_S)
+
+
+@contextlib.contextmanager
+def _ctrl_c_ignored() -> Iterator[None]:
+    """Drop ``SIGINT`` for the duration instead of raising it (Windows spawn window).
+
+    Only the main thread can adjust signal handlers, and only it ever receives
+    ``KeyboardInterrupt``; in any other thread there is nothing to ignore.
+    """
+    try:
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except ValueError:  # not the main thread: no KeyboardInterrupt can arrive here
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 # --- Windows: Job Objects ------------------------------------------------------------------------

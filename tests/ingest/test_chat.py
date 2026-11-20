@@ -839,3 +839,26 @@ def test_a_startup_interrupt_ends_the_suspended_child(
 
     (pid,) = captured
     assert _ended_within(pid)  # killed, not left suspended forever
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="tests the Windows spawn window")
+def test_the_windows_spawn_window_is_not_interruptible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Ctrl+C landing inside the Popen constructor would orphan the just created,
+    suspended child (no handle yet, not in its job), so that window ignores SIGINT
+    instead of raising it; afterwards the caller's handler is back in place."""
+    observed: list[object] = []
+    before = signal.getsignal(signal.SIGINT)
+    real_popen = subprocess.Popen
+
+    def checking_popen(*popen_args: object, **popen_kwargs: object) -> object:
+        observed.append(signal.getsignal(signal.SIGINT))
+        return real_popen(*popen_args, **popen_kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(subprocess, "Popen", checking_popen)
+
+    run_command([sys.executable, "-c", "pass"], timeout_s=60.0)
+
+    assert observed == [signal.SIG_IGN]
+    assert signal.getsignal(signal.SIGINT) == before
