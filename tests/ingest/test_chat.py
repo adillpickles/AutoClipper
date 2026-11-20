@@ -674,6 +674,14 @@ def _process_ended(pid: int) -> bool:
         kernel32.CloseHandle(handle)
 
 
+def _ended_within(pid: int, deadline_s: float = 15.0) -> bool:
+    """Poll until the process with ``pid`` is gone, or the deadline passes."""
+    deadline = time.monotonic() + deadline_s
+    while not _process_ended(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    return _process_ended(pid)
+
+
 def test_run_command_kills_a_timed_out_child_and_does_not_wait_for_it(
     tmp_path: Path,
 ) -> None:
@@ -690,7 +698,53 @@ def test_run_command_kills_a_timed_out_child_and_does_not_wait_for_it(
     assert time.monotonic() - started < 30
     # ... and really gone, not just forgotten.
     pid = int(pid_file.read_text(encoding="ascii"))
-    deadline = time.monotonic() + 15.0
-    while not _process_ended(pid) and time.monotonic() < deadline:
-        time.sleep(0.1)
-    assert _process_ended(pid)
+    assert _ended_within(pid)
+
+
+def test_run_command_kills_the_whole_process_tree(tmp_path: Path) -> None:
+    """A timed-out tool's descendants die with it; they hold the raw chat file open."""
+    pids_file = tmp_path / "pids"
+    # The child records its own pid and the grandchild's, then both sleep for a minute.
+    grandchild = "import time\ntime.sleep(60)\n"
+    child = (
+        "import os, subprocess, sys, time\n"
+        "grand = subprocess.Popen([sys.executable, '-c', " + repr(grandchild) + "])\n"
+        "open(" + repr(str(pids_file)) + ", 'w').write(str(os.getpid()) + ',' + str(grand.pid))\n"
+        "time.sleep(60)\n"
+    )
+
+    with pytest.raises(ChatDownloadError, match="did not finish within 1 s"):
+        run_command([sys.executable, "-c", child], timeout_s=1.0)
+
+    # The child may need a moment to have written the pids; after a kill it never will.
+    deadline = time.monotonic() + 10.0
+    while not pids_file.is_file() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    child_pid, grandchild_pid = (
+        int(part) for part in pids_file.read_text(encoding="ascii").split(",")
+    )
+
+    assert _ended_within(child_pid)
+    assert _ended_within(grandchild_pid)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sends a POSIX signal to the parent")
+def test_run_command_kills_the_child_on_keyboard_interrupt(tmp_path: Path) -> None:
+    """The child's own group keeps a terminal's Ctrl+C from reaching it, so run_command
+    ends the tree itself and the interrupt still propagates to the caller."""
+    pid_file = tmp_path / "child.pid"
+    # The child records its pid, lets the parent settle into its wait, interrupts it as
+    # Ctrl+C would, then sleeps.
+    script = (
+        "import os, signal, time\n"
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "time.sleep(1.0)\n"
+        "os.kill(os.getppid(), signal.SIGINT)\n"
+        "time.sleep(60)\n"
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_command([sys.executable, "-c", script], timeout_s=60.0)
+
+    pid = int(pid_file.read_text(encoding="ascii"))
+    assert _ended_within(pid)

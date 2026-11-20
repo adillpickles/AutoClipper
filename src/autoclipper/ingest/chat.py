@@ -226,6 +226,8 @@ def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> Comma
     Raises:
         OSError: The program could not be started.
         ChatDownloadError: ``timeout_s`` elapsed before the command finished.
+        KeyboardInterrupt: The caller was interrupted; the process tree was ended first
+            (it runs in its own process group, so the interrupt wouldn't have reached it).
     """
     process = subprocess.Popen(
         list(args),
@@ -235,6 +237,10 @@ def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> Comma
         text=True,
         encoding="utf-8",
         errors="replace",
+        # The child leads its own process group (POSIX), so a timeout or an interrupt can
+        # end the whole tree with one killpg. The flip side: a terminal's Ctrl+C no longer
+        # reaches the child, so run_command ends the tree itself on KeyboardInterrupt.
+        process_group=0 if sys.platform != "win32" else None,
     )
     try:
         stdout, stderr = process.communicate(timeout=timeout_s)
@@ -246,6 +252,11 @@ def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> Comma
         raise ChatDownloadError(
             f"{Path(args[0]).name} did not finish within {timeout_s:g} s and was killed"
         ) from None
+    except KeyboardInterrupt:
+        _end_process_tree(process)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.communicate(timeout=REAP_TIMEOUT_S)
+        raise
     assert process.returncode is not None  # communicate() waited for the process
     return CommandResult(process.returncode, stdout, stderr)
 
@@ -253,10 +264,10 @@ def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> Comma
 def _end_process_tree(process: subprocess.Popen[str]) -> None:
     """End a process and any processes it started, best effort, so a stalled tool can't linger.
 
-    On Windows the whole tree is ended with ``taskkill``. Elsewhere the child gets
-    ``SIGKILL``, and its process group too when it leads its own (children started here share
-    the caller's group, so normally only the child is ended; killing the caller's own group
-    would end this process as well).
+    On Windows the whole tree is ended with ``taskkill``. Elsewhere the child runs as its own
+    process-group leader (`run_command` starts it that way), so ``killpg`` ends it together
+    with any processes it started; the group check only guards against killing this
+    process's own group for a child started some other way.
     """
     if sys.platform == "win32":
         subprocess.run(
