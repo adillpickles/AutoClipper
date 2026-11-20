@@ -22,9 +22,13 @@ from autoclipper.analyze import AnalyzeError, analyze_vod, result_path
 from autoclipper.cli import ExitCode, app
 from autoclipper.config import TwitchCredentials
 from autoclipper.features.chat import Lexicon, load_lexicon
-from autoclipper.ingest.catalog import CatalogEntry, Status
+from autoclipper.ingest.catalog import CatalogEntry, Status, read_catalog
 from autoclipper.ingest.chat import PINNED_TOOL_VERSION, CommandResult
-from autoclipper.ingest.media import DownloadedMedia, DownloadRequest
+from autoclipper.ingest.media import (
+    DownloadedMedia,
+    DownloadRequest,
+    normalized_audio_path,
+)
 from autoclipper.ingest.twitch_api import HelixClient
 from autoclipper.ingest.vod import IngestTools
 from autoclipper.synthetic import generate_dataset
@@ -422,16 +426,24 @@ def test_the_no_usable_signals_precedence() -> None:
     failed = {**gone, ("audio", VIDEO_ID): entry("failed")}
     assert _nothing_to_rank(failed, VIDEO_ID).code == "upstream_unavailable"
 
-    # A chosen scorer's missing inputs follow the same rule, whatever else arrived.
+    # A chosen scorer: only an input it needs decides whether a retry can help. Audio failing
+    # doesn't bring chat back, so chat_spike is out of options for good.
     scorer = _nothing_to_rank(
-        failed, VIDEO_ID, scorer_reason="the chat_spike scorer can't score this VOD"
+        failed,
+        VIDEO_ID,
+        scorer_reason="the chat_spike scorer can't score this VOD",
+        needed=("chat",),
     )
-    assert scorer.code == "upstream_unavailable"
+    assert scorer.code == "no_usable_signals"
     assert "chat_spike" in scorer.message
-    config = _nothing_to_rank(
-        gone, VIDEO_ID, scorer_reason="the chat_spike scorer can't score this VOD"
+    retriable = _nothing_to_rank(
+        failed,
+        VIDEO_ID,
+        scorer_reason="the loudness scorer can't score this VOD",
+        needed=("audio",),
     )
-    assert config.code == "no_usable_signals"
+    assert retriable.code == "upstream_unavailable"
+    assert "loudness" in retriable.message
 
 
 def test_a_named_scorer_without_its_signal_fails_with_the_precedence_codes(
@@ -568,6 +580,33 @@ def test_a_vod_twitch_does_not_have_is_unavailable(
     assert excinfo.value.code == "vod_unavailable"
 
 
+def test_media_twitch_refuses_is_vod_unavailable_without_a_user_file(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    """§ 3.5: a VOD that isn't publicly viewable (deleted, expired or subscriber-only) is
+    vod_unavailable, not a chat-only result nobody could ever preview or export."""
+    from autoclipper.ingest.media import VodAccessRestrictedError
+
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=tmp_path / "data",
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(
+                chat_binary,
+                downloader=FakeDownloader(
+                    None, VodAccessRestrictedError(VIDEO_ID, "subscriber-only")
+                ),
+            ),
+            lexicon=lexicon,
+            clock=lambda: NOW,
+        )
+
+    assert excinfo.value.code == "vod_unavailable"
+    assert "subscriber-only" in excinfo.value.message
+    assert "--video" in excinfo.value.message
+
+
 def test_metadata_that_keeps_failing_is_upstream_unavailable(
     tmp_path: Path, chat_binary: Path, lexicon: Lexicon
 ) -> None:
@@ -610,12 +649,11 @@ def test_a_local_video_of_another_length_is_video_mismatch(
 
 
 @pytest.mark.ffmpeg
-def test_a_rejected_local_video_leaves_no_audio_behind(
+def test_a_rejected_local_video_is_refused_before_any_download(
     tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path], lexicon: Lexicon
 ) -> None:
-    """A --video file inside ingest's own length tolerance but outside the contract's 2 s:
-    its converted audio is discarded and the audio step is failed, so a later run without
-    --video re-fetches instead of silently using the wrong file's audio."""
+    """A --video file outside the contract's 2 s: the run stops at resolving_vod, before
+    chat or audio is fetched, so no catalog row or file of theirs is left behind."""
     data = tmp_path / "data"
     sixty_three = make_test_media("sixty-three.mp4", duration_s=63.0)
 
@@ -627,7 +665,7 @@ def test_a_rejected_local_video_leaves_no_audio_behind(
             tools=tools(
                 chat_binary,
                 twitch=FakeTwitch(video=video_record(duration="0h1m0s")),
-                downloader=FakeDownloader(None, AssertionError("not used")),
+                downloader=FakeDownloader(None, AssertionError("never reached")),
             ),
             lexicon=lexicon,
             video_file=sixty_three,
@@ -635,21 +673,17 @@ def test_a_rejected_local_video_leaves_no_audio_behind(
         )
 
     assert excinfo.value.code == "video_mismatch"
-    from autoclipper.ingest.catalog import read_catalog
-    from autoclipper.ingest.media import normalized_audio_path
-
-    assert not normalized_audio_path(data, VIDEO_ID).is_file()
-    audio = read_catalog(data)[("audio", VIDEO_ID)]
-    assert audio.status == "failed"
-    assert "discarded" in (audio.error or "")
+    catalog = read_catalog(data)
+    assert set(catalog) == {("vod_meta", VIDEO_ID)}  # nothing else was fetched
+    assert not list(data.rglob("*.wav"))
 
 
 @pytest.mark.ffmpeg
 def test_a_rejected_video_keeps_earlier_valid_audio(
     tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path], lexicon: Lexicon
 ) -> None:
-    """A wrong --video file only discards what it produced this run: audio cached from an
-    earlier, correct file survives the rejection."""
+    """A wrong --video file leaves earlier runs' work untouched: the rejection happens at
+    resolving_vod, so the cached audio of a correct earlier file survives."""
     data = tmp_path / "data"
     sixty = make_test_media("sixty.mp4", duration_s=60.0)
     sixty_three = make_test_media("sixty-three.mp4", duration_s=63.0)
@@ -677,14 +711,11 @@ def test_a_rejected_video_keeps_earlier_valid_audio(
             artifacts_dir=tmp_path / "artifacts",
             tools=sixty_vod,
             lexicon=lexicon,
-            video_file=sixty_three,  # ingest skips the conversion: audio is cached
+            video_file=sixty_three,
             clock=lambda: NOW,
         )
 
     assert excinfo.value.code == "video_mismatch"
-    from autoclipper.ingest.catalog import read_catalog
-    from autoclipper.ingest.media import normalized_audio_path
-
     assert normalized_audio_path(data, VIDEO_ID).is_file()  # the earlier audio survives
     audio = read_catalog(data)[("audio", VIDEO_ID)]
     assert audio.status == "ok"
@@ -714,14 +745,17 @@ def test_a_matching_local_video_is_used_for_audio(
     tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path], lexicon: Lexicon
 ) -> None:
     """--video with the VOD's length: its audio is converted instead of downloaded."""
-    data = tmp_path / "data"
-    whole_vod = make_test_media("whole.mp4", duration_s=3600.0)
+    whole_vod = make_test_media("whole.mp4", duration_s=60.0)
 
     result = analyze_vod(
         VIDEO_ID,
-        data_dir=data,
+        data_dir=tmp_path / "data",
         artifacts_dir=tmp_path / "artifacts",
-        tools=tools(chat_binary, downloader=FakeDownloader(None, AssertionError("not used"))),
+        tools=tools(
+            chat_binary,
+            twitch=FakeTwitch(video=video_record(duration="0h1m0s")),
+            downloader=FakeDownloader(None, AssertionError("not used")),
+        ),
         lexicon=lexicon,
         video_file=whole_vod,
         clock=lambda: NOW,

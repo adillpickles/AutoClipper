@@ -163,6 +163,7 @@ def ingest_vod(
     data_dir: Path,
     tools: IngestTools,
     media_file: Path | None = None,
+    after_vod_meta: Callable[[Vod | None], None] | None = None,
 ) -> IngestReport:
     """Run the four ingest steps for one VOD, skipping the ones already done.
 
@@ -172,6 +173,11 @@ def ingest_vod(
         tools: The API client, salt and downloaders.
         media_file: A video or audio file of this VOD the user already has; the audio step then
             converts it instead of downloading. It must start at the VOD's start.
+        after_vod_meta: Called right after the metadata step, with the resolved VOD (or None
+            when it couldn't be resolved), before anything is downloaded. An exception it
+            raises propagates and the remaining steps are skipped without catalog rows, so a
+            later run picks them up. `analyze_vod` uses it to reject a non-archive video or a
+            mismatched ``--video`` file before fetching anything (api-contract.md § 3.5).
 
     Raises:
         InvalidVideoIdError: `video_id` isn't a Twitch video ID.
@@ -223,6 +229,10 @@ def ingest_vod(
         else:
             _write_vod(data_dir, vod)
             finish("vod_meta", "ok", "helix", f"wrote {vods_path(data_dir)}")
+
+    if after_vod_meta is not None:
+        # The one point where the resolved VOD is known before anything is downloaded.
+        after_vod_meta(vod)
 
     # 2. Viewer clips (needs the metadata).
     clips_entry = done_before("clips", _snapshot_exists(data_dir, video_id))

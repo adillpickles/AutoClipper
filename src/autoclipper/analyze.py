@@ -6,23 +6,26 @@ analyze`` writes and the API will return (#45):
 
 1. **Ingest** (`ingest_vod`): metadata, the viewer-clip snapshot, chat and audio; resumable,
    recorded in the catalog. A video file the user already has (`video_file`) replaces the
-   audio download, and its length is checked against the VOD's with the contract's
-   ``video_mismatch`` bound (2 s, § 3.1) — stricter than ingest's own audio check, whose
-   audio the rejection discards.
+   audio download. The chosen scorer is validated first, and the VOD's type and the file's
+   length against the VOD's (the contract's ``video_mismatch``, 2 s, § 3.1) are checked in
+   ``ingest_vod``'s ``after_vod_meta`` hook, at the ``resolving_vod`` stage — before
+   anything is downloaded, so a rejected video or scorer costs nothing and leaves nothing.
 2. **Inputs as warnings** (§ 3.5): a signal that couldn't be obtained degrades the result
    with `chat_missing`, `audio_missing` or `viewer_clips_missing` (the clip list being
    incomplete adds `viewer_clips_incomplete`), and Twitch having muted part of the audio
    adds `audio_partly_muted`. The analysis carries on with what arrived. The VOD itself
-   being unresolvable, not a past broadcast, or a mismatched video file fails with the
-   contract's codes; nothing to rank fails with `no_usable_signals`, or
-   `upstream_unavailable` when a step failed transiently.
+   being unresolvable or not a past broadcast fails with the contract's codes, and so does
+   media Twitch refuses to serve without a user-provided file (deleted, expired or
+   subscriber-only: `vod_unavailable`); nothing to rank fails with `no_usable_signals`, or
+   `upstream_unavailable` when an input the ranking needs failed transiently.
 3. **Features**: the VOD's windows, then its chat and audio features per window.
 4. **Scoring**: a baseline by name (`baseline`, default ``chat_loudness``) or a saved model
    run (`model_dir`, `load_scorer`). The composite default degrades to whatever families
    arrived — ``loudness`` without chat, ``chat_spike`` without audio — and with neither,
    only viewer-clip moments rank, recorded as the ``no_signals`` scorer. A named
    single-signal baseline or a trained model that can't run fails with the § 3.5 codes
-   (`upstream_unavailable` when its input failed transiently, else `no_usable_signals`).
+   (`upstream_unavailable` when an input it needs failed transiently, else
+   `no_usable_signals`).
    With neither family and no viewer-clip moment, no scorer — ``random`` included — has
    anything to rank, and the § 3.5 precedence decides the code.
 5. **Candidates** (`generate_candidates`): ranked, merged with the snapshot's moments.
@@ -57,12 +60,10 @@ from autoclipper.features.audio import compute_audio_features
 from autoclipper.features.chat import FEATURE_COLUMNS as CHAT_FEATURE_COLUMNS
 from autoclipper.features.chat import Lexicon, compute_chat_features
 from autoclipper.ffmpeg import FFmpegError, MediaInfo, Runner, probe
-from autoclipper.ingest.catalog import CatalogEntry, read_catalog, record
+from autoclipper.ingest.catalog import CatalogEntry, read_catalog
 from autoclipper.ingest.media import normalized_audio_path, validate_video_id
+from autoclipper.ingest.twitch_api import Vod
 from autoclipper.ingest.vod import (
-    LOCAL_FILE_TOOL,
-    STAGE_VERSION,
-    IngestReport,
     IngestTools,
     chat_path,
     clips_dir,
@@ -150,10 +151,40 @@ def analyze_vod(
         ScorerError: `baseline` isn't a known scorer name, or `model_dir` isn't a saved run.
     """
     validate_video_id(video_id)
+    # The chosen scorer is validated before anything is downloaded: a bad name or model
+    # directory is an input error, not something minutes of fetching should precede.
+    if model_dir is not None:
+        load_scorer(model_dir)
+    else:
+        make_scorer(baseline)
     video_info = _probe_video_file(video_file, tools.runner)
-    report = _timed(
+
+    def check_vod(vod: Vod | None) -> None:
+        """§ 3.5's `resolving_vod` checks, before any other step downloads anything."""
+        if vod is None:
+            return  # a failed or missing metadata step is classified after the ingest
+        if vod.type != "archive":
+            raise AnalyzeError(
+                "vod_unsupported", f"the video is a {vod.type}, not a past broadcast"
+            )
+        if video_info is not None and abs(video_info.duration_s - vod.duration_s) > (
+            VIDEO_MISMATCH_TOLERANCE_S
+        ):
+            raise AnalyzeError(
+                "video_mismatch",
+                f"{video_file} is {video_info.duration_s:.1f} s long but the VOD is "
+                f"{vod.duration_s:.1f} s; pass a file of the whole VOD, starting at its start",
+            )
+
+    _timed(
         "ingest",
-        lambda: ingest_vod(video_id, data_dir=data_dir, tools=tools, media_file=video_file),
+        lambda: ingest_vod(
+            video_id,
+            data_dir=data_dir,
+            tools=tools,
+            media_file=video_file,
+            after_vod_meta=check_vod,
+        ),
     )
     catalog = read_catalog(data_dir)
     started = time.monotonic()
@@ -172,17 +203,6 @@ def analyze_vod(
         raise AnalyzeError(
             "upstream_unavailable", f"the VOD's row is missing from {data_dir / 'processed'}"
         )
-    if vod.type != "archive":
-        raise AnalyzeError("vod_unsupported", f"the video is a {vod.type}, not a past broadcast")
-    if video_info is not None and abs(video_info.duration_s - vod.duration_s) > (
-        VIDEO_MISMATCH_TOLERANCE_S
-    ):
-        _invalidate_audio_from(video_file, report, catalog, video_id, data_dir, tools.clock)
-        raise AnalyzeError(
-            "video_mismatch",
-            f"{video_file} is {video_info.duration_s:.1f} s long but the VOD is "
-            f"{vod.duration_s:.1f} s; pass a file of the whole VOD, starting at its start",
-        )
 
     # --- Warnings: which signals arrived (§ 3.5) -----------------------------------------------
     warnings: list[AnalysisWarning] = []
@@ -195,6 +215,16 @@ def analyze_vod(
     audio_entry = catalog.get(("audio", video_id))
     audio_ok = audio_entry is not None and audio_entry.status == "ok"
     if not audio_ok:
+        # The audio step is `unavailable` only when the download tool was refused the media
+        # (deleted, expired or subscriber-only; `VodUnavailableError`, `VodAccessRestrictedError`),
+        # so without a user-provided file the VOD itself isn't accessible (§ 3.5).
+        if audio_entry is not None and audio_entry.status == "unavailable" and video_file is None:
+            raise AnalyzeError(
+                "vod_unavailable",
+                "Twitch has no accessible video with this ID: its media is deleted, expired "
+                "or not publicly viewable (e.g. subscriber-only); pass a file of the VOD you "
+                "already have with --video to analyze it anyway",
+            )
         warnings.append(
             AnalysisWarning(code="audio_missing", message=_missing_reason("audio", audio_entry))
         )
@@ -231,13 +261,24 @@ def analyze_vod(
                 )
             )
     else:
-        warnings.append(
-            AnalysisWarning(
-                code="viewer_clips_missing",
-                message=_missing_reason("the viewer clip list", clips_entry)
-                + "; no candidate is built from viewer clips",
+        if clips_entry is not None and clips_entry.status == "ok":
+            # The snapshot is recorded done but can't be read; ingest never re-takes a
+            # snapshot it considers present, so say what to do instead of "try again".
+            warnings.append(
+                AnalysisWarning(
+                    code="viewer_clips_missing",
+                    message="the clip snapshot on disk couldn't be read; re-ingest the VOD to "
+                    "take a fresh one",
+                )
             )
-        )
+        else:
+            warnings.append(
+                AnalysisWarning(
+                    code="viewer_clips_missing",
+                    message=_missing_reason("the viewer clip list", clips_entry)
+                    + "; no candidate is built from viewer clips",
+                )
+            )
 
     # --- Features and scoring ------------------------------------------------------------------
     windows = _timed(
@@ -281,8 +322,9 @@ def analyze_vod(
         )
     except _ScorerUnavailable as exc:
         # A chosen scorer's inputs are missing; the code still follows § 3.5 (a transient
-        # fetch failure keeps upstream_unavailable's "try again later").
-        raise _nothing_to_rank(catalog, video_id, exc.reason) from None
+        # fetch failure of an input the scorer needs keeps upstream_unavailable's "try again
+        # later"; anything else can't be fixed by retrying).
+        raise _nothing_to_rank(catalog, video_id, exc.reason, exc.needed) from None
     if scored is None:  # neither signal family arrived, and moments exist
         # Viewer-clip moments alone rank, in stream order; the scorer field records that
         # no signal scored anything (a zero score everywhere would invent a peak at 0 s).
@@ -431,49 +473,29 @@ def _with_window_bounds(scores: pl.DataFrame, windows: pl.DataFrame) -> pl.DataF
 
 
 class _ScorerUnavailable(Exception):
-    """A chosen scorer's inputs are missing; the caller classifies it per § 3.5."""
+    """A chosen scorer's inputs are missing; the caller classifies it per § 3.5.
 
-    def __init__(self, reason: str) -> None:
+    Attributes:
+        reason: What the scorer was missing, for the error message.
+        needed: The ingest steps whose data the scorer needs (``chat``, ``audio``).
+    """
+
+    def __init__(self, reason: str, needed: tuple[str, ...]) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.needed = needed
 
 
-def _invalidate_audio_from(
-    video_file: Path | None,
-    report: IngestReport,
-    catalog: dict[tuple[str, str], CatalogEntry],
-    video_id: str,
-    data_dir: Path,
-    clock: Callable[[], datetime],
-) -> None:
-    """Discard audio a rejected --video file produced, so a later run re-fetches it.
-
-    Only the conversion of THIS run's file is discarded: when the audio step skipped, the
-    cache came from an earlier run and a different (possibly correct) file. Ingest does the
-    same for its own ``MediaLengthError``.
-    """
-    if video_file is None:
-        return
-    converted_now = any(step.step == "audio" and step.outcome == "ok" for step in report.steps)
-    audio = catalog.get(("audio", video_id))
-    if (
-        not converted_now
-        or audio is None
-        or audio.status != "ok"
-        or audio.tool != (LOCAL_FILE_TOOL)
-    ):
-        return  # this run didn't convert the rejected file
-    wav = normalized_audio_path(data_dir, video_id)
-    wav.unlink(missing_ok=True)
-    error = (
-        f"the provided file's audio was discarded: {video_file.name} doesn't match the VOD's "
-        "length, so it isn't this VOD"
+def _needed_steps(scorer: Scorer) -> tuple[str, ...]:
+    """The ingest steps a scorer's required features come from, sorted."""
+    return tuple(
+        sorted(
+            {
+                "chat" if feature.startswith("chat_") else "audio"
+                for feature in scorer.required_features
+            }
+        )
     )
-    record(
-        data_dir,
-        CatalogEntry("audio", video_id, "failed", LOCAL_FILE_TOOL, STAGE_VERSION, clock(), error),
-    )
-    log.info("ingest audio invalidated video_id=%s reason=video_mismatch", video_id)
 
 
 def _score_windows(
@@ -499,7 +521,7 @@ def _score_windows(
             scores = scorer.score(scoreable)
         except ScorerError as exc:
             raise _ScorerUnavailable(
-                f"the {scorer.name} model can't score this VOD: {exc}"
+                f"the {scorer.name} model can't score this VOD: {exc}", _needed_steps(scorer)
             ) from None
         return _with_window_bounds(scores, windows), scorer, model_dir.name
     name = baseline
@@ -516,7 +538,9 @@ def _score_windows(
     try:
         scores = scorer.score(scoreable)
     except ScorerError as exc:
-        raise _ScorerUnavailable(f"the {scorer.name} scorer can't score this VOD: {exc}") from None
+        raise _ScorerUnavailable(
+            f"the {scorer.name} scorer can't score this VOD: {exc}", _needed_steps(scorer)
+        ) from None
     return _with_window_bounds(scores, windows), scorer, None
 
 
@@ -550,17 +574,19 @@ def _nothing_to_rank(
     catalog: dict[tuple[str, str], CatalogEntry],
     video_id: str,
     scorer_reason: str | None = None,
+    needed: tuple[str, ...] = INPUT_STEPS,
 ) -> AnalyzeError:
     """The § 3.5 failure when nothing can be ranked (precedence step 3).
 
-    `scorer_reason` names what a chosen scorer was missing; either way the code follows the
-    contract: a step that failed while fetching (tool and network errors count as
-    transient, and when unsure, treat as transient) keeps `upstream_unavailable`'s "trying
-    again later may help".
+    `scorer_reason` names what a chosen scorer was missing, and `needed` the ingest steps
+    whose data that scorer uses: only a NEEDED step failing while fetching (tool and
+    network errors count as transient, and when unsure, treat as transient) keeps
+    `upstream_unavailable`'s "trying again later may help" — a retry can't bring back an
+    input that is gone for good, whatever else failed.
     """
     transient = [
         step
-        for step in INPUT_STEPS
+        for step in needed
         if (entry := catalog.get((step, video_id))) is not None and entry.status == "failed"
     ]
     if transient:
