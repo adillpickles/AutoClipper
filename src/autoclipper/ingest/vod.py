@@ -164,6 +164,7 @@ def ingest_vod(
     tools: IngestTools,
     media_file: Path | None = None,
     after_vod_meta: Callable[[Vod | None], None] | None = None,
+    on_step: Callable[[StepResult], None] | None = None,
 ) -> IngestReport:
     """Run the four ingest steps for one VOD, skipping the ones already done.
 
@@ -178,6 +179,11 @@ def ingest_vod(
             raises propagates and the remaining steps are skipped without catalog rows, so a
             later run picks them up. `analyze_vod` uses it to reject a non-archive video or a
             mismatched ``--video`` file before fetching anything (api-contract.md § 3.5).
+        on_step: Called with each step's result as the step completes, in step order (a
+            skipped step completes too); the metadata step's result is reported only after
+            ``after_vod_meta`` passes, so a VOD rejected there never reads as completed. The
+            API worker uses it to report job progress (api-contract.md § 3.4); an exception it
+            raises propagates like ``after_vod_meta``'s.
 
     Raises:
         InvalidVideoIdError: `video_id` isn't a Twitch video ID.
@@ -197,7 +203,9 @@ def ingest_vod(
             return None  # the output was removed: do it again
         return entry
 
-    def finish(step: StepName, status: Status, tool: str, detail: str) -> StepResult:
+    def finish(
+        step: StepName, status: Status, tool: str, detail: str, *, fire: bool = True
+    ) -> StepResult:
         error = None if status == "ok" else detail
         entry = CatalogEntry(step, video_id, status, tool, STAGE_VERSION, tools.clock(), error)
         record(data_dir, entry)
@@ -205,34 +213,48 @@ def ingest_vod(
         log.info("ingest step=%s video_id=%s status=%s", step, video_id, status)
         result = StepResult(step, status, detail)
         results.append(result)
+        if fire and on_step is not None:
+            on_step(result)
         return result
 
-    def skip(step: StepName, entry: CatalogEntry) -> None:
+    def skip(step: StepName, entry: CatalogEntry, *, fire: bool = True) -> None:
         detail = "done in an earlier run" if entry.status == "ok" else f"unavailable: {entry.error}"
-        results.append(StepResult(step, "skipped", detail))
+        result = StepResult(step, "skipped", detail)
+        results.append(result)
+        if fire and on_step is not None:
+            on_step(result)
 
-    # 1. Metadata.
+    # 1. Metadata. Its completion is reported only after the caller's checks pass, so a VOD
+    # rejected in `after_vod_meta` fails the run at `resolving_vod` (api-contract.md § 3.4).
     vod: Vod | None = None
     meta_entry = done_before("vod_meta", read_vod(data_dir, video_id) is not None)
     if meta_entry is not None:
-        skip("vod_meta", meta_entry)
+        skip("vod_meta", meta_entry, fire=False)
         vod = read_vod(data_dir, video_id)
     elif tools.helix is None:
-        finish("vod_meta", "failed", "helix", tools.missing_helix)
+        finish("vod_meta", "failed", "helix", tools.missing_helix, fire=False)
     else:
         try:
             (vod,) = tools.helix.get_videos([video_id])
         except TwitchNotFoundError:
-            finish("vod_meta", "unavailable", "helix", "Twitch has no published video with this ID")
+            finish(
+                "vod_meta",
+                "unavailable",
+                "helix",
+                "Twitch has no published video with this ID",
+                fire=False,
+            )
         except Exception as exc:  # recorded, not fatal
-            finish("vod_meta", "failed", "helix", _describe(exc))
+            finish("vod_meta", "failed", "helix", _describe(exc), fire=False)
         else:
             _write_vod(data_dir, vod)
-            finish("vod_meta", "ok", "helix", f"wrote {vods_path(data_dir)}")
+            finish("vod_meta", "ok", "helix", f"wrote {vods_path(data_dir)}", fire=False)
 
     if after_vod_meta is not None:
         # The one point where the resolved VOD is known before anything is downloaded.
         after_vod_meta(vod)
+    if on_step is not None:
+        on_step(results[-1])  # the metadata step's result, reported once its checks passed
 
     # 2. Viewer clips (needs the metadata).
     clips_entry = done_before("clips", _snapshot_exists(data_dir, video_id))

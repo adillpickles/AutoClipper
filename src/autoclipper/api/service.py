@@ -3,8 +3,14 @@
 `MockService` keeps job, export, highlights and media records in memory (a restart forgets
 them, § 9.3), validates requests in the contract's order and raises `ApiException` with the
 contract's codes. Two worker threads run the work: one for analysis jobs, one shared by exports
-and highlights videos (one render at a time), each first in, first out. The mock job walks
-through the six analysis stages and finishes with its § 11 scenario.
+and highlights videos (one render at a time), each first in, first out.
+
+Jobs run one of two runners (`job_runner`, reported by the health endpoint): ``mock`` walks
+through the six analysis stages and finishes with the § 11 scenario keyed by the VOD ID, for
+frontend work without credentials; ``pipeline`` (#45) calls the real analysis
+(`autoclipper.analyze.analyze_vod`) with the job's optional ``video_path``, reporting real
+progress as each stage begins and the warnings found so far, and fails the job with
+`AnalyzeError`'s § 3.5 code when the analysis can't produce a result.
 
 Exports are real: the render worker cuts the requested interval from the job's ``video_path``,
 or from the sample preview video when the job has none, and renders it with
@@ -19,13 +25,14 @@ import secrets
 import shutil
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal, Protocol
 
 from autoclipper.analysis import AnalysisResult, AnalysisWarning, Candidate
+from autoclipper.analyze import DEFAULT_SCORER, AnalyzeError, analyze_vod
 from autoclipper.api import mock
 from autoclipper.export.captions import CaptioningError, Stage, Transcriber
 from autoclipper.export.clip import (
@@ -38,7 +45,9 @@ from autoclipper.export.clip import (
 )
 from autoclipper.export.cut import Interval, IntervalTooShortError
 from autoclipper.export.errors import ExportError
+from autoclipper.features.chat import Lexicon
 from autoclipper.ffmpeg import FFmpegError, ffmpeg_command, probe, run_command
+from autoclipper.ingest.vod import IngestTools
 from autoclipper.schemas import (
     ApiError,
     CandidateMedia,
@@ -65,6 +74,8 @@ _RENDER_MESSAGES: Final = {
     "obtaining_media": "Getting the video",
     "transcribing": "Generating captions",
 }
+_STAGE_INDEX: Final = {name: index for index, (name, _) in enumerate(mock.JOB_STAGES, start=1)}
+"""A job stage name's 1-based position (§ 3.4); the pipeline reports the same stages."""
 
 type Clock = Callable[[], datetime]
 
@@ -82,6 +93,35 @@ class ClipRenderer(Protocol):
         on_stage: Callable[[Stage], None],
     ) -> object:
         """Write `spec.output` or raise."""
+        ...
+
+
+class AnalyzeRunner(Protocol):
+    """Analyzes one VOD; `analyze_vod` is the real one, tests pass a fake."""
+
+    def __call__(
+        self,
+        video_id: str,
+        *,
+        data_dir: Path,
+        artifacts_dir: Path,
+        tools: IngestTools,
+        lexicon: Lexicon,
+        video_file: Path | None,
+        baseline: str,
+        clock: Clock,
+        on_stage: Callable[[str], None],
+        on_warnings: Callable[[Sequence[AnalysisWarning]], None],
+    ) -> AnalysisResult:
+        """Return the analysis or raise."""
+        ...
+
+
+class ToolsFactory(Protocol):
+    """Builds the ingest tools for one pipeline job; the CLI builds them from settings."""
+
+    def __call__(self) -> IngestTools:
+        """Return the tools; the caller closes the Helix client when the job ends."""
         ...
 
 
@@ -267,7 +307,7 @@ def _utc_now() -> datetime:
 
 @dataclass
 class MockService:
-    """The mock backend.
+    """The backend's state and background work.
 
     Args:
         samples: The sample MP4s (`ensure_sample_media`).
@@ -283,6 +323,15 @@ class MockService:
             when it is set.
         transcriber: For captions; None means faster-whisper with the configured model.
         render: Renders an export (default `render_clip`).
+        job_runner: ``mock`` (the § 11 scenarios, for frontend work) or ``pipeline`` (the real
+            analysis, #45); the health endpoint reports which is running.
+        data_dir: Where the pipeline's ingest steps read and write. Required in pipeline mode.
+        artifacts_dir: Where the pipeline writes analysis results. Required in pipeline mode.
+        lexicon: For the pipeline's chat features. Required in pipeline mode.
+        tools_for: Builds the pipeline's ingest tools per job (the CLI builds them from
+            settings). Required in pipeline mode.
+        analyze: The pipeline's analysis function; tests pass a fake.
+        baseline: The scorer the pipeline scores with (§ 4.1 ``scorer``).
     """
 
     samples: SampleMedia
@@ -294,6 +343,13 @@ class MockService:
     export_region: tuple[float, float, float, float] | None = None
     transcriber: Transcriber | None = None
     render: ClipRenderer = render_clip
+    job_runner: Literal["mock", "pipeline"] = "mock"
+    data_dir: Path | None = None
+    artifacts_dir: Path | None = None
+    lexicon: Lexicon | None = None
+    tools_for: ToolsFactory | None = None
+    analyze: AnalyzeRunner = field(default=analyze_vod, kw_only=True)
+    baseline: str = DEFAULT_SCORER
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _jobs: dict[str, _JobRecord] = field(default_factory=dict, init=False)
     _renders: dict[str, _RenderRecord] = field(default_factory=dict, init=False)
@@ -304,6 +360,19 @@ class MockService:
     _threads: list[threading.Thread] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
+        if self.job_runner == "pipeline":
+            missing = [
+                name
+                for name, value in (
+                    ("data_dir", self.data_dir),
+                    ("artifacts_dir", self.artifacts_dir),
+                    ("lexicon", self.lexicon),
+                    ("tools_for", self.tools_for),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(f"pipeline jobs need {', '.join(missing)}")
         self._preview_media_id = new_id("med")
         self._media[self._preview_media_id] = self.samples.preview
         if self.synchronous:
@@ -733,10 +802,13 @@ class MockService:
         try:
             self._run_job(job_id)
         except Exception:  # a bug: fail the job, keep the worker alive
-            log.exception("mock job failed job_id=%s", job_id)
+            log.exception("job failed job_id=%s", job_id)
             self._fail_job(job_id, ApiError(code="internal_error", message=_INTERNAL))
 
     def _run_job(self, job_id: str) -> None:
+        if self.job_runner == "pipeline":
+            self._run_pipeline_job(job_id)
+            return
         with self._lock:
             record = self._jobs[job_id]
             scenario = mock.scenario_for(record.video_id)
@@ -763,6 +835,67 @@ class MockService:
             record.state = "done"
             record.progress = None
             record.times.updated_at = record.times.finished_at = now
+
+    def _run_pipeline_job(self, job_id: str) -> None:
+        """Run one job through the real analysis, reporting progress as stages begin."""
+        assert self.data_dir is not None
+        assert self.artifacts_dir is not None
+        assert self.lexicon is not None
+        assert self.tools_for is not None  # checked in __post_init__ for pipeline mode
+        with self._lock:
+            record = self._jobs[job_id]
+            now = self.clock()
+            video_id, video_path = record.video_id, record.video_path
+            record.state = "running"
+            record.progress = mock.stage_progress(1)  # never running without progress (§ 3.4)
+            record.times.started_at = record.times.updated_at = now
+
+        def stage(name: str) -> None:
+            index = _STAGE_INDEX[name]
+            with self._lock:
+                record.progress = mock.stage_progress(index)
+                record.times.updated_at = self.clock()
+
+        def warnings(found: Sequence[AnalysisWarning]) -> None:
+            with self._lock:  # the job's warnings mean "degradations found so far" (§ 3.5)
+                record.warnings = tuple(found)
+                record.times.updated_at = self.clock()
+
+        tools = self.tools_for()
+        log.info("pipeline job start job_id=%s video_id=%s", job_id, video_id)
+        try:
+            result = self.analyze(
+                video_id,
+                data_dir=self.data_dir,
+                artifacts_dir=self.artifacts_dir,
+                tools=tools,
+                lexicon=self.lexicon,
+                video_file=Path(video_path) if video_path is not None else None,
+                baseline=self.baseline,
+                clock=self.clock,
+                on_stage=stage,
+                on_warnings=warnings,
+            )
+        except AnalyzeError as exc:  # the analysis failed with a § 3.5 code
+            self._fail_job(job_id, ApiError(code=exc.code, message=exc.message))
+            return
+        finally:
+            if tools.helix is not None:
+                tools.helix.close()
+        with self._lock:
+            now = self.clock()
+            record.result = result
+            record.warnings = result.warnings
+            record.state = "done"
+            record.progress = None
+            record.times.updated_at = record.times.finished_at = now
+        log.info(
+            "pipeline job done job_id=%s video_id=%s candidates=%d warnings=%d",
+            job_id,
+            video_id,
+            len(result.candidates),
+            len(result.warnings),
+        )
 
     def _fail_job(self, job_id: str, error: ApiError) -> None:
         with self._lock:
