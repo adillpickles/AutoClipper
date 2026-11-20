@@ -851,10 +851,21 @@ def serve(
                 built["missing_helix"] = str(exc)
             return IngestTools(helix=helix, **built)
 
+        from autoclipper.ingest.media import VideoSegment, download_video_segment, raw_video_dir
+
+        segments = raw_video_dir(settings.data_dir)
+
+        def fetch_segment(video_id: str, begin_s: float, end_s: float, /) -> VideoSegment:
+            # The fetcher's own cache (by video and range) makes repeat requests cheap (#46).
+            return download_video_segment(
+                video_id, begin_s=begin_s, end_s=end_s, output_dir=segments / video_id
+            )
+
         options.update(
             data_dir=settings.data_dir,
             artifacts_dir=settings.artifacts_dir,
             tools_for=tools_for,
+            segment_fetcher=fetch_segment,
         )
         if not (settings.twitch_client_id and settings.twitch_client_secret):
             typer.echo(
