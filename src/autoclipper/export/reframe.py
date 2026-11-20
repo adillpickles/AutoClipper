@@ -135,14 +135,16 @@ class PixelRect:
 
 @dataclass(frozen=True, slots=True)
 class ReframePlan:
-    """Exact geometry that turns a source frame into an `OUTPUT_WIDTH` x `OUTPUT_HEIGHT` frame.
+    """Exact geometry that turns a source frame into a fixed-size output frame.
 
     Attributes:
         crop: The part of the source frame that is shown, in source pixels.
         scaled_width: Width the crop is scaled to, in output pixels.
         scaled_height: Height the crop is scaled to, in output pixels.
-        pad_x: Black columns left of the scaled crop (0 unless the layout pads).
-        pad_y: Black rows above the scaled crop (0 unless the layout pads).
+        pad_x: Black columns left of the scaled crop (0 unless the plan pads).
+        pad_y: Black rows above the scaled crop (0 unless the plan pads).
+        output_width: The output frame width the plan targets.
+        output_height: The output frame height the plan targets.
     """
 
     crop: PixelRect
@@ -150,6 +152,8 @@ class ReframePlan:
     scaled_height: int
     pad_x: int = 0
     pad_y: int = 0
+    output_width: int = OUTPUT_WIDTH
+    output_height: int = OUTPUT_HEIGHT
 
     def filters(self) -> tuple[str, ...]:
         """The FFmpeg video filters for this plan, in order, ending with square pixels."""
@@ -158,9 +162,10 @@ class ReframePlan:
             f"crop=w={c.width}:h={c.height}:x={c.x}:y={c.y}",
             f"scale=w={self.scaled_width}:h={self.scaled_height}:flags=lanczos",
         ]
-        if (self.scaled_width, self.scaled_height) != (OUTPUT_WIDTH, OUTPUT_HEIGHT):
+        if (self.scaled_width, self.scaled_height) != (self.output_width, self.output_height):
             filters.append(
-                f"pad=w={OUTPUT_WIDTH}:h={OUTPUT_HEIGHT}:x={self.pad_x}:y={self.pad_y}:color=black"
+                f"pad=w={self.output_width}:h={self.output_height}:x={self.pad_x}:y="
+                f"{self.pad_y}:color=black"
             )
         filters.append("setsar=1")
         return tuple(filters)
