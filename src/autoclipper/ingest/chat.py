@@ -38,7 +38,6 @@ import ctypes
 import json
 import logging
 import math
-import os
 import re
 import shutil
 import signal
@@ -179,15 +178,16 @@ class CommandRunner(Protocol):
     """Runs a command given as an argument list, ending it after its timeout.
 
     Tests pass a fake that records the commands instead of running anything; a fake that
-    wants to act out a stalled tool raises `subprocess.TimeoutExpired`, as the real runner
-    does after it has killed the process.
+    wants to act out a stalled tool raises `subprocess.TimeoutExpired`, exactly as the real
+    runner does once it has ended the process.
     """
 
     def __call__(self, args: Sequence[str], /, *, timeout_s: float | None = None) -> CommandResult:
         """Run ``args`` and return its result whatever the exit code was.
 
         When ``timeout_s`` is set and the command is still running after that many seconds,
-        the process — with any processes it started — is ended.
+        the process is ended — on Windows together with anything it started — and
+        `subprocess.TimeoutExpired` is raised.
         """
         ...
 
@@ -218,22 +218,25 @@ def chat_download_timeout_s(vod_duration_s: float | None) -> float:
 def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
     """Run ``args`` without a shell and with no stdin, and capture its output.
 
-    The child runs so that the whole tree can be ended at any time: on Windows it joins a
-    kill-on-close Job Object before its first instruction (see `_create_kill_on_close_job`);
-    elsewhere it leads its own process group. Nothing the tool started outlives the call.
+    The child runs so it can always be ended: on Windows it joins a kill-on-close Job Object
+    before its first instruction (`_create_kill_on_close_job`), so a timeout or an interrupt
+    ends it together with anything it started; on POSIX it stays in the caller's process
+    group — a supervisor's group kill (the pilot runner's) and the terminal's signals reach
+    it, and the timeout ends the tool itself. `download_chat` turns a timeout into
+    `ChatDownloadError`; a caller using this runner directly sees `subprocess.TimeoutExpired`.
 
     Args:
         args: The command as an argument list; ``args[0]`` names or paths the program.
-        timeout_s: Seconds the command may run. When they elapse, the process — with any
-            processes it started — is ended and `ChatDownloadError` is raised. None waits
-            for as long as the command runs; callers that can should always give a bound.
+        timeout_s: Seconds the command may run. When they elapse, the process is ended and
+            `subprocess.TimeoutExpired` is raised. None waits for as long as the command
+            runs; callers that can should always give a bound.
 
     Raises:
         OSError: The program could not be started (or, on Windows, could not be placed in
             its job; it was killed before it ran).
-        ChatDownloadError: ``timeout_s`` elapsed before the command finished.
-        KeyboardInterrupt: The caller was interrupted; the process tree was ended first
-            (POSIX: it runs in its own group, so the terminal's interrupt didn't reach it).
+        subprocess.TimeoutExpired: ``timeout_s`` elapsed; the process has been ended and
+            collected.
+        KeyboardInterrupt: The caller was interrupted; the process was ended first.
     """
     job: object | None = None
     process: subprocess.Popen[str] | None = None
@@ -272,6 +275,8 @@ def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> Comma
                     _reap(process)
                     raise
             else:
+                # No separate process group: a supervisor that ends the caller's group
+                # (the pilot runner) and the terminal's hangup must reach the tool too.
                 process = subprocess.Popen(
                     list(args),
                     stdin=subprocess.DEVNULL,
@@ -280,20 +285,19 @@ def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> Comma
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    # The child leads its own process group, so one killpg ends the whole tree.
-                    process_group=0,
                 )
             stdout, stderr = process.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             assert process is not None  # communicate() was running a child
+            assert timeout_s is not None  # a timeout fired, so one was set
             _end_process_tree(process, job)
             _reap(process)
-            raise ChatDownloadError(
-                f"{Path(args[0]).name} did not finish within {timeout_s:g} s and was killed"
-            ) from None
+            # A fresh exception without the partial output the tool wrote before it was
+            # killed: it may hold chat content, and download_chat's message is the report.
+            raise subprocess.TimeoutExpired(list(args), timeout_s) from None
         except KeyboardInterrupt:
-            # The child runs outside our signal's reach (own group on POSIX, a job on
-            # Windows), so end the tree here, then let the caller's interrupt continue.
+            # The tool may already have the terminal's signal; end it here as well, so an
+            # interrupt from any source leaves nothing of it running.
             if process is not None:
                 _end_process_tree(process, job)
                 _reap(process)
@@ -308,28 +312,36 @@ def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> Comma
 
 
 def _end_process_tree(process: subprocess.Popen[str], job: object | None) -> None:
-    """End a process and any processes it started, so a stalled tool can't linger.
+    """End the process, so a stalled tool can't linger past its bound.
 
-    The identity comes from launch time, not from a lookup that can fail: on Windows the job
-    still holds processes the tool left behind after exiting (a pid tree walk would find no
-    root to walk from), and on POSIX the group a dead leader started survives it, so its pid
-    still names it.
+    On Windows the job ends the whole tree — including processes the tool left behind
+    after exiting, which a pid tree walk couldn't reach from a dead root. On POSIX the tool
+    runs in the caller's process group and ends with the pid; something the tool left
+    behind keeps the caller's reap bounded instead (it runs and exits on its own — the
+    real chatdownload is a single process).
     """
     if sys.platform == "win32":
         assert job is not None  # run_command only spawns on Windows inside a job
         _TerminateJobObject(job, 1)
-    else:
-        if process.pid != os.getpgrp():  # always true for our own group leader children
-            with contextlib.suppress(OSError):
-                os.killpg(process.pid, signal.SIGKILL)
     with contextlib.suppress(OSError):  # it may already be gone
         process.kill()
 
 
 def _reap(process: subprocess.Popen[str]) -> None:
-    """Collect the killed process so nothing of it is left running when control returns."""
-    with contextlib.suppress(subprocess.TimeoutExpired):
+    """Collect the ended process so nothing of it is left running when control returns.
+
+    A leftover process holding the output pipes (Windows before the job ends it, or a
+    POSIX child the tool left behind) only holds the call up for `REAP_TIMEOUT_S`; then
+    our ends of the pipes are closed and the call returns.
+    """
+    if process.stdout is not None and process.stdout.closed:
+        return  # an earlier pass collected the process and closed the pipes
+    try:
         process.communicate(timeout=REAP_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
 
 
 @contextlib.contextmanager

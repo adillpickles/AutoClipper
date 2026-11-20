@@ -694,9 +694,11 @@ def test_run_command_kills_a_timed_out_child_and_does_not_wait_for_it(
     )
     started = time.monotonic()
 
-    with pytest.raises(ChatDownloadError, match="did not finish within 1 s and was killed"):
-        run_command([sys.executable, "-c", script], timeout_s=1.0)
+    # 5 s, not 1: on a loaded runner the child needs a moment to start and write its pid.
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        run_command([sys.executable, "-c", script], timeout_s=5.0)
 
+    assert excinfo.value.timeout == 5.0
     # Killed rather than waited out (the child would sleep for 60 s) ...
     assert time.monotonic() - started < 30
     # ... and really gone, not just forgotten.
@@ -704,8 +706,9 @@ def test_run_command_kills_a_timed_out_child_and_does_not_wait_for_it(
     assert _ended_within(pid)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows job ends the whole tree")
 def test_run_command_kills_the_whole_process_tree(tmp_path: Path) -> None:
-    """A timed-out tool's descendants die with it; they hold the raw chat file open."""
+    """A timed-out tool's descendants die with its job; they hold the raw chat file open."""
     pids_file = tmp_path / "pids"
     # The child records its own pid and the grandchild's, then both sleep for a minute.
     grandchild = "import time\ntime.sleep(60)\n"
@@ -716,13 +719,9 @@ def test_run_command_kills_the_whole_process_tree(tmp_path: Path) -> None:
         "time.sleep(60)\n"
     )
 
-    with pytest.raises(ChatDownloadError, match="did not finish within 1 s"):
-        run_command([sys.executable, "-c", child], timeout_s=1.0)
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_command([sys.executable, "-c", child], timeout_s=5.0)
 
-    # The child may need a moment to have written the pids; after a kill it never will.
-    deadline = time.monotonic() + 10.0
-    while not pids_file.is_file() and time.monotonic() < deadline:
-        time.sleep(0.05)
     child_pid, grandchild_pid = (
         int(part) for part in pids_file.read_text(encoding="ascii").split(",")
     )
@@ -731,9 +730,10 @@ def test_run_command_kills_the_whole_process_tree(tmp_path: Path) -> None:
     assert _ended_within(grandchild_pid)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows job ends the whole tree")
 def test_run_command_ends_the_tree_when_the_tool_exits_first(tmp_path: Path) -> None:
     """The tool exits while a child it started still holds the output pipes open, so the
-    call can't finish; the kill must still reach that child (a pid tree walk has no root)."""
+    call can't finish; the job must still end that child (a pid tree walk has no root)."""
     pids_file = tmp_path / "pids"
     grandchild = "import time\ntime.sleep(60)\n"
     # The child spawns the grandchild (which inherits the pipes), records both pids and exits.
@@ -744,8 +744,8 @@ def test_run_command_ends_the_tree_when_the_tool_exits_first(tmp_path: Path) -> 
     )
     started = time.monotonic()
 
-    with pytest.raises(ChatDownloadError, match="did not finish within 1 s"):
-        run_command([sys.executable, "-c", child], timeout_s=1.0)
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_command([sys.executable, "-c", child], timeout_s=5.0)
 
     assert time.monotonic() - started < 30
     child_pid, grandchild_pid = (
@@ -755,10 +755,34 @@ def test_run_command_ends_the_tree_when_the_tool_exits_first(tmp_path: Path) -> 
     assert _ended_within(grandchild_pid)
 
 
+def test_a_leftover_process_holding_the_pipes_does_not_hang_the_timeout(
+    tmp_path: Path,
+) -> None:
+    """The tool exits, a child it left behind keeps the output pipes open and the timeout
+    fires: the call still ends bounded (on Windows the job takes the leftover too; on POSIX
+    the reap cap closes our ends of the pipes and the leftover exits on its own)."""
+    pids_file = tmp_path / "pids"
+    grandchild = "import time\ntime.sleep(10)\n"
+    child = (
+        "import os, subprocess, sys\n"
+        "grand = subprocess.Popen([sys.executable, '-c', " + repr(grandchild) + "])\n"
+        "open(" + repr(str(pids_file)) + ", 'w').write(str(os.getpid()) + ',' + str(grand.pid))\n"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_command([sys.executable, "-c", child], timeout_s=5.0)
+
+    # Bounded by the timeout plus at most the reap cap, not the leftover's lifetime.
+    assert time.monotonic() - started < 30
+    child_pid, _ = (int(part) for part in pids_file.read_text(encoding="ascii").split(","))
+    assert _ended_within(child_pid)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="sends a POSIX signal to the parent")
 def test_run_command_kills_the_child_on_keyboard_interrupt(tmp_path: Path) -> None:
-    """The child's own group keeps a terminal's Ctrl+C from reaching it, so run_command
-    ends the tree itself and the interrupt still propagates to the caller."""
+    """An interrupt that reaches only the caller still ends the tool, and the interrupt
+    keeps propagating to the caller."""
     pid_file = tmp_path / "child.pid"
     # The child records its pid, lets the parent settle into its wait, interrupts it as
     # Ctrl+C would, then sleeps.
@@ -778,14 +802,12 @@ def test_run_command_kills_the_child_on_keyboard_interrupt(tmp_path: Path) -> No
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="sends a POSIX signal to the parent")
-def test_run_command_ends_the_tree_when_interrupted_after_the_tool_exits(
-    tmp_path: Path,
-) -> None:
-    """An interrupt after the tool exited (leaving a pipe-holding grandchild) must still
-    end the grandchild: communicate() may have reaped the tool, so the group can only be
-    named by the id remembered at launch, not looked up then."""
+def test_an_interrupt_after_the_tool_exits_still_returns_promptly(tmp_path: Path) -> None:
+    """An interrupt arriving after the tool exited, with a leftover process holding the
+    output pipes, must still propagate promptly: the reap cap closes our pipe ends instead
+    of waiting the leftover out."""
     pids_file = tmp_path / "pids"
-    grandchild = "import time\ntime.sleep(60)\n"
+    grandchild = "import time\ntime.sleep(10)\n"
     child = (
         "import os, subprocess, sys\n"
         "grand = subprocess.Popen([sys.executable, '-c', " + repr(grandchild) + "])\n"
@@ -797,7 +819,7 @@ def test_run_command_ends_the_tree_when_interrupted_after_the_tool_exits(
         deadline = time.monotonic() + 15.0
         while not pids_file.is_file() and time.monotonic() < deadline:
             time.sleep(0.05)
-        time.sleep(0.5)  # the tool has exited by now; the grandchild holds the pipes
+        time.sleep(0.5)  # the tool has exited by now; the leftover holds the pipes
         os.kill(os.getpid(), signal.SIGINT)
 
     thread = threading.Thread(target=interrupt, daemon=True)
@@ -807,11 +829,8 @@ def test_run_command_ends_the_tree_when_interrupted_after_the_tool_exits(
     thread.join(timeout=20)
 
     assert time.monotonic() - started < 30
-    child_pid, grandchild_pid = (
-        int(part) for part in pids_file.read_text(encoding="ascii").split(",")
-    )
+    child_pid, _ = (int(part) for part in pids_file.read_text(encoding="ascii").split(","))
     assert _ended_within(child_pid)
-    assert _ended_within(grandchild_pid)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="tests the Windows startup window")

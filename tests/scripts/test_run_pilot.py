@@ -249,6 +249,11 @@ def test_vod_state(statuses: list[str | None], state: str) -> None:
             "code 1. ...",
             True,
         ),
+        (
+            "ChatDownloadError: TwitchDownloaderCLI chatdownload timed out after 3600 s and "
+            "was killed",
+            True,
+        ),
         ("ChatDownloadError: unsupported chat format version 9.9.9", False),
         ("NoAudioOnlyFormatError: no audio-only format", False),
         ("MediaLengthError: wrong length", False),

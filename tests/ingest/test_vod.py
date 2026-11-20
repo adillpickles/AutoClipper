@@ -21,7 +21,6 @@ from autoclipper.ingest.catalog import catalog_path, read_catalog
 from autoclipper.ingest.chat import (
     DEFAULT_CHAT_TIMEOUT_S,
     PINNED_TOOL_VERSION,
-    ChatDownloadError,
     CommandResult,
     chat_download_timeout_s,
 )
@@ -728,35 +727,54 @@ def test_the_cli_reports_steps_and_fails_without_credentials(
     assert read_catalog(tmp_path / "data")[("chat", VIDEO_ID)].status == "failed"
 
 
-def test_the_cli_reports_a_chat_timeout_and_still_runs_the_other_steps(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.ffmpeg
+def test_the_cli_reports_a_chat_timeout_and_exits_2_when_chat_is_the_only_failure(
+    tmp_path: Path, chat_binary: Path, audio_source: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data = tmp_path / "data"
     monkeypatch.setenv("AUTOCLIPPER_DATA_DIR", str(data))
     monkeypatch.setenv("AUTOCLIPPER_CHAT_HASH_SALT", "test-salt")
-    monkeypatch.setenv("PATH", str(tmp_path))  # no TwitchDownloaderCLI, no yt-dlp network
+    # A first run saves metadata, clips and audio, and fails only the chat step (a tool
+    # crash), so the CLI retry below re-runs nothing else.
+    first = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(
+            chat_binary,
+            chat=FakeChatTool(returncode=1),
+            downloader=FakeDownloader(audio_source),
+        ),
+    )
+    assert outcomes(first) == {"vod_meta": "ok", "clips": "ok", "chat": "failed", "audio": "ok"}
+    # Only now is PATH narrowed: the CLI's retry needs the fake binary on it, and nothing
+    # it runs needs anything else (the finished steps are skipped).
+    monkeypatch.setenv("PATH", str(chat_binary.parent))
 
-    def no_network(*_: object, **__: object) -> object:
-        raise RuntimeError("no network in tests")
+    class Stalled(FakeChatTool):
+        """Plays a tool that stops making progress until its timeout."""
 
-    monkeypatch.setattr("autoclipper.ingest.vod.prepare_vod_audio", no_network)
+        def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
+            super().__call__(args, timeout_s=timeout_s)  # records the call
+            raise subprocess.TimeoutExpired(list(args), timeout_s or 0.0)
 
-    def stalled(*_: object, **__: object) -> object:
-        raise ChatDownloadError(
-            "TwitchDownloaderCLI chatdownload timed out after 3600 s and was killed"
-        )
+    real_tools = IngestTools
 
-    monkeypatch.setattr("autoclipper.ingest.chat.download_chat", stalled)
+    def tools_with_a_stalled_chat(**kwargs: object) -> IngestTools:
+        return real_tools(**{**kwargs, "chat_runner": Stalled()})
+
+    monkeypatch.setattr("autoclipper.ingest.vod.IngestTools", tools_with_a_stalled_chat)
 
     result = runner.invoke(app, ["ingest", VIDEO_ID])
 
     assert result.exit_code == ExitCode.EXTERNAL_FAILURE
+    # Chat is the only failed step; the finished ones were skipped.
     assert "chat: failed" in result.output
-    assert "timed out after 3600 s" in result.output
-    # The audio step ran after the chat step failed; it failed too, on its own network error.
-    assert "audio: failed" in result.output
+    assert "timed out after 1200 s" in result.output  # the 1 h fake VOD scales the bound
+    assert "vod_meta: skipped" in result.output
+    assert "audio: skipped" in result.output
     error = read_catalog(data)[("chat", VIDEO_ID)].error or ""
-    assert "timed out after 3600 s" in error
+    assert "timed out after 1200 s" in error
+    assert not raw_chat_path(data, VIDEO_ID).exists()
 
 
 # --- Live --------------------------------------------------------------------------------------
