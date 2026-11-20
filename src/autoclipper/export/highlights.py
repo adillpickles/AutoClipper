@@ -214,7 +214,9 @@ def resolve_segments(
         # § 7.1: start_s, then end_s, then the candidate's rank.
         ordered = sorted(chosen, key=lambda s: (s.start_s, s.end_s, ranks[s.candidate_id]))
     # Every segment must satisfy its candidate's export bounds, with the whole VOD as the
-    # bounds here (§ 7.1, § 4.6); the details name the first offender in the ordered list.
+    # bounds here (§ 7.1, § 4.6), and the per-segment and total maxima. All of it in one
+    # ordered pass, so the details name the true first offender whatever it violates.
+    total_s = 0.0
     for index, segment in enumerate(ordered):
         if not 0.0 <= segment.start_s < segment.end_s <= result.vod.duration_s:
             raise InvalidHighlightsBoundsError(
@@ -226,6 +228,28 @@ def resolve_segments(
                     "max_total_duration_s": MAX_TOTAL_DURATION_S,
                 },
             )
+        if segment.end_s - segment.start_s > MAX_SEGMENT_DURATION_S:
+            raise InvalidHighlightsBoundsError(
+                f"segment {index} ({segment.candidate_id}) is "
+                f"{segment.end_s - segment.start_s:g} s long; each moment can be at most "
+                f"{MAX_SEGMENT_DURATION_S:g} s. Shorten it and try again.",
+                {
+                    "segment_index": index,
+                    "max_duration_s": MAX_SEGMENT_DURATION_S,
+                    "max_total_duration_s": MAX_TOTAL_DURATION_S,
+                },
+            )
+        total_s += segment.end_s - segment.start_s
+    if total_s > MAX_TOTAL_DURATION_S:
+        raise InvalidHighlightsBoundsError(
+            f"the segments run {total_s:g} s together; a highlights video can be at most "
+            f"{MAX_TOTAL_DURATION_S:g} s. Drop some moments and try again.",
+            {
+                "segment_index": None,
+                "max_duration_s": MAX_SEGMENT_DURATION_S,
+                "max_total_duration_s": MAX_TOTAL_DURATION_S,
+            },
+        )
     return ordered
 
 
@@ -269,6 +293,10 @@ def render_highlights(
     _check_bounds(request.segments)
     if not request.source.is_file():
         raise FileNotFoundError(f"video file not found: {request.source}")
+    if output.resolve() == request.source.resolve():
+        # Overwriting the source with the highlights would destroy the VOD (the clip
+        # exporter guards the same way, `UnsupportedSourceError`).
+        raise UnsupportedSourceError(f"the output path is the source file: {output}")
     if output.exists() and not request.overwrite:
         raise FileExistsError(f"highlights output already exists (pass overwrite): {output}")
 
@@ -426,7 +454,14 @@ def _render_segment(
                 {"segment_index": index},
             ) from None
         actual = window.corrected(cut.actual)
-        if actual != interval:  # no padding, and the media covers the whole interval
+        # No padding, and the media covers the whole interval. The corrected times of a
+        # reset source come back with float noise, so compare like the clip exporter does:
+        # one output frame of slack (render_clip's tolerance).
+        tolerance_s = 1.0 / settings.frame_rate
+        if (
+            abs(actual.start_s - segment.start_s) > tolerance_s
+            or abs(actual.end_s - segment.end_s) > tolerance_s
+        ):
             raise InvalidHighlightsBoundsError(
                 f"segment {index} ({segment.candidate_id}) covers only "
                 f"{actual.start_s:.3f}-{actual.end_s:.3f} s of the requested "
@@ -442,8 +477,16 @@ def _render_segment(
             # The captions read the source on the corrected timeline, like the cut itself,
             # so the words land where the segment's picture shows them. They are burned in
             # BEFORE the fades, so a caption that spans a join fades out with the picture
-            # instead of staying bright over the black transition.
-            lines = caption_lines_for(request.source, actual, transcriber, work_dir, runner=runner)
+            # instead of staying bright over the black transition. A segment without audio
+            # has no speech to caption, like the clip captioner.
+            lines = caption_lines_for(
+                request.source,
+                actual,
+                transcriber,
+                work_dir,
+                has_audio=audio is not None,
+                runner=runner,
+            )
             ass = work_dir / f"captions-{index:03d}.ass"
             ass.write_text(
                 ass_subtitles(lines, play_res=(HIGHLIGHTS_WIDTH, HIGHLIGHTS_HEIGHT)),

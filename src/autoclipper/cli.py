@@ -590,6 +590,8 @@ def highlights(
     except FFmpegError as exc:
         typer.echo(f"Error: render_failed: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
+    except typer.Exit:
+        raise  # a deliberate exit from one of the checks above, not a bug
     except Exception as exc:  # a bug: details to the log, message generic (§ 4.6)
         logging.getLogger(__name__).exception(
             "highlights failed unexpectedly result=%s", result, exc_info=exc

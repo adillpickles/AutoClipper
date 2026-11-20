@@ -402,6 +402,102 @@ def test_a_source_without_video_is_rejected(
         )
 
 
+def test_the_output_can_never_be_the_source(
+    tmp_path: Path, make_test_media: Callable[..., Path]
+) -> None:
+    """--out pointing at the VOD itself is refused: overwriting it would destroy the VOD."""
+    source = make_test_media("vod.mp4", duration_s=6.0, video_size=(640, 360))
+
+    with pytest.raises(ExportError, match="the output path is the source file"):
+        render_highlights(
+            HighlightsRequest(
+                source=source,
+                segments=[Segment("c001", 1.0, 3.0)],
+                output=source,
+                overwrite=True,
+            )
+        )
+    assert source.stat().st_size > 0  # the VOD is untouched
+
+
+def test_mixed_violations_report_the_first_ordered_offender() -> None:
+    """Segment 0 over the 90 s maximum and segment 1 outside the VOD: the details name
+    segment 0, whichever rule it breaks."""
+    result = analysis_result([("c001", 0.0, 4.0), ("c002", 6.0, 9.0)], duration_s=120.0)
+
+    with pytest.raises(InvalidHighlightsBoundsError) as excinfo:
+        resolve_segments(
+            result,
+            count=2,
+            segments=[Segment("c001", 0.0, 91.0), Segment("c002", 119.0, 121.0)],
+            order="chronological",
+        )
+
+    assert excinfo.value.details["segment_index"] == 0
+    assert "at most 90" in str(excinfo.value)
+
+
+def _reset_source(tmp_path: Path) -> Path:
+    """Two MPEG-TS segments joined byte for byte, whose timestamps restart halfway
+    (the shape of tests/export/test_timeline.py's fixture)."""
+    first = tmp_path / "part0.ts"
+    second = tmp_path / "part1.ts"
+    for path, color, tone in ((first, "black", 440), (second, "white", 880)):
+        run_command(
+            ffmpeg_command(
+                "-y",
+                *("-f", "lavfi", "-i", f"color={color}:size=320x180:rate=25:duration=4"),
+                *("-f", "lavfi", "-i", f"sine=frequency={tone}:sample_rate=48000:duration=4"),
+                *("-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-c:a", "aac"),
+                *("-output_ts_offset", "0", "-f", "mpegts", path),
+            ),
+            timeout_s=TIMEOUT_S,
+        )
+    source = tmp_path / "reset.ts"
+    source.write_bytes(first.read_bytes() + second.read_bytes())
+    return source
+
+
+def test_a_timestamp_reset_source_cuts_exactly(tmp_path: Path) -> None:
+    """A source whose timestamps restart is cut on the corrected timeline, and the
+    corrected times' float noise doesn't reject a valid segment (one frame of slack)."""
+    source = _reset_source(tmp_path)
+    segment = Segment("c001", 3.169, 3.879)  # the corrected end carries float noise
+
+    rendered = render_highlights(
+        HighlightsRequest(source=source, segments=[segment], output=tmp_path / "out.mp4"),
+        settings=LOSSLESS,
+    )
+
+    assert rendered.duration_s == pytest.approx(0.71, abs=2 * TOLERANCE_S)
+
+
+def test_captions_on_a_silent_source_render_without_speech(
+    tmp_path: Path, make_test_media: Callable[..., Path]
+) -> None:
+    """A source with no audio stream has nothing to caption; the render succeeds rather
+    than failing to extract a nonexistent stream."""
+
+    class NeverTranscriber:
+        def __call__(self, wav: Path) -> list[Word]:
+            raise AssertionError("nothing to transcribe in a silent source")
+
+    source = make_ramp_video(tmp_path / "silent.mp4")  # the ramp is silent video
+
+    rendered = render_highlights(
+        HighlightsRequest(
+            source=source,
+            segments=[Segment("c001", 1.0, 4.0)],
+            output=tmp_path / "out.mp4",
+            captions=True,
+        ),
+        transcriber=NeverTranscriber(),  # type: ignore[arg-type]
+    )
+
+    assert rendered.duration_s == pytest.approx(3.0, abs=2 * TOLERANCE_S)
+    assert bright_pixels(rendered.output, 1.5, tmp_path) == 0  # no captions burned
+
+
 # --- The CLI ----------------------------------------------------------------------------------
 
 
