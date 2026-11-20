@@ -62,6 +62,7 @@ from autoclipper.ingest.media import normalized_audio_path, validate_video_id
 from autoclipper.ingest.vod import (
     LOCAL_FILE_TOOL,
     STAGE_VERSION,
+    IngestReport,
     IngestTools,
     chat_path,
     clips_dir,
@@ -150,7 +151,7 @@ def analyze_vod(
     """
     validate_video_id(video_id)
     video_info = _probe_video_file(video_file, tools.runner)
-    _timed(
+    report = _timed(
         "ingest",
         lambda: ingest_vod(video_id, data_dir=data_dir, tools=tools, media_file=video_file),
     )
@@ -176,7 +177,7 @@ def analyze_vod(
     if video_info is not None and abs(video_info.duration_s - vod.duration_s) > (
         VIDEO_MISMATCH_TOLERANCE_S
     ):
-        _invalidate_audio_from(video_file, catalog, video_id, data_dir, tools.clock)
+        _invalidate_audio_from(video_file, report, catalog, video_id, data_dir, tools.clock)
         raise AnalyzeError(
             "video_mismatch",
             f"{video_file} is {video_info.duration_s:.1f} s long but the VOD is "
@@ -439,6 +440,7 @@ class _ScorerUnavailable(Exception):
 
 def _invalidate_audio_from(
     video_file: Path | None,
+    report: IngestReport,
     catalog: dict[tuple[str, str], CatalogEntry],
     video_id: str,
     data_dir: Path,
@@ -446,16 +448,21 @@ def _invalidate_audio_from(
 ) -> None:
     """Discard audio a rejected --video file produced, so a later run re-fetches it.
 
-    Ingest converts the file's audio before the 2 s mismatch check runs (ingest's own check
-    is coarser). Without this, the wrong file's audio would sit cataloged ``ok`` and a
-    later run without ``--video`` would silently use it. Ingest does the same for its own
-    ``MediaLengthError``.
+    Only the conversion of THIS run's file is discarded: when the audio step skipped, the
+    cache came from an earlier run and a different (possibly correct) file. Ingest does the
+    same for its own ``MediaLengthError``.
     """
     if video_file is None:
         return
+    converted_now = any(step.step == "audio" and step.outcome == "ok" for step in report.steps)
     audio = catalog.get(("audio", video_id))
-    if audio is None or audio.status != "ok" or audio.tool != LOCAL_FILE_TOOL:
-        return  # the file's audio never became this run's audio
+    if (
+        not converted_now
+        or audio is None
+        or audio.status != "ok"
+        or audio.tool != (LOCAL_FILE_TOOL)
+    ):
+        return  # this run didn't convert the rejected file
     wav = normalized_audio_path(data_dir, video_id)
     wav.unlink(missing_ok=True)
     error = (

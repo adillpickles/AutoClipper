@@ -644,6 +644,52 @@ def test_a_rejected_local_video_leaves_no_audio_behind(
     assert "discarded" in (audio.error or "")
 
 
+@pytest.mark.ffmpeg
+def test_a_rejected_video_keeps_earlier_valid_audio(
+    tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path], lexicon: Lexicon
+) -> None:
+    """A wrong --video file only discards what it produced this run: audio cached from an
+    earlier, correct file survives the rejection."""
+    data = tmp_path / "data"
+    sixty = make_test_media("sixty.mp4", duration_s=60.0)
+    sixty_three = make_test_media("sixty-three.mp4", duration_s=63.0)
+    sixty_vod = tools(
+        chat_binary,
+        twitch=FakeTwitch(video=video_record(duration="0h1m0s")),
+        downloader=FakeDownloader(None, AssertionError("not used")),
+    )
+
+    first = analyze_vod(
+        VIDEO_ID,
+        data_dir=data,
+        artifacts_dir=tmp_path / "artifacts",
+        tools=sixty_vod,
+        lexicon=lexicon,
+        video_file=sixty,
+        clock=lambda: NOW,
+    )
+    assert first.candidates  # the correct file analyzed fine
+
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=data,
+            artifacts_dir=tmp_path / "artifacts",
+            tools=sixty_vod,
+            lexicon=lexicon,
+            video_file=sixty_three,  # ingest skips the conversion: audio is cached
+            clock=lambda: NOW,
+        )
+
+    assert excinfo.value.code == "video_mismatch"
+    from autoclipper.ingest.catalog import read_catalog
+    from autoclipper.ingest.media import normalized_audio_path
+
+    assert normalized_audio_path(data, VIDEO_ID).is_file()  # the earlier audio survives
+    audio = read_catalog(data)[("audio", VIDEO_ID)]
+    assert audio.status == "ok"
+
+
 def test_a_local_video_the_probe_cannot_read_is_invalid(
     tmp_path: Path, chat_binary: Path, lexicon: Lexicon
 ) -> None:
