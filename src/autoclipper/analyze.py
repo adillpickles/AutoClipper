@@ -7,7 +7,8 @@ analyze`` writes and the API will return (#45):
 1. **Ingest** (`ingest_vod`): metadata, the viewer-clip snapshot, chat and audio; resumable,
    recorded in the catalog. A video file the user already has (`video_file`) replaces the
    audio download, and its length is checked against the VOD's with the contract's
-   ``video_mismatch`` bound (2 s, § 3.1) — stricter than ingest's own audio check.
+   ``video_mismatch`` bound (2 s, § 3.1) — stricter than ingest's own audio check, whose
+   audio the rejection discards.
 2. **Inputs as warnings** (§ 3.5): a signal that couldn't be obtained degrades the result
    with `chat_missing`, `audio_missing` or `viewer_clips_missing` (the clip list being
    incomplete adds `viewer_clips_incomplete`), and Twitch having muted part of the audio
@@ -20,7 +21,10 @@ analyze`` writes and the API will return (#45):
    run (`model_dir`, `load_scorer`). The composite default degrades to whatever families
    arrived — ``loudness`` without chat, ``chat_spike`` without audio — and with neither,
    only viewer-clip moments rank, recorded as the ``no_signals`` scorer. A named
-   single-signal baseline or a trained model that can't run fails with `no_usable_signals`.
+   single-signal baseline or a trained model that can't run fails with the § 3.5 codes
+   (`upstream_unavailable` when its input failed transiently, else `no_usable_signals`).
+   With neither family and no viewer-clip moment, no scorer — ``random`` included — has
+   anything to rank, and the § 3.5 precedence decides the code.
 5. **Candidates** (`generate_candidates`): ranked, merged with the snapshot's moments.
 
 How long each stage took is logged. The result JSON is written atomically to
@@ -41,6 +45,7 @@ from typing import Final, Literal
 import polars as pl
 
 from autoclipper.analysis import (
+    MAX_CANDIDATES,
     AnalysisResult,
     AnalysisWarning,
     Candidate,
@@ -52,9 +57,17 @@ from autoclipper.features.audio import compute_audio_features
 from autoclipper.features.chat import FEATURE_COLUMNS as CHAT_FEATURE_COLUMNS
 from autoclipper.features.chat import Lexicon, compute_chat_features
 from autoclipper.ffmpeg import FFmpegError, MediaInfo, Runner, probe
-from autoclipper.ingest.catalog import CatalogEntry, read_catalog
+from autoclipper.ingest.catalog import CatalogEntry, read_catalog, record
 from autoclipper.ingest.media import normalized_audio_path, validate_video_id
-from autoclipper.ingest.vod import IngestTools, chat_path, clips_dir, ingest_vod, read_vod
+from autoclipper.ingest.vod import (
+    LOCAL_FILE_TOOL,
+    STAGE_VERSION,
+    IngestTools,
+    chat_path,
+    clips_dir,
+    ingest_vod,
+    read_vod,
+)
 from autoclipper.labels.moments import merge_clips_into_moments
 from autoclipper.labels.windows import make_windows
 from autoclipper.models.base import Scorer, ScorerError, load_scorer, make_scorer
@@ -163,6 +176,7 @@ def analyze_vod(
     if video_info is not None and abs(video_info.duration_s - vod.duration_s) > (
         VIDEO_MISMATCH_TOLERANCE_S
     ):
+        _invalidate_audio_from(video_file, catalog, video_id, data_dir, tools.clock)
         raise AnalyzeError(
             "video_mismatch",
             f"{video_file} is {video_info.duration_s:.1f} s long but the VOD is "
@@ -249,19 +263,26 @@ def analyze_vod(
         if audio_ok
         else None
     )
-    scored = _timed(
-        "scoring",
-        lambda: _score_windows(
-            windows,
-            chat_features,
-            audio_features,
-            baseline=baseline,
-            model_dir=model_dir,
-        ),
-    )
-    if scored is None:  # neither signal family arrived
-        if not moments:
-            raise _nothing_to_rank(catalog, video_id)
+    # § 3.5 precedence step 3, whatever scorer was chosen: with neither signal family and
+    # no viewer-clip moment, no scorer — random included — has anything to rank.
+    if chat_features is None and audio_features is None and not moments:
+        raise _nothing_to_rank(catalog, video_id)
+    try:
+        scored = _timed(
+            "scoring",
+            lambda: _score_windows(
+                windows,
+                chat_features,
+                audio_features,
+                baseline=baseline,
+                model_dir=model_dir,
+            ),
+        )
+    except _ScorerUnavailable as exc:
+        # A chosen scorer's inputs are missing; the code still follows § 3.5 (a transient
+        # fetch failure keeps upstream_unavailable's "try again later").
+        raise _nothing_to_rank(catalog, video_id, exc.reason) from None
+    if scored is None:  # neither signal family arrived, and moments exist
         # Viewer-clip moments alone rank, in stream order; the scorer field records that
         # no signal scored anything (a zero score everywhere would invent a peak at 0 s).
         scorer_info = ScorerInfo(kind="heuristic", name="no_signals")
@@ -408,6 +429,46 @@ def _with_window_bounds(scores: pl.DataFrame, windows: pl.DataFrame) -> pl.DataF
     return scores.join(windows.select("window_id", "start_s", "end_s"), on="window_id")
 
 
+class _ScorerUnavailable(Exception):
+    """A chosen scorer's inputs are missing; the caller classifies it per § 3.5."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _invalidate_audio_from(
+    video_file: Path | None,
+    catalog: dict[tuple[str, str], CatalogEntry],
+    video_id: str,
+    data_dir: Path,
+    clock: Callable[[], datetime],
+) -> None:
+    """Discard audio a rejected --video file produced, so a later run re-fetches it.
+
+    Ingest converts the file's audio before the 2 s mismatch check runs (ingest's own check
+    is coarser). Without this, the wrong file's audio would sit cataloged ``ok`` and a
+    later run without ``--video`` would silently use it. Ingest does the same for its own
+    ``MediaLengthError``.
+    """
+    if video_file is None:
+        return
+    audio = catalog.get(("audio", video_id))
+    if audio is None or audio.status != "ok" or audio.tool != LOCAL_FILE_TOOL:
+        return  # the file's audio never became this run's audio
+    wav = normalized_audio_path(data_dir, video_id)
+    wav.unlink(missing_ok=True)
+    error = (
+        f"the provided file's audio was discarded: {video_file.name} doesn't match the VOD's "
+        "length, so it isn't this VOD"
+    )
+    record(
+        data_dir,
+        CatalogEntry("audio", video_id, "failed", LOCAL_FILE_TOOL, STAGE_VERSION, clock(), error),
+    )
+    log.info("ingest audio invalidated video_id=%s reason=video_mismatch", video_id)
+
+
 def _score_windows(
     windows: pl.DataFrame,
     chat_features: pl.DataFrame | None,
@@ -419,7 +480,8 @@ def _score_windows(
     """Score the windows with a scorer that can run, or None when no signal arrived.
 
     Raises:
-        AnalyzeError: A named scorer's required features are missing (`no_usable_signals`).
+        _ScorerUnavailable: A named scorer's required features are missing; the caller
+            classifies it per § 3.5.
         ScorerError: `baseline` isn't a known scorer name, or `model_dir` isn't a saved run.
     """
     features = _feature_frame(chat_features, audio_features)
@@ -429,15 +491,14 @@ def _score_windows(
         try:
             scores = scorer.score(scoreable)
         except ScorerError as exc:
-            raise AnalyzeError(
-                "no_usable_signals",
-                f"the {scorer.name} model can't score this VOD: {exc}",
+            raise _ScorerUnavailable(
+                f"the {scorer.name} model can't score this VOD: {exc}"
             ) from None
         return _with_window_bounds(scores, windows), scorer, model_dir.name
     name = baseline
     if name == ChatLoudness.name:
         # The composite default degrades to whichever family arrived; a named scorer runs
-        # as named and fails with no_usable_signals when its signal is missing.
+        # as named and fails with the § 3.5 codes when its signal is missing.
         if chat_features is None and audio_features is None:
             return None
         if chat_features is None:
@@ -448,9 +509,7 @@ def _score_windows(
     try:
         scores = scorer.score(scoreable)
     except ScorerError as exc:
-        raise AnalyzeError(
-            "no_usable_signals", f"the {scorer.name} scorer can't score this VOD: {exc}"
-        ) from None
+        raise _ScorerUnavailable(f"the {scorer.name} scorer can't score this VOD: {exc}") from None
     return _with_window_bounds(scores, windows), scorer, None
 
 
@@ -458,12 +517,13 @@ def _moments_only(moments: Sequence[MomentInput], duration_s: float) -> list[Can
     """Viewer-clip moments as candidates in stream order, when no signal scored anything.
 
     Each keeps its own span, clamped to the VOD; a moment that no longer fits is dropped.
+    At most `MAX_CANDIDATES` rank (the first ones in stream order).
     """
     kept = [
         moment
         for moment in sorted(moments, key=lambda m: (m.start_s, m.moment_id))
         if moment.start_s < duration_s and min(moment.end_s, duration_s) > moment.start_s
-    ]
+    ][:MAX_CANDIDATES]
     return [
         Candidate(
             candidate_id=f"c{rank:03d}",
@@ -479,19 +539,31 @@ def _moments_only(moments: Sequence[MomentInput], duration_s: float) -> list[Can
     ]
 
 
-def _nothing_to_rank(catalog: dict[tuple[str, str], CatalogEntry], video_id: str) -> AnalyzeError:
-    """The § 3.5 failure when no signal and no viewer clip arrived (precedence step 3)."""
+def _nothing_to_rank(
+    catalog: dict[tuple[str, str], CatalogEntry],
+    video_id: str,
+    scorer_reason: str | None = None,
+) -> AnalyzeError:
+    """The § 3.5 failure when nothing can be ranked (precedence step 3).
+
+    `scorer_reason` names what a chosen scorer was missing; either way the code follows the
+    contract: a step that failed while fetching (tool and network errors count as
+    transient, and when unsure, treat as transient) keeps `upstream_unavailable`'s "trying
+    again later may help".
+    """
     transient = [
         step
         for step in INPUT_STEPS
         if (entry := catalog.get((step, video_id))) is not None and entry.status == "failed"
     ]
     if transient:
+        trail = f"{', '.join(transient)} failed while being fetched"
+        reason = scorer_reason if scorer_reason is not None else "chat and audio are both missing"
         return AnalyzeError(
-            "upstream_unavailable",
-            "chat and audio are both missing and "
-            f"{', '.join(transient)} failed while being fetched; trying again later may work",
+            "upstream_unavailable", f"{reason} and {trail}; trying again later may work"
         )
+    if scorer_reason is not None:
+        return AnalyzeError("no_usable_signals", scorer_reason)
     return AnalyzeError(
         "no_usable_signals",
         "nothing to rank: chat and audio are both missing and no viewer clip has a VOD position",

@@ -422,6 +422,107 @@ def test_the_no_usable_signals_precedence() -> None:
     failed = {**gone, ("audio", VIDEO_ID): entry("failed")}
     assert _nothing_to_rank(failed, VIDEO_ID).code == "upstream_unavailable"
 
+    # A chosen scorer's missing inputs follow the same rule, whatever else arrived.
+    scorer = _nothing_to_rank(
+        failed, VIDEO_ID, scorer_reason="the chat_spike scorer can't score this VOD"
+    )
+    assert scorer.code == "upstream_unavailable"
+    assert "chat_spike" in scorer.message
+    config = _nothing_to_rank(
+        gone, VIDEO_ID, scorer_reason="the chat_spike scorer can't score this VOD"
+    )
+    assert config.code == "no_usable_signals"
+
+
+def test_a_named_scorer_without_its_signal_fails_with_the_precedence_codes(
+    tmp_path: Path, chat_binary: Path, audio_source: Path, lexicon: Lexicon
+) -> None:
+    """A named single-signal scorer doesn't degrade; its failure carries § 3.5's code:
+    upstream when its input failed transiently, so a retry may help."""
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=tmp_path / "data",
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(
+                chat_binary,
+                chat=FakeChatTool(returncode=1),  # chat failed: a retry may fix it
+                downloader=FakeDownloader(audio_source),
+            ),
+            lexicon=lexicon,
+            baseline="chat_spike",
+            clock=lambda: NOW,
+        )
+
+    assert excinfo.value.code == "upstream_unavailable"
+    assert "chat_spike" in excinfo.value.message
+    assert "trying again later may work" in excinfo.value.message
+
+
+def test_the_random_scorer_cannot_rank_an_inputless_vod(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    """No chat, no audio, no viewer clips: nothing to rank for any scorer, random included."""
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=tmp_path / "data",
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(
+                chat_binary,
+                twitch=FakeTwitch(clips=[]),
+                chat=FakeChatTool(returncode=1),
+                downloader=FakeDownloader(None, RuntimeError("offline")),
+            ),
+            lexicon=lexicon,
+            baseline="random",
+            clock=lambda: NOW,
+        )
+
+    assert excinfo.value.code == "upstream_unavailable"
+
+
+def test_moments_only_results_respect_the_candidate_limit(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    """More moments than the contract's 200 candidates: the first 200 in stream order."""
+    from autoclipper.analysis import MAX_CANDIDATES
+
+    many_clips = [
+        {
+            "id": f"ManyClip{i:03d}",
+            "broadcaster_id": BROADCASTER_ID,
+            "creator_id": f"{9400000000 + i}",
+            "video_id": VIDEO_ID,
+            "game_id": "509658",
+            "language": "en",
+            "title": f"clip {i}",
+            "view_count": 1,
+            "created_at": (VOD_CREATED + timedelta(minutes=i)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "duration": 1.0,
+            "vod_offset": 15.0 * i,
+            "is_featured": False,
+        }
+        for i in range(MAX_CANDIDATES + 20)
+    ]
+    result = analyze_vod(
+        VIDEO_ID,
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        tools=tools(
+            chat_binary,
+            twitch=FakeTwitch(clips=many_clips),
+            chat=FakeChatTool(returncode=1),
+            downloader=FakeDownloader(None, RuntimeError("offline")),
+        ),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    assert result.scorer.name == "no_signals"
+    assert len(result.candidates) == MAX_CANDIDATES
+    assert [candidate.rank for candidate in result.candidates] == list(range(1, MAX_CANDIDATES + 1))
+
 
 # --- The VOD itself (§ 3.5 step 1) ----------------------------------------------------------------
 
@@ -506,6 +607,41 @@ def test_a_local_video_of_another_length_is_video_mismatch(
 
     assert excinfo.value.code == "video_mismatch"
     assert "is 60.0 s long but the VOD is 3600.0 s" in excinfo.value.message
+
+
+@pytest.mark.ffmpeg
+def test_a_rejected_local_video_leaves_no_audio_behind(
+    tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path], lexicon: Lexicon
+) -> None:
+    """A --video file inside ingest's own length tolerance but outside the contract's 2 s:
+    its converted audio is discarded and the audio step is failed, so a later run without
+    --video re-fetches instead of silently using the wrong file's audio."""
+    data = tmp_path / "data"
+    sixty_three = make_test_media("sixty-three.mp4", duration_s=63.0)
+
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=data,
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(
+                chat_binary,
+                twitch=FakeTwitch(video=video_record(duration="0h1m0s")),
+                downloader=FakeDownloader(None, AssertionError("not used")),
+            ),
+            lexicon=lexicon,
+            video_file=sixty_three,
+            clock=lambda: NOW,
+        )
+
+    assert excinfo.value.code == "video_mismatch"
+    from autoclipper.ingest.catalog import read_catalog
+    from autoclipper.ingest.media import normalized_audio_path
+
+    assert not normalized_audio_path(data, VIDEO_ID).is_file()
+    audio = read_catalog(data)[("audio", VIDEO_ID)]
+    assert audio.status == "failed"
+    assert "discarded" in (audio.error or "")
 
 
 def test_a_local_video_the_probe_cannot_read_is_invalid(
@@ -741,6 +877,28 @@ def test_the_cli_exits_2_when_the_metadata_keeps_failing(
 
     assert result.exit_code == ExitCode.EXTERNAL_FAILURE
     assert "upstream_unavailable" in result.output
+
+
+def test_the_cli_reports_unexpected_failures_as_internal_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bug in the pipeline exits 3 with a generic message (§ 4.6); details go to the log."""
+    monkeypatch.setenv("AUTOCLIPPER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AUTOCLIPPER_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("AUTOCLIPPER_CHAT_HASH_SALT", "test-salt")
+
+    def broken(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("a bug")
+
+    monkeypatch.setattr("autoclipper.analyze.analyze_vod", broken)
+
+    result = runner.invoke(app, ["analyze", VIDEO_ID, "--lexicon", str(LEXICON_PATH)])
+
+    assert result.exit_code == ExitCode.INTERNAL_ERROR
+    # The message the user reads is generic; the traceback only lives in the log lines.
+    error_lines = [line for line in result.output.splitlines() if "internal_error" in line]
+    assert error_lines
+    assert all("a bug" not in line for line in error_lines)
 
 
 # --- Live -----------------------------------------------------------------------------------------

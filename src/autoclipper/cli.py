@@ -6,6 +6,7 @@ Subcommands are verbs (``ingest``, ``export``, ...) registered on `app` with ``@
 """
 
 import json
+import logging
 import re
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -56,6 +57,8 @@ class ExitCode(IntEnum):
     USER_ERROR = 1
     # A network call or external tool (Twitch API, FFmpeg, TwitchDownloaderCLI) failed.
     EXTERNAL_FAILURE = 2
+    # A bug (api-contract.md § 4.6): unexpected exceptions from the analyze pipeline.
+    INTERNAL_ERROR = 3
 
 
 class _RootGroup(TyperGroup):
@@ -581,6 +584,15 @@ def analyze(
     except ScorerError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
+    except Exception as exc:  # a bug: details to the log, message generic (§ 4.6)
+        log = logging.getLogger(__name__)
+        log.exception("analyze failed unexpectedly video_id=%s", video_id, exc_info=exc)
+        typer.echo(
+            "Error: internal_error: something went wrong that shouldn't have; "
+            "the log has the details",
+            err=True,
+        )
+        raise typer.Exit(ExitCode.INTERNAL_ERROR) from None
     finally:
         if helix is not None:
             helix.close()
