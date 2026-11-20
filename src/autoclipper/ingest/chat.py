@@ -34,6 +34,7 @@ content or tool output (which may contain chat content).
 """
 
 import contextlib
+import ctypes
 import json
 import logging
 import math
@@ -45,7 +46,7 @@ import subprocess
 import sys
 import unicodedata
 from collections import Counter
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import groupby
 from pathlib import Path
@@ -217,6 +218,10 @@ def chat_download_timeout_s(vod_duration_s: float | None) -> float:
 def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
     """Run ``args`` without a shell and with no stdin, and capture its output.
 
+    The child runs so that the whole tree can be ended at any time: on Windows it joins a
+    kill-on-close Job Object before its first instruction (see `_create_kill_on_close_job`);
+    elsewhere it leads its own process group. Nothing the tool started outlives the call.
+
     Args:
         args: The command as an argument list; ``args[0]`` names or paths the program.
         timeout_s: Seconds the command may run. When they elapse, the process — with any
@@ -224,68 +229,248 @@ def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> Comma
             for as long as the command runs; callers that can should always give a bound.
 
     Raises:
-        OSError: The program could not be started.
+        OSError: The program could not be started (or, on Windows, could not be placed in
+            its job; it was killed before it ran).
         ChatDownloadError: ``timeout_s`` elapsed before the command finished.
         KeyboardInterrupt: The caller was interrupted; the process tree was ended first
-            (it runs in its own process group, so the interrupt wouldn't have reached it).
+            (POSIX: it runs in its own group, so the terminal's interrupt didn't reach it).
     """
-    process = subprocess.Popen(
-        list(args),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        # The child leads its own process group (POSIX), so a timeout or an interrupt can
-        # end the whole tree with one killpg. The flip side: a terminal's Ctrl+C no longer
-        # reaches the child, so run_command ends the tree itself on KeyboardInterrupt.
-        process_group=0 if sys.platform != "win32" else None,
-    )
+    job: object | None = None
     try:
-        stdout, stderr = process.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        _end_process_tree(process)
-        # Reap the killed process so nothing of it is left running when the error is raised.
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            process.communicate(timeout=REAP_TIMEOUT_S)
-        raise ChatDownloadError(
-            f"{Path(args[0]).name} did not finish within {timeout_s:g} s and was killed"
-        ) from None
-    except KeyboardInterrupt:
-        _end_process_tree(process)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            process.communicate(timeout=REAP_TIMEOUT_S)
-        raise
-    assert process.returncode is not None  # communicate() waited for the process
-    return CommandResult(process.returncode, stdout, stderr)
+        if sys.platform == "win32":
+            job = _create_kill_on_close_job()
+            process = subprocess.Popen(
+                list(args),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                # Suspended until it is in the job, so it can't leave a process outside it.
+                creationflags=_CREATE_SUSPENDED,
+            )
+            try:
+                _join_job(job, process.pid)
+            except OSError:
+                process.kill()  # still suspended: it never ran
+                raise
+            _resume_suspended_process(process.pid)
+        else:
+            process = subprocess.Popen(
+                list(args),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                # The child leads its own process group, so one killpg ends the whole tree.
+                process_group=0,
+            )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            _end_process_tree(process, job)
+            _reap(process)
+            raise ChatDownloadError(
+                f"{Path(args[0]).name} did not finish within {timeout_s:g} s and was killed"
+            ) from None
+        except KeyboardInterrupt:
+            # The child runs in its own group, so the terminal's Ctrl+C didn't reach it:
+            # end the tree here, then let the caller's interrupt handling continue.
+            _end_process_tree(process, job)
+            _reap(process)
+            raise
+        assert process.returncode is not None  # communicate() waited for the process
+        return CommandResult(process.returncode, stdout, stderr)
+    finally:
+        if job is not None:
+            # Kill-on-close: this also ends anything a normally-finishing tool left running.
+            _CloseHandle(job)
 
 
-def _end_process_tree(process: subprocess.Popen[str]) -> None:
-    """End a process and any processes it started, best effort, so a stalled tool can't linger.
+def _end_process_tree(process: subprocess.Popen[str], job: object | None) -> None:
+    """End a process and any processes it started, so a stalled tool can't linger.
 
-    On Windows the whole tree is ended with ``taskkill``. Elsewhere the child runs as its own
-    process-group leader (`run_command` starts it that way), so ``killpg`` ends it together
-    with any processes it started; the group check only guards against killing this
-    process's own group for a child started some other way.
+    The identity comes from launch time, not from a lookup that can fail: on Windows the job
+    still holds processes the tool left behind after exiting (a pid tree walk would find no
+    root to walk from), and on POSIX the group a dead leader started survives it, so its pid
+    still names it.
     """
     if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            check=False,
-        )
+        assert job is not None  # run_command only spawns on Windows inside a job
+        _TerminateJobObject(job, 1)
     else:
-        try:
-            group = os.getpgid(process.pid)
-        except ProcessLookupError:
-            group = None
-        if group is not None and group != os.getpgrp():
+        if process.pid != os.getpgrp():  # always true for our own group leader children
             with contextlib.suppress(OSError):
-                os.killpg(group, signal.SIGKILL)
+                os.killpg(process.pid, signal.SIGKILL)
     with contextlib.suppress(OSError):  # it may already be gone
         process.kill()
+
+
+def _reap(process: subprocess.Popen[str]) -> None:
+    """Collect the killed process so nothing of it is left running when control returns."""
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.communicate(timeout=REAP_TIMEOUT_S)
+
+
+# --- Windows: Job Objects ------------------------------------------------------------------------
+#
+# ``taskkill /PID <pid> /T`` walks a live process tree; when the tool exits while a child it
+# started keeps running, the root is gone and the walk finds nothing. Every ``run_command``
+# child on Windows is therefore created suspended and placed in a Job Object with
+# kill-on-close before its first instruction, like ``scripts/run_pilot.py`` does for whole
+# ingests. Terminating the job ends every member; closing the handle (in run_command's
+# ``finally``) is the backstop that ends stragglers even if this process dies.
+
+if sys.platform == "win32":
+    from ctypes import wintypes
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    _CREATE_SUSPENDED: Final = 0x00000004
+    _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: Final = 9
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: Final = 0x00002000
+    _PROCESS_SET_QUOTA: Final = 0x0100
+    _PROCESS_TERMINATE: Final = 0x0001
+    _THREAD_SUSPEND_RESUME: Final = 0x0002
+    _TH32CS_SNAPTHREAD: Final = 0x00000004
+
+    class _IOCounters(ctypes.Structure):
+        _fields_ = [
+            (name, ctypes.c_ulonglong)
+            for name in (
+                "ReadOperations",
+                "WriteOperations",
+                "OtherOperations",
+                "ReadTransferCount",
+                "WriteTransferCount",
+                "OtherTransferCount",
+            )
+        ]
+
+    class _JobObjectBasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _JobObjectBasicLimitInformation),
+            ("IoInfo", _IOCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    class _ThreadEntry(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ThreadID", wintypes.DWORD),
+            ("th32OwnerProcessID", wintypes.DWORD),
+            ("tpBasePri", ctypes.c_long),
+            ("tpDeltaPri", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    def _fn(name: str, restype: object, *argtypes: object) -> Callable[..., object]:
+        function = getattr(_kernel32, name)
+        function.restype = restype
+        function.argtypes = argtypes
+        return function
+
+    _CreateJobObjectW = _fn("CreateJobObjectW", wintypes.HANDLE, ctypes.c_void_p, wintypes.LPCWSTR)
+    _SetInformationJobObject = _fn(
+        "SetInformationJobObject",
+        wintypes.BOOL,
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    _AssignProcessToJobObject = _fn(
+        "AssignProcessToJobObject", wintypes.BOOL, wintypes.HANDLE, wintypes.HANDLE
+    )
+    _TerminateJobObject = _fn("TerminateJobObject", wintypes.BOOL, wintypes.HANDLE, wintypes.UINT)
+    _OpenProcess = _fn(
+        "OpenProcess", wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD
+    )
+    _OpenThread = _fn("OpenThread", wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    _ResumeThread = _fn("ResumeThread", wintypes.DWORD, wintypes.HANDLE)
+    _CreateToolhelp32Snapshot = _fn(
+        "CreateToolhelp32Snapshot", wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD
+    )
+    _Thread32First = _fn(
+        "Thread32First", wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(_ThreadEntry)
+    )
+    _Thread32Next = _fn(
+        "Thread32Next", wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(_ThreadEntry)
+    )
+    _CloseHandle = _fn("CloseHandle", wintypes.BOOL, wintypes.HANDLE)
+
+    def _check(ok: object, what: str) -> None:
+        if not ok:
+            raise ctypes.WinError(ctypes.get_last_error(), what)
+
+    def _create_kill_on_close_job() -> object:
+        job = _CreateJobObjectW(None, None)
+        _check(job, "CreateJobObjectW")
+        limits = _ExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        ok = _SetInformationJobObject(
+            job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits)
+        )
+        if not ok:
+            error = ctypes.get_last_error()
+            _CloseHandle(job)
+            raise ctypes.WinError(error, "SetInformationJobObject")
+        return job
+
+    def _join_job(job: object, pid: int) -> None:
+        process = _OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
+        _check(process, "OpenProcess")
+        try:
+            _check(_AssignProcessToJobObject(job, process), "AssignProcessToJobObject")
+        finally:
+            _CloseHandle(process)
+
+    def _resume_suspended_process(pid: int) -> None:
+        """Resume the threads of a process created suspended (it has one)."""
+        snapshot = _CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+        if not snapshot:
+            raise ctypes.WinError(ctypes.get_last_error(), "CreateToolhelp32Snapshot")
+        resumed = 0
+        try:
+            entry = _ThreadEntry()
+            entry.dwSize = ctypes.sizeof(_ThreadEntry)
+            more = _Thread32First(snapshot, ctypes.byref(entry))
+            while more:
+                if entry.th32OwnerProcessID == pid:
+                    thread = _OpenThread(_THREAD_SUSPEND_RESUME, False, entry.th32ThreadID)
+                    _check(thread, "OpenThread")
+                    try:
+                        previous = _ResumeThread(thread)
+                        if previous == 0xFFFFFFFF:
+                            raise ctypes.WinError(ctypes.get_last_error(), "ResumeThread")
+                        resumed += previous != 0
+                    finally:
+                        _CloseHandle(thread)
+                more = _Thread32Next(snapshot, ctypes.byref(entry))
+        finally:
+            _CloseHandle(snapshot)
+        if not resumed:
+            raise OSError(f"no suspended thread of process {pid} to resume")
 
 
 def find_twitchdownloader(binary: str | Path | None = None) -> Path:

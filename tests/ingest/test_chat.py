@@ -5,8 +5,10 @@ import gzip
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -728,6 +730,30 @@ def test_run_command_kills_the_whole_process_tree(tmp_path: Path) -> None:
     assert _ended_within(grandchild_pid)
 
 
+def test_run_command_ends_the_tree_when_the_tool_exits_first(tmp_path: Path) -> None:
+    """The tool exits while a child it started still holds the output pipes open, so the
+    call can't finish; the kill must still reach that child (a pid tree walk has no root)."""
+    pids_file = tmp_path / "pids"
+    grandchild = "import time\ntime.sleep(60)\n"
+    # The child spawns the grandchild (which inherits the pipes), records both pids and exits.
+    child = (
+        "import os, subprocess, sys\n"
+        "grand = subprocess.Popen([sys.executable, '-c', " + repr(grandchild) + "])\n"
+        "open(" + repr(str(pids_file)) + ", 'w').write(str(os.getpid()) + ',' + str(grand.pid))\n"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(ChatDownloadError, match="did not finish within 1 s"):
+        run_command([sys.executable, "-c", child], timeout_s=1.0)
+
+    assert time.monotonic() - started < 30
+    child_pid, grandchild_pid = (
+        int(part) for part in pids_file.read_text(encoding="ascii").split(",")
+    )
+    assert _ended_within(child_pid)
+    assert _ended_within(grandchild_pid)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="sends a POSIX signal to the parent")
 def test_run_command_kills_the_child_on_keyboard_interrupt(tmp_path: Path) -> None:
     """The child's own group keeps a terminal's Ctrl+C from reaching it, so run_command
@@ -748,3 +774,40 @@ def test_run_command_kills_the_child_on_keyboard_interrupt(tmp_path: Path) -> No
 
     pid = int(pid_file.read_text(encoding="ascii"))
     assert _ended_within(pid)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sends a POSIX signal to the parent")
+def test_run_command_ends_the_tree_when_interrupted_after_the_tool_exits(
+    tmp_path: Path,
+) -> None:
+    """An interrupt after the tool exited (leaving a pipe-holding grandchild) must still
+    end the grandchild: communicate() may have reaped the tool, so the group can only be
+    named by the id remembered at launch, not looked up then."""
+    pids_file = tmp_path / "pids"
+    grandchild = "import time\ntime.sleep(60)\n"
+    child = (
+        "import os, subprocess, sys\n"
+        "grand = subprocess.Popen([sys.executable, '-c', " + repr(grandchild) + "])\n"
+        "open(" + repr(str(pids_file)) + ", 'w').write(str(os.getpid()) + ',' + str(grand.pid))\n"
+    )
+    started = time.monotonic()
+
+    def interrupt() -> None:
+        deadline = time.monotonic() + 15.0
+        while not pids_file.is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.5)  # the tool has exited by now; the grandchild holds the pipes
+        os.kill(os.getpid(), signal.SIGINT)
+
+    thread = threading.Thread(target=interrupt, daemon=True)
+    thread.start()
+    with pytest.raises(KeyboardInterrupt):
+        run_command([sys.executable, "-c", child], timeout_s=60.0)
+    thread.join(timeout=20)
+
+    assert time.monotonic() - started < 30
+    child_pid, grandchild_pid = (
+        int(part) for part in pids_file.read_text(encoding="ascii").split(",")
+    )
+    assert _ended_within(child_pid)
+    assert _ended_within(grandchild_pid)
