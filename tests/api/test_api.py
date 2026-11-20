@@ -1464,6 +1464,7 @@ def test_a_real_pipeline_job_from_the_api(
     chat_binary = tmp_path / "bin" / "TwitchDownloaderCLI.exe"
     chat_binary.parent.mkdir(parents=True)
     chat_binary.write_bytes(b"")
+    chat_binary.chmod(0o755)  # shutil.which requires the execute bit on POSIX
     audio = make_test_media("source.m4a", duration_s=3.0, video_size=None)
     credentials = TwitchCredentials(SecretStr("fake-client-id"), SecretStr("fake-client-secret"))
     clock = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
@@ -1554,6 +1555,7 @@ def test_an_expired_vod_fails_where_the_audio_stopped_and_keeps_found_warnings(
     chat_binary = tmp_path / "bin" / "TwitchDownloaderCLI.exe"
     chat_binary.parent.mkdir(parents=True)
     chat_binary.write_bytes(b"")
+    chat_binary.chmod(0o755)  # shutil.which requires the execute bit on POSIX
     credentials = TwitchCredentials(SecretStr("fake-client-id"), SecretStr("fake-client-secret"))
     clock = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
 
