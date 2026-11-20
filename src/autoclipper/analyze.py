@@ -1,0 +1,546 @@
+"""The analyze pipeline: one VOD in, ranked candidate moments out (#44).
+
+`analyze_vod` runs everything for one VOD and returns — and writes — the contract's
+`AnalysisResult` (docs/architecture/api-contract.md § 4), the same JSON ``autoclipper
+analyze`` writes and the API will return (#45):
+
+1. **Ingest** (`ingest_vod`): metadata, the viewer-clip snapshot, chat and audio; resumable,
+   recorded in the catalog. A video file the user already has (`video_file`) replaces the
+   audio download, and its length is checked against the VOD's with the contract's
+   ``video_mismatch`` bound (2 s, § 3.1) — stricter than ingest's own audio check.
+2. **Inputs as warnings** (§ 3.5): a signal that couldn't be obtained degrades the result
+   with `chat_missing`, `audio_missing` or `viewer_clips_missing` (the clip list being
+   incomplete adds `viewer_clips_incomplete`), and Twitch having muted part of the audio
+   adds `audio_partly_muted`. The analysis carries on with what arrived. The VOD itself
+   being unresolvable, not a past broadcast, or a mismatched video file fails with the
+   contract's codes; nothing to rank fails with `no_usable_signals`, or
+   `upstream_unavailable` when a step failed transiently.
+3. **Features**: the VOD's windows, then its chat and audio features per window.
+4. **Scoring**: a baseline by name (`baseline`, default ``chat_loudness``) or a saved model
+   run (`model_dir`, `load_scorer`). The composite default degrades to whatever families
+   arrived — ``loudness`` without chat, ``chat_spike`` without audio — and with neither,
+   only viewer-clip moments rank, recorded as the ``no_signals`` scorer. A named
+   single-signal baseline or a trained model that can't run fails with `no_usable_signals`.
+5. **Candidates** (`generate_candidates`): ranked, merged with the snapshot's moments.
+
+How long each stage took is logged. The result JSON is written atomically to
+``<artifacts_dir>/analysis/<video_id>.json`` (or `out_path`), where ``autoclipper
+highlights`` (#71) and the frontend fixtures read it.
+"""
+
+import json
+import logging
+import math
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Final, Literal
+
+import polars as pl
+
+from autoclipper.analysis import (
+    AnalysisResult,
+    AnalysisWarning,
+    Candidate,
+    ScorerInfo,
+    VodSummary,
+)
+from autoclipper.features.audio import FEATURE_COLUMNS as AUDIO_FEATURE_COLUMNS
+from autoclipper.features.audio import compute_audio_features
+from autoclipper.features.chat import FEATURE_COLUMNS as CHAT_FEATURE_COLUMNS
+from autoclipper.features.chat import Lexicon, compute_chat_features
+from autoclipper.ffmpeg import FFmpegError, MediaInfo, Runner, probe
+from autoclipper.ingest.catalog import CatalogEntry, read_catalog
+from autoclipper.ingest.media import normalized_audio_path, validate_video_id
+from autoclipper.ingest.vod import IngestTools, chat_path, clips_dir, ingest_vod, read_vod
+from autoclipper.labels.moments import merge_clips_into_moments
+from autoclipper.labels.windows import make_windows
+from autoclipper.models.base import Scorer, ScorerError, load_scorer, make_scorer
+from autoclipper.models.baselines import ChatLoudness, ChatSpike, Loudness
+from autoclipper.models.candidates import MomentInput, generate_candidates
+
+log = logging.getLogger(__name__)
+
+DEFAULT_SCORER: Final = "chat_loudness"
+"""The baseline used without --scorer or --model (the issue's chat + loudness default)."""
+
+VIDEO_MISMATCH_TOLERANCE_S: Final = 2.0
+"""How far a --video file's duration may be from the VOD's (api-contract.md § 3.1)."""
+
+type FailureCode = Literal[
+    "invalid_video_path",
+    "vod_unavailable",
+    "vod_unsupported",
+    "video_mismatch",
+    "no_usable_signals",
+    "upstream_unavailable",
+]
+"""The failure codes of api-contract.md § 3.5 the CLI maps to exit codes (§ 4.6)."""
+
+# The steps whose failure means an input was fetched but broke (§ 3.5: tool and network
+# errors count as transient, so their failure makes a rankless result upstream_unavailable).
+INPUT_STEPS: Final = ("clips", "chat", "audio")
+
+
+class AnalyzeError(Exception):
+    """The analysis can't produce a meaningful result (api-contract.md § 3.5).
+
+    Attributes:
+        code: The contract's failure code; § 4.6 maps it to a CLI exit code (1 or 2).
+        message: What to tell the user, without chat content.
+    """
+
+    def __init__(self, code: FailureCode, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+def analyze_vod(
+    video_id: str,
+    *,
+    data_dir: Path,
+    artifacts_dir: Path,
+    tools: IngestTools,
+    lexicon: Lexicon,
+    video_file: Path | None = None,
+    baseline: str = DEFAULT_SCORER,
+    model_dir: Path | None = None,
+    out_path: Path | None = None,
+    clock: Callable[[], datetime] = lambda: datetime.now(tz=UTC),
+) -> AnalysisResult:
+    """Run the whole pipeline for one VOD and write its ranked candidates.
+
+    Args:
+        video_id: The Twitch video ID.
+        data_dir: The data directory the ingest steps read and write (``Settings.data_dir``).
+        artifacts_dir: Where the result JSON goes (``analysis/<video_id>.json``).
+        tools: The API client, salt and downloaders for the ingest steps (`IngestTools`).
+        lexicon: From `load_lexicon`, for the chat features.
+        video_file: A video file of this VOD the user already has; its audio is used instead
+            of downloading, and it is checked like the API's ``video_path`` (§ 3.1).
+        baseline: A scorer name from `BASELINES`. The default degrades to the families that
+            arrived; a named single-signal baseline fails when its signal is missing.
+        model_dir: A saved model run (``artifacts/models/<run_id>``); overrides `baseline`.
+        out_path: Where to write the result JSON instead of the default under `artifacts_dir`.
+        clock: Returns the current time as an aware UTC datetime (``generated_at``).
+
+    Returns:
+        The written `AnalysisResult`, ranked candidates first.
+
+    Raises:
+        ValueError: `video_id` isn't a Twitch video ID.
+        AnalyzeError: The analysis failed with a contract code (§ 3.5); nothing is written.
+        ScorerError: `baseline` isn't a known scorer name, or `model_dir` isn't a saved run.
+    """
+    validate_video_id(video_id)
+    video_info = _probe_video_file(video_file, tools.runner)
+    _timed(
+        "ingest",
+        lambda: ingest_vod(video_id, data_dir=data_dir, tools=tools, media_file=video_file),
+    )
+    catalog = read_catalog(data_dir)
+    started = time.monotonic()
+
+    # --- The VOD itself (§ 3.5: resolving it is required) --------------------------------------
+    meta = catalog.get(("vod_meta", video_id))
+    if meta is not None and meta.status == "unavailable":
+        raise AnalyzeError("vod_unavailable", "Twitch has no published video with this ID")
+    if meta is None or meta.status != "ok":
+        detail = "no details" if meta is None else (meta.error or "no details")
+        raise AnalyzeError(
+            "upstream_unavailable", f"the VOD's metadata couldn't be fetched: {detail}"
+        )
+    vod = read_vod(data_dir, video_id)
+    if vod is None:  # the catalog says ok, so this row exists; a guard against corruption
+        raise AnalyzeError(
+            "upstream_unavailable", f"the VOD's row is missing from {data_dir / 'processed'}"
+        )
+    if vod.type != "archive":
+        raise AnalyzeError("vod_unsupported", f"the video is a {vod.type}, not a past broadcast")
+    if video_info is not None and abs(video_info.duration_s - vod.duration_s) > (
+        VIDEO_MISMATCH_TOLERANCE_S
+    ):
+        raise AnalyzeError(
+            "video_mismatch",
+            f"{video_file} is {video_info.duration_s:.1f} s long but the VOD is "
+            f"{vod.duration_s:.1f} s; pass a file of the whole VOD, starting at its start",
+        )
+
+    # --- Warnings: which signals arrived (§ 3.5) -----------------------------------------------
+    warnings: list[AnalysisWarning] = []
+    chat_entry = catalog.get(("chat", video_id))
+    chat_ok = chat_entry is not None and chat_entry.status == "ok"
+    if not chat_ok:
+        warnings.append(
+            AnalysisWarning(code="chat_missing", message=_missing_reason("chat", chat_entry))
+        )
+    audio_entry = catalog.get(("audio", video_id))
+    audio_ok = audio_entry is not None and audio_entry.status == "ok"
+    if not audio_ok:
+        warnings.append(
+            AnalysisWarning(code="audio_missing", message=_missing_reason("audio", audio_entry))
+        )
+    if vod.muted_segments:
+        spans = ", ".join(f"{s.offset_s:.0f}s+{s.duration_s:.0f}s" for s in vod.muted_segments)
+        warnings.append(
+            AnalysisWarning(
+                code="audio_partly_muted",
+                message=f"Twitch muted part of the VOD's audio ({spans}); audio signals are "
+                "unreliable there",
+            )
+        )
+
+    snapshot = _read_snapshot(data_dir, video_id)
+    clips_entry = catalog.get(("clips", video_id))
+    clips_ok = clips_entry is not None and clips_entry.status == "ok" and snapshot is not None
+    moments: list[MomentInput] = []
+    n_viewer_clips_total: int | None = None
+    if clips_ok and snapshot is not None:
+        n_viewer_clips_total = int(
+            snapshot.clips.filter(
+                (pl.col("video_id") == video_id) & pl.col("vod_offset_s").is_not_null()
+            )["clip_id"].n_unique()
+        )
+        moments = _moments_of(snapshot.clips, video_id)
+        incomplete = snapshot.manifest.get("complete") is False or bool(
+            snapshot.manifest.get("saturated_ranges")
+        )
+        if incomplete:
+            warnings.append(
+                AnalysisWarning(
+                    code="viewer_clips_incomplete",
+                    message="the clip list hit a query limit, so some viewer clips may be missing",
+                )
+            )
+    else:
+        warnings.append(
+            AnalysisWarning(
+                code="viewer_clips_missing",
+                message=_missing_reason("the viewer clip list", clips_entry)
+                + "; no candidate is built from viewer clips",
+            )
+        )
+
+    # --- Features and scoring ------------------------------------------------------------------
+    windows = _timed(
+        "windows",
+        lambda: make_windows(
+            video_id, vod.duration_s, tuple((s.offset_s, s.duration_s) for s in vod.muted_segments)
+        ),
+    )
+    chat_features = (
+        _timed(
+            "chat_features",
+            lambda: compute_chat_features(
+                windows, pl.read_parquet(chat_path(data_dir, video_id)), lexicon=lexicon
+            ),
+        )
+        if chat_ok
+        else None
+    )
+    audio_features = (
+        _timed(
+            "audio_features",
+            lambda: compute_audio_features(windows, normalized_audio_path(data_dir, video_id)),
+        )
+        if audio_ok
+        else None
+    )
+    scored = _timed(
+        "scoring",
+        lambda: _score_windows(
+            windows,
+            chat_features,
+            audio_features,
+            baseline=baseline,
+            model_dir=model_dir,
+        ),
+    )
+    if scored is None:  # neither signal family arrived
+        if not moments:
+            raise _nothing_to_rank(catalog, video_id)
+        # Viewer-clip moments alone rank, in stream order; the scorer field records that
+        # no signal scored anything (a zero score everywhere would invent a peak at 0 s).
+        scorer_info = ScorerInfo(kind="heuristic", name="no_signals")
+        candidates = _timed("candidates", lambda: _moments_only(moments, vod.duration_s))
+    else:
+        scores, scorer, run_id = scored
+        scorer_info = ScorerInfo(kind=scorer.kind, name=scorer.name, run_id=run_id)
+        features = _feature_frame(chat_features, audio_features)
+        candidates = _timed(
+            "candidates",
+            lambda: generate_candidates(
+                scores, duration_s=vod.duration_s, features=features, moments=moments
+            ),
+        )
+    result = AnalysisResult(
+        generated_at=clock(),
+        vod=VodSummary(
+            video_id=video_id,
+            title=vod.title,
+            broadcaster_id=vod.broadcaster_id,
+            broadcaster_display_name=_broadcaster_display_name(vod.broadcaster_id, tools),
+            duration_s=vod.duration_s,
+            created_at=vod.created_at,
+        ),
+        scorer=scorer_info,
+        n_viewer_clips_total=n_viewer_clips_total,
+        warnings=tuple(warnings),
+        candidates=tuple(candidates),
+    )
+    path = result_path(artifacts_dir, video_id, out_path)
+    _write_result(path, result)
+    log.info(
+        "analyzed video_id=%s candidates=%d warnings=%d elapsed_s=%.1f scorer=%s out=%s",
+        video_id,
+        len(result.candidates),
+        len(result.warnings),
+        time.monotonic() - started,
+        scorer_info.name,
+        path,
+    )
+    return result
+
+
+# --- Pieces -------------------------------------------------------------------------------------
+
+
+def _timed[T](stage: str, work: Callable[[], T]) -> T:
+    """Run `work` and log how long the pipeline stage took."""
+    started = time.monotonic()
+    result = work()
+    log.info("analyze stage=%s elapsed_s=%.1f", stage, time.monotonic() - started)
+    return result
+
+
+def _probe_video_file(video_file: Path | None, runner: Runner | None) -> MediaInfo | None:
+    """Check the optional local video file the way the API's request handler does (§ 3.1)."""
+    if video_file is None:
+        return None
+    if not video_file.is_file():
+        raise AnalyzeError("invalid_video_path", f"video file not found: {video_file}")
+    try:
+        info = probe(video_file, runner=runner)
+    except FFmpegError as exc:
+        raise AnalyzeError(
+            "invalid_video_path", f"{video_file} is not a readable video file: {exc}"
+        ) from None
+    if not info.video_streams or not math.isfinite(info.duration_s) or info.duration_s <= 0:
+        raise AnalyzeError(
+            "invalid_video_path", f"{video_file} has no video stream or no known duration"
+        )
+    return info
+
+
+def _missing_reason(what: str, entry: CatalogEntry | None) -> str:
+    """A `*_missing` warning message: what happened, and whether a retry may help."""
+    if entry is None or entry.status == "unavailable":
+        return f"{what} couldn't be obtained for this VOD; trying again later won't help"
+    detail = entry.error or "no details"
+    return f"{what} failed: {detail}; trying again later may help"
+
+
+@dataclass(frozen=True, slots=True)
+class _Snapshot:
+    """A VOD's clip snapshot: its Parquet rows and its manifest."""
+
+    clips: pl.DataFrame
+    manifest: dict[str, object]
+
+
+def _read_snapshot(data_dir: Path, video_id: str) -> _Snapshot | None:
+    """The VOD's latest readable clip snapshot (newest first), or None when there is none."""
+    manifests = sorted(clips_dir(data_dir).glob(f"{validate_video_id(video_id)}-*.json"))
+    for manifest in reversed(manifests):
+        parquet = manifest.with_suffix(".parquet")
+        if not parquet.is_file():
+            continue
+        try:
+            data: object = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            log.warning("clip snapshot manifest unreadable path=%s error=%s", manifest, exc)
+            continue
+        if not isinstance(data, dict):
+            log.warning("clip snapshot manifest malformed path=%s", manifest)
+            continue
+        return _Snapshot(pl.read_parquet(parquet), data)
+    return None
+
+
+def _moments_of(clips: pl.DataFrame, video_id: str) -> list[MomentInput]:
+    """The snapshot's viewer-clip moments of this VOD, for candidate generation."""
+    merged = merge_clips_into_moments(clips.filter(pl.col("video_id") == video_id))
+    skipped = merged.n_without_vod_offset + merged.n_without_video
+    if skipped:
+        log.info("clips without a VOD position skipped video_id=%s n=%d", video_id, skipped)
+    return [
+        MomentInput(
+            moment_id=row["moment_id"],
+            start_s=row["start_s"],
+            end_s=row["end_s"],
+            clip_ids=tuple(row["clip_ids"]),
+        )
+        for row in merged.moments.iter_rows(named=True)
+    ]
+
+
+def _feature_frame(
+    chat_features: pl.DataFrame | None, audio_features: pl.DataFrame | None
+) -> pl.DataFrame | None:
+    """The per-window features that arrived: both families joined, one, or None."""
+    if chat_features is None and audio_features is None:
+        return None
+    if chat_features is None:
+        assert audio_features is not None
+        return audio_features
+    if audio_features is None:
+        return chat_features
+    chat = chat_features.select("window_id", *CHAT_FEATURE_COLUMNS)
+    audio = audio_features.select("window_id", *AUDIO_FEATURE_COLUMNS)
+    return chat.join(audio, on="window_id", how="full", coalesce=True)
+
+
+def _with_window_bounds(scores: pl.DataFrame, windows: pl.DataFrame) -> pl.DataFrame:
+    """The scorer's window scores with the windows' times, as generate_candidates needs."""
+    return scores.join(windows.select("window_id", "start_s", "end_s"), on="window_id")
+
+
+def _score_windows(
+    windows: pl.DataFrame,
+    chat_features: pl.DataFrame | None,
+    audio_features: pl.DataFrame | None,
+    *,
+    baseline: str,
+    model_dir: Path | None,
+) -> tuple[pl.DataFrame, Scorer, str | None] | None:
+    """Score the windows with a scorer that can run, or None when no signal arrived.
+
+    Raises:
+        AnalyzeError: A named scorer's required features are missing (`no_usable_signals`).
+        ScorerError: `baseline` isn't a known scorer name, or `model_dir` isn't a saved run.
+    """
+    features = _feature_frame(chat_features, audio_features)
+    scoreable = features if features is not None else windows.select("window_id")
+    if model_dir is not None:
+        scorer = load_scorer(model_dir)
+        try:
+            scores = scorer.score(scoreable)
+        except ScorerError as exc:
+            raise AnalyzeError(
+                "no_usable_signals",
+                f"the {scorer.name} model can't score this VOD: {exc}",
+            ) from None
+        return _with_window_bounds(scores, windows), scorer, model_dir.name
+    name = baseline
+    if name == ChatLoudness.name:
+        # The composite default degrades to whichever family arrived; a named scorer runs
+        # as named and fails with no_usable_signals when its signal is missing.
+        if chat_features is None and audio_features is None:
+            return None
+        if chat_features is None:
+            name = Loudness.name
+        elif audio_features is None:
+            name = ChatSpike.name
+    scorer = make_scorer(name)
+    try:
+        scores = scorer.score(scoreable)
+    except ScorerError as exc:
+        raise AnalyzeError(
+            "no_usable_signals", f"the {scorer.name} scorer can't score this VOD: {exc}"
+        ) from None
+    return _with_window_bounds(scores, windows), scorer, None
+
+
+def _moments_only(moments: Sequence[MomentInput], duration_s: float) -> list[Candidate]:
+    """Viewer-clip moments as candidates in stream order, when no signal scored anything.
+
+    Each keeps its own span, clamped to the VOD; a moment that no longer fits is dropped.
+    """
+    kept = [
+        moment
+        for moment in sorted(moments, key=lambda m: (m.start_s, m.moment_id))
+        if moment.start_s < duration_s and min(moment.end_s, duration_s) > moment.start_s
+    ]
+    return [
+        Candidate(
+            candidate_id=f"c{rank:03d}",
+            rank=rank,
+            score=0.0,
+            start_s=float(moment.start_s),
+            end_s=float(min(moment.end_s, duration_s)),
+            source="viewer_clips",
+            n_viewer_clips=len(moment.clip_ids),
+            top_signals=(),
+        )
+        for rank, moment in enumerate(kept, start=1)
+    ]
+
+
+def _nothing_to_rank(catalog: dict[tuple[str, str], CatalogEntry], video_id: str) -> AnalyzeError:
+    """The § 3.5 failure when no signal and no viewer clip arrived (precedence step 3)."""
+    transient = [
+        step
+        for step in INPUT_STEPS
+        if (entry := catalog.get((step, video_id))) is not None and entry.status == "failed"
+    ]
+    if transient:
+        return AnalyzeError(
+            "upstream_unavailable",
+            "chat and audio are both missing and "
+            f"{', '.join(transient)} failed while being fetched; trying again later may work",
+        )
+    return AnalyzeError(
+        "no_usable_signals",
+        "nothing to rank: chat and audio are both missing and no viewer clip has a VOD position",
+    )
+
+
+def _broadcaster_display_name(broadcaster_id: str, tools: IngestTools) -> str:
+    """The channel's display name (Get Users by ID), or its ID when that can't be fetched."""
+    if tools.helix is None:
+        return broadcaster_id
+    try:
+        (user,) = tools.helix.get_users_by_id([broadcaster_id])
+    except Exception as exc:  # a header nicety; the analysis doesn't depend on it
+        log.warning(
+            "broadcaster display name unavailable broadcaster_id=%s error=%s: %s",
+            broadcaster_id,
+            type(exc).__name__,
+            exc,
+        )
+        return broadcaster_id
+    return user.display_name
+
+
+def result_path(artifacts_dir: Path, video_id: str, out_path: Path | None = None) -> Path:
+    """Where an analysis JSON goes: `out_path`, or ``<artifacts_dir>/analysis/<video_id>.json``."""
+    return (
+        out_path
+        if out_path is not None
+        else artifacts_dir / "analysis" / f"{validate_video_id(video_id)}.json"
+    )
+
+
+def _write_result(path: Path, result: AnalysisResult) -> None:
+    """Write the result JSON atomically, so a reader never sees a partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.part")
+    try:
+        temp.write_text(result.model_dump_json(indent=2) + "\n", encoding="utf-8", newline="\n")
+        temp.replace(path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+__all__ = [
+    "DEFAULT_SCORER",
+    "VIDEO_MISMATCH_TOLERANCE_S",
+    "AnalyzeError",
+    "FailureCode",
+    "analyze_vod",
+    "result_path",
+]

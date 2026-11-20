@@ -1,0 +1,771 @@
+"""Tests for the analyze pipeline (#44): ingest → windows → features → scoring → candidates.
+
+The ingest steps run against the same fakes as ``tests/ingest/test_vod.py`` (a fake Helix
+transport, a fake TwitchDownloaderCLI and a fake downloader), and the synthetic dataset
+covers the post-ingest stages end to end on real (generated) data.
+"""
+
+import json
+import os
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import httpx
+import polars as pl
+import pytest
+from pydantic import SecretStr
+from typer.testing import CliRunner
+
+from autoclipper.analysis import AnalysisResult, ScorerInfo, VodSummary, rank_key
+from autoclipper.analyze import AnalyzeError, analyze_vod, result_path
+from autoclipper.cli import ExitCode, app
+from autoclipper.config import TwitchCredentials
+from autoclipper.features.chat import Lexicon, load_lexicon
+from autoclipper.ingest.catalog import CatalogEntry, Status
+from autoclipper.ingest.chat import PINNED_TOOL_VERSION, CommandResult
+from autoclipper.ingest.media import DownloadedMedia, DownloadRequest
+from autoclipper.ingest.twitch_api import HelixClient
+from autoclipper.ingest.vod import IngestTools
+from autoclipper.synthetic import generate_dataset
+
+FIXTURES = Path(__file__).parents[1] / "ingest" / "fixtures"
+LEXICON_PATH = Path(__file__).parents[2] / "configs" / "lexicon.yaml"
+VIDEO_ID = "9000000100"  # the chat fixture's VOD
+BROADCASTER_ID = "9000000000"
+SALT = SecretStr("fake-salt-5b1e")
+VOD_CREATED = datetime(2026, 10, 1, 18, 0, 0, tzinfo=UTC)
+NOW = datetime(2026, 10, 10, 12, 0, 0, tzinfo=UTC)
+BANNER = f"TwitchDownloaderCLI {PINNED_TOOL_VERSION} Copyright (c) lay295 and contributors\n"
+
+
+@pytest.fixture(scope="module")
+def lexicon() -> Lexicon:
+    return load_lexicon(LEXICON_PATH)
+
+
+# --- The fakes (mirroring tests/ingest/test_vod.py) ---------------------------------------------
+
+
+def video_record(
+    created_at: datetime = VOD_CREATED, duration: str = "1h0m0s", type_: str = "archive"
+) -> dict[str, object]:
+    return {
+        "id": VIDEO_ID,
+        "stream_id": "9200000100",
+        "user_id": BROADCASTER_ID,
+        "user_login": "streamer_000",
+        "user_name": "Streamer_000",
+        "title": "Synthetic test stream",
+        "description": "",
+        "created_at": created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "published_at": created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "url": f"https://www.twitch.tv/videos/{VIDEO_ID}",
+        "thumbnail_url": "",
+        "viewable": "public",
+        "view_count": 10,
+        "language": "en",
+        "type": type_,
+        "duration": duration,
+        "muted_segments": [{"duration": 30, "offset": 120}],
+    }
+
+
+def user_record() -> dict[str, object]:
+    return {
+        "id": BROADCASTER_ID,
+        "login": "streamer_000",
+        "display_name": "Streamer_000",
+        "broadcaster_type": "partner",
+        "created_at": "2000-01-01T00:00:00Z",
+    }
+
+
+def clip_record(index: int, created_at: datetime) -> dict[str, object]:
+    return {
+        "id": f"SyntheticClip{index:03d}",
+        "broadcaster_id": BROADCASTER_ID,
+        "creator_id": f"{9300000000 + index}",
+        "video_id": VIDEO_ID,
+        "game_id": "509658",
+        "language": "en",
+        "title": f"synthetic clip {index}",
+        "view_count": 10 * index,
+        "created_at": created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "duration": 30.0,
+        "vod_offset": 60 * index,
+        "is_featured": False,
+    }
+
+
+class _Missing:
+    """Sentinel for FakeTwitch's knobs: use the default fixture (None means "Twitch 404s")."""
+
+
+_MISSING = _Missing()
+
+
+class FakeTwitch:
+    """Answers the token, Get Users (by id), Get Videos and Get Clips requests.
+
+    A knob left as `_MISSING` serves the standard fixture; ``video=None`` makes Get Videos
+    answer 404, ``clips=[]`` serves no clips and ``users=None`` makes Get Users 404.
+    """
+
+    def __init__(
+        self,
+        *,
+        video: dict[str, object] | _Missing | None = _MISSING,
+        clips: list[dict[str, object]] | _Missing = _MISSING,
+        users: dict[str, object] | _Missing | None = _MISSING,
+        videos_status: int = 200,
+    ) -> None:
+        self.video = video_record() if isinstance(video, _Missing) else video
+        self.clips = (
+            [clip_record(i, VOD_CREATED + timedelta(minutes=i)) for i in (1, 2)]
+            if isinstance(clips, _Missing)
+            else clips
+        )
+        self.users = user_record() if isinstance(users, _Missing) else users
+        self.videos_status = videos_status
+        self.paths: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.paths.append(request.url.path)
+        if request.url.host == "id.twitch.tv":
+            return httpx.Response(
+                200,
+                json={"access_token": "fake-token", "expires_in": 3600, "token_type": "bearer"},
+            )
+        if request.url.path == "/helix/users":
+            if self.users is None:
+                return httpx.Response(404, json={"error": "Not Found", "status": 404})
+            return httpx.Response(200, json={"data": [self.users], "pagination": {}})
+        if request.url.path == "/helix/videos":
+            if self.videos_status != 200:
+                return httpx.Response(
+                    self.videos_status, json={"error": "Server Error", "status": self.videos_status}
+                )
+            if not self.video:
+                return httpx.Response(404, json={"error": "Not Found", "status": 404})
+            return httpx.Response(200, json={"data": [self.video], "pagination": {}})
+        assert request.url.path == "/helix/clips"
+        return httpx.Response(200, json={"data": self.clips, "pagination": {}})
+
+
+def helix_for(fake: FakeTwitch) -> HelixClient:
+    credentials = TwitchCredentials(SecretStr("fake-client-id"), SecretStr("fake-client-secret"))
+    http = httpx.Client(transport=httpx.MockTransport(fake))
+    return HelixClient(credentials, http_client=http, clock=lambda: NOW, sleep=lambda _: None)
+
+
+class FakeChatTool:
+    """Plays TwitchDownloaderCLI: writes the chat fixture (or garbage) to --output."""
+
+    def __init__(self, payload: bytes | None = None, returncode: int = 0) -> None:
+        self.payload = (
+            payload if payload is not None else (FIXTURES / "chat_replay.json").read_bytes()
+        )
+        self.returncode = returncode
+        self.calls = 0
+
+    def __call__(self, args: Sequence[str]) -> CommandResult:
+        self.calls += 1
+        Path(args[args.index("--output") + 1]).write_bytes(self.payload)
+        return CommandResult(self.returncode, BANNER, "")
+
+
+class FakeDownloader:
+    """Copies a generated audio file into place like yt-dlp, or raises."""
+
+    def __init__(self, source: Path | None, error: Exception | None = None) -> None:
+        self.source = source
+        self.error = error
+        self.calls = 0
+
+    def __call__(self, request: DownloadRequest, /) -> DownloadedMedia:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        assert self.source is not None
+        path = request.output_dir / f"{request.stem}.m4a"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        import shutil
+
+        shutil.copyfile(self.source, path)
+        return DownloadedMedia(path, 3.0)
+
+
+@pytest.fixture
+def chat_binary(tmp_path: Path) -> Path:
+    # shutil.which finds only executables with a PATHEXT extension on Windows.
+    import sys
+
+    name = "TwitchDownloaderCLI.exe" if sys.platform == "win32" else "TwitchDownloaderCLI"
+    binary = tmp_path / "bin" / name
+    binary.parent.mkdir()
+    binary.write_bytes(b"")
+    binary.chmod(0o755)
+    return binary
+
+
+@pytest.fixture
+def audio_source(make_test_media: Callable[..., Path]) -> Path:
+    return make_test_media("source.m4a", duration_s=3.0, video_size=None)
+
+
+def tools(
+    chat_binary: Path,
+    *,
+    twitch: FakeTwitch | None = None,
+    chat: FakeChatTool | None = None,
+    downloader: FakeDownloader | None = None,
+    salt: SecretStr | None = SALT,
+) -> IngestTools:
+    return IngestTools(
+        helix=helix_for(twitch or FakeTwitch()),
+        salt=salt,
+        chat_runner=chat or FakeChatTool(),
+        chat_binary=chat_binary,
+        downloader=downloader,
+        clock=lambda: NOW,
+    )
+
+
+def warning_codes(result: AnalysisResult) -> list[str]:
+    return [warning.code for warning in result.warnings]
+
+
+# --- A full run ----------------------------------------------------------------------------------
+
+
+@pytest.mark.ffmpeg
+def test_a_full_run_ranks_candidates_and_writes_the_result(
+    tmp_path: Path,
+    chat_binary: Path,
+    audio_source: Path,
+    lexicon: Lexicon,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    data = tmp_path / "data"
+    artifacts = tmp_path / "artifacts"
+    caplog.set_level(logging.INFO)
+
+    result = analyze_vod(
+        VIDEO_ID,
+        data_dir=data,
+        artifacts_dir=artifacts,
+        tools=tools(chat_binary, downloader=FakeDownloader(audio_source)),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    assert result.vod == VodSummary(
+        video_id=VIDEO_ID,
+        title="Synthetic test stream",
+        broadcaster_id=BROADCASTER_ID,
+        broadcaster_display_name="Streamer_000",  # Get Users by ID
+        duration_s=3600.0,
+        created_at=VOD_CREATED,
+    )
+    assert result.scorer == ScorerInfo(kind="heuristic", name="chat_loudness", run_id=None)
+    assert result.n_viewer_clips_total == 2
+    # The fake VOD mutes a segment; everything else arrived.
+    assert warning_codes(result) == ["audio_partly_muted"]
+    assert result.candidates, "the planted signals should produce candidates"
+    assert [c.rank for c in result.candidates] == list(range(1, len(result.candidates) + 1))
+    assert [rank_key(c) for c in result.candidates] == sorted(
+        rank_key(c) for c in result.candidates
+    )
+    assert all(0 <= c.start_s < c.end_s <= 3600.0 for c in result.candidates)
+    assert any(c.source == "viewer_clips" or c.source == "both" for c in result.candidates)
+    # How long each stage took is logged.
+    assert "analyze stage=ingest elapsed_s=" in caplog.text
+    assert "analyze stage=scoring elapsed_s=" in caplog.text
+    # The written JSON is the same result, and nothing partial is left behind.
+    path = result_path(artifacts, VIDEO_ID)
+    assert path.is_file()
+    assert AnalysisResult.model_validate_json(path.read_text(encoding="utf-8")) == result
+    assert not list(artifacts.rglob("*.part"))
+
+
+def test_a_vod_with_zero_viewer_clips_is_not_a_warning(
+    tmp_path: Path, chat_binary: Path, audio_source: Path, lexicon: Lexicon
+) -> None:
+    data = tmp_path / "data"
+    twitch = FakeTwitch(clips=[])
+
+    result = analyze_vod(
+        VIDEO_ID,
+        data_dir=data,
+        artifacts_dir=tmp_path / "artifacts",
+        tools=tools(chat_binary, twitch=twitch, downloader=FakeDownloader(audio_source)),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    assert result.n_viewer_clips_total == 0
+    assert "viewer_clips_missing" not in warning_codes(result)
+    assert result.candidates
+    assert all(candidate.source == "discovered" for candidate in result.candidates)
+    assert all(candidate.n_viewer_clips == 0 for candidate in result.candidates)
+
+
+# --- Missing signals degrade the result (api-contract.md § 3.5) ---------------------------------
+
+
+@pytest.mark.ffmpeg
+def test_missing_chat_warns_and_degrades_the_scorer(
+    tmp_path: Path, chat_binary: Path, audio_source: Path, lexicon: Lexicon
+) -> None:
+    data = tmp_path / "data"
+
+    result = analyze_vod(
+        VIDEO_ID,
+        data_dir=data,
+        artifacts_dir=tmp_path / "artifacts",
+        tools=tools(
+            chat_binary,
+            chat=FakeChatTool(returncode=1),
+            downloader=FakeDownloader(audio_source),
+        ),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    assert "chat_missing" in warning_codes(result)
+    assert result.scorer.name == "loudness"  # chat_loudness without chat
+    assert result.scorer.kind == "heuristic"
+    assert result.candidates
+
+
+def test_missing_audio_warns_and_degrades_the_scorer(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    result = analyze_vod(
+        VIDEO_ID,
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        tools=tools(chat_binary, downloader=FakeDownloader(None, RuntimeError("offline"))),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    assert "audio_missing" in warning_codes(result)
+    assert result.scorer.name == "chat_spike"  # chat_loudness without audio
+    assert result.candidates
+
+
+def test_without_any_signal_viewer_clips_rank_alone(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    result = analyze_vod(
+        VIDEO_ID,
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        tools=tools(
+            chat_binary,
+            chat=FakeChatTool(returncode=1),
+            downloader=FakeDownloader(None, RuntimeError("offline")),
+        ),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    assert warning_codes(result) == ["chat_missing", "audio_missing", "audio_partly_muted"]
+    assert result.scorer == ScorerInfo(kind="heuristic", name="no_signals", run_id=None)
+    assert result.n_viewer_clips_total == 2
+    assert [candidate.source for candidate in result.candidates] == ["viewer_clips"] * 2
+    assert all(candidate.score == 0.0 for candidate in result.candidates)
+
+
+def test_nothing_to_rank_after_transient_failures_is_upstream_unavailable(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=tmp_path / "data",
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(
+                chat_binary,
+                twitch=FakeTwitch(clips=[]),
+                chat=FakeChatTool(returncode=1),
+                downloader=FakeDownloader(None, RuntimeError("offline")),
+            ),
+            lexicon=lexicon,
+            clock=lambda: NOW,
+        )
+
+    assert excinfo.value.code == "upstream_unavailable"
+    assert "trying again later may work" in excinfo.value.message
+
+
+def test_the_no_usable_signals_precedence() -> None:
+    """§ 3.5 step 3: only a transient failure makes a rankless result upstream_unavailable."""
+    from autoclipper.analyze import _nothing_to_rank
+
+    def entry(status: Status) -> CatalogEntry:
+        return CatalogEntry(
+            "chat", VIDEO_ID, status, "tool", "1", NOW, None if status == "ok" else "x"
+        )
+
+    gone = {
+        ("chat", VIDEO_ID): entry("unavailable"),
+        ("audio", VIDEO_ID): entry("unavailable"),
+        ("clips", VIDEO_ID): entry("ok"),
+    }
+    assert _nothing_to_rank(gone, VIDEO_ID).code == "no_usable_signals"
+
+    failed = {**gone, ("audio", VIDEO_ID): entry("failed")}
+    assert _nothing_to_rank(failed, VIDEO_ID).code == "upstream_unavailable"
+
+
+# --- The VOD itself (§ 3.5 step 1) ----------------------------------------------------------------
+
+
+def test_a_video_that_is_not_a_past_broadcast_is_rejected(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=tmp_path / "data",
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(
+                chat_binary,
+                twitch=FakeTwitch(video=video_record(type_="highlight")),
+                downloader=FakeDownloader(None, RuntimeError("offline")),
+            ),
+            lexicon=lexicon,
+            clock=lambda: NOW,
+        )
+
+    assert excinfo.value.code == "vod_unsupported"
+    assert "highlight" in excinfo.value.message
+
+
+def test_a_vod_twitch_does_not_have_is_unavailable(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=tmp_path / "data",
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(
+                chat_binary,
+                twitch=FakeTwitch(video=None),
+                downloader=FakeDownloader(None, RuntimeError("x")),
+            ),
+            lexicon=lexicon,
+            clock=lambda: NOW,
+        )
+
+    assert excinfo.value.code == "vod_unavailable"
+
+
+def test_metadata_that_keeps_failing_is_upstream_unavailable(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=tmp_path / "data",
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(
+                chat_binary,
+                twitch=FakeTwitch(videos_status=500),
+                downloader=FakeDownloader(None, RuntimeError("x")),
+            ),
+            lexicon=lexicon,
+            clock=lambda: NOW,
+        )
+
+    assert excinfo.value.code == "upstream_unavailable"
+    assert "metadata" in excinfo.value.message
+
+
+def test_a_local_video_of_another_length_is_video_mismatch(
+    tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path], lexicon: Lexicon
+) -> None:
+    other_vod = make_test_media("other.mp4", duration_s=60.0)
+
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=tmp_path / "data",
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(chat_binary, downloader=FakeDownloader(None, RuntimeError("x"))),
+            lexicon=lexicon,
+            video_file=other_vod,
+            clock=lambda: NOW,
+        )
+
+    assert excinfo.value.code == "video_mismatch"
+    assert "is 60.0 s long but the VOD is 3600.0 s" in excinfo.value.message
+
+
+def test_a_local_video_the_probe_cannot_read_is_invalid(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    not_a_video = tmp_path / "not-a-video.mp4"
+    not_a_video.write_bytes(b"definitely not an mp4")
+
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=tmp_path / "data",
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(chat_binary, downloader=FakeDownloader(None, RuntimeError("x"))),
+            lexicon=lexicon,
+            video_file=not_a_video,
+            clock=lambda: NOW,
+        )
+
+    assert excinfo.value.code == "invalid_video_path"
+
+
+def test_a_matching_local_video_is_used_for_audio(
+    tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path], lexicon: Lexicon
+) -> None:
+    """--video with the VOD's length: its audio is converted instead of downloaded."""
+    data = tmp_path / "data"
+    whole_vod = make_test_media("whole.mp4", duration_s=3600.0)
+
+    result = analyze_vod(
+        VIDEO_ID,
+        data_dir=data,
+        artifacts_dir=tmp_path / "artifacts",
+        tools=tools(chat_binary, downloader=FakeDownloader(None, AssertionError("not used"))),
+        lexicon=lexicon,
+        video_file=whole_vod,
+        clock=lambda: NOW,
+    )
+
+    assert result.candidates
+    assert warning_codes(result) == ["audio_partly_muted"]
+
+
+def test_a_broadcaster_that_cannot_be_fetched_falls_back_to_the_id(
+    tmp_path: Path, chat_binary: Path, audio_source: Path, lexicon: Lexicon
+) -> None:
+    result = analyze_vod(
+        VIDEO_ID,
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        tools=tools(
+            chat_binary,
+            twitch=FakeTwitch(users=None),  # Get Users answers 404
+            downloader=FakeDownloader(audio_source),
+        ),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    assert result.vod.broadcaster_display_name == BROADCASTER_ID
+
+
+# --- The synthetic dataset, post-ingest stages end to end ----------------------------------------
+
+
+def test_analyze_the_synthetic_dataset_end_to_end(tmp_path: Path, lexicon: Lexicon) -> None:
+    """The synthetic dataset is an ingested data dir (its catalog says every step ok), so
+    analyze reads it without any network: features, scoring and candidates for real."""
+    root = tmp_path / "synthetic"
+    generate_dataset(root, seed=1)
+    vods = pl.read_parquet(root / "processed" / "vods.parquet")
+    video_id = str(vods["video_id"][0])
+    _adapt_clip_snapshot(root, video_id)
+
+    result = analyze_vod(
+        video_id,
+        data_dir=root,
+        artifacts_dir=tmp_path / "artifacts",
+        tools=IngestTools(),  # every step is done; no client is ever called
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    assert result.scorer == ScorerInfo(kind="heuristic", name="chat_loudness", run_id=None)
+    assert result.vod.video_id == video_id
+    assert result.vod.duration_s == float(vods["duration_s"][0])
+    clips = pl.read_parquet(root / "processed" / "clips" / f"{video_id}-20261010T120000Z.parquet")
+    with_offsets = clips.filter(pl.col("vod_offset_s").is_not_null())["clip_id"].n_unique()
+    assert result.n_viewer_clips_total == with_offsets
+    assert result.candidates, "the planted highlights should rank"
+    assert "chat_missing" not in warning_codes(result)
+    assert "audio_missing" not in warning_codes(result)
+    assert (
+        AnalysisResult.model_validate_json(
+            result_path(tmp_path / "artifacts", video_id).read_text(encoding="utf-8")
+        )
+        == result
+    )
+
+
+def _adapt_clip_snapshot(root: Path, video_id: str) -> None:
+    """Write this VOD's clip snapshot the way ingest would have (a Parquet plus its
+    manifest), from the single synthetic clips table, so the ingest step finds it done."""
+    synth = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    clips = pl.read_parquet(
+        root / "processed" / "clips" / f"{synth['clips_snapshot']['snapshot_id']}.parquet"
+    ).filter(pl.col("video_id") == video_id)
+    snapshot_id = f"{video_id}-20261010T120000Z"
+    parquet = root / "processed" / "clips" / f"{snapshot_id}.parquet"
+    clips.write_parquet(parquet)
+    captured = "2026-10-10T12:00:00Z"
+    manifest = {
+        "snapshot_id": snapshot_id,
+        "video_id": video_id,
+        "broadcaster_id": str(clips["broadcaster_id"][0]) if clips.height else BROADCASTER_ID,
+        "file": parquet.name,
+        "capture_started_at": captured,
+        "capture_ended_at": captured,
+        "search_started_at": captured,
+        "search_ended_at": captured,
+        "n_ranges_queried": 1,
+        "saturated_ranges": [],
+        "complete": True,
+        "n_clips": clips.height,
+        "n_without_vod_offset": int(clips.filter(pl.col("vod_offset_s").is_null()).height),
+        "vod_created_at": captured,
+        "vod_age_days": 9.0,
+        "mature": True,
+        "stage_version": "1",
+    }
+    parquet.with_suffix(".json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+# --- The CLI --------------------------------------------------------------------------------------
+
+
+runner = CliRunner()
+
+
+def test_the_cli_rejects_a_bad_link_and_a_missing_video() -> None:
+    bad = runner.invoke(app, ["analyze", "twitch.tv/someone"])
+    missing = runner.invoke(app, ["analyze", VIDEO_ID, "--video", "nope.mp4"])
+
+    assert bad.exit_code == ExitCode.USER_ERROR
+    assert "invalid_vod_link" in bad.output
+    assert missing.exit_code == ExitCode.USER_ERROR
+    assert "invalid_video_path" in missing.output
+
+
+@pytest.mark.ffmpeg
+def test_the_cli_analyzes_and_reports_the_result(
+    tmp_path: Path,
+    chat_binary: Path,
+    audio_source: Path,
+    lexicon: Lexicon,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = tmp_path / "data"
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("AUTOCLIPPER_DATA_DIR", str(data))
+    monkeypatch.setenv("AUTOCLIPPER_ARTIFACTS_DIR", str(artifacts))
+    monkeypatch.setenv("AUTOCLIPPER_CHAT_HASH_SALT", "test-salt")
+
+    # Everything is ingested first, so the CLI's run skips the fetches and only analyzes.
+    analyze_vod(
+        VIDEO_ID,
+        data_dir=data,
+        artifacts_dir=artifacts,
+        tools=tools(chat_binary, downloader=FakeDownloader(audio_source)),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    def ingest_tools(**kwargs: object) -> IngestTools:
+        del kwargs  # every step is already done; no client is needed
+        return IngestTools(clock=lambda: NOW)
+
+    monkeypatch.setattr("autoclipper.ingest.vod.IngestTools", ingest_tools)
+
+    result = runner.invoke(app, ["analyze", VIDEO_ID, "--lexicon", str(LEXICON_PATH)])
+
+    assert result.exit_code == ExitCode.SUCCESS, result.output
+    assert "Analyzed" in result.output
+    assert "candidates" in result.output
+    assert "chat_loudness" in result.output
+    assert f"Wrote {artifacts / 'analysis' / f'{VIDEO_ID}.json'}" in result.output
+    assert "audio_partly_muted" in result.output  # warnings reach stderr
+
+
+def test_the_cli_exits_1_for_a_vod_that_is_not_a_past_broadcast(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AUTOCLIPPER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AUTOCLIPPER_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("AUTOCLIPPER_CHAT_HASH_SALT", "test-salt")
+
+    def ingest_tools(**kwargs: object) -> IngestTools:
+        del kwargs  # the CLI has no credentials; the fake provides its own clients
+        return tools(
+            chat_binary,
+            twitch=FakeTwitch(video=video_record(type_="highlight")),
+            downloader=FakeDownloader(None, RuntimeError("x")),
+        )
+
+    monkeypatch.setattr("autoclipper.ingest.vod.IngestTools", ingest_tools)
+
+    result = runner.invoke(app, ["analyze", VIDEO_ID, "--lexicon", str(LEXICON_PATH)])
+
+    assert result.exit_code == ExitCode.USER_ERROR
+    assert "vod_unsupported" in result.output
+
+
+def test_the_cli_exits_2_when_the_metadata_keeps_failing(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AUTOCLIPPER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AUTOCLIPPER_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("AUTOCLIPPER_CHAT_HASH_SALT", "test-salt")
+
+    def ingest_tools(**kwargs: object) -> IngestTools:
+        del kwargs
+        return tools(
+            chat_binary,
+            twitch=FakeTwitch(videos_status=500),
+            downloader=FakeDownloader(None, RuntimeError("x")),
+        )
+
+    monkeypatch.setattr("autoclipper.ingest.vod.IngestTools", ingest_tools)
+
+    result = runner.invoke(app, ["analyze", VIDEO_ID, "--lexicon", str(LEXICON_PATH)])
+
+    assert result.exit_code == ExitCode.EXTERNAL_FAILURE
+    assert "upstream_unavailable" in result.output
+
+
+# --- Live -----------------------------------------------------------------------------------------
+
+
+@pytest.mark.live
+def test_analyze_a_real_vod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Analyze a real VOD into a temporary data dir.
+
+    Needs Twitch credentials, the chat hash salt, TwitchDownloaderCLI, yt-dlp, FFmpeg and
+    network. Set AUTOCLIPPER_TEST_VOD to a public VOD ID in the environment (not in .env,
+    which accepts only settings): ``AUTOCLIPPER_TEST_VOD=<id> uv run pytest -m live
+    tests/analyze/test_analyze.py``.
+    """
+    video_id = os.environ.get("AUTOCLIPPER_TEST_VOD")
+    if not video_id:
+        pytest.skip("set AUTOCLIPPER_TEST_VOD to a public Twitch VOD ID")
+    monkeypatch.setenv("AUTOCLIPPER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AUTOCLIPPER_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+
+    result = runner.invoke(app, ["analyze", video_id, "--lexicon", str(LEXICON_PATH)])
+
+    assert result.exit_code == ExitCode.SUCCESS, result.output
+    written = AnalysisResult.model_validate_json(
+        result_path(tmp_path / "artifacts", video_id).read_text(encoding="utf-8")
+    )
+    assert written.vod.video_id == video_id
+    assert written.candidates

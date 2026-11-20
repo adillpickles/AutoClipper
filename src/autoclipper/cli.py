@@ -21,6 +21,7 @@ from typer._click.exceptions import UsageError
 from typer.core import TyperGroup
 
 from autoclipper import __version__
+from autoclipper.analyze import DEFAULT_SCORER
 from autoclipper.config import ConfigError, get_settings
 from autoclipper.eval.harness import (
     ReportExistsError,
@@ -488,6 +489,109 @@ def ingest(
     if report.failed:
         typer.echo("Some steps failed; run the same command again to retry them.", err=True)
         raise typer.Exit(ExitCode.EXTERNAL_FAILURE)
+
+
+@app.command()
+def analyze(
+    vod: Annotated[str, typer.Argument(help="A Twitch VOD link or numeric video ID.")],
+    video: Annotated[
+        Path | None,
+        typer.Option(
+            help="A video file of this VOD you already have; its audio is used instead of "
+            "downloading, and it is checked against the VOD's length.",
+            show_default=False,
+        ),
+    ] = None,
+    scorer: Annotated[
+        str,
+        typer.Option(
+            help="Baseline scorer. The default (chat_loudness) degrades to whichever signal "
+            "arrived; a named one (chat_spike, loudness, random) fails without its signal."
+        ),
+    ] = DEFAULT_SCORER,
+    model: Annotated[
+        Path | None,
+        typer.Option(
+            help="A trained model run (artifacts/models/<run_id>) to score with; overrides "
+            "--scorer.",
+            show_default=False,
+        ),
+    ] = None,
+    lexicon: Annotated[Path, typer.Option(help="Versioned chat lexicon.")] = Path(
+        "configs/lexicon.yaml"
+    ),
+    out: Annotated[
+        Path | None,
+        typer.Option(help="Where to write the result JSON.", show_default=False),
+    ] = None,
+) -> None:
+    """Analyze one VOD: ingest it, score its windows and write the ranked candidates."""
+    from autoclipper.analyze import AnalyzeError, analyze_vod, result_path
+    from autoclipper.config import MissingSettingError
+    from autoclipper.features.chat import LexiconError, load_lexicon
+    from autoclipper.ingest.twitch_api import HelixClient
+    from autoclipper.ingest.vod import IngestTools
+    from autoclipper.models.base import ScorerError
+    from autoclipper.schemas import parse_vod
+
+    video_id = parse_vod(vod)
+    if video_id is None:
+        typer.echo("Error: invalid_vod_link: that isn't a Twitch VOD link or video ID", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    if video is not None and not video.is_file():
+        typer.echo(f"Error: invalid_video_path: video file not found: {video}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    if model is not None and not model.is_dir():
+        typer.echo(f"Error: no trained model run at {model}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    settings = get_settings()
+    try:
+        lexicon_loaded = load_lexicon(lexicon)
+    except LexiconError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    options: dict[str, Any] = {}
+    try:
+        options["salt"] = settings.require_chat_hash_salt()
+    except MissingSettingError as exc:
+        options["missing_salt"] = str(exc)
+    helix: HelixClient | None = None
+    try:
+        helix = HelixClient(settings.require_twitch_credentials())
+    except MissingSettingError as exc:
+        options["missing_helix"] = str(exc)
+    try:
+        result = analyze_vod(
+            video_id,
+            data_dir=settings.data_dir,
+            artifacts_dir=settings.artifacts_dir,
+            tools=IngestTools(helix=helix, **options),
+            lexicon=lexicon_loaded,
+            video_file=video.resolve() if video is not None else None,
+            baseline=scorer,
+            model_dir=model,
+            out_path=out,
+        )
+    except AnalyzeError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        code = (
+            ExitCode.EXTERNAL_FAILURE if exc.code == "upstream_unavailable" else ExitCode.USER_ERROR
+        )
+        raise typer.Exit(code) from None
+    except ScorerError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    finally:
+        if helix is not None:
+            helix.close()
+    for warning in result.warnings:
+        typer.echo(f"Warning: {warning.code}: {warning.message}", err=True)
+    top = result.candidates[0] if result.candidates else None
+    best = f", best at {top.start_s:.0f}-{top.end_s:.0f} s" if top is not None else ""
+    typer.echo(
+        f"Analyzed {video_id} with {result.scorer.name}: {len(result.candidates)} candidates{best}"
+    )
+    typer.echo(f"Wrote {result_path(settings.artifacts_dir, video_id, out)}")
 
 
 @app.command()
