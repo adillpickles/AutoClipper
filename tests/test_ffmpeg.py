@@ -721,7 +721,9 @@ def test_probe_reads_a_generated_video_with_tone(make_test_media: Callable[..., 
 
     assert info.duration_s == pytest.approx(1.0, abs=0.1)
     assert "mp4" in info.format_name.split(",")
-    assert info.video_streams == (VideoStream(index=0, codec_name="h264", width=320, height=180),)
+    assert info.video_streams == (
+        VideoStream(index=0, codec_name="h264", width=320, height=180, pix_fmt="yuv420p"),
+    )
     [audio] = info.audio_streams
     assert (audio.codec_name, audio.sample_rate_hz, audio.channels) == ("aac", 48_000, 2)
 

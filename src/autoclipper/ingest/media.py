@@ -7,10 +7,16 @@ normally ``get_settings().data_dir``:
   extension names the container ffprobe finds: ``ts`` (MPEG-TS) for Twitch's HLS segments,
   otherwise the one yt-dlp reports.
 - ``interim/audio/<video_id>.wav``: 16 kHz mono 16-bit PCM for feature extraction.
+- ``raw/video/<video_id>/segment-<begin>-<end>.<ext>``: a downloaded video segment of the VOD
+  (#46), covering ``[begin, end)`` of VOD time (the file's own time 0 is VOD time ``begin``),
+  for the API's preview and export media. Fetched with TwitchDownloaderCLI ``videodownload
+  --beginning --ending`` (the pinned tool the chat replay already uses); yt-dlp's
+  ``--download-sections`` would need FFmpeg inside yt-dlp, which this package never allows.
 
 Downloading VOD media through yt-dlp is unofficial (docs/data/data-sources.md § 3). Only public
-VODs and audio-only formats are downloaded: no cookies or login are passed, and there is no
-fallback to formats with video.
+VODs and audio-only formats are downloaded for features: no cookies or login are passed, and
+there is no fallback to formats with video. Video segments (#46) do ask for a video format (up
+to 1080p) and a time range, again without cookies or login.
 
 yt-dlp only downloads: its own FFmpeg use (remuxing, fix-ups, FFmpeg as HLS downloader) is turned
 off, so every FFmpeg and FFprobe run goes through `autoclipper.ffmpeg`, with a timeout.
@@ -20,7 +26,8 @@ while in progress, which it resumes on the next run). A partial download that ca
 safely is deleted first (`YtDlpDownloader`). A finished download is probed, checked for damaged
 bytes and against the duration the source reports, and only then renamed to
 ``<video_id>.<ext>``. A file with that name is therefore a complete, checked download, and it is
-never fetched again. Delete it to download again.
+never fetched again. Delete it to download again. Video segments follow the same staging and
+checking, and a segment file with its final name is a complete, checked download of that range.
 
 Download failures raise a subclass of `AudioDownloadError`, so the CLI can map them to exit codes
 (docs/development/conventions.md §7). yt-dlp has no error codes, so `classify_download_error`
@@ -45,6 +52,8 @@ from typing import Final, Protocol
 
 from autoclipper.ffmpeg import (
     TIMELINE_OPTIONS,
+    FFmpegCommand,
+    FFmpegError,
     FFmpegExitError,
     FFmpegOutputError,
     MediaInfo,
@@ -54,6 +63,7 @@ from autoclipper.ffmpeg import (
     probe,
     run_command,
 )
+from autoclipper.ingest.chat import ChatDownloadError, find_twitchdownloader
 
 log = logging.getLogger(__name__)
 
@@ -173,6 +183,11 @@ def vod_url(video_id: str) -> str:
 def raw_audio_dir(data_dir: Path) -> Path:
     """Return the directory that holds downloaded audio: ``<data_dir>/raw/audio``."""
     return data_dir / "raw" / "audio"
+
+
+def raw_video_dir(data_dir: Path) -> Path:
+    """Return the directory that holds downloaded video segments: ``<data_dir>/raw/video``."""
+    return data_dir / "raw" / "video"
 
 
 def normalized_audio_path(data_dir: Path, video_id: str) -> Path:
@@ -364,6 +379,21 @@ class DownloadRequest:
     url: str
     output_dir: Path
     stem: str
+
+
+@dataclass(frozen=True, slots=True)
+class VideoSegment:
+    """One downloaded video segment of a VOD (#46), for preview and export media.
+
+    Attributes:
+        path: The complete, checked MP4/TS file.
+        begin_s: The VOD time at the file's own time 0.
+        end_s: The VOD time at the end of the file: `begin_s` plus the duration ffprobe reads.
+    """
+
+    path: Path
+    begin_s: float
+    end_s: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -687,6 +717,203 @@ def download_audio(
     media.path.replace(final)
     log.info("downloaded audio video_id=%s path=%s", video_id, final)
     return final
+
+
+# A segment far shorter than asked for is unusable, and one much longer means the range was
+# ignored (the whole VOD would have the wrong time 0 for preview and cuts).
+SEGMENT_MIN_PLAYED_FRACTION: Final = 0.25
+SEGMENT_MAX_OVERSHOOT_S: Final = 30.0
+VIDEO_SEGMENT_TIMEOUT_BASE_S: Final = 120.0
+VIDEO_SEGMENT_TIMEOUT_PER_S: Final = 10.0
+"""Roughly ten times real time, far more than a healthy download needs."""
+VIDEO_SEGMENT_TIMEOUT_CAP_S: Final = 7200.0
+
+
+def build_videodownload_command(
+    binary: Path, video_id: str, output_path: Path, *, begin_s: int, end_s: int
+) -> FFmpegCommand:
+    """Return the TwitchDownloaderCLI ``videodownload`` argument list for one VOD segment.
+
+    ``--beginning`` and ``--ending`` are TimeSpans (``hh:mm:ss``; the ranges are whole
+    seconds; those are the argument names of the pinned 1.56.5 release) and ``--collision
+    Overwrite`` keeps the tool from prompting (stdin is closed), like the chat download. The
+    tool writes one MP4 of the VOD's own video and audio.
+
+    Raises:
+        ValueError: ``video_id`` is not all digits, or the range isn't ``0 <= begin < end``.
+    """
+    if not video_id.isdigit():
+        raise ValueError(f"video_id must be digits only, got {video_id!r}")
+    if not 0 <= begin_s < end_s:
+        raise ValueError(f"the segment range must be 0 <= begin < end, got {begin_s}-{end_s}")
+    return FFmpegCommand(
+        (
+            str(binary),
+            "videodownload",
+            "--id",
+            video_id,
+            "--beginning",
+            _timespan(begin_s),
+            "--ending",
+            _timespan(end_s),
+            "--collision",
+            "Overwrite",
+            "-o",
+            str(output_path),
+        )
+    )
+
+
+def _timespan(seconds: int) -> str:
+    """A TwitchDownloader TimeSpan: ``hh:mm:ss`` (the ranges are whole seconds)."""
+    hours, rest = divmod(seconds, 3600)
+    minutes, whole = divmod(rest, 60)
+    return f"{hours:02d}:{minutes:02d}:{whole:02d}"
+
+
+def download_video_segment(
+    video_id: str,
+    *,
+    begin_s: float,
+    end_s: float,
+    output_dir: Path,
+    runner: Runner | None = None,
+) -> VideoSegment:
+    """Download one video segment of a VOD with TwitchDownloaderCLI (#46), to ``<output_dir>``.
+
+    The segment covers ``[begin_s, end_s)`` of VOD time (both finite, ``0 <= begin < end``,
+    rounded to whole seconds); the downloaded file's own time 0 is ``begin_s``. Segments are
+    cached by range: a complete, checked file for the same range is never fetched again
+    (delete it to download again), and the file name carries the range,
+    ``segment-<begin>-<end>.<ext>``.
+
+    yt-dlp's ``--download-sections`` can fetch ranges too, but only by running FFmpeg itself
+    (docs/data/data-sources.md § 3), which this package forbids: every FFmpeg run goes through
+    `autoclipper.ffmpeg`. TwitchDownloaderCLI's ``videodownload``, the pinned tool the chat
+    replay already uses, takes ``--beginning``/``--ending`` directly.
+
+    A new download is checked before it is kept, like the audio: it must have a video and an
+    audio stream, no more than `MAX_DECODE_ERROR_RATE` of damaged bytes, and play for roughly
+    the requested length (a much shorter file is a broken download; a much longer one means
+    the range was ignored, so the file's VOD time would be unknown). The returned
+    `VideoSegment.end_s` is the *probed* duration, not the requested one, so preview coverage
+    and export bounds stay honest.
+
+    Args:
+        video_id: The Twitch video ID, digits only.
+        begin_s: Where the segment starts, in seconds from the VOD's start.
+        end_s: Where the segment ends (exclusive), in seconds from the VOD's start.
+        output_dir: The segment's directory, normally ``raw_video_dir(data_dir)/<video_id>``.
+        runner: Executes TwitchDownloaderCLI, FFmpeg and FFprobe. Defaults to the real
+            binaries with timeouts; tests pass a fake.
+
+    Returns:
+        The complete, checked segment.
+
+    Raises:
+        InvalidVideoIdError: `video_id` is not a Twitch video ID. Checked before anything else.
+        ValueError: `begin_s` or `end_s` is not a finite ``0 <= begin < end`` range, or one
+            that rounds to empty whole seconds.
+        DownloadToolError: TwitchDownloaderCLI is missing or failed (a deleted or restricted
+            VOD already failed the job's analysis, so a segment failure is a tool problem).
+        DownloadIntegrityError: The finished segment was damaged or the wrong length; it has
+            been deleted.
+        FFmpegError: FFprobe or FFmpeg could not run (not installed, timed out).
+    """
+    validate_video_id(video_id)
+    if not (math.isfinite(begin_s) and math.isfinite(end_s) and 0.0 <= begin_s < end_s):
+        raise ValueError(f"the segment range must be 0 <= begin < end, got {begin_s!r}-{end_s!r}")
+    # TwitchDownloader's TimeSpans are whole seconds; the caller's margin (the fetch spans
+    # more than the candidate) absorbs the sub-second rounding.
+    begin, end = round(begin_s), round(end_s)
+    if not begin < end:
+        raise ValueError(f"the segment range rounds empty: {begin_s!r}-{end_s!r}")
+    requested_s = end - begin
+    name = f"segment-{begin:g}-{end:g}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    # Only a final ``<name>.<ext>`` is complete; staging files carry an extra extension
+    # (``segment-<b>-<e>.download.mp4``, its ``.part``/``.ytdl``) and must not pass.
+    complete = [path for path in sorted(output_dir.glob(f"{name}.*")) if path.name.count(".") == 1]
+    if complete:
+        log.info(
+            "video segment already downloaded video_id=%s range=%g-%g path=%s",
+            video_id,
+            begin,
+            end,
+            complete[0],
+        )
+        info = probe(complete[0], runner=runner)
+        return VideoSegment(complete[0], float(begin), begin + info.duration_s)
+
+    try:
+        binary = find_twitchdownloader()
+    except ChatDownloadError as exc:
+        raise DownloadToolError(video_id, str(exc)) from exc
+    staging = output_dir / f"{name}{_STAGING_SUFFIX}.mp4"
+    staging.unlink(missing_ok=True)  # the tool doesn't resume; a leftover restarts cleanly
+    command = build_videodownload_command(binary, video_id, staging, begin_s=begin, end_s=end)
+    timeout_s = min(
+        VIDEO_SEGMENT_TIMEOUT_BASE_S + VIDEO_SEGMENT_TIMEOUT_PER_S * requested_s,
+        VIDEO_SEGMENT_TIMEOUT_CAP_S,
+    )
+    log.info(
+        "downloading video segment video_id=%s range=%g-%g tool=%s",
+        video_id,
+        begin,
+        end,
+        binary,
+    )
+    try:
+        run_command(command, timeout_s=timeout_s, runner=runner)
+    except FFmpegError as exc:
+        staging.unlink(missing_ok=True)
+        raise DownloadToolError(video_id, f"the video download failed: {exc}") from exc
+
+    try:
+        info = probe(staging, runner=runner)
+        problem = _segment_problem(info, requested_s, runner)
+    except (FFmpegExitError, FFmpegOutputError) as exc:
+        staging.unlink(missing_ok=True)
+        raise DownloadIntegrityError(video_id, f"FFmpeg can't read it: {exc}") from exc
+    if problem is not None:
+        staging.unlink(missing_ok=True)
+        raise DownloadIntegrityError(video_id, problem)
+
+    final = output_dir / f"{name}.{_container_extension(info) or 'mp4'}"
+    staging.replace(final)
+    log.info(
+        "downloaded video segment video_id=%s range=%g-%g path=%s",
+        video_id,
+        begin,
+        end,
+        final,
+    )
+    return VideoSegment(final, float(begin), begin + info.duration_s)
+
+
+def _segment_problem(info: MediaInfo, requested_s: float, runner: Runner | None) -> str | None:
+    """Why a downloaded segment can't be kept, or None if it is fine (#46)."""
+    if not info.video_streams:
+        return f"{info.path.name} has no video stream"
+    if not info.audio_streams:
+        return f"{info.path.name} has no audio stream"
+    damage = _byte_damage(info)
+    if damage is not None and damage.fraction > MAX_DECODE_ERROR_RATE:
+        return f"{info.path.name} is damaged: {damage}"
+    undecoded = _undecoded_fraction(info.path, runner, timeout_s=READ_CHECK_TIMEOUT_S)
+    if undecoded > MAX_DECODE_ERROR_RATE:
+        return f"{info.path.name} is damaged: {undecoded:.1%} of its audio frames fail to decode"
+    played_s = _played_duration_s(info.path, runner)
+    if played_s < max(2.0, SEGMENT_MIN_PLAYED_FRACTION * requested_s):
+        return (
+            f"{info.path.name} plays for only {played_s:.1f} s of the requested {requested_s:g} s"
+        )
+    if played_s > requested_s + SEGMENT_MAX_OVERSHOOT_S:
+        return (
+            f"{info.path.name} plays for {played_s:.1f} s, far past the requested "
+            f"{requested_s:g} s: the time range looks ignored, so its VOD time is unknown"
+        )
+    return None
 
 
 def _download_problem(
