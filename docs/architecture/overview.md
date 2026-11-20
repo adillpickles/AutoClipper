@@ -177,6 +177,7 @@ data/
 ├── splits/<dataset_version>.json
 └── catalog.parquet
 artifacts/
+├── analysis/<video_id>.json   # one AnalysisResult per analyzed VOD (`autoclipper analyze`)
 ├── models/<run_id>/
 ├── reports/<run_id>/
 ├── exports/<export_id>.mp4      # one file per clip export; candidate_id repeats across results
