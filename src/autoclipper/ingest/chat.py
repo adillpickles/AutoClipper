@@ -5,6 +5,10 @@ The JSON layout was read from TwitchDownloader's source at release tag ``1.56.5`
 field this module reads, with links to the source. Other format versions are rejected with
 `ChatDownloadError` rather than guessed at.
 
+Each ``chatdownload`` run is bounded (#89): one that exceeds its limit (`chat_download_timeout_s`)
+is killed, and `download_chat` raises `ChatDownloadError` so ingest records a failed step instead
+of hanging.
+
 Privacy (docs/data/data-governance.md §2): the output never contains a commenter's user ID, login
 or display name. Each message's author becomes ``user_hash``, the salted HMAC of the commenter's
 stable Twitch user ID (``commenter._id``). Message text is redacted in three steps:
@@ -41,12 +45,12 @@ import shutil
 import subprocess
 import unicodedata
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import groupby
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Literal, TypeGuard
+from typing import Final, Literal, Protocol, TypeGuard
 
 from pydantic import SecretStr
 
@@ -170,15 +174,29 @@ class CommandResult:
     stderr: str
 
 
-CommandRunner = Callable[[Sequence[str]], CommandResult]
-"""Runs a command given as an argument list. Tests pass a fake that records the commands."""
+class CommandRunner(Protocol):
+    """Runs a ``chatdownload`` command and returns its result, whatever the exit code.
+
+    `run_command` is the real implementation: it ends the child after `timeout_s` seconds and
+    raises `subprocess.TimeoutExpired`, which `download_chat` turns into the timeout message. A
+    fake runner in a test only needs to record the command and return a `CommandResult`, or
+    raise `TimeoutExpired` to play a stalled tool.
+    """
+
+    def __call__(self, args: Sequence[str], /, *, timeout_s: float | None) -> CommandResult:
+        """Run `args`, ending the child when it runs longer than `timeout_s` seconds."""
+        ...
 
 
-def run_command(args: Sequence[str]) -> CommandResult:
+def run_command(args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
     """Run ``args`` without a shell and with no stdin, and capture its output.
+
+    A run longer than ``timeout_s`` seconds is ended: ``subprocess.run`` kills the child and
+    waits for it, then raises. ``chatdownload`` is a single process, so this ends the download.
 
     Raises:
         OSError: The program could not be started.
+        subprocess.TimeoutExpired: The command ran longer than ``timeout_s`` seconds.
     """
     completed = subprocess.run(
         list(args),
@@ -188,8 +206,30 @@ def run_command(args: Sequence[str]) -> CommandResult:
         errors="replace",
         stdin=subprocess.DEVNULL,
         check=False,
+        timeout=timeout_s,
     )
     return CommandResult(completed.returncode, completed.stdout, completed.stderr)
+
+
+CHAT_TIMEOUT_BASE_S: Final = 15 * 60.0
+"""How long one chatdownload may run before scaling (even a short VOD's chat takes minutes)."""
+
+CHAT_TIMEOUT_PER_VOD_HOUR_S: Final = 5 * 60.0
+"""Additional seconds allowed per hour of VOD, about the tool's own running time per hour."""
+
+CHAT_TIMEOUT_UNKNOWN_VOD_S: Final = 60 * 60.0
+"""The bound when the VOD's length is unknown (its metadata step failed): one hour."""
+
+
+def chat_download_timeout_s(vod_duration_s: float | None) -> float:
+    """How long one ``chatdownload`` may run (#89): generous, and scaled to the VOD's length.
+
+    Real chat downloads take minutes; the bound exists so a tool that stops making progress
+    fails its step (recorded, like any tool failure) instead of hanging ingest forever.
+    """
+    if vod_duration_s is None:
+        return CHAT_TIMEOUT_UNKNOWN_VOD_S
+    return CHAT_TIMEOUT_BASE_S + CHAT_TIMEOUT_PER_VOD_HOUR_S * vod_duration_s / 3600.0
 
 
 def find_twitchdownloader(binary: str | Path | None = None) -> Path:
@@ -241,6 +281,7 @@ def download_chat(
     salt: SecretStr,
     binary: str | Path | None = None,
     runner: CommandRunner = run_command,
+    timeout_s: float | None = CHAT_TIMEOUT_UNKNOWN_VOD_S,
     embed_images: bool = False,
     keep_raw: bool = False,
 ) -> ChatReplay:
@@ -256,6 +297,10 @@ def download_chat(
         salt: The HMAC key for ``user_hash`` (``get_settings().require_chat_hash_salt()``).
         binary: The TwitchDownloaderCLI executable; see `find_twitchdownloader`.
         runner: Runs the command; the default starts a subprocess.
+        timeout_s: How long the tool may run; None leaves it unbounded (a caller's explicit
+            choice). No entry point is unbounded by default: the default is the one-hour cap
+            (`CHAT_TIMEOUT_UNKNOWN_VOD_S`), and `ingest_vod` passes `chat_download_timeout_s`
+            of the VOD's length (#89).
         embed_images: Pass ``--embed-images`` so third-party emotes can be counted.
         keep_raw: Keep the raw file after a successful parse.
 
@@ -264,8 +309,9 @@ def download_chat(
 
     Raises:
         ValueError: ``video_id``, ``raw_path`` or ``salt`` is invalid. Nothing is run.
-        ChatDownloadError: The tool is missing, fails, does not report its version or writes no
-            file, or the file is not a chat replay this parser supports.
+        ChatDownloadError: The tool is missing, fails, runs longer than `timeout_s` (it is
+            killed and a partial raw file is deleted), does not report its version or writes
+            no file, or the file is not a chat replay this parser supports.
     """
     _check_video_id(video_id)
     _check_output_path(raw_path)
@@ -276,7 +322,14 @@ def download_chat(
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     log.info("downloading chat replay video_id=%s", video_id)
     try:
-        result = runner(command)
+        result = runner(command, timeout_s=timeout_s)
+    except subprocess.TimeoutExpired as exc:
+        # A partial raw file holds usernames and is worthless: never keep it (#89).
+        raw_path.unlink(missing_ok=True)
+        raise ChatDownloadError(
+            f"{TOOL_NAME} chatdownload timed out after {exc.timeout:g} s and was killed for "
+            f"video_id={video_id}."
+        ) from None
     except OSError as exc:
         raise ChatDownloadError(f"could not start {command[0]}: {exc.strerror}") from None
     if result.returncode != 0:

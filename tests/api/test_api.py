@@ -1430,7 +1430,8 @@ class FakeChatTool:
     def __init__(self) -> None:
         self.calls = 0
 
-    def __call__(self, args: Sequence[str]) -> "CommandResult":
+    def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> "CommandResult":
+        del timeout_s  # the fake plays a successful run; the bound is not its business
         self.calls += 1
         Path(args[args.index("--output") + 1]).write_bytes(CHAT_FIXTURE.read_bytes())
         return CommandResult(0, BANNER, "")
@@ -1514,7 +1515,7 @@ def test_a_non_archive_vod_fails_where_it_was_rejected(
     credentials = TwitchCredentials(SecretStr("fake-client-id"), SecretStr("fake-client-secret"))
     clock = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
 
-    def refuse_chat(args: Sequence[str]) -> CommandResult:
+    def refuse_chat(args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
         raise AssertionError("the chat step should never run for a rejected VOD")
 
     def refuse_download(request: DownloadRequest, /) -> DownloadedMedia:
@@ -1559,7 +1560,8 @@ def test_an_expired_vod_fails_where_the_audio_stopped_and_keeps_found_warnings(
     credentials = TwitchCredentials(SecretStr("fake-client-id"), SecretStr("fake-client-secret"))
     clock = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
 
-    def failing_chat(args: Sequence[str]) -> CommandResult:
+    def failing_chat(args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
+        del timeout_s  # the fake plays a failing tool; the bound is not its business
         return CommandResult(1, BANNER, "TwitchDownloaderCLI: the video does not exist")
 
     def refused_download(request: DownloadRequest, /) -> DownloadedMedia:

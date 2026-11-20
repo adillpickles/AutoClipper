@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -17,7 +18,11 @@ from typer.testing import CliRunner
 from autoclipper.cli import ExitCode, app
 from autoclipper.config import TwitchCredentials
 from autoclipper.ingest.catalog import catalog_path, read_catalog
-from autoclipper.ingest.chat import PINNED_TOOL_VERSION, CommandResult
+from autoclipper.ingest.chat import (
+    PINNED_TOOL_VERSION,
+    CommandResult,
+    chat_download_timeout_s,
+)
 from autoclipper.ingest.media import (
     DownloadedMedia,
     DownloadRequest,
@@ -126,7 +131,7 @@ class FakeChatTool:
         self.returncode = returncode
         self.calls = 0
 
-    def __call__(self, args: Sequence[str]) -> CommandResult:
+    def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
         self.calls += 1
         Path(args[list(args).index("--output") + 1]).write_bytes(self.payload)
         return CommandResult(self.returncode, BANNER, "")
@@ -408,7 +413,7 @@ def test_an_interrupted_chat_download_leaves_no_raw_file(tmp_path: Path, chat_bi
     data = tmp_path / "data"
 
     class Interrupted(FakeChatTool):
-        def __call__(self, args: Sequence[str]) -> CommandResult:
+        def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
             super().__call__(args)  # the raw file, with usernames, is on disk now
             raise KeyboardInterrupt
 
@@ -416,6 +421,40 @@ def test_an_interrupted_chat_download_leaves_no_raw_file(tmp_path: Path, chat_bi
         ingest_vod(VIDEO_ID, data_dir=data, tools=tools(chat_binary, chat=Interrupted()))
 
     assert not raw_chat_path(data, VIDEO_ID).exists()
+
+
+def test_a_timed_out_chat_download_fails_the_step_and_the_audio_still_runs(
+    tmp_path: Path, chat_binary: Path
+) -> None:
+    """A stalled chatdownload is bounded (#89): the step fails with the timeout message, the
+    raw file is gone, the audio step still runs, and a re-run retries only the chat step."""
+    data = tmp_path / "data"
+
+    class Stalled(FakeChatTool):
+        def __init__(self) -> None:
+            super().__init__()
+            self.timeout_s: float | None = None
+
+        def __call__(self, args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
+            self.timeout_s = timeout_s
+            super().__call__(args)  # a partial raw file is on disk now
+            raise subprocess.TimeoutExpired(list(args), 2.0)
+
+    chat = Stalled()
+    offline = FakeDownloader(None, RuntimeError("offline"))
+
+    report = ingest_vod(
+        VIDEO_ID, data_dir=data, tools=tools(chat_binary, chat=chat, downloader=offline)
+    )
+
+    assert outcomes(report)["chat"] == "failed"
+    assert "timed out after 2 s and was killed" in (
+        read_catalog(data)[("chat", VIDEO_ID)].error or ""
+    )
+    assert chat.timeout_s == chat_download_timeout_s(3600.0)  # the fake VOD is one hour long
+    assert not raw_chat_path(data, VIDEO_ID).exists()
+    assert outcomes(report)["audio"] == "failed"  # the run continued past the chat step
+    assert "offline" in (read_catalog(data)[("audio", VIDEO_ID)].error or "")
 
 
 def test_a_leftover_raw_chat_file_is_removed_even_when_chat_is_done(

@@ -106,7 +106,8 @@ class IngestTools:
         helix: The Twitch API client, or None when no credentials are configured (the metadata
             and clip steps then fail with `missing_helix`).
         salt: The chat hash salt, or None when it isn't configured (clips and chat fail).
-        chat_runner: Runs TwitchDownloaderCLI.
+        chat_runner: Runs TwitchDownloaderCLI; the default ends the tool after its per-run
+            timeout (`chat_download_timeout_s`, #89).
         chat_binary: The TwitchDownloaderCLI executable (default: looked up on PATH).
         downloader: Downloads the audio (default yt-dlp).
         runner: Executes FFmpeg and FFprobe.
@@ -308,6 +309,10 @@ def ingest_vod(
                     salt=tools.salt,
                     binary=tools.chat_binary,
                     runner=tools.chat_runner,
+                    # A stalled tool fails the step instead of hanging the run (#89).
+                    timeout_s=chat_module.chat_download_timeout_s(
+                        None if vod is None else vod.duration_s
+                    ),
                 )
                 _write_chat(chat_file, replay)
             finally:
