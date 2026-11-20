@@ -207,10 +207,10 @@ def ingest_vod(
 
     # 1. Metadata.
     vod: Vod | None = None
-    meta_entry = done_before("vod_meta", _read_vod(data_dir, video_id) is not None)
+    meta_entry = done_before("vod_meta", read_vod(data_dir, video_id) is not None)
     if meta_entry is not None:
         skip("vod_meta", meta_entry)
-        vod = _read_vod(data_dir, video_id)
+        vod = read_vod(data_dir, video_id)
     elif tools.helix is None:
         finish("vod_meta", "failed", "helix", tools.missing_helix)
     else:
@@ -395,7 +395,8 @@ def _write_vod(data_dir: Path, vod: Vod) -> None:
     _write_table(pa.Table.from_pylist(rows, schema=tables.VODS), path)
 
 
-def _read_vod(data_dir: Path, video_id: str) -> Vod | None:
+def read_vod(data_dir: Path, video_id: str) -> Vod | None:
+    """The VOD's row from ``processed/vods.parquet``, or None when it isn't there."""
     path = vods_path(data_dir)
     if not path.is_file():
         return None

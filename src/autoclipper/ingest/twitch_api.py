@@ -437,6 +437,31 @@ class HelixClient:
             )
         return [found[login] for login in wanted]
 
+    def get_users_by_id(self, user_ids: Iterable[str]) -> list[Broadcaster]:
+        """Resolve user IDs with Get Users, in the order given (duplicates dropped).
+
+        The same endpoint as `get_users`, matched by ``id`` instead of ``login``: the VOD
+        record carries a broadcaster ID, and the analysis result needs the channel's
+        display name (api-contract.md § 4.1).
+
+        Raises:
+            TwitchNotFoundError: Some IDs don't exist; ``missing`` lists them.
+            ValueError: ``user_ids`` is a single string, empty, or contains a blank ID.
+        """
+        wanted = _unique_values(user_ids, "user_ids", normalize=str.strip)
+        found: dict[str, Broadcaster] = {}
+        for batch in _batches(wanted):
+            page = self.get("/users", [("id", user_id) for user_id in batch])
+            for record in page.records:
+                user = _parse_broadcaster(record, page.fetched_at)
+                found[user.broadcaster_id] = user
+        missing = [user_id for user_id in wanted if user_id not in found]
+        if missing:
+            raise TwitchNotFoundError(
+                f"no Twitch user with ID {', '.join(missing)}", missing=missing
+            )
+        return [found[user_id] for user_id in wanted]
+
     def get_videos(self, video_ids: Iterable[str]) -> list[Vod]:
         """Fetch videos by ID with Get Videos, in the order given (duplicates dropped).
 

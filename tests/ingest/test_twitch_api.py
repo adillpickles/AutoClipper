@@ -199,6 +199,49 @@ def _user(login: str) -> dict[str, object]:
     return {"id": f"9{login[-3:]}", "login": login, "display_name": login, "broadcaster_type": ""}
 
 
+def _user_by_id(user_id: str) -> dict[str, object]:
+    return {
+        "id": user_id,
+        "login": f"user_{user_id[-3:]}",
+        "display_name": f"User_{user_id[-3:]}",
+        "broadcaster_type": "partner",
+    }
+
+
+def test_get_users_by_id_parses_broadcasters_in_requested_order(
+    make_client: MakeClient, clock: FakeClock
+) -> None:
+    client, fake = make_client(ok({"data": [_user_by_id("9000000002"), _user_by_id("9000000001")]}))
+
+    users = client.get_users_by_id(["9000000001", "9000000002", "9000000002"])
+
+    assert [u.broadcaster_id for u in users] == ["9000000001", "9000000002"]
+    assert users[0].display_name == "User_001"
+    assert users[1].broadcaster_type == "partner"
+    assert users[0].fetched_at == clock.now
+    assert fake.helix_requests[0].url.params.get_list("id") == ["9000000001", "9000000002"]
+
+
+def test_get_users_by_id_raises_not_found_listing_missing_ids(make_client: MakeClient) -> None:
+    client, _ = make_client(ok({"data": [_user_by_id("9000000001")]}))
+
+    with pytest.raises(TwitchNotFoundError) as caught:
+        client.get_users_by_id(["9000000001", "9000000009"])
+
+    assert caught.value.missing == ("9000000009",)
+
+
+@pytest.mark.parametrize("user_ids", ["9000000001", [], ["9000000001", "  "]])
+def test_get_users_by_id_rejects_bad_arguments(
+    make_client: MakeClient, user_ids: list[str] | str
+) -> None:
+    client, fake = make_client()
+
+    with pytest.raises(ValueError, match="user_ids"):
+        client.get_users_by_id(user_ids)
+    assert fake.requests == []
+
+
 # --- Get Videos ------------------------------------------------------------------------------
 
 
