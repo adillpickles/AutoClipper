@@ -79,6 +79,9 @@ HIGHLIGHTS_HEIGHT: Final = 1080
 MAX_SEGMENT_DURATION_S: Final = 90.0
 """The longest one segment may be (the contract's export `max_duration_s`)."""
 
+MAX_HIGHLIGHTS_SEGMENTS: Final = 20
+"""How many segments one highlights video may have (api-contract.md § 7.1)."""
+
 MAX_TOTAL_DURATION_S: Final = 900.0
 """The longest the whole video may be: 15 minutes (api-contract.md § 7.1)."""
 
@@ -191,6 +194,12 @@ def resolve_segments(
                 {"segment_index": None},
             )
     else:
+        if not 1 <= len(segments) <= MAX_HIGHLIGHTS_SEGMENTS:  # section 7.1's 1-20 items
+            raise InvalidHighlightsBoundsError(
+                f"a highlights video needs 1-{MAX_HIGHLIGHTS_SEGMENTS} segments; "
+                f"{len(segments)} were given",
+                {"segment_index": None},
+            )
         chosen = list(segments)
         known = {candidate.candidate_id for candidate in result.candidates}
         for segment in chosen:
@@ -198,8 +207,26 @@ def resolve_segments(
                 raise ValueError(f"no candidate {segment.candidate_id} in the analysis result")
     ranks = {candidate.candidate_id: candidate.rank for candidate in result.candidates}
     if order == "rank":
-        return sorted(chosen, key=lambda s: (ranks[s.candidate_id], s.start_s, s.end_s))
-    return sorted(chosen, key=lambda s: (s.start_s, s.end_s, ranks[s.candidate_id]))
+        # § 7.1: rank, then start_s. Python's sort is stable, so equal keys keep the
+        # supplied order.
+        ordered = sorted(chosen, key=lambda s: (ranks[s.candidate_id], s.start_s))
+    else:
+        # § 7.1: start_s, then end_s, then the candidate's rank.
+        ordered = sorted(chosen, key=lambda s: (s.start_s, s.end_s, ranks[s.candidate_id]))
+    # Every segment must satisfy its candidate's export bounds, with the whole VOD as the
+    # bounds here (§ 7.1, § 4.6); the details name the first offender in the ordered list.
+    for index, segment in enumerate(ordered):
+        if not 0.0 <= segment.start_s < segment.end_s <= result.vod.duration_s:
+            raise InvalidHighlightsBoundsError(
+                f"segment {index} ({segment.candidate_id}) must be inside the VOD's "
+                f"0-{result.vod.duration_s:g} s; it is {segment.start_s:g}-{segment.end_s:g} s",
+                {
+                    "segment_index": index,
+                    "max_duration_s": MAX_SEGMENT_DURATION_S,
+                    "max_total_duration_s": MAX_TOTAL_DURATION_S,
+                },
+            )
+    return ordered
 
 
 def render_highlights(
@@ -273,7 +300,15 @@ def render_highlights(
             pieces.append(piece)
             planned_s += duration_s
         report("rendering")
-        video = _join(pieces, output, planned_s, len(request.segments), encode, runner=runner)
+        video = _join(
+            pieces,
+            output,
+            planned_s,
+            len(request.segments),
+            encode,
+            overwrite=request.overwrite,
+            runner=runner,
+        )
     return HighlightsResult(
         output=output,
         segments=tuple(request.segments),
@@ -402,17 +437,12 @@ def _render_segment(
         reframe = _letterbox_plan(video)
         video_filters: list[str] = []
         audio_filters: list[str] = []
-        fade_out_at = max(0.0, cut.actual.duration_s - FADE_S / 2)
-        if index > 0:  # fade in from the previous segment
-            video_filters.append(f"fade=t=in:st=0:d={FADE_S / 2:g}")
-            audio_filters.append(f"afade=t=in:st=0:d={FADE_S / 2:g}")
-        if index < n - 1:  # fade out into the next segment
-            video_filters.append(f"fade=t=out:st={fade_out_at:g}:d={FADE_S / 2:g}")
-            audio_filters.append(f"afade=t=out:st={fade_out_at:g}:d={FADE_S / 2:g}")
         if request.captions:
             assert transcriber is not None
             # The captions read the source on the corrected timeline, like the cut itself,
-            # so the words land where the segment's picture shows them.
+            # so the words land where the segment's picture shows them. They are burned in
+            # BEFORE the fades, so a caption that spans a join fades out with the picture
+            # instead of staying bright over the black transition.
             lines = caption_lines_for(request.source, actual, transcriber, work_dir, runner=runner)
             ass = work_dir / f"captions-{index:03d}.ass"
             ass.write_text(
@@ -421,6 +451,13 @@ def _render_segment(
                 newline="\n",
             )
             video_filters.append(subtitles_filter(ass))
+        fade_out_at = max(0.0, cut.actual.duration_s - FADE_S / 2)
+        if index > 0:  # fade in from the previous segment
+            video_filters.append(f"fade=t=in:st=0:d={FADE_S / 2:g}")
+            audio_filters.append(f"afade=t=in:st=0:d={FADE_S / 2:g}")
+        if index < n - 1:  # fade out into the next segment
+            video_filters.append(f"fade=t=out:st={fade_out_at:g}:d={FADE_S / 2:g}")
+            audio_filters.append(f"afade=t=out:st={fade_out_at:g}:d={FADE_S / 2:g}")
 
         keyframe_s = find_keyframe(
             window.path,
@@ -486,6 +523,7 @@ def _join(
     n_segments: int,
     settings: EncodeSettings,
     *,
+    overwrite: bool,
     runner: Runner | None,
 ) -> MediaInfo:
     """Stream-copy the pieces into one MP4 and check the joined result."""
@@ -495,10 +533,13 @@ def _join(
     )
     os.close(fd)
     temp = Path(temp_name)
-    list_path = temp.with_suffix(".txt")
+    # The list file lives next to the pieces and names them by their plain file names, which
+    # this code chose: a path with an apostrophe (a Windows user folder) can't be quoted in
+    # the ffconcat syntax, but the names never contain one.
+    list_path = pieces[0].parent / "segments.ffconcat"
     try:
         list_path.write_text(
-            "\n".join(["ffconcat version 1.0", *(f"file '{piece.as_posix()}'" for piece in pieces)])
+            "\n".join(["ffconcat version 1.0", *(f"file '{piece.name}'" for piece in pieces)])
             + "\n",
             encoding="utf-8",
             newline="\n",
@@ -551,7 +592,9 @@ def _join(
                 f"{HIGHLIGHTS_WIDTH}x{HIGHLIGHTS_HEIGHT} {OUTPUT_VIDEO_CODEC}/"
                 f"{OUTPUT_AUDIO_CODEC} shape: {'; '.join(problems)}"
             )
-        publish_output(temp, output, overwrite=True)
+        # `overwrite` decides here too: a file that appeared at the output since the check
+        # at the start of the render is kept, not silently replaced.
+        publish_output(temp, output, overwrite=overwrite)
     except BaseException:
         with contextlib.suppress(OSError):
             temp.unlink(missing_ok=True)
@@ -573,6 +616,7 @@ __all__ = [
     "FADE_S",
     "HIGHLIGHTS_HEIGHT",
     "HIGHLIGHTS_WIDTH",
+    "MAX_HIGHLIGHTS_SEGMENTS",
     "MAX_SEGMENT_DURATION_S",
     "MAX_TOTAL_DURATION_S",
     "HighlightsRequest",

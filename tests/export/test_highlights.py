@@ -22,6 +22,7 @@ from autoclipper.export.errors import ExportError
 from autoclipper.export.highlights import (
     HIGHLIGHTS_HEIGHT,
     HIGHLIGHTS_WIDTH,
+    MAX_HIGHLIGHTS_SEGMENTS,
     MAX_SEGMENT_DURATION_S,
     HighlightsRequest,
     InvalidHighlightsBoundsError,
@@ -183,6 +184,54 @@ def test_resolution_rejects_unknown_candidates_and_empty_results() -> None:
     assert excinfo.value.details == {"segment_index": None}
 
 
+def test_resolution_rejects_segments_outside_the_vod() -> None:
+    """A trim must lie inside the whole VOD (§ 7.1's export bounds), named by its index in
+    the ordered list."""
+    result = analysis_result([("c001", 1.0, 4.0)])  # a 20 s VOD
+
+    beyond = [Segment("c001", 5.0, 21.0)]  # ends after the VOD
+    with pytest.raises(InvalidHighlightsBoundsError) as excinfo:
+        resolve_segments(result, count=2, segments=beyond, order="chronological")
+    assert excinfo.value.details["segment_index"] == 0
+    assert "0-20 s" in str(excinfo.value)
+
+    negative = [Segment("c001", 1.0, 2.0), Segment("c001", -1.0, 2.0)]
+    with pytest.raises(InvalidHighlightsBoundsError) as negative_info:
+        resolve_segments(result, count=2, segments=negative, order="chronological")
+    # Ordering sorts the -1.0 start first, so that is the first offender.
+    assert negative_info.value.details["segment_index"] == 0
+
+
+def test_resolution_caps_explicit_segments_at_twenty() -> None:
+    result = analysis_result([("c001", 1.0, 4.0)])
+
+    with pytest.raises(InvalidHighlightsBoundsError, match="1-20"):
+        resolve_segments(
+            result,
+            count=2,
+            segments=[Segment("c001", 1.0, 1.5)] * (MAX_HIGHLIGHTS_SEGMENTS + 1),
+            order="rank",
+        )
+
+
+def test_rank_order_keeps_supplied_order_between_equal_keys() -> None:
+    """§ 7.1 sorts by (rank, start_s); segments that tie on both keep their supplied order
+    (no end_s tie breaker)."""
+    result = analysis_result([("c001", 1.0, 4.0)])
+
+    resolved = resolve_segments(
+        result,
+        count=2,
+        segments=[
+            Segment("c001", 2.0, 2.5),
+            Segment("c001", 2.0, 3.0),
+        ],
+        order="rank",
+    )
+
+    assert [s.end_s for s in resolved] == [2.5, 3.0]
+
+
 def test_bounds_name_the_offending_segment_and_the_limits() -> None:
     too_long = [Segment("c001", 0.0, MAX_SEGMENT_DURATION_S + 0.5)]
     with pytest.raises(InvalidHighlightsBoundsError) as excinfo:
@@ -301,6 +350,31 @@ def test_captions_are_burned_into_each_segment(tmp_path: Path) -> None:
     assert bright_pixels(rendered.output, 2.6, tmp_path) == 0
 
 
+def test_captions_fade_out_with_the_picture_at_a_join(tmp_path: Path) -> None:
+    """A caption that runs to the end of a segment dims with the fade through black instead
+    of staying bright over the transition (the fade applies after the subtitles)."""
+
+    class LongTranscriber:
+        def __call__(self, wav: Path) -> list[Word]:
+            return [Word(start_s=0.2, end_s=3.0, text="WORDS ALL THE WAY TO THE END")]
+
+    source = black_video_with_tone(tmp_path / "vod.mp4")
+    chosen = [Segment("c001", 1.0, 4.0), Segment("c002", 6.0, 9.0)]
+
+    rendered = render_highlights(
+        HighlightsRequest(
+            source=source, segments=chosen, output=tmp_path / "out.mp4", captions=True
+        ),
+        transcriber=LongTranscriber(),
+    )
+
+    # Mid-segment the caption is bright; at the segment's last frames the fade has taken
+    # the caption down with the picture (~13% brightness at the boundary).
+    assert bright_pixels(rendered.output, 1.5, tmp_path) > 1000
+    faded = bright_pixels(rendered.output, 2.967, tmp_path)
+    assert faded < 100  # mostly dark: the caption went out with the picture
+
+
 def test_a_segment_the_video_does_not_cover_is_invalid(
     tmp_path: Path, make_test_media: Callable[..., Path]
 ) -> None:
@@ -337,31 +411,63 @@ runner = CliRunner()
 def test_the_cli_rejects_missing_inputs(
     tmp_path: Path, make_test_media: Callable[..., Path]
 ) -> None:
-    video = make_test_media("vod.mp4", duration_s=6.0)
-    missing_result = runner.invoke(app, ["highlights", "missing.json", str(video)])
+    video = make_test_media("vod.mp4", duration_s=120.0)
+    missing_result = runner.invoke(app, ["highlights", "missing.json", "--video", str(video)])
     result = tmp_path / "result.json"
     result.write_text("{}", encoding="utf-8")
-    bad_result = runner.invoke(app, ["highlights", str(result), str(video)])
+    bad_result = runner.invoke(app, ["highlights", str(result), "--video", str(video)])
+    no_video = runner.invoke(app, ["highlights", str(result), "--video", "missing.mp4"])
     segments = tmp_path / "segments.json"
     segments.write_text(
         json.dumps({"segments": [{"candidate_id": "c001", "start_s": 0.0, "end_s": 91.0}]}),
+        encoding="utf-8",
+    )
+    outside = tmp_path / "outside.json"
+    outside.write_text(
+        json.dumps({"segments": [{"candidate_id": "c001", "start_s": 100.0, "end_s": 121.0}]}),
         encoding="utf-8",
     )
 
     assert missing_result.exit_code == ExitCode.USER_ERROR
     assert bad_result.exit_code == ExitCode.USER_ERROR
     assert "not a valid analysis result" in bad_result.output
+    assert no_video.exit_code == ExitCode.USER_ERROR
+    assert "video file not found" in no_video.output
 
-    analysis = analysis_result([("c001", 0.0, 3.0), ("c002", 3.5, 5.5)], duration_s=6.0)
+    analysis = analysis_result([("c001", 0.0, 3.0), ("c002", 3.5, 5.5)], duration_s=120.0)
     result.write_text(analysis.model_dump_json(), encoding="utf-8")
     bounds = runner.invoke(
         app,
-        ["highlights", str(result), str(video), "--segments", str(segments)],
+        ["highlights", str(result), "--video", str(video), "--segments", str(segments)],
+    )
+    beyond_vod = runner.invoke(
+        app,
+        ["highlights", str(result), "--video", str(video), "--segments", str(outside)],
+    )
+    too_many = tmp_path / "too-many.json"
+    too_many.write_text(
+        json.dumps(
+            {
+                "segments": [
+                    {"candidate_id": "c001", "start_s": float(i), "end_s": float(i) + 0.5}
+                    for i in range(MAX_HIGHLIGHTS_SEGMENTS + 1)
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    twenty_one = runner.invoke(
+        app,
+        ["highlights", str(result), "--video", str(video), "--segments", str(too_many)],
     )
 
     assert bounds.exit_code == ExitCode.USER_ERROR
     assert "invalid_highlights_bounds" in bounds.output
-    assert "at most 90" in bounds.output
+    assert "at most 90" in bounds.output  # inside the VOD, over the per-segment maximum
+    assert beyond_vod.exit_code == ExitCode.USER_ERROR
+    assert "must be inside the VOD's 0-120 s" in beyond_vod.output
+    assert twenty_one.exit_code == ExitCode.USER_ERROR
+    assert "1-20" in twenty_one.output  # the segment-count cap (section 7.1)
 
 
 def test_the_cli_writes_the_highlights_video(
@@ -377,7 +483,16 @@ def test_the_cli_writes_the_highlights_video(
     monkeypatch.setenv("AUTOCLIPPER_ARTIFACTS_DIR", str(artifacts))
 
     done = runner.invoke(
-        app, ["highlights", str(result_path), str(video), "--count", "2", "--overwrite"]
+        app,
+        [
+            "highlights",
+            str(result_path),
+            "--video",
+            str(video),
+            "--count",
+            "2",
+            "--overwrite",
+        ],
     )
 
     assert done.exit_code == ExitCode.SUCCESS, done.output
@@ -389,6 +504,33 @@ def test_the_cli_writes_the_highlights_video(
     assert "Wrote" in done.output
 
     # The default output name is fixed; a second run needs --overwrite.
-    again = runner.invoke(app, ["highlights", str(result_path), str(video), "--count", "2"])
+    again = runner.invoke(
+        app, ["highlights", str(result_path), "--video", str(video), "--count", "2"]
+    )
     assert again.exit_code == ExitCode.USER_ERROR
     assert "exists" in again.output
+
+
+def test_the_cli_reports_unexpected_failures_as_internal_error(
+    tmp_path: Path,
+    make_test_media: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bug in the renderer exits 3 with a generic message (§ 4.6)."""
+    video = make_test_media("vod.mp4", duration_s=6.0)
+    result = analysis_result([("c001", 1.0, 3.0)], duration_s=6.0)
+    result_path = tmp_path / "result.json"
+    result_path.write_text(result.model_dump_json(), encoding="utf-8")
+    monkeypatch.setenv("AUTOCLIPPER_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+
+    def broken(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("a bug")
+
+    monkeypatch.setattr("autoclipper.export.highlights.render_highlights", broken)
+
+    done = runner.invoke(app, ["highlights", str(result_path), "--video", str(video)])
+
+    assert done.exit_code == ExitCode.INTERNAL_ERROR
+    error_lines = [line for line in done.output.splitlines() if "internal_error" in line]
+    assert error_lines
+    assert all("a bug" not in line for line in error_lines)

@@ -447,7 +447,11 @@ def highlights(
         Path, typer.Argument(help="A saved AnalysisResult JSON (autoclipper analyze's output).")
     ],
     video: Annotated[
-        Path, typer.Argument(help="The VOD's video file; it must start at the VOD's start.")
+        Path,
+        typer.Option(
+            help="The VOD's video file; it must start at the VOD's start.",
+            show_default=False,
+        ),
     ],
     count: Annotated[int, typer.Option(min=1, max=20, help="Top candidates to include.")] = 10,
     order: Annotated[
@@ -483,6 +487,7 @@ def highlights(
     from autoclipper.export.captions import CaptioningError
     from autoclipper.export.errors import ExportError
     from autoclipper.export.highlights import (
+        MAX_HIGHLIGHTS_SEGMENTS,
         HighlightsRequest,
         InvalidHighlightsBoundsError,
         Segment,
@@ -523,6 +528,13 @@ def highlights(
                 err=True,
             )
             raise typer.Exit(ExitCode.USER_ERROR) from None
+        if not 1 <= len(explicit) <= MAX_HIGHLIGHTS_SEGMENTS:  # section 7.1's 1-20 items
+            typer.echo(
+                f"Error: {segments} has {len(explicit)} segments; a highlights video needs "
+                f"1-{MAX_HIGHLIGHTS_SEGMENTS}",
+                err=True,
+            )
+            raise typer.Exit(ExitCode.USER_ERROR)
     settings = get_settings()
     video_id = analysis.vod.video_id
     target = out or settings.artifacts_dir / "highlights" / f"autoclipper_{video_id}_highlights.mp4"
@@ -566,18 +578,28 @@ def highlights(
     except ValueError as exc:  # a segment naming a candidate that isn't in the result
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
-    except CaptioningError as exc:  # a missing install or a failing model: an external tool
+    except CaptioningError as exc:  # § 4.6's exit-1 codes
         typer.echo(f"Error: captioning_failed: {exc}", err=True)
-        raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+        raise typer.Exit(ExitCode.USER_ERROR) from None
     except FileExistsError:
         typer.echo(f"Error: {target} exists; pass --overwrite to replace it", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
     except ExportError as exc:
-        typer.echo(f"Error: {exc}", err=True)
+        typer.echo(f"Error: render_failed: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
     except FFmpegError as exc:
         typer.echo(f"Error: render_failed: {exc}", err=True)
-        raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    except Exception as exc:  # a bug: details to the log, message generic (§ 4.6)
+        logging.getLogger(__name__).exception(
+            "highlights failed unexpectedly result=%s", result, exc_info=exc
+        )
+        typer.echo(
+            "Error: internal_error: something went wrong that shouldn't have; "
+            "the log has the details",
+            err=True,
+        )
+        raise typer.Exit(ExitCode.INTERNAL_ERROR) from None
     typer.echo(
         f"Wrote {rendered.output} ({rendered.duration_s:.2f} s, "
         f"{len(rendered.segments)} segments, {rendered.width}x{rendered.height})"
