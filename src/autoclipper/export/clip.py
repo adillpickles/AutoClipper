@@ -19,14 +19,20 @@ from autoclipper.export.captions import Stage, Transcriber, export_clip_with_cap
 from autoclipper.export.cut import Interval
 from autoclipper.export.encode import EncodeSettings, ExportRequest, ExportResult, export_clip
 from autoclipper.export.errors import ExportError
-from autoclipper.export.reframe import CenterCrop, Layout, layout_from_settings
+from autoclipper.export.reframe import (
+    CenterCrop,
+    Layout,
+    StackedLayout,
+    layout_from_settings,
+    stacked_layout_from_region,
+)
 from autoclipper.ffmpeg import Runner
 
 log = logging.getLogger(__name__)
 
-type LayoutName = Literal["center_crop", "configured_region"]
+type LayoutName = Literal["center_crop", "configured_region", "stacked"]
 
-LAYOUT_NAMES: Final[tuple[LayoutName, ...]] = ("center_crop", "configured_region")
+LAYOUT_NAMES: Final[tuple[LayoutName, ...]] = ("center_crop", "configured_region", "stacked")
 # The longest clip (api-contract.md § 5 `max_duration_s`, labeling.md § 2 export preset).
 MAX_CLIP_DURATION_S: Final = 90.0
 
@@ -43,6 +49,10 @@ class NoRegionConfiguredError(ExportError):
     """``configured_region`` was asked for, but ``AUTOCLIPPER_EXPORT_REGION`` isn't set."""
 
 
+class NoFacecamConfiguredError(ExportError):
+    """``stacked`` was asked for, but no facecam region or channel preset is configured (#68)."""
+
+
 class IntervalOutsideMediaError(ExportError):
     """The source's video and audio don't cover the whole interval, so the clip can't be exact."""
 
@@ -55,9 +65,11 @@ class ClipSpec:
         source: The video file; it must start at VOD time 0 (times are file times).
         interval: The interval to export, exactly as the user trimmed it.
         output: Where to write the MP4.
-        layout: ``center_crop`` or ``configured_region`` (the region set in config).
+        layout: ``center_crop``, ``configured_region``, or ``stacked`` (#68).
         captions: Burn in captions of the speech.
         overwrite: Replace an existing file at `output`.
+        stacked_layout: Optional explicit `StackedLayout` (e.g. from a channel preset) used
+            when `layout` is ``"stacked"``.
     """
 
     source: Path
@@ -66,22 +78,50 @@ class ClipSpec:
     layout: LayoutName = "center_crop"
     captions: bool = False
     overwrite: bool = False
+    stacked_layout: StackedLayout | None = None
 
 
-def available_layouts(region: tuple[float, float, float, float] | None) -> tuple[LayoutName, ...]:
-    """The layouts that can be rendered: ``configured_region`` only when a region is set."""
-    return LAYOUT_NAMES if region is not None else ("center_crop",)
+def available_layouts(
+    region: tuple[float, float, float, float] | None,
+    *,
+    facecam_region: tuple[float, float, float, float] | None = None,
+    stacked_layout: StackedLayout | None = None,
+) -> tuple[LayoutName, ...]:
+    """The layouts that can be rendered given the configured regions and channel preset."""
+    layouts: list[LayoutName] = ["center_crop"]
+    if region is not None:
+        layouts.append("configured_region")
+    if stacked_layout is not None or facecam_region is not None:
+        layouts.append("stacked")
+    return tuple(layouts)
 
 
-def layout_named(name: LayoutName, region: tuple[float, float, float, float] | None) -> Layout:
+def layout_named(
+    name: LayoutName,
+    region: tuple[float, float, float, float] | None,
+    *,
+    facecam_region: tuple[float, float, float, float] | None = None,
+    stacked_layout: StackedLayout | None = None,
+) -> Layout:
     """The `Layout` behind a contract layout name.
 
     Raises:
         NoRegionConfiguredError: ``configured_region`` without a configured region.
-        InvalidLayoutError: The configured region is out of bounds.
+        NoFacecamConfiguredError: ``stacked`` without a facecam region or channel preset.
+        InvalidLayoutError: A configured region is out of bounds.
     """
     if name == "center_crop":
         return CenterCrop()
+    if name == "stacked":
+        if stacked_layout is not None:
+            return stacked_layout
+        if facecam_region is not None:
+            return stacked_layout_from_region(facecam_region)
+        raise NoFacecamConfiguredError(
+            "the stacked layout needs AUTOCLIPPER_EXPORT_FACECAM_REGION (x,y,width,height "
+            "as fractions of the frame), --facecam-region, or a channel preset in "
+            "configs/channels.yaml"
+        )
     if region is None:
         raise NoRegionConfiguredError(
             "the configured_region layout needs AUTOCLIPPER_EXPORT_REGION (x,y,width,height "
@@ -94,6 +134,8 @@ def render_clip(
     spec: ClipSpec,
     *,
     region: tuple[float, float, float, float] | None = None,
+    facecam_region: tuple[float, float, float, float] | None = None,
+    stacked_layout: StackedLayout | None = None,
     transcriber: Transcriber | None = None,
     on_stage: Callable[[Stage], None] | None = None,
     max_duration_s: float = MAX_CLIP_DURATION_S,
@@ -105,6 +147,8 @@ def render_clip(
     Args:
         spec: What to render.
         region: ``Settings.export_region``, for the ``configured_region`` layout.
+        facecam_region: ``Settings.export_facecam_region``, for the ``stacked`` layout (#68).
+        stacked_layout: Explicit `StackedLayout` (e.g. from a channel preset) for ``stacked``.
         transcriber: For captions; defaults to faster-whisper with the configured model.
         on_stage: Called with ``transcribing`` when transcription starts (captions only) and
             ``rendering`` when cutting and encoding starts.
@@ -127,7 +171,12 @@ def render_clip(
         )
     if not spec.source.is_file():
         raise SourceMissingError(f"video file not found: {spec.source}")
-    layout = layout_named(spec.layout, region)
+    layout = layout_named(
+        spec.layout,
+        region,
+        facecam_region=facecam_region,
+        stacked_layout=spec.stacked_layout or stacked_layout,
+    )
     request = ExportRequest(spec.source, interval, spec.output, layout, overwrite=spec.overwrite)
     tolerance_s = 1.0 / (settings or EncodeSettings()).frame_rate
 

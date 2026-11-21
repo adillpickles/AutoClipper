@@ -25,7 +25,7 @@ import queue
 import secrets
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -55,6 +55,7 @@ from autoclipper.export.highlights import (
 from autoclipper.export.highlights import (
     Stage as HighlightsStage,
 )
+from autoclipper.export.reframe import StackedLayout, stacked_layout_from_region
 from autoclipper.features.chat import Lexicon
 from autoclipper.ffmpeg import FFmpegError, ffmpeg_command, probe, run_command
 from autoclipper.ingest.media import (
@@ -458,6 +459,8 @@ class MockService:
     clock: Clock = _utc_now
     synchronous: bool = False
     export_region: tuple[float, float, float, float] | None = None
+    export_facecam_region: tuple[float, float, float, float] | None = None
+    channel_layouts: Mapping[str, StackedLayout] | None = None
     transcriber: Transcriber | None = None
     render: ClipRenderer = render_clip
     highlights_render: HighlightsRenderer = render_highlights
@@ -979,7 +982,7 @@ class MockService:
                     reason=None,
                     message=_PREPARING_LOCAL_MESSAGE,
                 )
-            export = self._whole_vod_export(duration_s)
+            export = self._whole_vod_export(job, duration_s)
         elif self._needs_segment(job):
             return self._segment_media(job, candidate)
         elif job.video_id == mock.NO_MEDIA_VIDEO_ID:
@@ -1012,7 +1015,7 @@ class MockService:
                 reason=None,
                 message=None,
             )
-            export = self._whole_vod_export(duration_s)
+            export = self._whole_vod_export(job, duration_s)
         return CandidateMedia(
             job_id=job.job_id,
             candidate_id=candidate.candidate_id,
@@ -1021,7 +1024,53 @@ class MockService:
             export=export,
         )
 
-    def _whole_vod_export(self, duration_s: float) -> ExportAvailability:
+    def _stacked_layout_for(self, job: _JobRecord) -> StackedLayout | None:
+        """Return the channel preset or global facecam stacked layout for `job`, if any (#68)."""
+        if self.channel_layouts and job.result is not None:
+            vod = job.result.vod
+            # Prefer canonical broadcaster_id or login (from processed/broadcasters.parquet
+            # when present) before falling back to display name.
+            keys: list[str] = [vod.broadcaster_id]
+            login = self._broadcaster_login(vod.broadcaster_id)
+            if login is not None:
+                keys.append(login.lower())
+            keys.append(vod.broadcaster_display_name.lower())
+            for key in keys:
+                preset = self.channel_layouts.get(key)
+                if preset is not None:
+                    return preset
+        if self.export_facecam_region is not None:
+            return stacked_layout_from_region(self.export_facecam_region)
+        return None
+
+    def _broadcaster_login(self, broadcaster_id: str) -> str | None:
+        """Resolve canonical Twitch login for `broadcaster_id` from processed data, if present."""
+        if self.data_dir is None:
+            return None
+        table = self.data_dir / "processed" / "broadcasters.parquet"
+        if not table.is_file():
+            return None
+        try:
+            import polars as pl
+
+            rows = (
+                pl.read_parquet(table, columns=["broadcaster_id", "login"])
+                .filter(pl.col("broadcaster_id") == broadcaster_id)
+                .get_column("login")
+                .to_list()
+            )
+            return str(rows[0]) if rows else None
+        except Exception:
+            return None
+
+    def _layouts_for(self, job: _JobRecord) -> tuple[str, ...]:
+        return available_layouts(
+            self.export_region,
+            facecam_region=self.export_facecam_region,
+            stacked_layout=self._stacked_layout_for(job),
+        )
+
+    def _whole_vod_export(self, job: _JobRecord, duration_s: float) -> ExportAvailability:
         """Export availability over a source that covers the whole VOD."""
         return ExportAvailability(
             status="available",
@@ -1030,7 +1079,7 @@ class MockService:
             min_start_s=0.0,
             max_end_s=duration_s,
             max_duration_s=MAX_EXPORT_DURATION_S,
-            layouts=available_layouts(self.export_region),
+            layouts=self._layouts_for(job),
         )
 
     def _segment_media(self, job: _JobRecord, candidate: Candidate) -> CandidateMedia:
@@ -1092,7 +1141,7 @@ class MockService:
                 min_start_s=state.planned_begin_s,
                 max_end_s=state.planned_end_s,
                 max_duration_s=MAX_EXPORT_DURATION_S,
-                layouts=available_layouts(self.export_region),
+                layouts=self._layouts_for(job),
             )
             return CandidateMedia(
                 job_id=job.job_id,
@@ -1155,7 +1204,7 @@ class MockService:
             min_start_s=begin,
             max_end_s=end,
             max_duration_s=MAX_EXPORT_DURATION_S,
-            layouts=available_layouts(self.export_region),
+            layouts=self._layouts_for(job),
         )
         return CandidateMedia(
             job_id=job.job_id,
@@ -1744,6 +1793,7 @@ class MockService:
             output=target,
             layout=request.layout,
             captions=request.captions,
+            stacked_layout=(self._stacked_layout_for(job) if request.layout == "stacked" else None),
         )
         try:
             self.render(
