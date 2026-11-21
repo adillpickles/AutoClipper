@@ -2400,3 +2400,39 @@ def test_stacked_layout_is_offered_and_rendered_when_facecam_configured(
     assert renderer.specs[0].layout == "stacked"
     assert renderer.specs[0].stacked_layout is not None
     assert renderer.specs[0].stacked_layout.facecam.x == pytest.approx(0.02)
+
+
+def test_stacked_layout_resolves_channel_preset_by_broadcaster_id_and_login(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+) -> None:
+    """Channel presets match by broadcaster_id or canonical login from broadcasters.parquet
+    even when display_name differs or falls back to the broadcaster ID (#68)."""
+    import polars as pl
+
+    from autoclipper.export.reframe import stacked_layout_from_region
+
+    data_dir = tmp_path / "data"
+    (data_dir / "processed").mkdir(parents=True)
+    # Mock VOD 9000000001 has broadcaster_id "9100000001" and display_name "user_001".
+    pl.DataFrame({"broadcaster_id": ["9100000001"], "login": ["jynxzi"]}).write_parquet(
+        data_dir / "processed" / "broadcasters.parquet"
+    )
+    preset = stacked_layout_from_region((0.02, 0.04, 0.22, 0.28))
+    renderer = FakeRenderer()
+    client, _ = make_client(
+        render=renderer,
+        data_dir=data_dir,
+        channel_layouts={"jynxzi": preset},
+    )
+    job = done_job(client)
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert "stacked" in media["export"]["layouts"]
+
+    made = client.post(
+        f"{API}/exports",
+        json=export_body(job["job_id"], layout="stacked", captions=False),
+    )
+    assert made.status_code == 201
+    assert renderer.specs[0].stacked_layout == preset

@@ -539,7 +539,7 @@ When the user selects a candidate, the client calls `GET /api/v1/jobs/{job_id}/c
 | `min_start_s` | float \| null | Earliest export `start_s` allowed; non-null iff `available` |
 | `max_end_s` | float \| null | Latest export `end_s` allowed; non-null iff `available` |
 | `max_duration_s` | float \| null | Longest export allowed (`end_s - start_s`); non-null iff `available`. Server-configured; default 90 s, the export preset in [labeling § 2](../data/labeling.md#2-from-clips-to-moments). |
-| `layouts` | list<str> | Layouts the server can render now (§ 6.1); `[]` iff `unavailable`. `configured_region` is listed only when the server has a region configured (`AUTOCLIPPER_EXPORT_REGION`). Clients ignore values they don't know. |
+| `layouts` | list<str> | Layouts the server can render now (§ 6.1); `[]` iff `unavailable`. `configured_region` is listed only when `AUTOCLIPPER_EXPORT_REGION` is set; `stacked` is listed when `AUTOCLIPPER_EXPORT_FACECAM_REGION` or a channel preset in `configs/channels.yaml` applies (#68). Clients ignore values they don't know. |
 
 `MediaUnavailableReason` (open enum):
 
@@ -652,7 +652,7 @@ Layouts ([PRD § Export](../product/prd.md#export), #20, #68):
 - `configured_region`: one fixed 9:16 source region set in server configuration (e.g. where a streamer's layout puts the action). It isn't chosen per request in v1.
 - `stacked`: facecam region stacked above gameplay inside 1080×1920, listed when `AUTOCLIPPER_EXPORT_FACECAM_REGION` or a per-channel `stacked_layout` preset in `configs/channels.yaml` applies (#68).
 
-Further layouts (e.g. facecam stacked over gameplay, optional polish) would be added as new values (§ 10).
+Further layouts (e.g. automatic smart crop, optional polish) would be added as new values (§ 10).
 
 **Exact trim.** The export covers exactly `[start_s, end_s)` of the source as sent, to within one video frame. The server adds **no chat-lag shift and no padding**; a user who wants context trims wider ([overview § 4.6](overview.md#46-export), [labeling § 5](../data/labeling.md#5-chat-lag)). The interval may extend beyond the candidate's own bounds but must satisfy `export.min_start_s ≤ start_s < end_s ≤ export.max_end_s` and `end_s - start_s ≤ export.max_duration_s` (otherwise `422 invalid_export_bounds`). Output is always an MP4, H.264/AAC, 1080×1920 ([PRD § Export](../product/prd.md#export)).
 

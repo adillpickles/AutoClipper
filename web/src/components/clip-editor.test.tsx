@@ -151,7 +151,7 @@ describe("ClipEditor", () => {
 
     fireEvent.click(screen.getByLabelText("Move start 5 seconds earlier"));
     fireEvent.click(screen.getByLabelText("Move end 1 second later"));
-    fireEvent.click(screen.getByLabelText("Configured region (9:16)"));
+    fireEvent.click(await screen.findByLabelText("Configured region (9:16)"));
     fireEvent.click(screen.getByLabelText("Burn in captions"));
 
     fireEvent.click(screen.getByRole("button", { name: "Re-render clip" }));

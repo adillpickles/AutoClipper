@@ -17,7 +17,6 @@ from autoclipper.export.clip import (
 from autoclipper.export.cut import Interval
 from autoclipper.export.encode import build_export_command
 from autoclipper.export.reframe import (
-    DEFAULT_CHANNELS_PATH,
     OUTPUT_HEIGHT,
     OUTPUT_WIDTH,
     FixedRegion,
@@ -31,6 +30,7 @@ from autoclipper.export.reframe import (
 )
 from autoclipper.ffmpeg import AudioStream, VideoStream, ffmpeg_command, probe, run_command
 
+CHANNELS_PATH = Path(__file__).resolve().parents[2] / "configs" / "channels.yaml"
 PILOT_CHANNELS = ("caseoh_", "ishowspeed", "kaicenat", "jynxzi", "flightreacts")
 
 
@@ -88,11 +88,11 @@ def test_build_export_command_uses_filter_complex_with_vstack_and_post_filters(
 
 
 def test_all_pilot_channels_have_valid_stacked_layouts_in_channels_yaml() -> None:
-    presets = load_channel_stacked_layouts(DEFAULT_CHANNELS_PATH)
+    presets = load_channel_stacked_layouts(CHANNELS_PATH)
 
     for channel in PILOT_CHANNELS:
         assert channel in presets
-        layout = stacked_layout_for_channel(channel.upper())
+        layout = stacked_layout_for_channel(channel.upper(), channels_path=CHANNELS_PATH)
         assert layout is not None
         assert layout == presets[channel]
         for width, height in ((1920, 1080), (1280, 720)):
@@ -130,9 +130,12 @@ def test_export_facecam_region_setting(monkeypatch: pytest.MonkeyPatch) -> None:
         get_settings.cache_clear()
 
 
-def _make_facecam_over_gameplay_source(path: Path) -> Path:
-    """Generate a 16:9 640x360 clip: blue gameplay with a bright red facecam box at top-left."""
-    # Top-left box matches jynxzi's preset (x=0.02..0.24, y=0.04..0.32 -> x=12..154, y=14..115).
+def _make_facecam_over_gameplay_source(path: Path, facecam: FixedRegion) -> Path:
+    """Generate a 16:9 640x360 clip: blue gameplay with a bright red facecam at `facecam`."""
+    x = round(facecam.x * 640)
+    y = round(facecam.y * 360)
+    w = round(facecam.width * 640)
+    h = round(facecam.height * 360)
     run_command(
         ffmpeg_command(
             "-y",
@@ -140,7 +143,7 @@ def _make_facecam_over_gameplay_source(path: Path) -> Path:
             *("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3"),
             *(
                 "-vf",
-                "drawbox=x=10:y=12:w=150:h=108:color=red:t=fill",
+                f"drawbox=x={x}:y={y}:w={w}:h={h}:color=red:t=fill",
             ),
             *("-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"),
             *("-c:a", "aac", "-shortest", path),
@@ -174,7 +177,9 @@ def _sample_rgb(video: Path, x: int, y: int) -> tuple[int, int, int]:
 def test_stacked_export_puts_facecam_on_top_and_gameplay_below(tmp_path: Path) -> None:
     """End-to-end CLI export with --layout stacked --channel jynxzi places red facecam on top
     and blue gameplay below inside a 1080x1920 H.264/AAC MP4 (#68)."""
-    source = _make_facecam_over_gameplay_source(tmp_path / "stream.mp4")
+    preset = stacked_layout_for_channel("jynxzi", channels_path=CHANNELS_PATH)
+    assert preset is not None
+    source = _make_facecam_over_gameplay_source(tmp_path / "stream.mp4", preset.facecam)
     out = tmp_path / "stacked.mp4"
 
     cli = CliRunner()
@@ -191,6 +196,8 @@ def test_stacked_export_puts_facecam_on_top_and_gameplay_below(tmp_path: Path) -
             "stacked",
             "--channel",
             "jynxzi",
+            "--channels",
+            str(CHANNELS_PATH),
             "--output",
             str(out),
         ],
@@ -215,10 +222,12 @@ def test_stacked_export_puts_facecam_on_top_and_gameplay_below(tmp_path: Path) -
 @pytest.mark.ffmpeg
 @pytest.mark.parametrize("channel", PILOT_CHANNELS)
 def test_each_pilot_channel_stacked_preset_renders_1080x1920(tmp_path: Path, channel: str) -> None:
-    source = _make_facecam_over_gameplay_source(tmp_path / f"{channel}_src.mp4")
-    out = tmp_path / f"{channel}_stacked.mp4"
-    preset = stacked_layout_for_channel(channel)
+    """Every pilot channel preset crops its own facecam corner onto the top pane and gameplay
+    onto the bottom pane inside 1080x1920 (#68)."""
+    preset = stacked_layout_for_channel(channel, channels_path=CHANNELS_PATH)
     assert preset is not None
+    source = _make_facecam_over_gameplay_source(tmp_path / f"{channel}_src.mp4", preset.facecam)
+    out = tmp_path / f"{channel}_stacked.mp4"
 
     rendered = render_clip(
         ClipSpec(
@@ -233,3 +242,12 @@ def test_each_pilot_channel_stacked_preset_renders_1080x1920(tmp_path: Path, cha
     assert rendered.output == out
     info = probe(out)
     assert (info.video_streams[0].width, info.video_streams[0].height) == (1080, 1920)
+    plan = plan_reframe(preset, 640, 360)
+    top_y = plan.top.output_height // 2
+    bot_y = plan.top.output_height + plan.bottom.output_height // 2
+    top_r, _top_g, top_b = _sample_rgb(out, 540, top_y)
+    bot_r, _bot_g, bot_b = _sample_rgb(out, 540, bot_y)
+    assert top_r > 180
+    assert top_b < 80
+    assert bot_b > 180
+    assert bot_r < 80

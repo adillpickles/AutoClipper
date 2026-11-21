@@ -1027,12 +1027,41 @@ class MockService:
     def _stacked_layout_for(self, job: _JobRecord) -> StackedLayout | None:
         """Return the channel preset or global facecam stacked layout for `job`, if any (#68)."""
         if self.channel_layouts and job.result is not None:
-            preset = self.channel_layouts.get(job.result.vod.broadcaster_display_name.lower())
-            if preset is not None:
-                return preset
+            vod = job.result.vod
+            # Prefer canonical broadcaster_id or login (from processed/broadcasters.parquet
+            # when present) before falling back to display name.
+            keys: list[str] = [vod.broadcaster_id]
+            login = self._broadcaster_login(vod.broadcaster_id)
+            if login is not None:
+                keys.append(login.lower())
+            keys.append(vod.broadcaster_display_name.lower())
+            for key in keys:
+                preset = self.channel_layouts.get(key)
+                if preset is not None:
+                    return preset
         if self.export_facecam_region is not None:
             return stacked_layout_from_region(self.export_facecam_region)
         return None
+
+    def _broadcaster_login(self, broadcaster_id: str) -> str | None:
+        """Resolve canonical Twitch login for `broadcaster_id` from processed data, if present."""
+        if self.data_dir is None:
+            return None
+        table = self.data_dir / "processed" / "broadcasters.parquet"
+        if not table.is_file():
+            return None
+        try:
+            import polars as pl
+
+            rows = (
+                pl.read_parquet(table, columns=["broadcaster_id", "login"])
+                .filter(pl.col("broadcaster_id") == broadcaster_id)
+                .get_column("login")
+                .to_list()
+            )
+            return str(rows[0]) if rows else None
+        except Exception:
+            return None
 
     def _layouts_for(self, job: _JobRecord) -> tuple[str, ...]:
         return available_layouts(

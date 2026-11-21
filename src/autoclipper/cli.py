@@ -411,10 +411,15 @@ def export(
     channel: Annotated[
         str | None,
         typer.Option(
-            help="Pilot channel login from configs/channels.yaml for --layout stacked.",
+            help="Pilot channel login from --channels (default configs/channels.yaml) for "
+            "--layout stacked.",
             show_default=False,
         ),
     ] = None,
+    channels: Annotated[
+        Path,
+        typer.Option(help="Channels YAML file with per-channel stacked_layout presets."),
+    ] = Path("configs/channels.yaml"),
     captions: Annotated[
         bool,
         typer.Option(help="Burn in captions of the speech (needs `uv sync --extra captions`)."),
@@ -449,14 +454,13 @@ def export(
             raise typer.Exit(ExitCode.USER_ERROR) from None
     elif channel is not None:
         try:
-            stacked = stacked_layout_for_channel(channel)
+            stacked = stacked_layout_for_channel(channel, channels_path=channels)
         except ExportError as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(ExitCode.USER_ERROR) from None
         if stacked is None:
             typer.echo(
-                f"Error: no stacked_layout preset found for channel {channel!r} in "
-                "configs/channels.yaml",
+                f"Error: no stacked_layout preset found for channel {channel!r} in {channels}",
                 err=True,
             )
             raise typer.Exit(ExitCode.USER_ERROR)
@@ -867,6 +871,10 @@ def serve(
     lexicon: Annotated[Path, typer.Option(help="Versioned chat lexicon (pipeline jobs).")] = Path(
         "configs/lexicon.yaml"
     ),
+    channels: Annotated[
+        Path,
+        typer.Option(help="Channels YAML file with per-channel stacked_layout presets."),
+    ] = Path("configs/channels.yaml"),
 ) -> None:
     """Run the backend API (open /docs for the endpoints)."""
     import uvicorn  # Deferred: only this command needs the web server.
@@ -937,7 +945,7 @@ def serve(
         output_dir=settings.artifacts_dir,
         export_region=settings.export_region,
         export_facecam_region=settings.export_facecam_region,
-        channel_layouts=load_channel_stacked_layouts(),
+        channel_layouts=load_channel_stacked_layouts(channels),
         **options,
     )
     api = create_app(service, cors_origins=settings.cors_origins)

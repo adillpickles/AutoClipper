@@ -50,8 +50,6 @@ _EDGE_EPSILON = 1e-9
 type Fit = Literal["pad", "crop"]
 _FITS: frozenset[str] = frozenset({"pad", "crop"})
 
-DEFAULT_CHANNELS_PATH: Final = Path(__file__).resolve().parents[3] / "configs" / "channels.yaml"
-
 
 class InvalidLayoutError(ExportError, ValueError):
     """A layout's region is out of bounds, too small for the source, or has an unknown fit."""
@@ -185,12 +183,12 @@ def stacked_layout_from_region(
     return StackedLayout(facecam=facecam, gameplay=gameplay, facecam_fraction=facecam_fraction)
 
 
-def load_channel_stacked_layouts(
-    channels_path: Path = DEFAULT_CHANNELS_PATH,
-) -> dict[str, StackedLayout]:
-    """Read per-channel `stacked_layout` presets from ``configs/channels.yaml`` (#68).
+def load_channel_stacked_layouts(channels_path: Path) -> dict[str, StackedLayout]:
+    """Read per-channel `stacked_layout` presets from a ``channels.yaml`` file (#68).
 
-    Keys are lowercased channel logins. Channels without a ``stacked_layout`` block are skipped.
+    Keys are lowercased channel logins (and optional ``broadcaster_id`` values when present).
+    Channels without a ``stacked_layout`` block are skipped. Returns an empty dict if
+    `channels_path` does not exist.
     """
     if not channels_path.is_file():
         return {}
@@ -222,15 +220,17 @@ def load_channel_stacked_layouts(
             raise InvalidLayoutError(
                 f"{channels_path}: facecam_fraction for {login!r} must be a number"
             )
-        layouts[login.strip().lower()] = stacked_layout_from_region(
+        stacked = stacked_layout_from_region(
             facecam, gameplay_region=gameplay, facecam_fraction=float(fraction_raw)
         )
+        layouts[login.strip().lower()] = stacked
+        broadcaster_id = entry.get("broadcaster_id")
+        if isinstance(broadcaster_id, str) and broadcaster_id.strip():
+            layouts[broadcaster_id.strip()] = stacked
     return layouts
 
 
-def stacked_layout_for_channel(
-    channel: str, *, channels_path: Path = DEFAULT_CHANNELS_PATH
-) -> StackedLayout | None:
+def stacked_layout_for_channel(channel: str, *, channels_path: Path) -> StackedLayout | None:
     """Return the configured `StackedLayout` for `channel` (case-insensitive), or None."""
     return load_channel_stacked_layouts(channels_path).get(channel.strip().lower())
 
