@@ -31,12 +31,14 @@ import logging
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Final
 
 import numpy as np
 import polars as pl
 
 from autoclipper.analysis import MAX_CANDIDATES, Candidate, Source
+from autoclipper.models.pauses import PauseSnapParams, snap_interval_to_wav
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +101,8 @@ def generate_candidates(
     features: pl.DataFrame | None = None,
     moments: Sequence[MomentInput] = (),
     params: CandidateParams | None = None,
+    audio_path: Path | None = None,
+    pause_snap: PauseSnapParams | None = None,
 ) -> list[Candidate]:
     """Build the ranked candidates of one VOD.
 
@@ -110,6 +114,9 @@ def generate_candidates(
             ``top_signals``. Without it every ``top_signals`` is empty.
         moments: The VOD's viewer-clip moments (product mode). Empty for independent discovery.
         params: Generation settings.
+        audio_path: Optional normalized 16 kHz WAV of the VOD. When given, each candidate's
+            start and end are snapped to nearby pauses without cutting the peak moment out (#66).
+        pause_snap: Pause snapping settings; defaults to `PauseSnapParams()`.
 
     Returns:
         Candidates in rank order (score descending, then start, then ID), ``rank`` 1..N and IDs
@@ -159,14 +166,15 @@ def generate_candidates(
         last = index
         while last + 1 < len(smoothed) and smoothed[last + 1] >= threshold:
             last += 1
+        peak = (float(starts[index]), float(ends[index]))
         start, end = _bounds(
             starts[index] - params.pre_s,
             ends[last] + params.post_s,
-            (starts[index], ends[index]),
+            peak,
             duration_s,
             params,
         )
-        discovered.append(_Draft(float(raw[index]), start, end, "discovered", set()))
+        discovered.append(_Draft(float(raw[index]), start, end, peak, "discovered", set()))
 
     clipped: list[_Draft] = []
     for moment in moments:
@@ -191,7 +199,9 @@ def generate_candidates(
         peak = (float(starts[best]), float(ends[best]))
         start = max(moment.start_s, peak[0] - params.pre_s)
         start, end = _bounds(start, moment.end_s, peak, duration_s, params)
-        clipped.append(_Draft(float(raw[best]), start, end, "viewer_clips", set(moment.clip_ids)))
+        clipped.append(
+            _Draft(float(raw[best]), start, end, peak, "viewer_clips", set(moment.clip_ids))
+        )
 
     # The shortlist: the best `shortlist_k` discovered peaks (merged or not), then every
     # clip-backed candidate beyond it, so viewer clips are never dropped by the cut.
@@ -199,6 +209,19 @@ def generate_candidates(
     drafts = discovered[: params.shortlist_k]
     drafts += [d for d in discovered[params.shortlist_k :] if d.source == "both"]
     drafts += clipped
+    if audio_path is not None and audio_path.is_file():
+        snap_params = pause_snap or PauseSnapParams()
+        for draft in drafts:
+            draft.start, draft.end = snap_interval_to_wav(
+                audio_path,
+                draft.start,
+                draft.end,
+                peak=draft.peak,
+                duration_s=duration_s,
+                min_len_s=params.min_len_s,
+                max_len_s=params.max_len_s,
+                params=snap_params,
+            )
     drafts.sort(key=lambda d: (-d.score, d.start))
     drafts = drafts[:MAX_CANDIDATES]
     candidates: list[Candidate] = []
@@ -223,6 +246,7 @@ class _Draft:
     score: float
     start: float
     end: float
+    peak: tuple[float, float]
     source: Source
     clip_ids: set[str]
 
