@@ -3,8 +3,9 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { ClipExport } from "@/components/clip-card";
 import { StreamTimeline } from "@/components/stream-timeline";
-import type { Candidate } from "@/lib/api/types";
+import type { Candidate, Export } from "@/lib/api/types";
 
 const OVERLAPPING_CANDIDATES: Candidate[] = [
   {
@@ -38,6 +39,28 @@ const OVERLAPPING_CANDIDATES: Candidate[] = [
     top_signals: [],
   },
 ];
+
+function readyClip(candidate: Candidate): ClipExport {
+  const exp: Export = {
+    export_id: `exp_${candidate.candidate_id}`,
+    job_id: "job_1",
+    candidate_id: candidate.candidate_id,
+    video_id: "9000000001",
+    start_s: candidate.start_s,
+    end_s: candidate.end_s,
+    layout: "center_crop",
+    captions: true,
+    state: "done",
+    progress: null,
+    error: null,
+    download_url: `/mock-media/${candidate.candidate_id}.mp4`,
+    created_at: "2026-11-20T12:00:00Z",
+    started_at: "2026-11-20T12:00:01Z",
+    updated_at: "2026-11-20T12:00:02Z",
+    finished_at: "2026-11-20T12:00:02Z",
+  };
+  return { kind: "export", export: exp, url: exp.download_url };
+}
 
 describe("StreamTimeline", () => {
   afterEach(() => {
@@ -94,5 +117,46 @@ describe("StreamTimeline", () => {
     expect(
       screen.getByRole("link", { name: /Edit clip 2/ }).getAttribute("href"),
     ).toBe("/jobs/job_1/results/c002");
+  });
+
+  it("resets video error state when switching from a failed preview to another clip", () => {
+    const clips: Record<string, ClipExport> = {
+      c001: readyClip(OVERLAPPING_CANDIDATES[0]),
+      c002: readyClip(OVERLAPPING_CANDIDATES[1]),
+    };
+
+    const { rerender } = render(
+      <StreamTimeline
+        jobId="job_1"
+        videoId="9000000001"
+        durationS={360}
+        candidates={OVERLAPPING_CANDIDATES}
+        selectedId="c001"
+        onSelect={vi.fn()}
+        clips={clips}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    fireEvent.error(screen.getByLabelText(/^Clip 1,/));
+    expect(screen.getByText(/ready but can't be played here/i)).toBeTruthy();
+
+    rerender(
+      <StreamTimeline
+        jobId="job_1"
+        videoId="9000000001"
+        durationS={360}
+        candidates={OVERLAPPING_CANDIDATES}
+        selectedId="c002"
+        onSelect={vi.fn()}
+        clips={clips}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText(/ready but can't be played here/i)).toBeNull();
+    expect(screen.getByLabelText(/^Clip 2,/).getAttribute("src")).toBe(
+      "/mock-media/c002.mp4",
+    );
   });
 });

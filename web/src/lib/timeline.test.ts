@@ -49,10 +49,11 @@ describe("timeline layout helpers", () => {
     });
   });
 
-  it("enforces minimum clickable marker width without overflowing past 100%", () => {
+  it("enforces minimum clickable marker width and separates visually close short clips", () => {
     const items = [
       candidate("c001", 1, 10, 30, 3.0), // 20s in a 6-hour VOD (~0.09%)
-      candidate("c002", 2, 21580, 21600, 2.0), // right at the VOD's end
+      candidate("c002", 2, 100, 120, 2.5), // visually within c001's 6% min width -> lane 1
+      candidate("c003", 3, 21580, 21600, 2.0), // right at the VOD's end
     ];
 
     const layout = layoutTimelineMarkers(items, 21600);
@@ -62,13 +63,22 @@ describe("timeline layout helpers", () => {
       expect(marker.leftPct).toBeGreaterThanOrEqual(0);
       expect(marker.leftPct + marker.widthPct).toBeLessThanOrEqual(100);
     }
+    expect(layout.markers[0].lane).toBe(0);
+    expect(layout.markers[1].lane).toBe(1);
+    expect(layout.markers[2].lane).toBe(0);
   });
 
-  it("handles negative z-scores and empty candidate lists cleanly", () => {
+  it("handles negative z-scores, aligned tick percentages, and empty lists cleanly", () => {
     expect(layoutTimelineMarkers([], 360)).toEqual({
       markers: [],
       laneCount: 0,
-      ticks: [0, 90, 180, 270, 360],
+      ticks: [
+        { pct: 0, seconds: 0 },
+        { pct: 25, seconds: 90 },
+        { pct: 50, seconds: 180 },
+        { pct: 75, seconds: 270 },
+        { pct: 100, seconds: 360 },
+      ],
     });
 
     const layout = layoutTimelineMarkers(

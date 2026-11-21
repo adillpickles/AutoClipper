@@ -2,11 +2,14 @@
 
 import type { Candidate } from "@/lib/api/types";
 
-/** Minimum horizontal bar width (% of timeline) so short clips stay clickable on long VODs. */
-export const MIN_MARKER_WIDTH_PCT = 2.0;
+/**
+ * Minimum horizontal bar width (% of timeline) so short clips stay wide enough to show their
+ * rank and stay clickable even on a 320 px viewport (~19 px at 6%).
+ */
+export const MIN_MARKER_WIDTH_PCT = 6.0;
 
 /** Minimum horizontal breathing room (% of timeline) before two markers share a lane. */
-const LANE_GAP_PCT = 0.5;
+const LANE_GAP_PCT = 1.0;
 
 export interface TimelineMarker {
   candidate: Candidate;
@@ -16,10 +19,15 @@ export interface TimelineMarker {
   scoreFraction: number;
 }
 
+export interface TimelineTick {
+  seconds: number;
+  pct: number;
+}
+
 export interface TimelineLayout {
   markers: TimelineMarker[];
   laneCount: number;
-  ticks: number[];
+  ticks: TimelineTick[];
 }
 
 function clamp(value: number, low: number, high: number): number {
@@ -36,9 +44,10 @@ export function layoutTimelineMarkers(
 ): TimelineLayout {
   const safeDuration =
     Number.isFinite(durationS) && durationS > 0 ? durationS : 1;
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((fraction) =>
-    Math.round(safeDuration * fraction),
-  );
+  const ticks: TimelineTick[] = [0, 25, 50, 75, 100].map((pct) => ({
+    pct,
+    seconds: Math.round((safeDuration * pct) / 100),
+  }));
   if (candidates.length === 0) {
     return { markers: [], laneCount: 0, ticks };
   }

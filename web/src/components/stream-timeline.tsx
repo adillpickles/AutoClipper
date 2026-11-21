@@ -10,12 +10,13 @@ import { formatTime } from "@/lib/format";
 import { reasonFor } from "@/lib/reason";
 import { buildActivityBins, layoutTimelineMarkers } from "@/lib/timeline";
 
+// WCAG AA (>= 4.5:1) foreground/background pairs in both light and dark themes.
 const MARKER_STYLE: Record<Candidate["source"], string> = {
   discovered:
-    "bg-sky-500/90 text-white hover:bg-sky-500 dark:bg-sky-500/80 dark:hover:bg-sky-400",
+    "bg-sky-700 text-white hover:bg-sky-800 dark:bg-sky-300 dark:text-zinc-950 dark:hover:bg-sky-200",
   viewer_clips:
-    "bg-violet-500/90 text-white hover:bg-violet-500 dark:bg-violet-500/80 dark:hover:bg-violet-400",
-  both: "bg-emerald-600/90 text-white hover:bg-emerald-600 dark:bg-emerald-500/85 dark:hover:bg-emerald-400",
+    "bg-violet-700 text-white hover:bg-violet-800 dark:bg-violet-300 dark:text-zinc-950 dark:hover:bg-violet-200",
+  both: "bg-emerald-700 text-white hover:bg-emerald-800 dark:bg-emerald-300 dark:text-zinc-950 dark:hover:bg-emerald-200",
 };
 
 const LANE_HEIGHT_PX = 36;
@@ -74,21 +75,21 @@ export function StreamTimeline({
             <span className="inline-flex items-center gap-1.5">
               <span
                 aria-hidden="true"
-                className="size-2.5 rounded-full bg-emerald-600"
+                className="size-2.5 rounded-full bg-emerald-700 dark:bg-emerald-300"
               />
               Both
             </span>
             <span className="inline-flex items-center gap-1.5">
               <span
                 aria-hidden="true"
-                className="size-2.5 rounded-full bg-sky-500"
+                className="size-2.5 rounded-full bg-sky-700 dark:bg-sky-300"
               />
               Discovered
             </span>
             <span className="inline-flex items-center gap-1.5">
               <span
                 aria-hidden="true"
-                className="size-2.5 rounded-full bg-violet-500"
+                className="size-2.5 rounded-full bg-violet-700 dark:bg-violet-300"
               />
               Viewer clip
             </span>
@@ -140,10 +141,10 @@ export function StreamTimeline({
                   top: `${topPx}px`,
                   height: `${LANE_HEIGHT_PX}px`,
                 }}
-                className={`absolute flex items-center justify-center overflow-hidden rounded-lg px-1.5 text-xs font-semibold transition focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none ${MARKER_STYLE[candidate.source]} ${
+                className={`absolute box-border flex min-w-0 items-center justify-center overflow-hidden rounded-lg px-0.5 text-xs font-semibold transition focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none ${MARKER_STYLE[candidate.source]} ${
                   isSelected
                     ? "z-10 ring-2 ring-zinc-950 ring-offset-2 ring-offset-zinc-50 dark:ring-white dark:ring-offset-zinc-950"
-                    : "opacity-90"
+                    : ""
                 }`}
               >
                 <span className="truncate tabular-nums">#{candidate.rank}</span>
@@ -152,11 +153,25 @@ export function StreamTimeline({
           })}
         </div>
 
-        {/* Stream time axis ticks */}
-        <div className="flex items-center justify-between text-xs text-zinc-500 tabular-nums dark:text-zinc-400">
-          {layout.ticks.map((tick, index) => (
-            <span key={index}>{formatTime(tick)}</span>
-          ))}
+        {/* Stream time axis ticks anchored to the exact marker percentage scale */}
+        <div className="relative h-4 w-full text-xs text-zinc-500 tabular-nums dark:text-zinc-400">
+          {layout.ticks.map((tick) => {
+            const align =
+              tick.pct === 0
+                ? ""
+                : tick.pct === 100
+                  ? "-translate-x-full"
+                  : "-translate-x-1/2";
+            return (
+              <span
+                key={tick.pct}
+                style={{ left: `${tick.pct}%` }}
+                className={`absolute top-0 whitespace-nowrap ${align}`}
+              >
+                {formatTime(tick.seconds)}
+              </span>
+            );
+          })}
         </div>
       </div>
 
@@ -164,6 +179,7 @@ export function StreamTimeline({
         <div className="mx-auto w-full max-w-sm">
           <ol role="list">
             <ClipCard
+              key={selected.candidate.candidate_id}
               jobId={jobId}
               candidate={selected.candidate}
               scoreFraction={selected.scoreFraction}
