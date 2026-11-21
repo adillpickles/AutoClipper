@@ -389,6 +389,7 @@ export function ResultsScreen() {
               {top.map((candidate) => (
                 <ClipCard
                   key={candidate.candidate_id}
+                  jobId={jobId}
                   candidate={candidate}
                   scoreFraction={scale(candidate.score)}
                   clip={clips[candidate.candidate_id] ?? { kind: "pending" }}
