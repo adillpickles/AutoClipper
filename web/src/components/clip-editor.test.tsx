@@ -316,7 +316,7 @@ describe("ClipEditor", () => {
 
     render(<ClipEditor />);
 
-    await screen.findByLabelText("Start (seconds)");
+    await screen.findByLabelText("Center crop (9:16)");
     fireEvent.click(screen.getByRole("button", { name: "Re-render clip" }));
 
     // Re-rendering without edits must submit the exact pause-snapped timestamps unrounded.
