@@ -112,7 +112,7 @@ export interface CandidateMedia {
   export: ExportAvailability;
 }
 
-export type Layout = "center_crop" | "configured_region";
+export type Layout = "center_crop" | "configured_region" | "stacked";
 
 export interface CreateExportRequest {
   job_id: string;

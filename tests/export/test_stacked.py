@@ -1,0 +1,235 @@
+"""Tests for the stacked (facecam over gameplay) vertical export layout (#68)."""
+
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from autoclipper.cli import ExitCode, app
+from autoclipper.config import get_settings
+from autoclipper.export.clip import (
+    ClipSpec,
+    NoFacecamConfiguredError,
+    available_layouts,
+    layout_named,
+    render_clip,
+)
+from autoclipper.export.cut import Interval
+from autoclipper.export.encode import build_export_command
+from autoclipper.export.reframe import (
+    DEFAULT_CHANNELS_PATH,
+    OUTPUT_HEIGHT,
+    OUTPUT_WIDTH,
+    FixedRegion,
+    InvalidLayoutError,
+    StackedLayout,
+    StackedReframePlan,
+    load_channel_stacked_layouts,
+    plan_reframe,
+    stacked_layout_for_channel,
+    stacked_layout_from_region,
+)
+from autoclipper.ffmpeg import AudioStream, VideoStream, ffmpeg_command, probe, run_command
+
+PILOT_CHANNELS = ("caseoh_", "ishowspeed", "kaicenat", "jynxzi", "flightreacts")
+
+
+def test_stacked_layout_validation() -> None:
+    facecam = FixedRegion(0.02, 0.04, 0.22, 0.28, fit="crop")
+    with pytest.raises(InvalidLayoutError, match="facecam_fraction"):
+        StackedLayout(facecam=facecam, facecam_fraction=0.05)
+    with pytest.raises(InvalidLayoutError, match="facecam_fraction"):
+        StackedLayout(facecam=facecam, facecam_fraction=0.9)
+    with pytest.raises(InvalidLayoutError, match="facecam_fraction"):
+        StackedLayout(facecam=facecam, facecam_fraction=float("nan"))
+
+
+def test_plan_reframe_builds_even_stacked_panes_summing_to_1080x1920() -> None:
+    layout = stacked_layout_from_region((0.02, 0.04, 0.22, 0.28), facecam_fraction=0.35)
+    plan = plan_reframe(layout, 1920, 1080)
+
+    assert isinstance(plan, StackedReframePlan)
+    assert plan.output_width == OUTPUT_WIDTH
+    assert plan.output_height == OUTPUT_HEIGHT
+    assert plan.top.scaled_width == OUTPUT_WIDTH
+    assert plan.bottom.scaled_width == OUTPUT_WIDTH
+    assert plan.top.scaled_height % 2 == 0
+    assert plan.bottom.scaled_height % 2 == 0
+    assert plan.top.scaled_height + plan.bottom.scaled_height == OUTPUT_HEIGHT
+    assert plan.top.scaled_height == 672
+    assert plan.bottom.scaled_height == 1248
+
+
+def test_build_export_command_uses_filter_complex_with_vstack_and_post_filters(
+    tmp_path: Path,
+) -> None:
+    layout = stacked_layout_from_region((0.02, 0.04, 0.22, 0.28))
+    plan = plan_reframe(layout, 1920, 1080)
+    cmd = build_export_command(
+        tmp_path / "vod.mp4",
+        Interval(10.0, 20.0),
+        VideoStream(index=0, codec_name="h264", width=1920, height=1080),
+        AudioStream(index=1, codec_name="aac", sample_rate_hz=48_000, channels=2),
+        plan,
+        tmp_path / "out.mp4",
+        seek_s=8.0,
+        video_filters=("subtitles='subs.ass'",),
+    )
+
+    args = list(cmd.args)
+    assert "-filter_complex" in args
+    assert "-filter:v" not in args
+    graph = args[args.index("-filter_complex") + 1]
+    assert "split=2" in graph
+    assert "vstack=inputs=2" in graph
+    # Post filters (captions + format) run after vstack on the combined 1080x1920 frame.
+    assert graph.index("vstack=inputs=2") < graph.index("subtitles='subs.ass'")
+    assert "[ac_vout]" in args
+
+
+def test_all_pilot_channels_have_valid_stacked_layouts_in_channels_yaml() -> None:
+    presets = load_channel_stacked_layouts(DEFAULT_CHANNELS_PATH)
+
+    for channel in PILOT_CHANNELS:
+        assert channel in presets
+        layout = stacked_layout_for_channel(channel.upper())
+        assert layout is not None
+        assert layout == presets[channel]
+        for width, height in ((1920, 1080), (1280, 720)):
+            plan = plan_reframe(layout, width, height)
+            assert isinstance(plan, StackedReframePlan)
+            assert plan.top.scaled_height + plan.bottom.scaled_height == OUTPUT_HEIGHT
+
+
+def test_available_layouts_and_layout_named_for_stacked() -> None:
+    assert available_layouts(None) == ("center_crop",)
+    assert available_layouts(None, facecam_region=(0.0, 0.0, 0.25, 0.3)) == (
+        "center_crop",
+        "stacked",
+    )
+    assert available_layouts((0.25, 0.0, 0.5, 1.0), facecam_region=(0.0, 0.0, 0.25, 0.3)) == (
+        "center_crop",
+        "configured_region",
+        "stacked",
+    )
+
+    with pytest.raises(NoFacecamConfiguredError):
+        layout_named("stacked", None)
+
+    resolved = layout_named("stacked", None, facecam_region=(0.02, 0.04, 0.22, 0.28))
+    assert isinstance(resolved, StackedLayout)
+    assert resolved.facecam.x == pytest.approx(0.02)
+
+
+def test_export_facecam_region_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTOCLIPPER_EXPORT_FACECAM_REGION", "0.02,0.04,0.22,0.28")
+    get_settings.cache_clear()
+    try:
+        assert get_settings().export_facecam_region == (0.02, 0.04, 0.22, 0.28)
+    finally:
+        get_settings.cache_clear()
+
+
+def _make_facecam_over_gameplay_source(path: Path) -> Path:
+    """Generate a 16:9 640x360 clip: blue gameplay with a bright red facecam box at top-left."""
+    # Top-left box matches jynxzi's preset (x=0.02..0.24, y=0.04..0.32 -> x=12..154, y=14..115).
+    run_command(
+        ffmpeg_command(
+            "-y",
+            *("-f", "lavfi", "-i", "color=c=blue:s=640x360:r=10:d=3"),
+            *("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3"),
+            *(
+                "-vf",
+                "drawbox=x=10:y=12:w=150:h=108:color=red:t=fill",
+            ),
+            *("-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"),
+            *("-c:a", "aac", "-shortest", path),
+        ),
+        timeout_s=60,
+    )
+    return path
+
+
+def _sample_rgb(video: Path, x: int, y: int) -> tuple[int, int, int]:
+    """Read one pixel's (R, G, B) from frame 0 of `video` via FFmpeg rawvideo."""
+    result = run_command(
+        ffmpeg_command(
+            "-i",
+            video,
+            "-frames:v",
+            "1",
+            "-vf",
+            f"format=rgb24,crop=1:1:{x}:{y}",
+            "-f",
+            "rawvideo",
+            "-",
+        ),
+        timeout_s=30,
+    )
+    assert len(result.stdout) >= 3
+    return (result.stdout[0], result.stdout[1], result.stdout[2])
+
+
+@pytest.mark.ffmpeg
+def test_stacked_export_puts_facecam_on_top_and_gameplay_below(tmp_path: Path) -> None:
+    """End-to-end CLI export with --layout stacked --channel jynxzi places red facecam on top
+    and blue gameplay below inside a 1080x1920 H.264/AAC MP4 (#68)."""
+    source = _make_facecam_over_gameplay_source(tmp_path / "stream.mp4")
+    out = tmp_path / "stacked.mp4"
+
+    cli = CliRunner()
+    res = cli.invoke(
+        app,
+        [
+            "export",
+            str(source),
+            "--start",
+            "0.5",
+            "--end",
+            "2.0",
+            "--layout",
+            "stacked",
+            "--channel",
+            "jynxzi",
+            "--output",
+            str(out),
+        ],
+    )
+    assert res.exit_code == ExitCode.SUCCESS, res.output
+    info = probe(out)
+    assert info.video_streams[0].codec_name == "h264"
+    assert (info.video_streams[0].width, info.video_streams[0].height) == (1080, 1920)
+    assert info.video_streams[0].pix_fmt == "yuv420p"
+    assert info.audio_streams[0].codec_name == "aac"
+    assert info.duration_s == pytest.approx(1.5, abs=0.15)
+
+    # Top pane center (y=336) comes from the red facecam box; bottom center (y=1300) is blue.
+    top_r, _top_g, top_b = _sample_rgb(out, 540, 336)
+    bot_r, _bot_g, bot_b = _sample_rgb(out, 540, 1300)
+    assert top_r > 180
+    assert top_b < 80
+    assert bot_b > 180
+    assert bot_r < 80
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("channel", PILOT_CHANNELS)
+def test_each_pilot_channel_stacked_preset_renders_1080x1920(tmp_path: Path, channel: str) -> None:
+    source = _make_facecam_over_gameplay_source(tmp_path / f"{channel}_src.mp4")
+    out = tmp_path / f"{channel}_stacked.mp4"
+    preset = stacked_layout_for_channel(channel)
+    assert preset is not None
+
+    rendered = render_clip(
+        ClipSpec(
+            source=source,
+            interval=Interval(0.0, 1.0),
+            output=out,
+            layout="stacked",
+            captions=False,
+            stacked_layout=preset,
+        )
+    )
+    assert rendered.output == out
+    info = probe(out)
+    assert (info.video_streams[0].width, info.video_streams[0].height) == (1080, 1920)

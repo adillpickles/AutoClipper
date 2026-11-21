@@ -110,6 +110,10 @@ class Settings(BaseSettings):
             width and height from the top-left corner, e.g. ``0.25,0,0.5,1``; a region that
             isn't 9:16 is cropped to 9:16 around its center. None (unset) means a center crop.
             `autoclipper.export.reframe.layout_from_settings` turns it into a layout.
+        export_facecam_region: ``AUTOCLIPPER_EXPORT_FACECAM_REGION``: the facecam rectangle for
+            the ``stacked`` vertical layout (#68), as ``x,y,width,height`` fractions (0-1). None
+            means no default facecam region is configured (channel presets in
+            ``configs/channels.yaml`` still apply).
 
     Both directories are absolute. A relative value, including the defaults, is taken relative to
     the working directory at the time the settings are loaded (the directory ``.env`` is read
@@ -158,6 +162,9 @@ class Settings(BaseSettings):
     # NoDecode: the value is "x,y,width,height", not the JSON pydantic-settings expects for tuples.
     export_region: Annotated[tuple[float, float, float, float] | None, NoDecode] = Field(
         default=None, validation_alias="AUTOCLIPPER_EXPORT_REGION"
+    )
+    export_facecam_region: Annotated[tuple[float, float, float, float] | None, NoDecode] = Field(
+        default=None, validation_alias="AUTOCLIPPER_EXPORT_FACECAM_REGION"
     )
 
     @field_validator("twitch_client_id", "twitch_client_secret", "chat_hash_salt", mode="before")
@@ -230,7 +237,7 @@ class Settings(BaseSettings):
                 )
         return origins
 
-    @field_validator("export_region", mode="before")
+    @field_validator("export_region", "export_facecam_region", mode="before")
     @classmethod
     def _parse_region(cls, value: object) -> object:
         if not isinstance(value, str):

@@ -643,13 +643,14 @@ The VOD's video can't be downloaded (mock `9000000007`):
 | `candidate_id` | str | A candidate in that job's result |
 | `start_s` | float | Trimmed start, source time |
 | `end_s` | float | Trimmed end (exclusive) |
-| `layout` | `center_crop` \| `configured_region` | Must be in the candidate's `export.layouts` |
+| `layout` | `center_crop` \| `configured_region` \| `stacked` | Must be in the candidate's `export.layouts` |
 | `captions` | bool | Burn in speech-to-text captions |
 
-Layouts ([PRD § Export](../product/prd.md#export), #20):
+Layouts ([PRD § Export](../product/prd.md#export), #20, #68):
 
 - `center_crop`: the central 9:16 region of the 16:9 source, scaled to 1080×1920.
 - `configured_region`: one fixed 9:16 source region set in server configuration (e.g. where a streamer's layout puts the action). It isn't chosen per request in v1.
+- `stacked`: facecam region stacked above gameplay inside 1080×1920, listed when `AUTOCLIPPER_EXPORT_FACECAM_REGION` or a per-channel `stacked_layout` preset in `configs/channels.yaml` applies (#68).
 
 Further layouts (e.g. facecam stacked over gameplay, optional polish) would be added as new values (§ 10).
 

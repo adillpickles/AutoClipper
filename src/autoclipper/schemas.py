@@ -47,7 +47,7 @@ __all__ = [
 SCHEMA_VERSION: Final = "1.0"
 
 type State = Literal["queued", "running", "done", "failed"]
-type Layout = Literal["center_crop", "configured_region"]
+type Layout = Literal["center_crop", "configured_region", "stacked"]
 type Order = Literal["chronological", "rank"]
 
 # api-contract.md § 3.1, case-insensitive; the ID is in group 1 or 2.

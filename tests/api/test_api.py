@@ -2373,3 +2373,30 @@ def test_local_video_preview_preparation_runs_in_background(
     served = client.get(str(ready["preview"]["url"]))
     assert served.status_code == 200
     assert served.content == video.read_bytes()
+
+
+def test_stacked_layout_is_offered_and_rendered_when_facecam_configured(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    """When `export_facecam_region` is set, media advertises `stacked` and exports pass a
+    `StackedLayout` to the renderer (#68)."""
+    renderer = FakeRenderer()
+    client, _ = make_client(
+        render=renderer,
+        export_facecam_region=(0.02, 0.04, 0.22, 0.28),
+    )
+    job = done_job(client)
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert "stacked" in media["export"]["layouts"]
+
+    made = client.post(
+        f"{API}/exports",
+        json=export_body(job["job_id"], layout="stacked", captions=False),
+    )
+    assert made.status_code == 201
+    assert client.get(f"{API}/exports/{made.json()['export_id']}").json()["state"] == "done"
+    assert len(renderer.specs) == 1
+    assert renderer.specs[0].layout == "stacked"
+    assert renderer.specs[0].stacked_layout is not None
+    assert renderer.specs[0].stacked_layout.facecam.x == pytest.approx(0.02)

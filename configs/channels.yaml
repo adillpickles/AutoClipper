@@ -2,14 +2,38 @@
 # Large channels have many viewer clips, which gives the model plenty of labeled moments.
 # Evaluation hides or subsamples a held-out VOD's clips to measure how much the scorer
 # depends on clips. That doesn't test a small channel's quieter chat (docs/ml/evaluation.md).
+#
+# Each channel also carries a `stacked_layout` preset (#68) for vertical 9:16 exports that
+# stack the streamer's facecam over the gameplay: normalized [x, y, width, height] regions
+# from the top-left corner and the top pane's share of the 1920 px frame (`facecam_fraction`).
 channels:
   - login: caseoh_
     reason: Just Chatting / variety, very large audience
+    stacked_layout:
+      facecam: [0.76, 0.04, 0.22, 0.28]
+      gameplay: [0.0, 0.0, 1.0, 1.0]
+      facecam_fraction: 0.35
   - login: ishowspeed
     reason: High-energy IRL and variety streams, very large audience
+    stacked_layout:
+      facecam: [0.02, 0.66, 0.24, 0.30]
+      gameplay: [0.0, 0.0, 1.0, 1.0]
+      facecam_fraction: 0.38
   - login: kaicenat
     reason: Just Chatting and events, very large audience
+    stacked_layout:
+      facecam: [0.72, 0.65, 0.26, 0.32]
+      gameplay: [0.0, 0.0, 1.0, 1.0]
+      facecam_fraction: 0.38
   - login: jynxzi
     reason: Competitive FPS (Rainbow Six Siege), very large audience
+    stacked_layout:
+      facecam: [0.02, 0.04, 0.22, 0.28]
+      gameplay: [0.0, 0.0, 1.0, 1.0]
+      facecam_fraction: 0.35
   - login: flightreacts
     reason: Sports and gaming reactions, large audience
+    stacked_layout:
+      facecam: [0.02, 0.62, 0.28, 0.34]
+      gameplay: [0.0, 0.0, 1.0, 1.0]
+      facecam_fraction: 0.38

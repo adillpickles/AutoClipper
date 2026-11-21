@@ -371,6 +371,19 @@ class ExportLayout(StrEnum):
 
     CENTER_CROP = "center_crop"
     CONFIGURED_REGION = "configured_region"
+    STACKED = "stacked"
+
+
+def _parse_region_option(value: str) -> tuple[float, float, float, float]:
+    """Parse ``x,y,width,height`` normalized coordinates from a CLI flag."""
+    parts = value.split(",")
+    try:
+        x, y, width, height = (float(part) for part in parts)
+    except ValueError:
+        raise ValueError(
+            "expected four numbers x,y,width,height (fractions 0-1), e.g. 0.02,0.04,0.22,0.28"
+        ) from None
+    return (x, y, width, height)
 
 
 @app.command()
@@ -382,8 +395,26 @@ def export(
     end: Annotated[float, typer.Option(min=0.0, help="End (exclusive), seconds from the start.")],
     layout: Annotated[
         ExportLayout,
-        typer.Option(help="center_crop, or configured_region (AUTOCLIPPER_EXPORT_REGION)."),
+        typer.Option(
+            help="center_crop, configured_region (AUTOCLIPPER_EXPORT_REGION), or "
+            "stacked (facecam over gameplay)."
+        ),
     ] = ExportLayout.CENTER_CROP,
+    facecam_region: Annotated[
+        str | None,
+        typer.Option(
+            help="Facecam x,y,width,height fractions (0-1) for --layout stacked; overrides "
+            "AUTOCLIPPER_EXPORT_FACECAM_REGION and --channel.",
+            show_default=False,
+        ),
+    ] = None,
+    channel: Annotated[
+        str | None,
+        typer.Option(
+            help="Pilot channel login from configs/channels.yaml for --layout stacked.",
+            show_default=False,
+        ),
+    ] = None,
     captions: Annotated[
         bool,
         typer.Option(help="Burn in captions of the speech (needs `uv sync --extra captions`)."),
@@ -403,11 +434,32 @@ def export(
     from autoclipper.export.clip import ClipSpec, render_clip
     from autoclipper.export.cut import Interval
     from autoclipper.export.errors import ExportError
+    from autoclipper.export.reframe import stacked_layout_for_channel, stacked_layout_from_region
 
     if end <= start:
         typer.echo("Error: --end must be after --start", err=True)
         raise typer.Exit(ExitCode.USER_ERROR)
     settings = get_settings()
+    stacked = None
+    if facecam_region is not None:
+        try:
+            stacked = stacked_layout_from_region(_parse_region_option(facecam_region))
+        except (ValueError, ExportError) as exc:
+            typer.echo(f"Error: invalid --facecam-region: {exc}", err=True)
+            raise typer.Exit(ExitCode.USER_ERROR) from None
+    elif channel is not None:
+        try:
+            stacked = stacked_layout_for_channel(channel)
+        except ExportError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(ExitCode.USER_ERROR) from None
+        if stacked is None:
+            typer.echo(
+                f"Error: no stacked_layout preset found for channel {channel!r} in "
+                "configs/channels.yaml",
+                err=True,
+            )
+            raise typer.Exit(ExitCode.USER_ERROR)
     target = output or settings.artifacts_dir / "exports" / _export_name(video, start, end)
     spec = ClipSpec(
         source=video,
@@ -416,9 +468,14 @@ def export(
         layout=layout.value,
         captions=captions,
         overwrite=overwrite,
+        stacked_layout=stacked,
     )
     try:
-        result = render_clip(spec, region=settings.export_region)
+        result = render_clip(
+            spec,
+            region=settings.export_region,
+            facecam_region=settings.export_facecam_region,
+        )
     except CaptioningError as exc:  # a missing install or a failing model: an external tool
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
@@ -873,10 +930,14 @@ def serve(
                 "upstream_unavailable until they are (--jobs mock for the built-in scenarios).",
                 err=True,
             )
+    from autoclipper.export.reframe import load_channel_stacked_layouts
+
     service = MockService(
         samples=samples,
         output_dir=settings.artifacts_dir,
         export_region=settings.export_region,
+        export_facecam_region=settings.export_facecam_region,
+        channel_layouts=load_channel_stacked_layouts(),
         **options,
     )
     api = create_app(service, cors_origins=settings.cors_origins)
