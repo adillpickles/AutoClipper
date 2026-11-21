@@ -628,6 +628,14 @@ function highlightsNow(
 
 export function createMockClient(now: () => number = Date.now): ApiClient {
   return {
+    async getHealth() {
+      return {
+        status: "ok" as const,
+        schema_version: "1.0",
+        job_runner: "mock" as const,
+      };
+    },
+
     async createJob(request: CreateJobRequest) {
       const videoId = parseVod(request.vod);
       if (videoId === null) {
