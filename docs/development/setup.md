@@ -75,7 +75,7 @@ When a hook fixes files (Ruff, end-of-file or whitespace fixes, notebook output 
 
 ## Frontend (web/)
 
-The Next.js app needs only Node.js. It doesn't call the Python backend yet. These steps were tested on Windows 11 (Node 24.19.0) in PowerShell and Git Bash. CI runs the same checks on Ubuntu; nobody has tried them on macOS or Linux by hand yet.
+The Next.js app runs in browser mock mode by default, or against a local `autoclipper serve` backend when `NEXT_PUBLIC_API_ORIGIN` is set. These steps were tested on Windows 11 (Node 24.19.0) in PowerShell and Git Bash. CI runs the same checks on Ubuntu; nobody has tried them on macOS or Linux by hand yet.
 
 **Node version.** `web/.nvmrc` pins Node **24** ("Krypton"). It was the Active LTS line when pinned on 2026-10-19, moves to Maintenance LTS on 2026-10-20, and is supported until 2028-04-30 ([Node.js release schedule](https://github.com/nodejs/Release#release-schedule)). Node 26 becomes Active LTS on 2026-10-28; moving to it means changing `.nvmrc` and `engines` in `web/package.json` together. Check with `node --version` (should print `v24.x`).
 
@@ -92,6 +92,32 @@ Set-Location web
 npm ci
 npm run dev
 ```
+
+### Running backend and frontend together
+
+Start the FastAPI backend from the repository root (use `--jobs mock` if you want the built-in mock scenarios without Twitch credentials):
+
+```bash
+uv run autoclipper serve              # real pipeline jobs on http://127.0.0.1:8000
+uv run autoclipper serve --jobs mock  # mock scenarios with real FFmpeg exports/highlights
+```
+
+Then configure `web/.env.local` (copied from `web/.env.example`) so the frontend calls the backend instead of browser mock mode:
+
+```bash
+cp web/.env.example web/.env.local
+# web/.env.local contains: NEXT_PUBLIC_API_ORIGIN=http://127.0.0.1:8000
+cd web
+npm run dev
+```
+
+```powershell
+Copy-Item web\.env.example web\.env.local
+Set-Location web
+npm run dev
+```
+
+Open <http://localhost:3000>. To switch back to browser mock mode without deleting `web/.env.local`, set `NEXT_PUBLIC_API_MODE=mock`. `AUTOCLIPPER_CORS_ORIGINS` already allows `http://localhost:3000` and `http://127.0.0.1:3000` by default.
 
 Run the same checks as CI before you push:
 
