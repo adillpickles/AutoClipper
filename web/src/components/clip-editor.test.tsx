@@ -245,4 +245,47 @@ describe("ClipEditor", () => {
     expect(await screen.findByLabelText("Preview of clip 1")).toBeTruthy();
     expect(api.getCandidateMedia.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
+
+  it("clamps typed trim inputs on blur instead of each keystroke and clears stale renders", async () => {
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia.mockResolvedValue(AVAILABLE_MEDIA);
+    api.createExport.mockResolvedValue({
+      export: makeExport("done"),
+      created: true,
+    });
+
+    render(<ClipEditor />);
+
+    const startInput = (await screen.findByLabelText(
+      "Start (seconds)",
+    )) as HTMLInputElement;
+    const endInput = screen.getByLabelText("End (seconds)") as HTMLInputElement;
+
+    // Typing an intermediate out-of-range prefix ("1", "12") must not clamp mid-keystroke.
+    fireEvent.change(startInput, { target: { value: "1" } });
+    expect(startInput.value).toBe("1");
+    fireEvent.change(startInput, { target: { value: "12" } });
+    expect(startInput.value).toBe("12");
+    fireEvent.change(startInput, { target: { value: "50" } });
+    expect(startInput.value).toBe("50");
+
+    // Blurring clamps 50 up to min_start_s (88).
+    fireEvent.blur(startInput);
+    expect(startInput.value).toBe("88");
+
+    // Typing an end beyond start + max_duration_s (88 + 90 = 178) clamps on blur.
+    fireEvent.change(endInput, { target: { value: "250" } });
+    expect(endInput.value).toBe("250");
+    fireEvent.blur(endInput);
+    expect(endInput.value).toBe("178");
+
+    // Render once so the finished clip appears, then change the trim and verify it clears.
+    fireEvent.click(screen.getByRole("button", { name: "Re-render clip" }));
+    expect(
+      await screen.findByRole("link", { name: "Download clip" }),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Move end 5 seconds earlier"));
+    expect(screen.queryByRole("link", { name: "Download clip" })).toBeNull();
+  });
 });

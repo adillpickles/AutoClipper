@@ -2253,3 +2253,84 @@ def test_a_segment_whose_preview_cant_be_prepared_still_exports(
     made = client.post(f"{API}/exports", json=export_body(job["job_id"]))
     assert made.status_code == 201
     assert client.get(f"{API}/exports/{made.json()['export_id']}").json()["state"] == "done"
+
+
+def test_a_transient_segment_fetch_failure_is_retryable(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """Transient `fetch_failed` errors aren't cached forever: retrying media or export fetches
+    again and succeeds once the network recovers (#46 follow-up)."""
+    from autoclipper.ingest.media import DownloadNetworkError
+
+    video = make_test_media("vod.mp4", duration_s=20.0)
+    fetcher = FakeSegmentFetcher(
+        video,
+        tmp_path / "raw" / "video",
+        error=DownloadNetworkError("9000000001", "connection reset"),
+    )
+    renderer = FakeRenderer()
+    client, _ = segment_client(make_client, tmp_path, fetcher, render=renderer)
+    job = done_job(client)
+
+    first = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert first["preview"]["status"] == "unavailable"
+    assert first["preview"]["reason"] == "fetch_failed"
+    assert first["export"]["status"] == "available"
+
+    # The transient error clears: the very next media request retries instead of staying stuck.
+    fetcher.error = None
+    retried = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert retried["preview"]["status"] == "available"
+    assert len(fetcher.calls) == 2
+
+    # Exports also retry after a transient failure even without re-polling media first.
+    fetcher.error = DownloadNetworkError("9000000001", "temporary blip")
+    first_c2 = client.get(f"{API}/jobs/{job['job_id']}/candidates/c002/media").json()
+    assert first_c2["preview"]["reason"] == "fetch_failed"
+    fetcher.error = None
+    made = client.post(
+        f"{API}/exports",
+        json=export_body(job["job_id"], candidate_id="c002", start_s=255.0, end_s=270.0),
+    )
+    assert made.status_code == 201
+    assert client.get(f"{API}/exports/{made.json()['export_id']}").json()["state"] == "done"
+
+
+def test_local_video_preview_preparation_runs_in_background(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preparing a browser-playable copy of a job's local `video_path` runs on the background
+    worker so the HTTP media request returns `preparing` immediately instead of blocking."""
+    from autoclipper.api import service as service_mod
+
+    video = make_test_media("local.mp4", duration_s=3.0)
+    gate = threading.Event()
+    started = threading.Event()
+    real_copy = service_mod._playable_copy
+
+    def gated_copy(source: Path, target: Path) -> Path:
+        started.set()
+        gate.wait(timeout=10.0)
+        return real_copy(source, target)
+
+    monkeypatch.setattr(service_mod, "_playable_copy", gated_copy)
+    client, _ = make_client(synchronous=False, step_s=0.01)
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(video)}).json()
+    wait_until(lambda: client.get(f"{API}/jobs/{job['job_id']}").json()["state"] == "done")
+
+    first = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert first["preview"]["status"] == "preparing"
+    assert first["export"]["status"] == "available"
+    assert started.wait(timeout=5.0)
+
+    gate.set()
+    ready = wait_until_media(client, job["job_id"], "c001")
+    assert ready["preview"]["status"] == "available"
+    served = client.get(str(ready["preview"]["url"]))
+    assert served.status_code == 200
+    assert served.content == video.read_bytes()

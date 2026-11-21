@@ -91,6 +91,7 @@ MAX_HIGHLIGHTS_DURATION_S: Final = 900.0  # § 7.1
 # a trim without another download, kept well under the 90 s export bound.
 SEGMENT_MARGIN_S: Final = 30.0
 _PREPARING_MESSAGE: Final = "Fetching the video for this moment…"
+_PREPARING_LOCAL_MESSAGE: Final = "Preparing the video for playback…"
 _FETCH_FAILED_PREVIEW: Final = (
     "Preview isn't available: downloading the video failed. Trying again later may work."
 )
@@ -388,6 +389,17 @@ class _SegmentState:
     reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _FileMediaState:
+    """Prepared preview copy state for a job's local `video_path` (#46)."""
+
+    status: Literal["preparing", "ready", "failed"]
+    media_id: str | None = None
+
+
+type _FetchWork = tuple[Literal["segment"], str, str] | tuple[Literal["file"], str]
+
+
 class _MediaUnavailable(Exception):
     """A render's video segment couldn't be obtained (#46); the reason is the contract's § 5.2."""
 
@@ -453,9 +465,7 @@ class MockService:
     _renders: dict[str, _RenderRecord] = field(default_factory=dict, init=False)
     _media: dict[str, Path] = field(default_factory=dict, init=False)
     _preview_media_id: str = field(default="", init=False)
-    _job_media: dict[str, str] = field(default_factory=dict, init=False)
-    _job_media_failed: set[str] = field(default_factory=set, init=False)
-    _file_media_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _file_media: dict[str, _FileMediaState] = field(default_factory=dict, init=False)
     _segments: dict[tuple[str, str], _SegmentState] = field(default_factory=dict, init=False)
     _fetching: set[tuple[str, int, int]] = field(default_factory=set, init=False)
     _fetches_done: int = field(default=0, init=False)
@@ -464,9 +474,7 @@ class MockService:
     )
     _analysis_queue: "queue.Queue[str | None]" = field(default_factory=queue.Queue, init=False)
     _render_queue: "queue.Queue[str | None]" = field(default_factory=queue.Queue, init=False)
-    _fetch_queue: "queue.Queue[tuple[str, str] | None]" = field(
-        default_factory=queue.Queue, init=False
-    )
+    _fetch_queue: "queue.Queue[_FetchWork | None]" = field(default_factory=queue.Queue, init=False)
     _threads: list[threading.Thread] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
@@ -562,57 +570,69 @@ class MockService:
         """Preview and export availability of one candidate (§ 5).
 
         A pipeline job without a `video_path` gets its video by downloading a segment around
-        the candidate (#46). The first request starts that fetch and reports `preparing`; poll
-        (§ 9.1) until it is `available` or `unavailable`.
+        the candidate (#46). A job with a `video_path` prepares its browser-playable preview
+        copy on the same background worker so HTTP requests never block on FFmpeg. The first
+        request starts that work and reports `preparing`; poll (§ 9.1) until it is `available`
+        or `unavailable`. Transient `fetch_failed` outcomes are evicted once reported so a
+        later request retries instead of caching the failure.
         """
-        fetch = False
+        work: _FetchWork | None = None
         with self._lock:
             record = self._done_job(job_id)
             candidate = self._candidate(record, candidate_id)
-            if self._needs_segment(record) and (job_id, candidate_id) not in self._segments:
+            if record.video_path is not None:
+                if Path(record.video_path).is_file() and job_id not in self._file_media:
+                    self._file_media[job_id] = _FileMediaState("preparing")
+                    work = ("file", job_id)
+            elif self._needs_segment(record) and (job_id, candidate_id) not in self._segments:
                 span = self._segment_span(record, candidate.start_s, candidate.end_s)
                 self._segments[(job_id, candidate_id)] = _SegmentState("preparing", *span)
-                fetch = True
-            own_file = record.video_path
-        if fetch:  # enqueued outside the lock, like every worker item
-            self._enqueue(self._fetch_queue, (job_id, candidate_id), self._run_fetch_safely)
-        if (
-            own_file is not None
-            and job_id not in self._job_media
-            and job_id not in self._job_media_failed
-        ):
-            # A preview must be playable in the browser (§ 5.1); making it so can run FFmpeg,
-            # so it happens outside the lock, once per job (#46).
-            self._prepare_file_media(job_id, own_file)
+                work = ("segment", job_id, candidate_id)
+        if work is not None:  # enqueued outside the lock, like every worker item
+            self._enqueue(self._fetch_queue, work, self._run_fetch_item_safely)
         with self._lock:
             record = self._jobs[job_id]
             candidate = self._candidate(record, candidate_id)
-            return self._media_for(record, candidate)
+            media = self._media_for(record, candidate)
+            seg_key = (job_id, candidate_id)
+            seg_state = self._segments.get(seg_key)
+            if (
+                seg_state is not None
+                and seg_state.status == "failed"
+                and seg_state.reason == "fetch_failed"
+            ):
+                self._segments.pop(seg_key, None)
+            file_state = self._file_media.get(job_id)
+            if file_state is not None and file_state.status == "failed":
+                self._file_media.pop(job_id, None)
+            return media
 
-    def _prepare_file_media(self, job_id: str, video_path: str) -> None:
-        """Register a playable copy of the job's own video file under a media ID (#46).
-
-        Serialized by `_file_media_lock` so concurrent requests prepare at most one copy per
-        job, and a success is never overwritten by a failure observed concurrently.
-        """
+    def _prepare_file_media(self, job_id: str) -> None:
+        """Prepare a browser-playable copy of the job's own video file in the background (#46)."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            video_path = None if job is None else job.video_path
+        if video_path is None:
+            return
         source = Path(video_path)
         if not source.is_file():
+            with self._lock:
+                self._file_media.pop(job_id, None)
             return  # _media_for reports local_file_missing
-        with self._file_media_lock:
+        self._sleep()
+        media_id = new_id("med")
+        try:
+            playable = _playable_copy(source, self.output_dir / "media" / f"{media_id}.mp4")
+        except Exception as exc:  # the preview can't be made; renders still cut the file
+            log.warning("preview preparation failed job_id=%s: %s", job_id, exc)
             with self._lock:
-                if job_id in self._job_media or job_id in self._job_media_failed:
-                    return  # already prepared (or already known unprepareable)
-            media_id = new_id("med")
-            try:
-                playable = _playable_copy(source, self.output_dir / "media" / f"{media_id}.mp4")
-            except Exception as exc:  # the preview can't be made; renders still cut the file
-                log.warning("preview preparation failed job_id=%s: %s", job_id, exc)
-                with self._lock:
-                    self._job_media_failed.add(job_id)
-                return
-            with self._lock:
-                self._media[media_id] = playable
-                self._job_media[job_id] = media_id
+                current = self._file_media.get(job_id)
+                if current is None or current.status != "ready":
+                    self._file_media[job_id] = _FileMediaState("failed")
+            return
+        with self._lock:
+            self._media[media_id] = playable
+            self._file_media[job_id] = _FileMediaState("ready", media_id)
 
     def _needs_segment(self, job: _JobRecord) -> bool:
         """Whether this job's media comes from a downloaded segment (#46)."""
@@ -894,9 +914,19 @@ class MockService:
         elif job.video_path is not None:
             # The server reads the user's file and downloads no video (§ 5); it is the whole
             # VOD (checked against the VOD's length at ingest), so its time 0 is VOD time 0.
-            # The preview serves a playable copy prepared by `candidate_media` (#46, § 5.1).
-            media_id = self._job_media.get(job.job_id)
-            if job.job_id in self._job_media_failed or media_id is None:
+            # The preview serves a playable copy prepared in the background (#46, § 5.1).
+            file_state = self._file_media.get(job.job_id)
+            if file_state is not None and file_state.status == "ready" and file_state.media_id:
+                preview = PreviewMedia(
+                    status="available",
+                    kind="video_file",
+                    url=f"/api/v1/media/{file_state.media_id}",
+                    media_start_s=0.0,
+                    media_end_s=duration_s,
+                    reason=None,
+                    message=None,
+                )
+            elif file_state is not None and file_state.status == "failed":
                 preview = PreviewMedia(
                     status="unavailable",
                     kind=None,
@@ -911,13 +941,13 @@ class MockService:
                 )
             else:
                 preview = PreviewMedia(
-                    status="available",
-                    kind="video_file",
-                    url=f"/api/v1/media/{media_id}",
-                    media_start_s=0.0,
-                    media_end_s=duration_s,
+                    status="preparing",
+                    kind=None,
+                    url=None,
+                    media_start_s=None,
+                    media_end_s=None,
                     reason=None,
-                    message=None,
+                    message=_PREPARING_LOCAL_MESSAGE,
                 )
             export = self._whole_vod_export(duration_s)
         elif self._needs_segment(job):
@@ -987,11 +1017,35 @@ class MockService:
             state = _SegmentState("preparing", *span)
         if state.status == "failed":
             assert state.reason is not None
-            preview_message, export_message = (
-                (_SOURCE_PREVIEW_UNAVAILABLE, _SOURCE_EXPORT_UNAVAILABLE)
-                if state.reason == "source_unavailable"
-                else (_FETCH_FAILED_PREVIEW, _FETCH_FAILED_EXPORT)
-            )
+            if state.reason == "source_unavailable":
+                preview = PreviewMedia(
+                    status="unavailable",
+                    kind=None,
+                    url=None,
+                    media_start_s=None,
+                    media_end_s=None,
+                    reason=state.reason,
+                    message=_SOURCE_PREVIEW_UNAVAILABLE,
+                )
+                export = ExportAvailability(
+                    status="unavailable",
+                    reason=state.reason,
+                    message=_SOURCE_EXPORT_UNAVAILABLE,
+                    min_start_s=None,
+                    max_end_s=None,
+                    max_duration_s=None,
+                    layouts=(),
+                )
+                return CandidateMedia(
+                    job_id=job.job_id,
+                    candidate_id=candidate.candidate_id,
+                    video_id=job.video_id,
+                    preview=preview,
+                    export=export,
+                )
+            # Transient download failures remain retryable: preview reports `fetch_failed` once
+            # (evicted after reporting), while exports keep the planned bounds so retrying an
+            # export fetches fresh media instead of failing from cached state.
             preview = PreviewMedia(
                 status="unavailable",
                 kind=None,
@@ -999,16 +1053,16 @@ class MockService:
                 media_start_s=None,
                 media_end_s=None,
                 reason=state.reason,
-                message=preview_message,
+                message=_FETCH_FAILED_PREVIEW,
             )
             export = ExportAvailability(
-                status="unavailable",
-                reason=state.reason,
-                message=export_message,
-                min_start_s=None,
-                max_end_s=None,
-                max_duration_s=None,
-                layouts=(),
+                status="available",
+                reason=None,
+                message=None,
+                min_start_s=state.planned_begin_s,
+                max_end_s=state.planned_end_s,
+                max_duration_s=MAX_EXPORT_DURATION_S,
+                layouts=available_layouts(self.export_region),
             )
             return CandidateMedia(
                 job_id=job.job_id,
@@ -1217,10 +1271,22 @@ class MockService:
             self._run_render_safely(render_id)
 
     def _run_fetches(self) -> None:
-        while (key := self._fetch_queue.get()) is not None:
-            self._run_fetch_safely(key)
+        while (item := self._fetch_queue.get()) is not None:
+            self._run_fetch_item_safely(item)
 
-    def _run_fetch_safely(self, key: tuple[str, str]) -> None:
+    def _run_fetch_item_safely(self, item: _FetchWork) -> None:
+        if item[0] == "file":
+            job_id = item[1]
+            try:
+                self._prepare_file_media(job_id)
+            except Exception:  # a bug: fail preview preparation, keep the worker alive
+                log.exception("preview preparation failed job_id=%s", job_id)
+                with self._lock:
+                    current = self._file_media.get(job_id)
+                    if current is None or current.status != "ready":
+                        self._file_media[job_id] = _FileMediaState("failed")
+            return
+        key = (item[1], item[2])
         try:
             self._run_fetch(*key)
         except Exception:  # a bug: fail the segment's fetch, keep the worker alive
@@ -1385,14 +1451,8 @@ class MockService:
         key = (job.job_id, candidate.candidate_id)
         with self._lock:
             state = self._segments.get(key)
-        if state is not None and state.status == "failed":
-            assert state.reason is not None
-            message = (
-                _SOURCE_EXPORT_UNAVAILABLE
-                if state.reason == "source_unavailable"
-                else _FETCH_FAILED_EXPORT
-            )
-            raise _MediaUnavailable(state.reason, message)
+        if state is not None and state.status == "failed" and state.reason == "source_unavailable":
+            raise _MediaUnavailable(state.reason, _SOURCE_EXPORT_UNAVAILABLE)
         if (
             state is not None
             and state.status == "ready"

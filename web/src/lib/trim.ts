@@ -22,11 +22,16 @@ function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
 }
 
-/** Clamp a trim interval to `[minStartS, maxEndS]` while keeping `startS < endS`. */
+/**
+ * Clamp a trim interval to `[minStartS, maxEndS]` and `maxDurationS` while keeping
+ * `startS < endS`. When `anchor` is `"end"`, `endS` is kept fixed and `startS` is pulled
+ * forward to satisfy `maxDurationS`; otherwise `endS` is pulled back.
+ */
 export function clampTrim(
   startS: number,
   endS: number,
   bounds: TrimBounds,
+  anchor: "start" | "end" = "start",
 ): TrimInterval {
   const span = Math.max(0, bounds.maxEndS - bounds.minStartS);
   const minGap = Math.min(MIN_TRIM_DURATION_S, span / 2);
@@ -44,37 +49,54 @@ export function clampTrim(
       nextStart = roundTenths(Math.max(bounds.minStartS, nextEnd - minGap));
     }
   }
+  if (
+    bounds.maxDurationS !== null &&
+    nextEnd - nextStart > bounds.maxDurationS
+  ) {
+    if (anchor === "end") {
+      nextStart = roundTenths(
+        Math.max(bounds.minStartS, nextEnd - bounds.maxDurationS),
+      );
+    } else {
+      nextEnd = roundTenths(
+        Math.min(bounds.maxEndS, nextStart + bounds.maxDurationS),
+      );
+    }
+  }
   return { startS: nextStart, endS: nextEnd };
 }
 
-/** Nudge `startS` by `deltaS`, clamped to `[minStartS, endS - MIN_TRIM_DURATION_S]`. */
+/** Nudge `startS` by `deltaS`, clamped to `[minStartS, endS - MIN_TRIM_DURATION_S]` and `maxDurationS`. */
 export function nudgeStart(
   current: TrimInterval,
   deltaS: number,
   bounds: TrimBounds,
 ): TrimInterval {
-  const maxStart = Math.max(
-    bounds.minStartS,
-    current.endS - MIN_TRIM_DURATION_S,
-  );
+  const minStart =
+    bounds.maxDurationS !== null
+      ? Math.max(bounds.minStartS, current.endS - bounds.maxDurationS)
+      : bounds.minStartS;
+  const maxStart = Math.max(minStart, current.endS - MIN_TRIM_DURATION_S);
   return {
-    startS: roundTenths(
-      clamp(current.startS + deltaS, bounds.minStartS, maxStart),
-    ),
+    startS: roundTenths(clamp(current.startS + deltaS, minStart, maxStart)),
     endS: current.endS,
   };
 }
 
-/** Nudge `endS` by `deltaS`, clamped to `[startS + MIN_TRIM_DURATION_S, maxEndS]`. */
+/** Nudge `endS` by `deltaS`, clamped to `[startS + MIN_TRIM_DURATION_S, maxEndS]` and `maxDurationS`. */
 export function nudgeEnd(
   current: TrimInterval,
   deltaS: number,
   bounds: TrimBounds,
 ): TrimInterval {
-  const minEnd = Math.min(bounds.maxEndS, current.startS + MIN_TRIM_DURATION_S);
+  const maxEnd =
+    bounds.maxDurationS !== null
+      ? Math.min(bounds.maxEndS, current.startS + bounds.maxDurationS)
+      : bounds.maxEndS;
+  const minEnd = Math.min(maxEnd, current.startS + MIN_TRIM_DURATION_S);
   return {
     startS: current.startS,
-    endS: roundTenths(clamp(current.endS + deltaS, minEnd, bounds.maxEndS)),
+    endS: roundTenths(clamp(current.endS + deltaS, minEnd, maxEnd)),
   };
 }
 
