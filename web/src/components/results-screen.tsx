@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { ClipCard, type ClipExport } from "@/components/clip-card";
 import { HighlightsDialog } from "@/components/highlights-dialog";
+import { StreamTimeline } from "@/components/stream-timeline";
 import {
   ApiRequestError,
   getApiClient,
@@ -69,8 +70,11 @@ export function ResultsScreen() {
   const { jobId } = useParams<{ jobId: string }>();
   const [view, setView] = useState<View>({ kind: "loading" });
   const [clips, setClips] = useState<Record<string, ClipExport>>({});
+  const [viewMode, setViewMode] = useState<"cards" | "timeline">("cards");
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(
+    null,
+  );
   const [highlightsOpen, setHighlightsOpen] = useState(false);
-  const downloads = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -297,14 +301,32 @@ export function ResultsScreen() {
   const { vod } = view.result;
 
   function downloadAll() {
-    // One click per finished clip, spaced out: each link has its own `download` file name, and
-    // clicks in quick succession can cancel each other.
-    const links =
-      downloads.current?.querySelectorAll<HTMLAnchorElement>("a[download]") ??
-      [];
-    links.forEach((link, index) =>
-      setTimeout(() => link.click(), index * DOWNLOAD_SPACING_MS),
-    );
+    // Trigger one download per finished clip, spaced out so the browser starts every file;
+    // works from both the clip-cards grid and the timeline view.
+    ready.forEach((candidate, index) => {
+      const clip = clips[candidate.candidate_id];
+      if (!clip || clip.kind !== "export" || !clip.url) return;
+      const url = clip.url;
+      const filename = `autoclipper_${vod.video_id}_${candidate.start_s}-${candidate.end_s}.mp4`;
+      setTimeout(() => {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        link.click();
+      }, index * DOWNLOAD_SPACING_MS);
+    });
+  }
+
+  function selectTimelineCandidate(candidate: Candidate) {
+    setSelectedCandidateId(candidate.candidate_id);
+    // Candidates beyond the auto-rendered top 10 render on demand when selected from the timeline.
+    if (!(candidate.candidate_id in clips)) {
+      setClips((current) => ({
+        ...current,
+        [candidate.candidate_id]: { kind: "pending" },
+      }));
+      void renderRef.current?.(candidate, false);
+    }
   }
 
   return (
@@ -365,6 +387,36 @@ export function ResultsScreen() {
                   " · Nobody clipped this VOD, so every moment was discovered."}
               </p>
             </div>
+            <div
+              role="group"
+              aria-label="Results view"
+              className="inline-flex rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800"
+            >
+              <button
+                type="button"
+                aria-pressed={viewMode === "cards"}
+                onClick={() => setViewMode("cards")}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none ${
+                  viewMode === "cards"
+                    ? "bg-white text-zinc-950 shadow-xs dark:bg-zinc-950 dark:text-zinc-50"
+                    : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                }`}
+              >
+                Clip cards
+              </button>
+              <button
+                type="button"
+                aria-pressed={viewMode === "timeline"}
+                onClick={() => setViewMode("timeline")}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none ${
+                  viewMode === "timeline"
+                    ? "bg-white text-zinc-950 shadow-xs dark:bg-zinc-950 dark:text-zinc-50"
+                    : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                }`}
+              >
+                Timeline
+              </button>
+            </div>
             <button
               type="button"
               onClick={() => setHighlightsOpen(true)}
@@ -381,24 +433,37 @@ export function ResultsScreen() {
               Download all{ready.length > 0 ? ` (${ready.length})` : ""}
             </button>
           </div>
-          <div ref={downloads}>
-            <ol
-              role="list"
-              className="grid grid-cols-1 gap-5 min-[480px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
-            >
-              {top.map((candidate) => (
-                <ClipCard
-                  key={candidate.candidate_id}
-                  jobId={jobId}
-                  candidate={candidate}
-                  scoreFraction={scale(candidate.score)}
-                  clip={clips[candidate.candidate_id] ?? { kind: "pending" }}
-                  onRetry={() => retry(candidate)}
-                  videoId={vod.video_id}
-                />
-              ))}
-            </ol>
-          </div>
+          {viewMode === "timeline" ? (
+            <StreamTimeline
+              jobId={jobId}
+              videoId={vod.video_id}
+              durationS={vod.duration_s}
+              candidates={view.result.candidates}
+              selectedId={selectedCandidateId}
+              onSelect={selectTimelineCandidate}
+              clips={clips}
+              onRetry={retry}
+            />
+          ) : (
+            <div>
+              <ol
+                role="list"
+                className="grid grid-cols-1 gap-5 min-[480px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+              >
+                {top.map((candidate) => (
+                  <ClipCard
+                    key={candidate.candidate_id}
+                    jobId={jobId}
+                    candidate={candidate}
+                    scoreFraction={scale(candidate.score)}
+                    clip={clips[candidate.candidate_id] ?? { kind: "pending" }}
+                    onRetry={() => retry(candidate)}
+                    videoId={vod.video_id}
+                  />
+                ))}
+              </ol>
+            </div>
+          )}
         </section>
       )}
 
