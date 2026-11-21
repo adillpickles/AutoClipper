@@ -405,10 +405,15 @@ def analyze_vod(
         scores, scorer, run_id = scored
         scorer_info = ScorerInfo(kind=scorer.kind, name=scorer.name, run_id=run_id)
         features = _feature_frame(chat_features, audio_features)
+        audio_wav = normalized_audio_path(data_dir, video_id) if audio_ok else None
         candidates = _timed(
             "candidates",
             lambda: generate_candidates(
-                scores, duration_s=vod.duration_s, features=features, moments=moments
+                scores,
+                duration_s=vod.duration_s,
+                features=features,
+                moments=moments,
+                audio_path=audio_wav,
             ),
         )
     result = AnalysisResult(
