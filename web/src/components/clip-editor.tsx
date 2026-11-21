@@ -89,6 +89,8 @@ export function ClipEditor() {
   const [media, setMedia] = useState<CandidateMedia | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [trim, setTrim] = useState<TrimInterval>({ startS: 0, endS: 0 });
+  const [startInput, setStartInput] = useState("0");
+  const [endInput, setEndInput] = useState("0");
   const [layout, setLayout] = useState<Layout>("center_crop");
   const [captions, setCaptions] = useState(true);
   const [render, setRender] = useState<RenderState>({ kind: "idle" });
@@ -116,6 +118,8 @@ export function ClipEditor() {
           return;
         }
         setTrim({ startS: candidate.start_s, endS: candidate.end_s });
+        setStartInput(String(candidate.start_s));
+        setEndInput(String(candidate.end_s));
         setLoaded({ kind: "ready", result, candidate });
       })
       .catch((error: unknown) => {
@@ -285,24 +289,98 @@ export function ClipEditor() {
     }
   }
 
+  function clearStaleRender() {
+    // Invalidate any in-flight poll too so an earlier trim's export never publishes under a
+    // newer selection.
+    pollRunRef.current += 1;
+    setRender((current) =>
+      current.kind === "idle" ? current : { kind: "idle" },
+    );
+  }
+
+  function applyTrim(next: TrimInterval, seekToStart = false) {
+    const changed = next.startS !== trim.startS || next.endS !== trim.endS;
+    setStartInput(String(next.startS));
+    setEndInput(String(next.endS));
+    if (!changed) return;
+    setTrim(next);
+    clearStaleRender();
+    if (seekToStart) seekToVodTime(next.startS);
+  }
+
+  function commitStartInput() {
+    if (startInput === String(trim.startS)) return;
+    const parsed = startInput.trim() === "" ? NaN : Number(startInput);
+    const next = Number.isFinite(parsed)
+      ? clampTrim(parsed, trim.endS, bounds, "end")
+      : trim;
+    applyTrim(next, true);
+  }
+
+  function commitEndInput() {
+    if (endInput === String(trim.endS)) return;
+    const parsed = endInput.trim() === "" ? NaN : Number(endInput);
+    const next = Number.isFinite(parsed)
+      ? clampTrim(trim.startS, parsed, bounds, "start")
+      : trim;
+    applyTrim(next);
+  }
+
   function setFromPlayhead(edge: "start" | "end") {
     const element = videoRef.current;
     if (!element || !previewPlayable) return;
     const vodTime = mediaStartS + element.currentTime;
-    setTrim((current) =>
+    const next =
       edge === "start"
-        ? clampTrim(vodTime, Math.max(vodTime + 0.5, current.endS), bounds)
-        : clampTrim(Math.min(current.startS, vodTime - 0.5), vodTime, bounds),
-    );
+        ? clampTrim(vodTime, Math.max(vodTime + 0.5, trim.endS), bounds, "end")
+        : clampTrim(
+            Math.min(trim.startS, vodTime - 0.5),
+            vodTime,
+            bounds,
+            "start",
+          );
+    applyTrim(next);
   }
 
   function resetTrim() {
-    setTrim({ startS: candidate.start_s, endS: candidate.end_s });
-    seekToVodTime(candidate.start_s);
+    applyTrim({ startS: candidate.start_s, endS: candidate.end_s }, true);
   }
 
   async function reRender() {
-    if (!canExport) return;
+    const startEdited = startInput !== String(trim.startS);
+    const endEdited = endInput !== String(trim.endS);
+    let effective = trim;
+    if (startEdited || endEdited) {
+      const parsedStart = startEdited
+        ? startInput.trim() === ""
+          ? NaN
+          : Number(startInput)
+        : trim.startS;
+      const parsedEnd = endEdited
+        ? endInput.trim() === ""
+          ? NaN
+          : Number(endInput)
+        : trim.endS;
+      if (Number.isFinite(parsedStart) && Number.isFinite(parsedEnd)) {
+        effective = clampTrim(
+          parsedStart,
+          parsedEnd,
+          bounds,
+          startEdited && !endEdited ? "end" : "start",
+        );
+      }
+      setTrim(effective);
+      setStartInput(String(effective.startS));
+      setEndInput(String(effective.endS));
+    }
+    if (
+      exportInfo?.status !== "available" ||
+      layouts.length === 0 ||
+      trimError(effective, bounds) !== null ||
+      render.kind === "active"
+    ) {
+      return;
+    }
     const runId = ++pollRunRef.current;
     const wait = (ms: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -311,8 +389,8 @@ export function ClipEditor() {
       const { export: started } = await client.createExport({
         job_id: jobId,
         candidate_id: candidate.candidate_id,
-        start_s: trim.startS,
-        end_s: trim.endS,
+        start_s: effective.startS,
+        end_s: effective.endS,
         layout,
         captions,
       });
@@ -531,11 +609,7 @@ export function ClipEditor() {
                 <button
                   type="button"
                   aria-label="Move start 5 seconds earlier"
-                  onClick={() => {
-                    const next = nudgeStart(trim, -5, bounds);
-                    setTrim(next);
-                    seekToVodTime(next.startS);
-                  }}
+                  onClick={() => applyTrim(nudgeStart(trim, -5, bounds), true)}
                   className={NUDGE_BUTTON}
                 >
                   -5s
@@ -543,11 +617,7 @@ export function ClipEditor() {
                 <button
                   type="button"
                   aria-label="Move start 1 second earlier"
-                  onClick={() => {
-                    const next = nudgeStart(trim, -1, bounds);
-                    setTrim(next);
-                    seekToVodTime(next.startS);
-                  }}
+                  onClick={() => applyTrim(nudgeStart(trim, -1, bounds), true)}
                   className={NUDGE_BUTTON}
                 >
                   -1s
@@ -558,26 +628,21 @@ export function ClipEditor() {
                   step="0.5"
                   min={bounds.minStartS}
                   max={bounds.maxEndS}
-                  value={trim.startS}
+                  value={startInput}
                   onChange={(event) => {
-                    const next = clampTrim(
-                      Number(event.target.value),
-                      trim.endS,
-                      bounds,
-                    );
-                    setTrim(next);
-                    seekToVodTime(next.startS);
+                    setStartInput(event.target.value);
+                    clearStaleRender();
+                  }}
+                  onBlur={commitStartInput}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") commitStartInput();
                   }}
                   className={TIME_INPUT}
                 />
                 <button
                   type="button"
                   aria-label="Move start 1 second later"
-                  onClick={() => {
-                    const next = nudgeStart(trim, 1, bounds);
-                    setTrim(next);
-                    seekToVodTime(next.startS);
-                  }}
+                  onClick={() => applyTrim(nudgeStart(trim, 1, bounds), true)}
                   className={NUDGE_BUTTON}
                 >
                   +1s
@@ -585,11 +650,7 @@ export function ClipEditor() {
                 <button
                   type="button"
                   aria-label="Move start 5 seconds later"
-                  onClick={() => {
-                    const next = nudgeStart(trim, 5, bounds);
-                    setTrim(next);
-                    seekToVodTime(next.startS);
-                  }}
+                  onClick={() => applyTrim(nudgeStart(trim, 5, bounds), true)}
                   className={NUDGE_BUTTON}
                 >
                   +5s
@@ -610,7 +671,7 @@ export function ClipEditor() {
                 <button
                   type="button"
                   aria-label="Move end 5 seconds earlier"
-                  onClick={() => setTrim((cur) => nudgeEnd(cur, -5, bounds))}
+                  onClick={() => applyTrim(nudgeEnd(trim, -5, bounds))}
                   className={NUDGE_BUTTON}
                 >
                   -5s
@@ -618,7 +679,7 @@ export function ClipEditor() {
                 <button
                   type="button"
                   aria-label="Move end 1 second earlier"
-                  onClick={() => setTrim((cur) => nudgeEnd(cur, -1, bounds))}
+                  onClick={() => applyTrim(nudgeEnd(trim, -1, bounds))}
                   className={NUDGE_BUTTON}
                 >
                   -1s
@@ -629,18 +690,21 @@ export function ClipEditor() {
                   step="0.5"
                   min={bounds.minStartS}
                   max={bounds.maxEndS}
-                  value={trim.endS}
-                  onChange={(event) =>
-                    setTrim((cur) =>
-                      clampTrim(cur.startS, Number(event.target.value), bounds),
-                    )
-                  }
+                  value={endInput}
+                  onChange={(event) => {
+                    setEndInput(event.target.value);
+                    clearStaleRender();
+                  }}
+                  onBlur={commitEndInput}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") commitEndInput();
+                  }}
                   className={TIME_INPUT}
                 />
                 <button
                   type="button"
                   aria-label="Move end 1 second later"
-                  onClick={() => setTrim((cur) => nudgeEnd(cur, 1, bounds))}
+                  onClick={() => applyTrim(nudgeEnd(trim, 1, bounds))}
                   className={NUDGE_BUTTON}
                 >
                   +1s
@@ -648,7 +712,7 @@ export function ClipEditor() {
                 <button
                   type="button"
                   aria-label="Move end 5 seconds later"
-                  onClick={() => setTrim((cur) => nudgeEnd(cur, 5, bounds))}
+                  onClick={() => applyTrim(nudgeEnd(trim, 5, bounds))}
                   className={NUDGE_BUTTON}
                 >
                   +5s
@@ -679,7 +743,10 @@ export function ClipEditor() {
                       name="export-layout"
                       value={option}
                       checked={layout === option}
-                      onChange={() => setLayout(option)}
+                      onChange={() => {
+                        setLayout(option);
+                        clearStaleRender();
+                      }}
                     />
                     {LAYOUT_LABEL[option]}
                   </label>
@@ -696,7 +763,10 @@ export function ClipEditor() {
             <input
               type="checkbox"
               checked={captions}
-              onChange={(event) => setCaptions(event.target.checked)}
+              onChange={(event) => {
+                setCaptions(event.target.checked);
+                clearStaleRender();
+              }}
             />
             Burn in captions
           </label>

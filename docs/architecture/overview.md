@@ -140,7 +140,7 @@ One pipeline runs these steps for the CLI and the API: `autoclipper.export.clip.
 
 Clip exports and highlights videos share one render queue (one render at a time). Rendered files stay in `artifacts/` until the user deletes them; the server never deletes them on its own.
 
-Analytical results stay usable when video is unavailable (VOD deleted, subscriber-only, download failed): return candidates with a clear media-unavailable status and disable preview/export with an actionable explanation. Never claim an export succeeded or invent replacement media.
+Analytical results stay usable when video is unavailable: permanent source unavailability (VOD deleted, subscriber-only, missing local file) disables both preview and export with an actionable explanation, while transient download or preview-preparation failures (`fetch_failed`) report the failure on preview without caching it permanently so later preview requests and exports can retry. Never claim an export succeeded or invent replacement media.
 
 ### 4.7 Interfaces
 
