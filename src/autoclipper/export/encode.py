@@ -61,9 +61,11 @@ from autoclipper.export.errors import ExportError
 from autoclipper.export.reframe import (
     OUTPUT_HEIGHT,
     OUTPUT_WIDTH,
+    AnyReframePlan,
     CenterCrop,
     Layout,
     ReframePlan,
+    StackedReframePlan,
     plan_reframe,
 )
 from autoclipper.export.seek import (
@@ -205,7 +207,7 @@ class ExportResult:
     output: Path
     cut: CutPlan
     layout: Layout
-    reframe: ReframePlan
+    reframe: AnyReframePlan
     duration_s: float
     width: int
     height: int
@@ -234,7 +236,7 @@ def build_export_command(
     interval: Interval,
     video: VideoStream,
     audio: AudioStream | None,
-    reframe: ReframePlan,
+    reframe: AnyReframePlan,
     output: Path,
     *,
     seek_s: float,
@@ -277,7 +279,7 @@ def build_export_command(
     # resampled before it is trimmed: output frame 0 then repeats the source frame on screen at
     # the start (its timestamp is just below 0), which a trim first would have dropped.
     skip = _seconds(interval.start_s - seek_s)
-    filters = (
+    pre_filters = (
         f"setpts=PTS-{skip}/TB",
         # round=up puts a source frame at clip time p in output slot ceil(p * fps), so output frame
         # n shows the last source frame at or before n / fps: the frame on screen then. With
@@ -285,10 +287,8 @@ def build_export_command(
         # run up to one output frame ahead of the audio.
         f"fps=fps={encode.frame_rate}:round=up",
         "trim=start=0",
-        *reframe.filters(),
-        *video_filters,
-        "format=yuv420p",
     )
+    post_filters = (*video_filters, "format=yuv420p")
     audio_chain = (
         # Gaps in the audio's timestamps become silence (and so does missing audio at the start),
         # as when the audio is normalized for analysis, so the clip's audio keeps its timeline
@@ -313,17 +313,33 @@ def build_export_command(
     if audio is None:
         silence = f"anullsrc=channel_layout=stereo:sample_rate={encode.audio_sample_rate_hz}"
         inputs += ["-f", "lavfi", "-i", silence]
+    if isinstance(reframe, StackedReframePlan):
+        graph = reframe.filter_complex(f"0:{video.index}", pre_filters, post_filters, "ac_vout")
+        video_args: tuple[str, ...] = (
+            "-filter_complex",
+            graph,
+            "-map",
+            "[ac_vout]",
+            "-map",
+            audio_map,
+        )
+    else:
+        assert isinstance(reframe, ReframePlan)
+        filters = (*pre_filters, *reframe.filters(), *post_filters)
+        video_args = (
+            "-map",
+            f"0:{video.index}",
+            "-map",
+            audio_map,
+            "-filter:v",
+            ",".join(filters),
+        )
     return ffmpeg_command(
         "-y",
         *inputs,
         "-t",
         _seconds(interval.duration_s),
-        "-map",
-        f"0:{video.index}",
-        "-map",
-        audio_map,
-        "-filter:v",
-        ",".join(filters),
+        *video_args,
         "-filter:a",
         ",".join(audio_chain),
         "-c:v",

@@ -36,11 +36,16 @@ const FIRST_BACKOFF_MS = 2000;
 const MAX_BACKOFF_MS = 10_000;
 const GIVE_UP_AFTER_MS = 60_000;
 
-const KNOWN_LAYOUTS: readonly Layout[] = ["center_crop", "configured_region"];
+const KNOWN_LAYOUTS: readonly Layout[] = [
+  "center_crop",
+  "configured_region",
+  "stacked",
+];
 
 const LAYOUT_LABEL: Record<Layout, string> = {
   center_crop: "Center crop (9:16)",
   configured_region: "Configured region (9:16)",
+  stacked: "Stacked (facecam + gameplay)",
 };
 
 const exportsKey = (jobId: string) => `autoclipper.exports.${jobId}`;
