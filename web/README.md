@@ -1,6 +1,6 @@
 # AutoClipper web app
 
-The Next.js frontend for AutoClipper ([app stack](../docs/decisions/0007-web-application-stack.md)). It has the start screen (`/`), the progress screen (`/jobs/<job_id>`) and the results screen (`/jobs/<job_id>/results`). By default it runs in **mock mode** inside the browser so no backend is needed; set `NEXT_PUBLIC_API_ORIGIN` (e.g. `http://127.0.0.1:8000` in `web/.env.local`, see `web/.env.example`) to talk to a running `autoclipper serve` backend (#33).
+The Next.js frontend for AutoClipper ([app stack](../docs/decisions/0007-web-application-stack.md)). It has the start screen (`/`), the progress screen (`/jobs/<job_id>`), the results screen (`/jobs/<job_id>/results`), and the clip editor (`/jobs/<job_id>/results/<candidate_id>`). By default it runs in **mock mode** inside the browser so no backend is needed; set `NEXT_PUBLIC_API_ORIGIN` (e.g. `http://127.0.0.1:8000` in `web/.env.local`, see `web/.env.example`) to talk to a running `autoclipper serve` backend (#33).
 
 Stack: Next.js 16 (App Router, Turbopack), React 19, TypeScript (strict), Tailwind CSS 4, ESLint 9 and Prettier 3. npm is the package manager.
 

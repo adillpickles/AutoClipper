@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 import type { Candidate, Export } from "@/lib/api/types";
@@ -26,12 +27,14 @@ const SOURCE_STYLE: Record<Candidate["source"], string> = {
 };
 
 export function ClipCard({
+  jobId,
   candidate,
   scoreFraction,
   clip,
   videoId,
   onRetry,
 }: {
+  jobId: string;
   candidate: Candidate;
   scoreFraction: number;
   clip: ClipExport;
@@ -106,7 +109,7 @@ export function ClipCard({
             />
           </div>
         </div>
-        <div className="mt-auto pt-1">
+        <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
           {ready ? (
             <a
               href={clip.url ?? undefined}
@@ -128,6 +131,12 @@ export function ClipCard({
               </span>
             </button>
           )}
+          <Link
+            href={`/jobs/${jobId}/results/${candidate.candidate_id}`}
+            className="inline-flex rounded-lg bg-white px-3.5 py-2 text-sm font-medium text-zinc-900 ring-1 ring-zinc-300 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none dark:bg-zinc-900 dark:text-zinc-100 dark:ring-zinc-700 dark:hover:bg-zinc-800"
+          >
+            Edit<span className="sr-only"> clip {candidate.rank}</span>
+          </Link>
         </div>
       </div>
     </li>
