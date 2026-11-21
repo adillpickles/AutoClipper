@@ -22,6 +22,7 @@ from autoclipper.analyze import AnalyzeError, analyze_vod, result_path
 from autoclipper.cli import ExitCode, app
 from autoclipper.config import TwitchCredentials
 from autoclipper.features.chat import Lexicon, load_lexicon
+from autoclipper.ffmpeg import ffmpeg_command, probe, run_command
 from autoclipper.ingest.catalog import CatalogEntry, Status, read_catalog
 from autoclipper.ingest.chat import PINNED_TOOL_VERSION, CommandResult
 from autoclipper.ingest.media import (
@@ -817,6 +818,112 @@ def test_a_matching_local_video_is_used_for_audio(
 
     assert result.candidates
     assert warning_codes(result) == ["audio_partly_muted"]
+
+
+def _reset_video_source(tmp_path: Path, *, part_s: float = 15.0) -> Path:
+    """Two MPEG-TS parts joined byte for byte whose timestamps restart halfway (#95)."""
+    first = tmp_path / "part0.ts"
+    second = tmp_path / "part1.ts"
+    for path, color, tone in ((first, "black", 440), (second, "white", 880)):
+        run_command(
+            ffmpeg_command(
+                "-y",
+                *("-f", "lavfi", "-i", f"color={color}:size=320x180:rate=10:duration={part_s:g}"),
+                *(
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"sine=frequency={tone}:sample_rate=48000:duration={part_s:g}",
+                ),
+                *("-c:v", "libx264", "-preset", "ultrafast", "-g", "20", "-c:a", "aac"),
+                *("-output_ts_offset", "0", "-f", "mpegts", path),
+            ),
+            timeout_s=60,
+        )
+    source = tmp_path / "reset.ts"
+    source.write_bytes(first.read_bytes() + second.read_bytes())
+    return source
+
+
+@pytest.mark.ffmpeg
+def test_a_local_video_whose_timestamps_restart_passes_video_mismatch(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    """A whole-VOD file whose timestamps restart passes video_mismatch via the analysis
+    timeline, while a genuinely wrong length still fails (#95)."""
+    reset_vod = _reset_video_source(tmp_path, part_s=15.0)
+    assert probe(reset_vod).duration_s < 20.0  # ffprobe sees only the first span
+
+    result = analyze_vod(
+        VIDEO_ID,
+        data_dir=tmp_path / "data-ok",
+        artifacts_dir=tmp_path / "artifacts-ok",
+        tools=tools(
+            chat_binary,
+            twitch=FakeTwitch(video=video_record(duration="0h0m30s")),
+            downloader=FakeDownloader(None, AssertionError("not used")),
+        ),
+        lexicon=lexicon,
+        video_file=reset_vod,
+        clock=lambda: NOW,
+    )
+
+    assert result.candidates
+    assert probe(normalized_audio_path(tmp_path / "data-ok", VIDEO_ID)).duration_s == pytest.approx(
+        30.0, abs=0.5
+    )
+
+    # A genuinely shorter file (30 s on the analysis timeline vs a 60 s VOD) still fails.
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=tmp_path / "data-bad",
+            artifacts_dir=tmp_path / "artifacts-bad",
+            tools=tools(
+                chat_binary,
+                twitch=FakeTwitch(video=video_record(duration="0h1m0s")),
+                downloader=FakeDownloader(None, AssertionError("not used")),
+            ),
+            lexicon=lexicon,
+            video_file=reset_vod,
+            clock=lambda: NOW,
+        )
+
+    assert excinfo.value.code == "video_mismatch"
+    assert "but the VOD is 60.0 s" in excinfo.value.message
+
+
+@pytest.mark.ffmpeg
+def test_corrected_duration_is_skipped_when_ffprobe_matches(
+    tmp_path: Path,
+    chat_binary: Path,
+    make_test_media: Callable[..., Path],
+    lexicon: Lexicon,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The full-file timeline re-read only runs when the cheap ffprobe duration disagrees (#95)."""
+    whole_vod = make_test_media("whole.mp4", duration_s=60.0)
+
+    def should_not_run(*args: object, **kwargs: object) -> float:
+        raise AssertionError("corrected_duration_s should not run when ffprobe agrees")
+
+    monkeypatch.setattr("autoclipper.analyze.corrected_duration_s", should_not_run)
+
+    result = analyze_vod(
+        VIDEO_ID,
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        tools=tools(
+            chat_binary,
+            twitch=FakeTwitch(video=video_record(duration="0h1m0s")),
+            downloader=FakeDownloader(None, AssertionError("not used")),
+        ),
+        lexicon=lexicon,
+        video_file=whole_vod,
+        clock=lambda: NOW,
+    )
+
+    assert result.candidates
 
 
 def test_a_broadcaster_that_cannot_be_fetched_falls_back_to_the_id(
