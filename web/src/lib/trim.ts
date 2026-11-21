@@ -18,8 +18,54 @@ function roundTenths(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+function ceilTenths(value: number): number {
+  return Math.ceil(value * 10 - 1e-9) / 10;
+}
+
+function floorTenths(value: number): number {
+  return Math.floor(value * 10 + 1e-9) / 10;
+}
+
 function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
+}
+
+function fitMaxDurationStart(
+  startS: number,
+  endS: number,
+  bounds: TrimBounds,
+): number {
+  if (bounds.maxDurationS === null || endS - startS <= bounds.maxDurationS) {
+    return startS;
+  }
+  let next = Math.max(bounds.minStartS, ceilTenths(endS - bounds.maxDurationS));
+  // Guard against IEEE-754 decimal overshoot such as `128.3 - 38.3 === 90.00000000000001`.
+  while (endS - next > bounds.maxDurationS && roundTenths(next + 0.1) < endS) {
+    next = roundTenths(next + 0.1);
+  }
+  return next;
+}
+
+function fitMaxDurationEnd(
+  startS: number,
+  endS: number,
+  bounds: TrimBounds,
+): number {
+  if (bounds.maxDurationS === null || endS - startS <= bounds.maxDurationS) {
+    return endS;
+  }
+  let next = Math.min(
+    bounds.maxEndS,
+    floorTenths(startS + bounds.maxDurationS),
+  );
+  // Guard against IEEE-754 decimal overshoot such as `128.3 - 38.3 === 90.00000000000001`.
+  while (
+    next - startS > bounds.maxDurationS &&
+    roundTenths(next - 0.1) > startS
+  ) {
+    next = roundTenths(next - 0.1);
+  }
+  return next;
 }
 
 /**
@@ -49,19 +95,10 @@ export function clampTrim(
       nextStart = roundTenths(Math.max(bounds.minStartS, nextEnd - minGap));
     }
   }
-  if (
-    bounds.maxDurationS !== null &&
-    nextEnd - nextStart > bounds.maxDurationS
-  ) {
-    if (anchor === "end") {
-      nextStart = roundTenths(
-        Math.max(bounds.minStartS, nextEnd - bounds.maxDurationS),
-      );
-    } else {
-      nextEnd = roundTenths(
-        Math.min(bounds.maxEndS, nextStart + bounds.maxDurationS),
-      );
-    }
+  if (anchor === "end") {
+    nextStart = fitMaxDurationStart(nextStart, nextEnd, bounds);
+  } else {
+    nextEnd = fitMaxDurationEnd(nextStart, nextEnd, bounds);
   }
   return { startS: nextStart, endS: nextEnd };
 }
@@ -72,15 +109,14 @@ export function nudgeStart(
   deltaS: number,
   bounds: TrimBounds,
 ): TrimInterval {
-  const minStart =
-    bounds.maxDurationS !== null
-      ? Math.max(bounds.minStartS, current.endS - bounds.maxDurationS)
-      : bounds.minStartS;
+  const minStart = fitMaxDurationStart(bounds.minStartS, current.endS, bounds);
   const maxStart = Math.max(minStart, current.endS - MIN_TRIM_DURATION_S);
-  return {
-    startS: roundTenths(clamp(current.startS + deltaS, minStart, maxStart)),
-    endS: current.endS,
-  };
+  const nextStart = fitMaxDurationStart(
+    roundTenths(clamp(current.startS + deltaS, minStart, maxStart)),
+    current.endS,
+    bounds,
+  );
+  return { startS: nextStart, endS: current.endS };
 }
 
 /** Nudge `endS` by `deltaS`, clamped to `[startS + MIN_TRIM_DURATION_S, maxEndS]` and `maxDurationS`. */
@@ -89,15 +125,14 @@ export function nudgeEnd(
   deltaS: number,
   bounds: TrimBounds,
 ): TrimInterval {
-  const maxEnd =
-    bounds.maxDurationS !== null
-      ? Math.min(bounds.maxEndS, current.startS + bounds.maxDurationS)
-      : bounds.maxEndS;
+  const maxEnd = fitMaxDurationEnd(current.startS, bounds.maxEndS, bounds);
   const minEnd = Math.min(maxEnd, current.startS + MIN_TRIM_DURATION_S);
-  return {
-    startS: current.startS,
-    endS: roundTenths(clamp(current.endS + deltaS, minEnd, maxEnd)),
-  };
+  const nextEnd = fitMaxDurationEnd(
+    current.startS,
+    roundTenths(clamp(current.endS + deltaS, minEnd, maxEnd)),
+    bounds,
+  );
+  return { startS: current.startS, endS: nextEnd };
 }
 
 /** Return a validation message if the trim violates export bounds, or `null` when valid. */

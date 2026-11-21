@@ -387,6 +387,11 @@ class _SegmentState:
     media_id: str | None = None
     # `source_unavailable` or `fetch_failed` (§ 5.2); the messages derive from it.
     reason: str | None = None
+    # When a segment downloaded fine (`status == "ready"`) but preview transcoding failed
+    # transiently (`media_id is None`), report `fetch_failed` once and allow retrying preview
+    # preparation on the next media request without losing the downloaded segment for exports.
+    preview_preparing: bool = False
+    preview_failed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,7 +402,11 @@ class _FileMediaState:
     media_id: str | None = None
 
 
-type _FetchWork = tuple[Literal["segment"], str, str] | tuple[Literal["file"], str]
+type _FetchWork = (
+    tuple[Literal["segment"], str, str]
+    | tuple[Literal["segment_preview"], str, str]
+    | tuple[Literal["file"], str]
+)
 
 
 class _MediaUnavailable(Exception):
@@ -584,10 +593,21 @@ class MockService:
                 if Path(record.video_path).is_file() and job_id not in self._file_media:
                     self._file_media[job_id] = _FileMediaState("preparing")
                     work = ("file", job_id)
-            elif self._needs_segment(record) and (job_id, candidate_id) not in self._segments:
-                span = self._segment_span(record, candidate.start_s, candidate.end_s)
-                self._segments[(job_id, candidate_id)] = _SegmentState("preparing", *span)
-                work = ("segment", job_id, candidate_id)
+            elif self._needs_segment(record):
+                seg_key = (job_id, candidate_id)
+                existing = self._segments.get(seg_key)
+                if existing is None:
+                    span = self._segment_span(record, candidate.start_s, candidate.end_s)
+                    self._segments[seg_key] = _SegmentState("preparing", *span)
+                    work = ("segment", job_id, candidate_id)
+                elif (
+                    existing.status == "ready"
+                    and existing.media_id is None
+                    and not existing.preview_preparing
+                    and not existing.preview_failed
+                ):
+                    self._segments[seg_key] = replace(existing, preview_preparing=True)
+                    work = ("segment_preview", job_id, candidate_id)
         if work is not None:  # enqueued outside the lock, like every worker item
             self._enqueue(self._fetch_queue, work, self._run_fetch_item_safely)
         with self._lock:
@@ -602,6 +622,16 @@ class MockService:
                 and seg_state.reason == "fetch_failed"
             ):
                 self._segments.pop(seg_key, None)
+            elif (
+                seg_state is not None
+                and seg_state.status == "ready"
+                and seg_state.media_id is None
+                and seg_state.preview_failed
+            ):
+                # Reported `fetch_failed` once for this segment's preview; clear the sticky
+                # flag so the next media request retries preview preparation while keeping the
+                # downloaded segment available for exports.
+                self._segments[seg_key] = replace(seg_state, preview_failed=False)
             file_state = self._file_media.get(job_id)
             if file_state is not None and file_state.status == "failed":
                 self._file_media.pop(job_id, None)
@@ -1071,7 +1101,17 @@ class MockService:
                 preview=preview,
                 export=export,
             )
-        if state.status == "ready" and state.media_id is None:
+        if state.status == "ready" and state.media_id is None and state.preview_preparing:
+            preview = PreviewMedia(
+                status="preparing",
+                kind=None,
+                url=None,
+                media_start_s=None,
+                media_end_s=None,
+                reason=None,
+                message=_PREPARING_LOCAL_MESSAGE,
+            )
+        elif state.status == "ready" and state.media_id is None:
             # The segment exists for cuts, but no playable preview could be prepared from it
             # (#46): report that instead of serving unverified bytes (§ 5.1).
             preview = PreviewMedia(
@@ -1286,6 +1326,19 @@ class MockService:
                     if current is None or current.status != "ready":
                         self._file_media[job_id] = _FileMediaState("failed")
             return
+        if item[0] == "segment_preview":
+            key = (item[1], item[2])
+            try:
+                self._retry_segment_preview(*key)
+            except Exception:
+                log.exception("segment preview retry failed job_id=%s", key[0])
+                with self._lock:
+                    state = self._segments.get(key)
+                    if state is not None and state.media_id is None:
+                        self._segments[key] = replace(
+                            state, preview_preparing=False, preview_failed=True
+                        )
+            return
         key = (item[1], item[2])
         try:
             self._run_fetch(*key)
@@ -1295,6 +1348,34 @@ class MockService:
                 state = self._segments.get(key)
                 if state is not None and state.status != "ready":
                     self._segments[key] = replace(state, status="failed", reason="fetch_failed")
+
+    def _retry_segment_preview(self, job_id: str, candidate_id: str) -> None:
+        """Retry preparing a browser-playable preview from an already downloaded segment."""
+        key = (job_id, candidate_id)
+        with self._lock:
+            state = self._segments.get(key)
+            if (
+                state is None
+                or state.status != "ready"
+                or state.media_id is not None
+                or state.path is None
+                or state.begin_s is None
+                or state.end_s is None
+            ):
+                return
+            segment = VideoSegment(state.path, state.begin_s, state.end_s)
+        self._sleep()
+        media_id = self._register_segment_media(segment)
+        with self._lock:
+            current = self._segments.get(key)
+            if current is None or current.status != "ready" or current.media_id is not None:
+                return
+            self._segments[key] = replace(
+                current,
+                media_id=media_id,
+                preview_preparing=False,
+                preview_failed=media_id is None,
+            )
 
     def _run_fetch(self, job_id: str, candidate_id: str) -> None:
         """Download one candidate's video segment in the background and record it (#46)."""
@@ -1325,6 +1406,7 @@ class MockService:
             with self._lock:
                 self._fetches_done += 1
             return
+        media_id = self._register_segment_media(segment)
         self._store_segment(
             job,
             candidate,
@@ -1335,7 +1417,8 @@ class MockService:
                 path=segment.path,
                 begin_s=segment.begin_s,
                 end_s=segment.end_s,
-                media_id=self._register_segment_media(segment),
+                media_id=media_id,
+                preview_failed=media_id is None,
             ),
         )
         with self._lock:
@@ -1464,6 +1547,7 @@ class MockService:
             assert state.path is not None
             return VideoSegment(state.path, state.begin_s, state.end_s)
         segment = self._fetch_segment(job, begin_needed_s, end_needed_s)
+        media_id = self._register_segment_media(segment)
         self._store_segment(
             job,
             candidate,
@@ -1474,7 +1558,8 @@ class MockService:
                 path=segment.path,
                 begin_s=segment.begin_s,
                 end_s=segment.end_s,
-                media_id=self._register_segment_media(segment),
+                media_id=media_id,
+                preview_failed=media_id is None,
             ),
         )
         return segment

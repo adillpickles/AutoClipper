@@ -290,22 +290,26 @@ export function ClipEditor() {
   }
 
   function clearStaleRender() {
+    // Invalidate any in-flight poll too so an earlier trim's export never publishes under a
+    // newer selection.
+    pollRunRef.current += 1;
     setRender((current) =>
-      current.kind === "done" || current.kind === "failed"
-        ? { kind: "idle" }
-        : current,
+      current.kind === "idle" ? current : { kind: "idle" },
     );
   }
 
   function applyTrim(next: TrimInterval, seekToStart = false) {
-    setTrim(next);
+    const changed = next.startS !== trim.startS || next.endS !== trim.endS;
     setStartInput(String(next.startS));
     setEndInput(String(next.endS));
+    if (!changed) return;
+    setTrim(next);
     clearStaleRender();
     if (seekToStart) seekToVodTime(next.startS);
   }
 
   function commitStartInput() {
+    if (startInput === String(trim.startS)) return;
     const parsed = startInput.trim() === "" ? NaN : Number(startInput);
     const next = Number.isFinite(parsed)
       ? clampTrim(parsed, trim.endS, bounds, "end")
@@ -314,6 +318,7 @@ export function ClipEditor() {
   }
 
   function commitEndInput() {
+    if (endInput === String(trim.endS)) return;
     const parsed = endInput.trim() === "" ? NaN : Number(endInput);
     const next = Number.isFinite(parsed)
       ? clampTrim(trim.startS, parsed, bounds, "start")
@@ -342,18 +347,28 @@ export function ClipEditor() {
   }
 
   async function reRender() {
-    const parsedStart = startInput.trim() === "" ? NaN : Number(startInput);
-    const parsedEnd = endInput.trim() === "" ? NaN : Number(endInput);
-    const effective =
-      Number.isFinite(parsedStart) && Number.isFinite(parsedEnd)
-        ? clampTrim(parsedStart, parsedEnd, bounds)
-        : trim;
-    if (
-      effective.startS !== trim.startS ||
-      effective.endS !== trim.endS ||
-      startInput !== String(effective.startS) ||
-      endInput !== String(effective.endS)
-    ) {
+    const startEdited = startInput !== String(trim.startS);
+    const endEdited = endInput !== String(trim.endS);
+    let effective = trim;
+    if (startEdited || endEdited) {
+      const parsedStart = startEdited
+        ? startInput.trim() === ""
+          ? NaN
+          : Number(startInput)
+        : trim.startS;
+      const parsedEnd = endEdited
+        ? endInput.trim() === ""
+          ? NaN
+          : Number(endInput)
+        : trim.endS;
+      if (Number.isFinite(parsedStart) && Number.isFinite(parsedEnd)) {
+        effective = clampTrim(
+          parsedStart,
+          parsedEnd,
+          bounds,
+          startEdited && !endEdited ? "end" : "start",
+        );
+      }
       setTrim(effective);
       setStartInput(String(effective.startS));
       setEndInput(String(effective.endS));

@@ -59,6 +59,22 @@ describe("trim helpers", () => {
     });
   });
 
+  it("never exceeds maxDurationS due to float rounding or multi-decimal edges", () => {
+    const wide = { minStartS: 0, maxEndS: 360, maxDurationS: 90 };
+    // 128.3 - 38.3 === 90.00000000000001 in IEEE-754; clamped end must still pass trimError.
+    const clampedEnd = clampTrim(38.3, 200, wide, "start");
+    expect(clampedEnd.endS - clampedEnd.startS).toBeLessThanOrEqual(90);
+    expect(trimError(clampedEnd, wide)).toBeNull();
+
+    const nudgedEnd = nudgeEnd({ startS: 38.349, endS: 125 }, 10, wide);
+    expect(nudgedEnd.endS - nudgedEnd.startS).toBeLessThanOrEqual(90);
+    expect(trimError(nudgedEnd, wide)).toBeNull();
+
+    const nudgedStart = nudgeStart({ startS: 60, endS: 148.349 }, -10, wide);
+    expect(nudgedStart.endS - nudgedStart.startS).toBeLessThanOrEqual(90);
+    expect(trimError(nudgedStart, wide)).toBeNull();
+  });
+
   it("reports validation errors for out-of-range, reversed, and too-long trims", () => {
     expect(trimError({ startS: 118, endS: 148 }, BOUNDS)).toBeNull();
     expect(trimError({ startS: 75, endS: 120 }, BOUNDS)).toContain("80.0s");

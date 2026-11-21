@@ -2255,6 +2255,45 @@ def test_a_segment_whose_preview_cant_be_prepared_still_exports(
     assert client.get(f"{API}/exports/{made.json()['export_id']}").json()["state"] == "done"
 
 
+def test_a_downloaded_segments_failed_preview_preparation_is_retryable(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a segment downloads fine but preparing its preview fails transiently, a later media
+    request retries preview preparation without re-downloading or losing export support."""
+    from autoclipper.api import service as service_mod
+
+    video = make_test_media("vod.mp4", duration_s=20.0)
+    fetcher = FakeSegmentFetcher(video, tmp_path / "raw" / "video")
+    real_copy = service_mod._playable_copy
+    attempts = 0
+
+    def flaky_copy(source: Path, target: Path) -> Path:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary disk full")
+        return real_copy(source, target)
+
+    monkeypatch.setattr(service_mod, "_playable_copy", flaky_copy)
+    client, _ = segment_client(make_client, tmp_path, fetcher)
+    job = done_job(client)
+
+    first = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert first["preview"]["status"] == "unavailable"
+    assert first["preview"]["reason"] == "fetch_failed"
+    assert first["export"]["status"] == "available"
+    assert len(fetcher.calls) == 1
+
+    # Retrying recovers the preview without downloading the segment a second time.
+    retried = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert retried["preview"]["status"] == "available"
+    assert len(fetcher.calls) == 1
+    assert attempts == 2
+
+
 def test_a_transient_segment_fetch_failure_is_retryable(
     make_client: Callable[..., tuple[TestClient, MockService]],
     make_test_media: Callable[..., Path],
