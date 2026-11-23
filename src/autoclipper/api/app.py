@@ -19,6 +19,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from autoclipper.analysis import AnalysisResult
 from autoclipper.api.service import ApiException, MockService
+from autoclipper.config import get_settings
+from autoclipper.preflight import run_preflight
 from autoclipper.schemas import (
     ApiError,
     CandidateMedia,
@@ -30,6 +32,7 @@ from autoclipper.schemas import (
     Health,
     HighlightsVideo,
     Job,
+    PreflightReport,
 )
 
 log = logging.getLogger(__name__)
@@ -86,7 +89,10 @@ def _invalid_request_message(errors: Sequence[object]) -> tuple[str, list[str]]:
 
 
 def create_app(
-    service: MockService, *, cors_origins: Sequence[str] = DEFAULT_CORS_ORIGINS
+    service: MockService,
+    *,
+    cors_origins: Sequence[str] = DEFAULT_CORS_ORIGINS,
+    preflight: Callable[[], PreflightReport] | None = None,
 ) -> FastAPI:
     """Build the API around `service`; closing the app stops its workers."""
 
@@ -156,6 +162,15 @@ def create_app(
     @app.get(f"{API_PREFIX}/health", response_model=Health)
     def health() -> Response:
         return _json(Health(job_runner=service.job_runner))
+
+    @app.get(f"{API_PREFIX}/preflight", response_model=PreflightReport)
+    def get_preflight() -> Response:
+        report = (
+            preflight()
+            if preflight is not None
+            else run_preflight(get_settings(), job_runner=service.job_runner)
+        )
+        return _json(report, headers=_NO_STORE)
 
     @app.post(f"{API_PREFIX}/jobs", response_model=Job, status_code=201)
     def create_job(request: CreateJobRequest) -> Response:

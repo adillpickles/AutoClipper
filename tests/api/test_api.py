@@ -202,6 +202,86 @@ def test_health_reports_the_mock_runner(client: TestClient) -> None:
     assert response.json() == {"status": "ok", "schema_version": "1.0", "job_runner": "mock"}
 
 
+def test_preflight_returns_readiness_checks_with_no_store(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TWITCH_CLIENT_ID", "secret-id-xyz")
+    monkeypatch.setenv("TWITCH_CLIENT_SECRET", "secret-val-xyz")
+    monkeypatch.setenv("AUTOCLIPPER_CHAT_HASH_SALT", "secret-salt-xyz")
+
+    response = client.get(f"{API}/preflight")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json; charset=utf-8"
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert body["status"] in ("ok", "warn", "fail")
+    assert [c["name"] for c in body["checks"]] == [
+        "ffmpeg",
+        "twitch_downloader",
+        "chat_hash_salt",
+        "captions",
+        "twitch_credentials",
+    ]
+    for check in body["checks"]:
+        assert set(check) == {"name", "label", "status", "message", "fix"}
+        if check["status"] == "ok":
+            assert check["fix"] is None
+        else:
+            assert isinstance(check["fix"], str)
+            assert check["fix"]
+    for secret in ("secret-id-xyz", "secret-val-xyz", "secret-salt-xyz"):
+        assert secret not in response.text
+
+
+def test_preflight_uses_pipeline_severity_and_accepts_custom_provider(
+    tmp_path: Path, samples: SampleMedia
+) -> None:
+    from autoclipper.schemas import PreflightCheck, PreflightReport
+
+    service = MockService(
+        samples=samples,
+        output_dir=tmp_path / "artifacts",
+        step_s=0.0,
+        synchronous=True,
+        job_runner="pipeline",
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=IngestTools,
+        segment_fetcher=unused_fetcher,
+    )
+    default_app = create_app(service)
+    with TestClient(default_app) as pipeline_http:
+        report = pipeline_http.get(f"{API}/preflight").json()
+        by_name = {c["name"]: c["status"] for c in report["checks"]}
+        assert by_name["twitch_credentials"] == "fail"
+        assert by_name["chat_hash_salt"] == "warn"
+
+    custom = PreflightReport(
+        status="warn",
+        checks=(
+            PreflightCheck(
+                name="captions",
+                label="Captions extra",
+                status="warn",
+                message="Captions unavailable.",
+                fix="uv sync --extra captions",
+            ),
+        ),
+    )
+    custom_service = MockService(
+        samples=samples,
+        output_dir=tmp_path / "artifacts",
+        step_s=0.0,
+        synchronous=True,
+    )
+    with TestClient(create_app(custom_service, preflight=lambda: custom)) as custom_http:
+        response = custom_http.get(f"{API}/preflight")
+        assert response.status_code == 200
+        assert response.json() == json.loads(custom.model_dump_json())
+
+
 def test_a_job_from_start_to_finish(client: TestClient) -> None:
     created = client.post(f"{API}/jobs", json={"vod": "https://www.twitch.tv/videos/9000000001"})
 
@@ -1355,10 +1435,11 @@ def test_serve_starts_the_pipeline_app_and_names_missing_credentials(
     from autoclipper.cli import app as cli
 
     monkeypatch.setattr(service_module, "ensure_sample_media", lambda directory: samples)
+    preflight_seen: list[dict[str, Any]] = []
 
     def run(api: object, **kwargs: object) -> None:
-        with TestClient(api):  # type: ignore[arg-type]  # runs the lifespan, stops the workers
-            pass
+        with TestClient(api) as http:  # type: ignore[arg-type]  # runs the lifespan, stops the workers
+            preflight_seen.append(http.get(f"{API}/preflight").json())
 
     monkeypatch.setattr(uvicorn, "run", run)
     lexicon = Path(__file__).parents[2] / "configs" / "lexicon.yaml"
@@ -1366,9 +1447,15 @@ def test_serve_starts_the_pipeline_app_and_names_missing_credentials(
     result = CliRunner().invoke(cli, ["serve", "--lexicon", str(lexicon)])
 
     assert result.exit_code == 0, result.output
+    assert "Preflight checks:" in result.output
     assert "pipeline" in result.output  # the default runner
     assert "TWITCH_CLIENT_ID" in result.output  # the missing-credentials note
     assert "(mock jobs) on http" not in result.output  # no longer branded mock-only
+    assert len(preflight_seen) == 1
+    assert preflight_seen[0]["status"] == "fail"
+    by_name = {c["name"]: c["status"] for c in preflight_seen[0]["checks"]}
+    assert by_name["twitch_credentials"] == "fail"
+    assert by_name["chat_hash_salt"] == "warn"
 
 
 # --- Pipeline jobs (#45) ------------------------------------------------------------------------

@@ -35,13 +35,14 @@ The initial setup uses `autoclipper serve` on a development machine and the app 
 | nullable | `T \| None`, always serialized | `T \| null` |
 | enum | `Literal[...]` (always in request models, § 1) or `StrEnum` | string-literal union |
 
-Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`, `ApiError`, `ErrorResponse`, `AnalysisResult`, `VodSummary`, `ScorerInfo`, `Candidate`, `CandidateMedia`, `PreviewMedia`, `ExportAvailability`, `CreateExportRequest`, `Export`, `CreateHighlightsRequest`, `HighlightsSegment`, `HighlightsVideo`, `Health`.
+Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`, `ApiError`, `ErrorResponse`, `AnalysisResult`, `VodSummary`, `ScorerInfo`, `Candidate`, `CandidateMedia`, `PreviewMedia`, `ExportAvailability`, `CreateExportRequest`, `Export`, `CreateHighlightsRequest`, `HighlightsSegment`, `HighlightsVideo`, `Health`, `PreflightCheck`, `PreflightReport`.
 
 ## 2. Endpoints
 
 | Method | Path | Purpose | Success |
 |---|---|---|---|
 | `GET` | `/api/v1/health` | Liveness and which job runner is active | `200` `Health` |
+| `GET` | `/api/v1/preflight` | Local setup readiness checks (tools, optional extras, credentials presence) | `200` `PreflightReport` |
 | `POST` | `/api/v1/jobs` | Start analyzing a VOD | `201` new `Job`; `200` if the same VOD is already queued/running |
 | `GET` | `/api/v1/jobs/{job_id}` | Job status and progress (poll this) | `200` `Job` |
 | `GET` | `/api/v1/jobs/{job_id}/result` | Ranked candidates of a `done` job | `200` `AnalysisResult` |
@@ -1032,12 +1033,57 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 
 `job_runner` is `mock` (#28) or `pipeline` (#45), so the UI can show a "mock data" badge. Which runner is active is server configuration, not part of a job request; both produce the same shapes.
 
+### 9.6 Preflight
+
+`GET /api/v1/preflight` returns `200` with `Cache-Control: no-store` and a `PreflightReport` describing whether the local machine has the tools, optional extras and settings that AutoClipper needs. Checks make no network calls, load no ML models, and never include secret values or local file paths.
+
+`PreflightReport`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `status` | `ok` \| `warn` \| `fail` | Worst status across `checks` (`fail` > `warn` > `ok`) |
+| `checks` | list<`PreflightCheck`> | Individual checks in display order |
+
+`PreflightCheck`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | str (open enum) | Stable check identifier: `ffmpeg`, `twitch_downloader`, `chat_hash_salt`, `captions`, `twitch_credentials` |
+| `label` | str | Short human-readable label for display |
+| `status` | `ok` \| `warn` \| `fail` | Readiness state for this check |
+| `message` | str | Short English status sentence safe for the UI |
+| `fix` | str \| null | Actionable fix (exact command or env var name) when `status` is `warn` or `fail`; `null` when `ok` |
+
+Example:
+
+```json
+{
+  "status": "warn",
+  "checks": [
+    {
+      "name": "ffmpeg",
+      "label": "FFmpeg & FFprobe",
+      "status": "ok",
+      "message": "FFmpeg and FFprobe are available on PATH.",
+      "fix": null
+    },
+    {
+      "name": "captions",
+      "label": "Captions extra",
+      "status": "warn",
+      "message": "faster-whisper is not installed; exports and highlights work without captions, but burned-in captions are unavailable.",
+      "fix": "Install the captions extra with: uv sync --extra captions"
+    }
+  ]
+}
+```
+
 ## 10. Versioning
 
 - The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` and `Health`; this contract is `1.0`.
 - **Minor change** (same path, `1.x`): a new endpoint, a new response field, an optional request field with a default, or a new value in an **open** enum. Clients must already ignore unknown fields and handle unknown open-enum values with a default branch.
 - **Major change** (`/api/v2`): anything else, such as renaming or removing a field, changing a type, unit or meaning, adding a required request field, or adding a value to a **closed** enum.
-- **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, and layouts listed in `export.layouts`. **Closed enums:** job, export and highlights `state`, `source`, `preview.status`, `export.status`, `scorer.kind`, highlights `order`. A request's `layout` must be one the server lists.
+- **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, `PreflightCheck.name`, and layouts listed in `export.layouts`. **Closed enums:** job, export and highlights `state`, `source`, `preview.status`, `export.status`, `scorer.kind`, highlights `order`, and preflight `status`. A request's `layout` must be one the server lists.
 - Update this doc, its examples and [data model § candidates](data-model.md#candidates-apicli-output-json) with the implementation in the same PR ([AGENTS.md § 6](../../AGENTS.md#6-engineering-basics), rule 4).
 
 ## 11. Mock scenarios (#28)
