@@ -35,6 +35,13 @@ export function PreflightBanner() {
     };
   }, [browserMock]);
 
+  useEffect(() => {
+    if (!dismissed) return;
+    // The dismiss control unmounts with the banner, so put focus on the form
+    // the user is about to fill in.
+    document.querySelector<HTMLInputElement>('input[name="vod"]')?.focus();
+  }, [dismissed]);
+
   if (browserMock || dismissed) return null;
 
   const problems = problemChecks(report);
@@ -78,7 +85,6 @@ export function PreflightBanner() {
   return (
     <section
       role="alert"
-      aria-live="assertive"
       aria-atomic="true"
       onKeyDown={handleKeyDown}
       className="rounded-card border border-danger-border bg-danger-soft p-4 text-sm text-danger-soft-ink shadow-card"

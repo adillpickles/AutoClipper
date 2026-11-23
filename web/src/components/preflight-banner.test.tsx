@@ -157,7 +157,7 @@ describe("PreflightBanner", () => {
     render(<PreflightBanner />);
 
     const banner = await screen.findByRole("alert");
-    expect(banner.getAttribute("aria-live")).toBe("assertive");
+    expect(banner.hasAttribute("aria-live")).toBe(false);
     expect(screen.getByText("Setup issues need attention")).toBeTruthy();
     const items = screen.getAllByRole("listitem");
     expect(items).toHaveLength(2);
@@ -180,7 +180,12 @@ describe("PreflightBanner", () => {
     };
     state.getPreflight.mockResolvedValue(warningReport);
 
-    render(<PreflightBanner />);
+    render(
+      <>
+        <PreflightBanner />
+        <input name="vod" />
+      </>,
+    );
     const button = await screen.findByRole("button", {
       name: "Dismiss setup notice",
     });
@@ -188,13 +193,20 @@ describe("PreflightBanner", () => {
 
     fireEvent.click(button);
     expect(screen.queryByRole("status")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("textbox"));
 
     cleanup();
-    render(<PreflightBanner />);
+    render(
+      <>
+        <PreflightBanner />
+        <input name="vod" />
+      </>,
+    );
     const secondButton = await screen.findByRole("button", {
       name: "Dismiss setup notice",
     });
     fireEvent.keyDown(secondButton, { key: "Escape" });
     expect(screen.queryByRole("status")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("textbox"));
   });
 });
