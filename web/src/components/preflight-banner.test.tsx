@@ -31,7 +31,40 @@ describe("PreflightBanner", () => {
     expect(state.getPreflight).not.toHaveBeenCalled();
   });
 
-  it("stays hidden when all preflight checks pass", async () => {
+  it("mounts an empty polite region before warnings arrive, then fills it", async () => {
+    let resolveReport: (report: PreflightReport) => void = () => {};
+    state.getPreflight.mockReturnValue(
+      new Promise((resolve) => {
+        resolveReport = resolve;
+      }),
+    );
+
+    render(<PreflightBanner />);
+
+    const region = screen.getByRole("status");
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.textContent).toBe("");
+
+    resolveReport({
+      status: "warn",
+      checks: [
+        {
+          name: "captions",
+          label: "Captions extra",
+          status: "warn",
+          message: "faster-whisper is not installed.",
+          fix: "uv sync --extra captions",
+        },
+      ],
+    });
+
+    expect(
+      await screen.findByText("Optional setup items missing"),
+    ).toBeTruthy();
+    expect(screen.getByRole("status")).toBe(region);
+  });
+
+  it("stays visually empty when all preflight checks pass", async () => {
     state.getPreflight.mockResolvedValue({
       status: "ok",
       checks: [
@@ -45,19 +78,23 @@ describe("PreflightBanner", () => {
       ],
     });
 
-    const { container } = render(<PreflightBanner />);
+    render(<PreflightBanner />);
     await vi.waitFor(() => expect(state.getPreflight).toHaveBeenCalledTimes(1));
 
-    expect(container.firstChild).toBeNull();
+    const region = screen.getByRole("status");
+    expect(region.textContent).toBe("");
+    expect(region.className).toContain("sr-only");
+    expect(screen.queryByText("FFmpeg & FFprobe")).toBeNull();
   });
 
-  it("stays hidden when the preflight request fails", async () => {
+  it("stays visually empty when the preflight request fails", async () => {
     state.getPreflight.mockRejectedValue(new Error("offline"));
 
-    const { container } = render(<PreflightBanner />);
+    render(<PreflightBanner />);
     await vi.waitFor(() => expect(state.getPreflight).toHaveBeenCalledTimes(1));
 
-    expect(container.firstChild).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("renders a polite status banner for warnings and hides passing checks", async () => {

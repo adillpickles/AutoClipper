@@ -35,10 +35,11 @@ export function PreflightBanner() {
     };
   }, [browserMock]);
 
-  const problems = problemChecks(report);
-  if (dismissed || problems.length === 0) return null;
+  if (browserMock || dismissed) return null;
 
+  const problems = problemChecks(report);
   const hasFailure = problems.some((check) => check.status === "fail");
+  const visible = problems.length > 0;
 
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key === "Escape") {
@@ -46,45 +47,83 @@ export function PreflightBanner() {
     }
   }
 
+  // The polite region is mounted before the request resolves so a warning-only
+  // result is announced as a change to an existing live region.
+  if (!hasFailure) {
+    return (
+      <section
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        onKeyDown={handleKeyDown}
+        className={
+          visible
+            ? "rounded-card border border-signal-border bg-signal-soft p-4 text-sm text-signal-soft-ink shadow-card"
+            : "sr-only"
+        }
+      >
+        {visible && (
+          <BannerBody
+            tone="warn"
+            title="Optional setup items missing"
+            summary="AutoClipper can run, but some optional features are currently unavailable."
+            problems={problems}
+            onDismiss={() => setDismissed(true)}
+          />
+        )}
+      </section>
+    );
+  }
+
   return (
     <section
-      role={hasFailure ? "alert" : "status"}
-      aria-live={hasFailure ? "assertive" : "polite"}
+      role="alert"
+      aria-live="assertive"
+      aria-atomic="true"
       onKeyDown={handleKeyDown}
-      className={
-        hasFailure
-          ? "rounded-xl border border-red-300 bg-red-50/90 p-4 text-sm text-red-950 dark:border-red-900 dark:bg-red-950/40 dark:text-red-100"
-          : "rounded-xl border border-amber-300 bg-amber-50/90 p-4 text-sm text-amber-950 dark:border-amber-800/80 dark:bg-amber-950/35 dark:text-amber-100"
-      }
+      className="rounded-card border border-danger-border bg-danger-soft p-4 text-sm text-danger-soft-ink shadow-card"
     >
+      <BannerBody
+        tone="fail"
+        title="Setup issues need attention"
+        summary="Some required local tools or credentials are missing before real VOD analysis can run."
+        problems={problems}
+        onDismiss={() => setDismissed(true)}
+      />
+    </section>
+  );
+}
+
+function BannerBody({
+  tone,
+  title,
+  summary,
+  problems,
+  onDismiss,
+}: {
+  tone: "warn" | "fail";
+  title: string;
+  summary: string;
+  problems: PreflightCheck[];
+  onDismiss: () => void;
+}) {
+  const fail = tone === "fail";
+  return (
+    <>
       <div className="flex items-start justify-between gap-4">
         <div className="flex flex-col gap-1">
-          <h2 className="font-semibold">
-            {hasFailure
-              ? "Setup issues need attention"
-              : "Optional setup items missing"}
-          </h2>
-          <p
-            className={
-              hasFailure
-                ? "text-red-900/90 dark:text-red-200/90"
-                : "text-amber-900/90 dark:text-amber-200/90"
-            }
-          >
-            {hasFailure
-              ? "Some required local tools or credentials are missing before real VOD analysis can run."
-              : "AutoClipper can run, but some optional features are currently unavailable."}
-          </p>
+          <h2 className="font-display text-base font-semibold">{title}</h2>
+          <p>{summary}</p>
         </div>
         <button
           type="button"
-          onClick={() => setDismissed(true)}
+          onClick={onDismiss}
           aria-label="Dismiss setup notice"
-          className={
-            hasFailure
-              ? "shrink-0 rounded-md border border-red-300/80 px-2.5 py-1 text-xs font-medium text-red-900 hover:bg-red-100 focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:outline-none dark:border-red-800 dark:text-red-100 dark:hover:bg-red-900/50 dark:focus-visible:ring-red-400"
-              : "shrink-0 rounded-md border border-amber-300/80 px-2.5 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:outline-none dark:border-amber-700/80 dark:text-amber-100 dark:hover:bg-amber-900/50 dark:focus-visible:ring-amber-400"
-          }
+          className={`shrink-0 rounded-control border bg-surface-panel px-2.5 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:outline-none ${
+            fail
+              ? "border-danger-border text-danger-soft-ink ring-offset-danger-soft hover:bg-surface-elevated"
+              : "border-signal-border text-signal-soft-ink ring-offset-signal-soft hover:bg-surface-elevated"
+          }`}
         >
           Dismiss
         </button>
@@ -96,27 +135,23 @@ export function PreflightBanner() {
           return (
             <li
               key={check.name}
-              className="rounded-lg bg-white/75 px-3 py-2.5 dark:bg-zinc-950/45"
+              className="rounded-control bg-surface-panel px-3 py-2.5 text-ink-primary"
             >
               <div className="flex flex-wrap items-center gap-2">
                 <span
                   className={
                     isFail
-                      ? "rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-900 dark:bg-red-900/70 dark:text-red-100"
-                      : "rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-900 dark:bg-amber-900/70 dark:text-amber-100"
+                      ? "rounded-pill bg-danger px-2 py-0.5 text-xs font-semibold text-danger-ink"
+                      : "rounded-pill border border-signal-border bg-signal-soft px-2 py-0.5 text-xs font-semibold text-signal-soft-ink"
                   }
                 >
                   {isFail ? "Required" : "Warning"}
                 </span>
-                <span className="font-medium text-zinc-950 dark:text-zinc-100">
-                  {check.label}
-                </span>
+                <span className="font-medium">{check.label}</span>
               </div>
-              <p className="mt-1 text-zinc-800 dark:text-zinc-300">
-                {check.message}
-              </p>
+              <p className="mt-1 text-ink-secondary">{check.message}</p>
               {check.fix && (
-                <p className="mt-1.5 font-mono text-xs text-zinc-700 dark:text-zinc-300">
+                <p className="mt-1.5 font-mono text-xs text-ink-tertiary">
                   Fix: {check.fix}
                 </p>
               )}
@@ -124,6 +159,6 @@ export function PreflightBanner() {
           );
         })}
       </ul>
-    </section>
+    </>
   );
 }
