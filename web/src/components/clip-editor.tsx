@@ -98,11 +98,34 @@ export function ClipEditor() {
   const [endInput, setEndInput] = useState("0");
   const [layout, setLayout] = useState<Layout>("center_crop");
   const [captions, setCaptions] = useState(true);
+  const [captionsAvailable, setCaptionsAvailable] = useState(true);
   const [render, setRender] = useState<RenderState>({ kind: "idle" });
   const [videoFailed, setVideoFailed] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const pollRunRef = useRef(0);
+  const captionsTouchedRef = useRef(false);
+
+  // Check whether the server has captioning installed so the toggle defaults honestly.
+  useEffect(() => {
+    let cancelled = false;
+    getApiClient()
+      .getHealth()
+      .then((health) => {
+        if (cancelled) return;
+        const available = health.captions_available !== false;
+        setCaptionsAvailable(available);
+        if (!available && !captionsTouchedRef.current) {
+          setCaptions(false);
+        }
+      })
+      .catch(() => {
+        // Leave captions enabled on transient health failures; the server validates on export.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Load the analysis result and locate this candidate.
   useEffect(() => {
@@ -397,7 +420,7 @@ export function ClipEditor() {
         start_s: effective.startS,
         end_s: effective.endS,
         layout,
-        captions,
+        captions: captionsAvailable ? captions : false,
       });
       if (pollRunRef.current !== runId) return;
       rememberExport(jobId, candidate.candidate_id, started.export_id);
@@ -764,17 +787,27 @@ export function ClipEditor() {
             )}
           </fieldset>
 
-          <label className="flex items-center gap-2 text-sm font-medium">
-            <input
-              type="checkbox"
-              checked={captions}
-              onChange={(event) => {
-                setCaptions(event.target.checked);
-                clearStaleRender();
-              }}
-            />
-            Burn in captions
-          </label>
+          <div className="flex flex-col gap-1">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={captionsAvailable ? captions : false}
+                disabled={!captionsAvailable}
+                onChange={(event) => {
+                  captionsTouchedRef.current = true;
+                  setCaptions(event.target.checked);
+                  clearStaleRender();
+                }}
+              />
+              Burn in captions
+            </label>
+            {!captionsAvailable && (
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                Unavailable on this server — install with{" "}
+                <code>uv sync --extra captions</code>.
+              </p>
+            )}
+          </div>
 
           {exportInfo?.status === "unavailable" && (
             <div

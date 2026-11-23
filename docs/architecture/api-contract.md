@@ -41,7 +41,7 @@ Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`
 
 | Method | Path | Purpose | Success |
 |---|---|---|---|
-| `GET` | `/api/v1/health` | Liveness and which job runner is active | `200` `Health` |
+| `GET` | `/api/v1/health` | Liveness, active job runner and caption capability | `200` `Health` |
 | `GET` | `/api/v1/preflight` | Local setup readiness checks (tools, optional extras, credentials presence) | `200` `PreflightReport` |
 | `POST` | `/api/v1/jobs` | Start analyzing a VOD | `201` new `Job`; `200` if the same VOD is already queued/running |
 | `GET` | `/api/v1/jobs/{job_id}` | Job status and progress (poll this) | `200` `Job` |
@@ -1028,10 +1028,10 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 `GET /api/v1/health` returns `200`:
 
 ```json
-{ "status": "ok", "schema_version": "1.0", "job_runner": "mock" }
+{ "status": "ok", "schema_version": "1.0", "job_runner": "mock", "captions_available": true }
 ```
 
-`job_runner` is `mock` (#28) or `pipeline` (#45), so the UI can show a "mock data" badge. Which runner is active is server configuration, not part of a job request; both produce the same shapes.
+`job_runner` is `mock` (#28) or `pipeline` (#45), so the UI can show a "mock data" badge. Which runner is active is server configuration, not part of a job request; both produce the same shapes. `captions_available` reports whether the server can burn in speech-to-text captions (`faster-whisper` installed via `uv sync --extra captions`, or a configured transcriber), so clients can fall back to uncaptioned exports and disable caption toggles when captioning isn't installed.
 
 ### 9.6 Preflight
 

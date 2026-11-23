@@ -75,6 +75,10 @@ export function ResultsScreen() {
     null,
   );
   const [highlightsOpen, setHighlightsOpen] = useState(false);
+  const [captionsAvailable, setCaptionsAvailable] = useState<boolean | null>(
+    null,
+  );
+  const [captionsFallback, setCaptionsFallback] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,16 +138,42 @@ export function ResultsScreen() {
     const wait = (ms: number) =>
       new Promise<void>((resolve) => timers.push(setTimeout(resolve, ms)));
 
+    // Check `/health` once so servers without faster-whisper export cleanly without captions
+    // instead of failing every card with `captioning_failed`.
+    let captionsEnabled = true;
+    const healthReady = client
+      .getHealth()
+      .then((health) => {
+        if (cancelled) return;
+        const available = health.captions_available !== false;
+        captionsEnabled = available;
+        setCaptionsAvailable(available);
+      })
+      .catch(() => {
+        // Health check failed transiently: try with captions and fall back on captioning_failed.
+      });
+
     async function start(
       candidate: Candidate,
       fresh: boolean,
+      forceNoCaptions = false,
     ): Promise<Export | null> {
+      await healthReady;
+      if (cancelled) return null;
+      const useCaptions = forceNoCaptions ? false : captionsEnabled;
       const known = fresh
         ? null
         : rememberedExport(jobId, candidate.candidate_id);
       if (known) {
         try {
-          return await client.getExport(known);
+          const existing = await client.getExport(known);
+          if (!(
+            !useCaptions &&
+            existing.state === "failed" &&
+            existing.error?.code === "captioning_failed"
+          )) {
+            return existing;
+          }
         } catch (error) {
           if (!(error instanceof ApiRequestError && error.status === 404))
             throw error;
@@ -192,7 +222,7 @@ export function ResultsScreen() {
         start_s: candidate.start_s,
         end_s: candidate.end_s,
         layout,
-        captions: true,
+        captions: useCaptions,
       });
       rememberExport(jobId, candidate.candidate_id, created.export_id);
       return created;
@@ -202,15 +232,32 @@ export function ResultsScreen() {
       let failingSince: number | null = null;
       let backoff = FIRST_BACKOFF_MS;
       let current: Export | null = null;
+      let forceFresh = fresh;
+      let forceNoCaptions = false;
+      let retriedWithoutCaptions = false;
       while (!cancelled) {
         try {
           current =
             current === null
-              ? await start(candidate, fresh)
+              ? await start(candidate, forceFresh, forceNoCaptions)
               : await client.getExport(current.export_id);
           if (current === null) return;
           failingSince = null;
           backoff = FIRST_BACKOFF_MS;
+          if (
+            current.state === "failed" &&
+            current.error?.code === "captioning_failed" &&
+            current.captions &&
+            !retriedWithoutCaptions
+          ) {
+            retriedWithoutCaptions = true;
+            forceNoCaptions = true;
+            forceFresh = true;
+            captionsEnabled = false;
+            if (!cancelled) setCaptionsFallback(true);
+            current = null;
+            continue;
+          }
           const url = current.download_url
             ? client.resolveUrl(current.download_url)
             : null;
@@ -347,6 +394,25 @@ export function ResultsScreen() {
             {warning.message}
           </p>
         ))}
+        {(captionsAvailable === false || captionsFallback) && (
+          <p
+            role="status"
+            className="rounded-lg bg-zinc-100 px-4 py-3 text-sm text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-300"
+          >
+            {captionsAvailable === false ? (
+              <>
+                Clips are rendered without captions because faster-whisper
+                isn&apos;t installed on the server. Run{" "}
+                <code className="rounded bg-zinc-200 px-1 py-0.5 text-xs dark:bg-zinc-700">
+                  uv sync --extra captions
+                </code>{" "}
+                to enable them.
+              </>
+            ) : (
+              "Captioning failed on the server, so clips were rendered without captions."
+            )}
+          </p>
+        )}
       </div>
 
       {top.length === 0 ? (
@@ -473,6 +539,7 @@ export function ResultsScreen() {
           videoId={vod.video_id}
           vodDurationS={vod.duration_s}
           candidates={top}
+          captionsAvailable={captionsAvailable !== false}
           onClose={() => setHighlightsOpen(false)}
         />
       )}

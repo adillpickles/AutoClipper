@@ -256,6 +256,7 @@ class Health(_Response):
     status: Literal["ok"] = "ok"
     schema_version: str = SCHEMA_VERSION
     job_runner: Literal["mock", "pipeline"]
+    captions_available: bool = False
 
 
 class PreflightCheck(_Response):

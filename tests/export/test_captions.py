@@ -145,6 +145,14 @@ def test_missing_faster_whisper_is_a_captioning_error(
         FasterWhisperTranscriber()(tmp_path / "clip.wav")
 
 
+def test_captions_available_reflects_faster_whisper_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(captions.importlib.util, "find_spec", lambda name: None)
+    assert captions.captions_available() is False
+
+    monkeypatch.setattr(captions.importlib.util, "find_spec", lambda name: object())
+    assert captions.captions_available() is True
+
+
 # --- FFmpeg ------------------------------------------------------------------------------------
 
 

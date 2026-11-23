@@ -196,10 +196,35 @@ def error_code(response: object) -> str:
 # --- Health and jobs ---------------------------------------------------------------------------
 
 
-def test_health_reports_the_mock_runner(client: TestClient) -> None:
+def test_health_reports_the_mock_runner(
+    make_client: Callable[..., tuple[TestClient, MockService]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("autoclipper.api.service.captions_available", lambda: False)
+    client, _ = make_client()
+
     response = client.get(f"{API}/health")
 
-    assert response.json() == {"status": "ok", "schema_version": "1.0", "job_runner": "mock"}
+    assert response.json() == {
+        "status": "ok",
+        "schema_version": "1.0",
+        "job_runner": "mock",
+        "captions_available": False,
+    }
+
+
+def test_health_reports_captions_available_from_package_or_transcriber(
+    make_client: Callable[..., tuple[TestClient, MockService]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("autoclipper.api.service.captions_available", lambda: True)
+    client_pkg, _ = make_client()
+    assert client_pkg.get(f"{API}/health").json()["captions_available"] is True
+
+    monkeypatch.setattr("autoclipper.api.service.captions_available", lambda: False)
+    client_custom, _ = make_client(transcriber=lambda _wav: [Word("hi", 0.0, 0.4)])
+    assert client_custom.get(f"{API}/health").json()["captions_available"] is True
+
+    client_override, _ = make_client(captions_supported=True)
+    assert client_override.get(f"{API}/health").json()["captions_available"] is True
 
 
 def test_preflight_returns_readiness_checks_with_no_store(
@@ -1549,8 +1574,11 @@ def unused_fetcher(video_id: str, begin_s: float, end_s: float, /) -> VideoSegme
 
 
 def test_the_health_endpoint_reports_the_pipeline_runner(
-    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("autoclipper.api.service.captions_available", lambda: False)
     probe = PipelineProbe(_scenario_result("9000000001"))
     client, _ = pipeline_client(make_client, probe, tmp_path)
 
@@ -1560,6 +1588,7 @@ def test_the_health_endpoint_reports_the_pipeline_runner(
         "status": "ok",
         "schema_version": "1.0",
         "job_runner": "pipeline",
+        "captions_available": False,
     }
 
 

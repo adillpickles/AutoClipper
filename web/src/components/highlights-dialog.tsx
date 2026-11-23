@@ -34,12 +34,14 @@ export function HighlightsDialog({
   videoId,
   vodDurationS,
   candidates,
+  captionsAvailable = true,
   onClose,
 }: {
   jobId: string;
   videoId: string;
   vodDurationS: number;
   candidates: Candidate[];
+  captionsAvailable?: boolean;
   onClose: () => void;
 }) {
   const [trims, setTrims] = useState<Record<string, Trim>>(() =>
@@ -98,7 +100,7 @@ export function HighlightsDialog({
           job_id: jobId,
           segments,
           order,
-          captions,
+          captions: captionsAvailable ? captions : false,
         })
       ).highlights;
       while (
@@ -286,10 +288,18 @@ export function HighlightsDialog({
                 <input
                   type="checkbox"
                   id="highlights-captions"
-                  checked={captions}
+                  checked={captionsAvailable ? captions : false}
+                  disabled={!captionsAvailable}
                   onChange={(event) => setCaptions(event.target.checked)}
                 />
-                <label htmlFor="highlights-captions">Burn in captions</label>
+                <label htmlFor="highlights-captions">
+                  Burn in captions
+                  {!captionsAvailable && (
+                    <span className="ml-1 text-xs text-zinc-500 dark:text-zinc-400">
+                      (needs uv sync --extra captions)
+                    </span>
+                  )}
+                </label>
               </div>
             </fieldset>
 
@@ -353,7 +363,7 @@ export function HighlightsDialog({
           <div className="flex flex-col gap-3" aria-live="polite">
             <p>
               The highlights video is ready ({formatTime(stage.duration_s)}
-              {captions ? " · captioned" : ""}).
+              {captionsAvailable && captions ? " · captioned" : ""}).
             </p>
             <div className="flex gap-3">
               <a

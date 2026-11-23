@@ -34,6 +34,7 @@ describe("SiteHeader", () => {
       status: "ok",
       schema_version: "1.0",
       job_runner: "mock",
+      captions_available: true,
     });
 
     render(<SiteHeader />);
@@ -47,6 +48,7 @@ describe("SiteHeader", () => {
       status: "ok",
       schema_version: "1.0",
       job_runner: "pipeline",
+      captions_available: false,
     });
 
     render(<SiteHeader />);

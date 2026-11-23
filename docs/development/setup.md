@@ -39,8 +39,9 @@ Only Git and uv are needed for these steps. FFmpeg and TwitchDownloaderCLI are n
 git clone https://github.com/adillpickles/AutoClipper.git
 cd AutoClipper
 
-# Create .venv with Python 3.12 and install the locked dependencies, dev tools included
-uv sync
+# Create .venv with Python 3.12 and install the locked dependencies, dev tools and captions extra included
+# (Plain `uv sync` works if you don't need burned-in Whisper captions.)
+uv sync --extra captions
 
 # Local config: fill in values privately (see below); never commit .env
 cp .env.example .env
@@ -58,7 +59,7 @@ uv run autoclipper --help
 ```powershell
 git clone https://github.com/adillpickles/AutoClipper.git
 cd AutoClipper
-uv sync
+uv sync --extra captions
 Copy-Item .env.example .env
 uv run pre-commit install
 uv run pytest

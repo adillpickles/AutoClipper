@@ -20,6 +20,7 @@ Times are seconds from the clip's start. A clip without speech is exported witho
 import contextlib
 import functools
 import importlib
+import importlib.util
 import logging
 import math
 import re
@@ -344,6 +345,11 @@ def caption_lines_for(
 def transcriber_for(model_size: str) -> FasterWhisperTranscriber:
     """One shared `FasterWhisperTranscriber` per model size, so the model loads once per process."""
     return FasterWhisperTranscriber(model_size)
+
+
+def captions_available() -> bool:
+    """Whether the optional ``faster-whisper`` package is installed for burned-in captions."""
+    return importlib.util.find_spec("faster_whisper") is not None
 
 
 def export_clip_with_captions(

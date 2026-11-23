@@ -633,6 +633,7 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
         status: "ok" as const,
         schema_version: "1.0",
         job_runner: "mock" as const,
+        captions_available: true,
       };
     },
 

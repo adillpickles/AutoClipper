@@ -38,6 +38,7 @@ describe("HTTP API client", () => {
         status: "ok",
         schema_version: "1.0",
         job_runner: "pipeline",
+        captions_available: true,
       }),
     );
     const client = createHttpClient("http://127.0.0.1:8000", fetchMock);
@@ -48,6 +49,7 @@ describe("HTTP API client", () => {
       status: "ok",
       schema_version: "1.0",
       job_runner: "pipeline",
+      captions_available: true,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
