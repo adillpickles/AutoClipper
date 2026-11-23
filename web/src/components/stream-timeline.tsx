@@ -10,27 +10,27 @@ import { formatTime } from "@/lib/format";
 import { reasonFor } from "@/lib/reason";
 import { buildActivityBins, layoutTimelineMarkers } from "@/lib/timeline";
 
-// WCAG AA (>= 4.5:1) foreground/background pairs in both light and dark themes.
+// WCAG AA (>= 4.5:1) foreground/background pairs via semantic source tokens.
 const MARKER_STYLE: Record<Candidate["source"], string> = {
   discovered:
-    "bg-sky-700 text-white hover:bg-sky-800 dark:bg-sky-300 dark:text-zinc-950 dark:hover:bg-sky-200",
+    "bg-source-discovered text-source-discovered-ink hover:bg-source-discovered-hover",
   viewer_clips:
-    "bg-violet-700 text-white hover:bg-violet-800 dark:bg-violet-300 dark:text-zinc-950 dark:hover:bg-violet-200",
-  both: "bg-emerald-700 text-white hover:bg-emerald-800 dark:bg-emerald-300 dark:text-zinc-950 dark:hover:bg-emerald-200",
+    "bg-source-viewer text-source-viewer-ink hover:bg-source-viewer-hover",
+  both: "bg-source-both text-source-both-ink hover:bg-source-both-hover",
 };
 
 const ANCHOR_COLOR: Record<Candidate["source"], string> = {
-  discovered: "bg-sky-700 dark:bg-sky-300",
-  viewer_clips: "bg-violet-700 dark:bg-violet-300",
-  both: "bg-emerald-700 dark:bg-emerald-300",
+  discovered: "bg-source-discovered",
+  viewer_clips: "bg-source-viewer",
+  both: "bg-source-both",
 };
 
 const SHORT_LABEL_STYLE: Record<Candidate["source"], string> = {
   discovered:
-    "border-sky-700/40 bg-white text-sky-900 dark:border-sky-300/50 dark:bg-zinc-900 dark:text-sky-200",
+    "border-source-discovered-border bg-surface-panel text-source-discovered-soft-ink",
   viewer_clips:
-    "border-violet-700/40 bg-white text-violet-900 dark:border-violet-300/50 dark:bg-zinc-900 dark:text-violet-200",
-  both: "border-emerald-700/40 bg-white text-emerald-900 dark:border-emerald-300/50 dark:bg-zinc-900 dark:text-emerald-200",
+    "border-source-viewer-border bg-surface-panel text-source-viewer-soft-ink",
+  both: "border-source-both-border bg-surface-panel text-source-both-soft-ink",
 };
 
 const LANE_HEIGHT_PX = 36;
@@ -74,36 +74,38 @@ export function StreamTimeline({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex flex-col gap-4 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-panel">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h3 className="text-base font-semibold">Stream timeline</h3>
-            <p className="text-xs text-zinc-600 dark:text-zinc-400">
+            <h3 className="font-display text-base font-semibold text-ink-primary">
+              Stream timeline
+            </h3>
+            <p className="text-xs text-ink-secondary">
               Select a highlighted moment to inspect, download, or edit its
               clip.
               {layout.laneCount > 1 &&
                 ` Overlapping moments are arranged into ${layout.laneCount} rows.`}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-600 dark:text-zinc-400">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-ink-secondary">
             <span className="inline-flex items-center gap-1.5">
               <span
                 aria-hidden="true"
-                className="size-2.5 rounded-full bg-emerald-700 dark:bg-emerald-300"
+                className="size-2.5 rounded-pill bg-source-both"
               />
               Both
             </span>
             <span className="inline-flex items-center gap-1.5">
               <span
                 aria-hidden="true"
-                className="size-2.5 rounded-full bg-sky-700 dark:bg-sky-300"
+                className="size-2.5 rounded-pill bg-source-discovered"
               />
               Discovered
             </span>
             <span className="inline-flex items-center gap-1.5">
               <span
                 aria-hidden="true"
-                className="size-2.5 rounded-full bg-violet-700 dark:bg-violet-300"
+                className="size-2.5 rounded-pill bg-source-viewer"
               />
               Viewer clip
             </span>
@@ -113,17 +115,17 @@ export function StreamTimeline({
         {/* Candidate activity strip (reflects selected candidate scores only) */}
         <div className="flex flex-col gap-1.5">
           <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
-            <span className="font-medium text-zinc-700 dark:text-zinc-300">
+            <span className="font-medium text-ink-primary">
               Candidate activity
             </span>
-            <span className="text-zinc-600 dark:text-zinc-400">
+            <span className="text-ink-tertiary">
               Ranked moments only — blank segments had no selected candidates
             </span>
           </div>
           <div
             role="img"
             aria-label="Candidate activity across the stream (ranked moments only; blank segments had no selected candidates)"
-            className="grid h-3 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800"
+            className="grid h-3 w-full overflow-hidden rounded-pill bg-surface-subtle"
             style={{
               gridTemplateColumns: `repeat(${activityBins.length}, minmax(0, 1fr))`,
             }}
@@ -132,7 +134,7 @@ export function StreamTimeline({
               <span
                 key={index}
                 aria-hidden="true"
-                className="h-full bg-amber-500"
+                className="h-full bg-signal"
                 style={{ opacity: intensity > 0 ? 0.15 + 0.85 * intensity : 0 }}
               />
             ))}
@@ -143,7 +145,7 @@ export function StreamTimeline({
         <div
           role="group"
           aria-label="Highlighted moments along the stream"
-          className="relative w-full rounded-xl bg-zinc-50 py-2 dark:bg-zinc-950"
+          className="relative w-full rounded-card bg-surface-elevated py-2 ring-1 ring-border-subtle ring-inset"
           style={{ height: `${trackHeightPx + 16}px` }}
         >
           {layout.markers.map((marker) => {
@@ -177,9 +179,9 @@ export function StreamTimeline({
                     top: `${topPx}px`,
                     height: `${LANE_HEIGHT_PX}px`,
                   }}
-                  className={`group absolute box-border flex min-w-0 items-center overflow-hidden rounded-lg bg-transparent transition hover:bg-zinc-200/70 focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none dark:hover:bg-zinc-800/70 ${labelAlign} ${
+                  className={`group absolute box-border flex min-w-0 items-center overflow-hidden rounded-control bg-transparent transition hover:bg-surface-subtle/80 focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none ${labelAlign} ${
                     isSelected
-                      ? "z-10 bg-zinc-200/80 ring-2 ring-zinc-950 ring-offset-2 ring-offset-zinc-50 dark:bg-zinc-800/80 dark:ring-white dark:ring-offset-zinc-950"
+                      ? "z-10 bg-surface-subtle ring-2 ring-ink-primary ring-offset-2 ring-offset-surface-elevated"
                       : ""
                   }`}
                 >
@@ -202,7 +204,7 @@ export function StreamTimeline({
                     style={{
                       left: `${marker.anchorOffsetInHitPct}%`,
                     }}
-                    className={`pointer-events-none absolute inset-y-0.5 w-0.5 -translate-x-1/2 rounded-full ${ANCHOR_COLOR[candidate.source]}`}
+                    className={`pointer-events-none absolute inset-y-0.5 w-0.5 -translate-x-1/2 rounded-pill ${ANCHOR_COLOR[candidate.source]}`}
                   />
                   <span
                     className={`relative z-10 max-w-full truncate rounded border px-0.5 py-0.5 text-[10px] leading-none font-semibold tabular-nums shadow-2xs sm:px-1 sm:text-[11px] ${SHORT_LABEL_STYLE[candidate.source]}`}
@@ -230,9 +232,9 @@ export function StreamTimeline({
                   top: `${topPx}px`,
                   height: `${LANE_HEIGHT_PX}px`,
                 }}
-                className={`absolute box-border flex min-w-0 items-center justify-center overflow-hidden rounded-lg px-0.5 text-xs font-semibold transition focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none ${MARKER_STYLE[candidate.source]} ${
+                className={`absolute box-border flex min-w-0 items-center justify-center overflow-hidden rounded-control px-0.5 font-mono text-xs font-semibold transition focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none ${MARKER_STYLE[candidate.source]} ${
                   isSelected
-                    ? "z-10 ring-2 ring-zinc-950 ring-offset-2 ring-offset-zinc-50 dark:ring-white dark:ring-offset-zinc-950"
+                    ? "z-10 ring-2 ring-ink-primary ring-offset-2 ring-offset-surface-elevated"
                     : ""
                 }`}
               >
@@ -243,7 +245,7 @@ export function StreamTimeline({
         </div>
 
         {/* Stream time axis ticks anchored to the exact marker percentage scale */}
-        <div className="relative h-4 w-full text-xs text-zinc-500 tabular-nums dark:text-zinc-400">
+        <div className="relative h-4 w-full text-xs text-ink-tertiary tabular-nums">
           {layout.ticks.map((tick) => {
             const align =
               tick.pct === 0
@@ -251,11 +253,13 @@ export function StreamTimeline({
                 : tick.pct === 100
                   ? "-translate-x-full"
                   : "-translate-x-1/2";
+            const intermediateHidden =
+              tick.pct === 25 || tick.pct === 75 ? "hidden sm:inline" : "";
             return (
               <span
                 key={tick.pct}
                 style={{ left: `${tick.pct}%` }}
-                className={`absolute top-0 whitespace-nowrap ${align}`}
+                className={`absolute top-0 whitespace-nowrap ${align} ${intermediateHidden}`}
               >
                 {formatTime(tick.seconds)}
               </span>

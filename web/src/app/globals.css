@@ -1,24 +1,259 @@
 @import "tailwindcss";
 
+/*
+ * AutoClipper Design System ("Broadcast Edit Bay")
+ * Light and dark tokens follow the OS color scheme and target WCAG AA (>= 4.5:1)
+ * text contrast on every surface pairing.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #09090b;
-  color-scheme: light dark;
-}
+  /* Surfaces */
+  --surface-canvas: #f6f7fa;
+  --surface-panel: #ffffff;
+  --surface-elevated: #eef1f6;
+  --surface-subtle: #e3e7f0;
+  --surface-media: #0d0f15;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  /* Borders */
+  --border-subtle: #dce1ec;
+  --border-strong: #bcc5d6;
+
+  /* Ink (text) */
+  --ink-primary: #10131a;
+  --ink-secondary: #464f66;
+  --ink-tertiary: #59637a;
+
+  /* Primary brand accent — Broadcast Violet (7.8:1 white on #6d28d9) */
+  --accent: #6d28d9;
+  --accent-hover: #5b21b6;
+  --accent-ink: #ffffff;
+  --accent-soft: #ede9fe;
+  --accent-soft-ink: #4c1d95;
+  --accent-border: #c4b5fd;
+
+  /* Secondary energy/signal accent — Peak Amber */
+  --signal: #d97706;
+  --signal-soft: #fef3c7;
+  --signal-soft-ink: #78350f;
+  --signal-border: #fcd34d;
+
+  /* Candidate source semantics (all >= 4.5:1) */
+  --source-both: #047857;
+  --source-both-hover: #065f46;
+  --source-both-ink: #ffffff;
+  --source-both-soft: #d1fae5;
+  --source-both-soft-ink: #065f46;
+  --source-both-border: #6ee7b7;
+
+  --source-discovered: #0369a1;
+  --source-discovered-hover: #075985;
+  --source-discovered-ink: #ffffff;
+  --source-discovered-soft: #e0f2fe;
+  --source-discovered-soft-ink: #075985;
+  --source-discovered-border: #7dd3fc;
+
+  --source-viewer: #7e22ce;
+  --source-viewer-hover: #6b21a8;
+  --source-viewer-ink: #ffffff;
+  --source-viewer-soft: #f3e8ff;
+  --source-viewer-soft-ink: #581c87;
+  --source-viewer-border: #d8b4fe;
+
+  /* Danger / error */
+  --danger: #b91c1c;
+  --danger-ink: #ffffff;
+  --danger-soft: #fef2f2;
+  --danger-soft-ink: #991b1b;
+  --danger-border: #fecaca;
+
+  /* Focus ring */
+  --focus-ring: #6d28d9;
+  --focus-ring-media: #c4b5fd;
+
+  /* Radii & elevation */
+  --radius-panel: 1.25rem;
+  --radius-card: 1rem;
+  --radius-control: 0.625rem;
+  --radius-pill: 9999px;
+
+  --shadow-panel:
+    0 1px 2px rgb(16 19 26 / 0.04), 0 8px 24px -12px rgb(16 19 26 / 0.08);
+  --shadow-card:
+    0 1px 2px rgb(16 19 26 / 0.05), 0 4px 12px -6px rgb(16 19 26 / 0.07);
+
+  /* Type scale */
+  --type-display: clamp(2rem, 4vw, 3.125rem);
+  --type-title: clamp(1.5rem, 2.5vw, 2rem);
+  --type-heading: 1.125rem;
+  --type-body: 0.9375rem;
+  --type-caption: 0.8125rem;
+  --type-micro: 0.75rem;
+
+  /* Legacy aliases retained for components not yet migrated to surface/ink tokens */
+  --background: var(--surface-canvas);
+  --foreground: var(--ink-primary);
+
+  color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #09090b;
-    --foreground: #fafafa;
+    --surface-canvas: #0b0d12;
+    --surface-panel: #131620;
+    --surface-elevated: #1a1e2b;
+    --surface-subtle: #232838;
+    --surface-media: #07090d;
+
+    --border-subtle: #252b3b;
+    --border-strong: #374058;
+
+    --ink-primary: #f4f6fb;
+    --ink-secondary: #a8b2c7;
+    --ink-tertiary: #8490a8;
+
+    /* Bright Broadcast Violet on dark surfaces (8.5:1 dark ink on #a78bfa) */
+    --accent: #a78bfa;
+    --accent-hover: #c4b5fd;
+    --accent-ink: #0b0d12;
+    --accent-soft: rgb(167 139 250 / 0.16);
+    --accent-soft-ink: #ddd6fe;
+    --accent-border: rgb(167 139 250 / 0.35);
+
+    --signal: #f59e0b;
+    --signal-soft: rgb(245 158 11 / 0.15);
+    --signal-soft-ink: #fde68a;
+    --signal-border: rgb(245 158 11 / 0.35);
+
+    --source-both: #34d399;
+    --source-both-hover: #6ee7b7;
+    --source-both-ink: #07140f;
+    --source-both-soft: rgb(52 211 153 / 0.15);
+    --source-both-soft-ink: #a7f3d0;
+    --source-both-border: rgb(52 211 153 / 0.35);
+
+    --source-discovered: #38bdf8;
+    --source-discovered-hover: #7dd3fc;
+    --source-discovered-ink: #06131c;
+    --source-discovered-soft: rgb(56 189 248 / 0.15);
+    --source-discovered-soft-ink: #bae6fd;
+    --source-discovered-border: rgb(56 189 248 / 0.35);
+
+    --source-viewer: #c084fc;
+    --source-viewer-hover: #d8b4fe;
+    --source-viewer-ink: #14081f;
+    --source-viewer-soft: rgb(192 132 252 / 0.16);
+    --source-viewer-soft-ink: #e9d5ff;
+    --source-viewer-border: rgb(192 132 252 / 0.35);
+
+    --danger: #f87171;
+    --danger-ink: #1a0707;
+    --danger-soft: rgb(239 68 68 / 0.14);
+    --danger-soft-ink: #fecaca;
+    --danger-border: rgb(248 113 113 / 0.35);
+
+    --focus-ring: #c4b5fd;
+
+    --shadow-panel:
+      0 1px 0 rgb(255 255 255 / 0.04) inset, 0 12px 32px -16px rgb(0 0 0 / 0.6);
+    --shadow-card:
+      0 1px 0 rgb(255 255 255 / 0.04) inset, 0 6px 20px -10px rgb(0 0 0 / 0.5);
   }
 }
 
+@theme inline {
+  --color-background: var(--surface-canvas);
+  --color-foreground: var(--ink-primary);
+
+  --color-surface-canvas: var(--surface-canvas);
+  --color-surface-panel: var(--surface-panel);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-surface-media: var(--surface-media);
+
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+
+  --color-ink-primary: var(--ink-primary);
+  --color-ink-secondary: var(--ink-secondary);
+  --color-ink-tertiary: var(--ink-tertiary);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-soft-ink: var(--accent-soft-ink);
+  --color-accent-border: var(--accent-border);
+
+  --color-signal: var(--signal);
+  --color-signal-soft: var(--signal-soft);
+  --color-signal-soft-ink: var(--signal-soft-ink);
+  --color-signal-border: var(--signal-border);
+
+  --color-source-both: var(--source-both);
+  --color-source-both-hover: var(--source-both-hover);
+  --color-source-both-ink: var(--source-both-ink);
+  --color-source-both-soft: var(--source-both-soft);
+  --color-source-both-soft-ink: var(--source-both-soft-ink);
+  --color-source-both-border: var(--source-both-border);
+
+  --color-source-discovered: var(--source-discovered);
+  --color-source-discovered-hover: var(--source-discovered-hover);
+  --color-source-discovered-ink: var(--source-discovered-ink);
+  --color-source-discovered-soft: var(--source-discovered-soft);
+  --color-source-discovered-soft-ink: var(--source-discovered-soft-ink);
+  --color-source-discovered-border: var(--source-discovered-border);
+
+  --color-source-viewer: var(--source-viewer);
+  --color-source-viewer-hover: var(--source-viewer-hover);
+  --color-source-viewer-ink: var(--source-viewer-ink);
+  --color-source-viewer-soft: var(--source-viewer-soft);
+  --color-source-viewer-soft-ink: var(--source-viewer-soft-ink);
+  --color-source-viewer-border: var(--source-viewer-border);
+
+  --color-danger: var(--danger);
+  --color-danger-ink: var(--danger-ink);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-soft-ink: var(--danger-soft-ink);
+  --color-danger-border: var(--danger-border);
+
+  --color-focus-ring: var(--focus-ring);
+  --color-focus-ring-media: var(--focus-ring-media);
+
+  --font-display:
+    "Space Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans:
+    "Plus Jakarta Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono:
+    "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
+
+  --radius-panel: var(--radius-panel);
+  --radius-card: var(--radius-card);
+  --radius-control: var(--radius-control);
+  --radius-pill: var(--radius-pill);
+
+  --shadow-panel: var(--shadow-panel);
+  --shadow-card: var(--shadow-card);
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--surface-canvas);
+  color: var(--ink-primary);
+  font-family: var(--font-sans);
+  font-size: var(--type-body);
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--accent-soft-ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

@@ -9,9 +9,7 @@ export default function ClipEditorPage() {
       <SiteHeader />
       <main className="flex flex-1 flex-col py-8 sm:py-12">
         <Suspense
-          fallback={
-            <p className="text-zinc-600 dark:text-zinc-400">Loading…</p>
-          }
+          fallback={<p className="text-sm text-ink-secondary">Loading…</p>}
         >
           <ClipEditor />
         </Suspense>

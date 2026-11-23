@@ -20,10 +20,11 @@ const SOURCE_LABEL: Record<Candidate["source"], string> = {
 };
 
 const SOURCE_STYLE: Record<Candidate["source"], string> = {
-  discovered: "bg-sky-100 text-sky-900 dark:bg-sky-400/15 dark:text-sky-200",
+  discovered:
+    "border-source-discovered-border bg-source-discovered-soft text-source-discovered-soft-ink",
   viewer_clips:
-    "bg-violet-100 text-violet-900 dark:bg-violet-400/15 dark:text-violet-200",
-  both: "bg-emerald-100 text-emerald-900 dark:bg-emerald-400/15 dark:text-emerald-200",
+    "border-source-viewer-border bg-source-viewer-soft text-source-viewer-soft-ink",
+  both: "border-source-both-border bg-source-both-soft text-source-both-soft-ink",
 };
 
 export function ClipCard({
@@ -48,8 +49,8 @@ export function ClipCard({
   const filename = `autoclipper_${videoId}_${candidate.start_s}-${candidate.end_s}.mp4`;
 
   return (
-    <li className="flex flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="relative aspect-[9/16] w-full bg-zinc-100 dark:bg-zinc-950">
+    <li className="flex flex-col overflow-hidden rounded-card border border-border-subtle bg-surface-panel shadow-card transition-colors hover:border-border-strong">
+      <div className="relative aspect-[9/16] w-full bg-surface-media">
         {ready && !videoFailed ? (
           <video
             src={clip.url ?? undefined}
@@ -61,7 +62,7 @@ export function ClipCard({
             aria-label={`Clip ${candidate.rank}, ${span} in the stream`}
           />
         ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center text-sm text-zinc-600 dark:text-zinc-400">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 p-5 text-center text-sm text-zinc-300">
             <ClipPlaceholder
               clip={clip}
               videoFailed={videoFailed}
@@ -69,29 +70,29 @@ export function ClipCard({
             />
           </div>
         )}
-        <span className="absolute top-3 left-3 flex size-9 items-center justify-center rounded-full bg-zinc-950/80 font-semibold text-white ring-1 ring-white/40">
+        <span className="absolute top-3 left-3 flex size-9 items-center justify-center rounded-pill bg-surface-media/85 font-mono text-sm font-semibold text-white ring-1 ring-white/30 backdrop-blur-xs">
           <span className="sr-only">Rank </span>
           {candidate.rank}
         </span>
       </div>
 
       <div className="flex flex-1 flex-col gap-3 p-4">
-        <div className="flex flex-wrap items-center gap-2 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
           <span
-            className={`rounded-full px-2.5 py-0.5 font-medium ${SOURCE_STYLE[candidate.source]}`}
+            className={`rounded-pill border px-2.5 py-0.5 font-medium ${SOURCE_STYLE[candidate.source]}`}
           >
             {SOURCE_LABEL[candidate.source]}
           </span>
-          <span className="text-zinc-600 tabular-nums dark:text-zinc-400">
+          <span className="font-mono text-ink-secondary tabular-nums">
             <span className="sr-only">In the stream at </span>
             {span}
           </span>
         </div>
-        <p className="font-medium text-pretty">{reasonFor(candidate)}</p>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-zinc-600 dark:text-zinc-400">
-            Score
-          </span>
+        <p className="text-sm leading-snug font-medium text-pretty text-ink-primary">
+          {reasonFor(candidate)}
+        </p>
+        <div className="flex items-center gap-2.5">
+          <span className="text-xs font-medium text-ink-tertiary">Score</span>
           <div
             role="meter"
             aria-label="Score within this stream"
@@ -99,22 +100,22 @@ export function ClipCard({
             aria-valuemax={100}
             aria-valuenow={Math.round(scoreFraction * 100)}
             aria-valuetext={`Rank ${candidate.rank} by score in this stream`}
-            className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800"
+            className="h-1.5 flex-1 overflow-hidden rounded-pill bg-surface-subtle"
           >
             <div
-              className="h-full rounded-full bg-amber-500"
+              className="h-full rounded-pill bg-signal"
               style={{
                 width: `${Math.max(4, Math.round(scoreFraction * 100))}%`,
               }}
             />
           </div>
         </div>
-        <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
+        <div className="mt-auto flex flex-wrap items-center gap-2 pt-1.5">
           {ready ? (
             <a
               href={clip.url ?? undefined}
               download={filename}
-              className="inline-flex rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-amber-400 focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:outline-none"
+              className="inline-flex rounded-control bg-accent px-4 py-2 text-sm font-semibold text-accent-ink shadow-card transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-panel focus-visible:outline-none"
             >
               Download<span className="sr-only"> clip {candidate.rank}</span>
             </a>
@@ -122,7 +123,7 @@ export function ClipCard({
             <button
               type="button"
               disabled
-              className="inline-flex rounded-lg bg-zinc-100 px-4 py-2 text-sm font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+              className="inline-flex cursor-not-allowed rounded-control bg-surface-subtle px-4 py-2 text-sm font-semibold text-ink-tertiary"
             >
               Download
               <span className="sr-only">
@@ -133,7 +134,7 @@ export function ClipCard({
           )}
           <Link
             href={`/jobs/${jobId}/results/${candidate.candidate_id}`}
-            className="inline-flex rounded-lg bg-white px-3.5 py-2 text-sm font-medium text-zinc-900 ring-1 ring-zinc-300 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none dark:bg-zinc-900 dark:text-zinc-100 dark:ring-zinc-700 dark:hover:bg-zinc-800"
+            className="inline-flex rounded-control border border-border-strong bg-surface-elevated px-3.5 py-2 text-sm font-medium text-ink-primary transition-colors hover:bg-surface-subtle focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-panel focus-visible:outline-none"
           >
             Edit <span className="sr-only">clip {candidate.rank}</span>
           </Link>
@@ -170,11 +171,11 @@ function ClipPlaceholder({
         : (clip.export.error?.message ?? "Rendering failed.");
     return (
       <>
-        <p className="text-red-700 dark:text-red-300">{message}</p>
+        <p className="text-red-300">{message}</p>
         <button
           type="button"
           onClick={onRetry}
-          className="rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-zinc-900 ring-1 ring-zinc-300 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none dark:bg-zinc-900 dark:text-zinc-100 dark:ring-zinc-700"
+          className="rounded-control border border-white/25 bg-white/10 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-focus-ring-media focus-visible:ring-offset-2 focus-visible:ring-offset-surface-media focus-visible:outline-none"
         >
           Try again
         </button>
@@ -188,7 +189,7 @@ function ClipPlaceholder({
   return (
     <>
       <span
-        className="size-6 animate-spin rounded-full border-2 border-amber-500 border-t-transparent"
+        className="size-6 animate-spin rounded-pill border-2 border-accent border-t-transparent"
         aria-hidden="true"
       />
       <p>{progress ? `Rendering… ${progress.message}` : "Rendering…"}</p>
