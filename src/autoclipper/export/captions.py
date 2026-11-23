@@ -347,9 +347,20 @@ def transcriber_for(model_size: str) -> FasterWhisperTranscriber:
     return FasterWhisperTranscriber(model_size)
 
 
+@functools.cache
+def ffmpeg_supports_subtitles() -> bool:
+    """Whether the installed FFmpeg build includes the libass ``subtitles`` filter."""
+    try:
+        result = run_command(ffmpeg_command("-hide_banner", "-filters"), timeout_s=10.0)
+    except FFmpegError:
+        return False
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    return re.search(r"\bsubtitles\b", stdout) is not None
+
+
 def captions_available() -> bool:
-    """Whether the optional ``faster-whisper`` package is installed for burned-in captions."""
-    return importlib.util.find_spec("faster_whisper") is not None
+    """Whether burned-in captions can run (``faster-whisper`` and FFmpeg ``subtitles`` filter)."""
+    return importlib.util.find_spec("faster_whisper") is not None and ffmpeg_supports_subtitles()
 
 
 def export_clip_with_captions(

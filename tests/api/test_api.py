@@ -206,7 +206,7 @@ def test_health_reports_the_mock_runner(
 
     assert response.json() == {
         "status": "ok",
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "job_runner": "mock",
         "captions_available": False,
     }
@@ -1586,7 +1586,7 @@ def test_the_health_endpoint_reports_the_pipeline_runner(
 
     assert response.json() == {
         "status": "ok",
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "job_runner": "pipeline",
         "captions_available": False,
     }

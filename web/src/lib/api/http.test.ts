@@ -36,7 +36,7 @@ describe("HTTP API client", () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
         status: "ok",
-        schema_version: "1.0",
+        schema_version: "1.1",
         job_runner: "pipeline",
         captions_available: true,
       }),
@@ -47,7 +47,7 @@ describe("HTTP API client", () => {
 
     expect(health).toEqual({
       status: "ok",
-      schema_version: "1.0",
+      schema_version: "1.1",
       job_runner: "pipeline",
       captions_available: true,
     });

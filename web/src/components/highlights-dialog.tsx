@@ -34,16 +34,18 @@ export function HighlightsDialog({
   videoId,
   vodDurationS,
   candidates,
-  captionsAvailable = true,
+  captionsStatus = "available",
   onClose,
 }: {
   jobId: string;
   videoId: string;
   vodDurationS: number;
   candidates: Candidate[];
-  captionsAvailable?: boolean;
+  captionsStatus?: "checking" | "available" | "unavailable" | "unknown";
   onClose: () => void;
 }) {
+  const captionsAllowed =
+    captionsStatus === "available" || captionsStatus === "unknown";
   const [trims, setTrims] = useState<Record<string, Trim>>(() =>
     Object.fromEntries(
       candidates.map((candidate) => [
@@ -100,7 +102,7 @@ export function HighlightsDialog({
           job_id: jobId,
           segments,
           order,
-          captions: captionsAvailable ? captions : false,
+          captions: captionsAllowed ? captions : false,
         })
       ).highlights;
       while (
@@ -288,13 +290,18 @@ export function HighlightsDialog({
                 <input
                   type="checkbox"
                   id="highlights-captions"
-                  checked={captionsAvailable ? captions : false}
-                  disabled={!captionsAvailable}
+                  checked={captionsAllowed ? captions : false}
+                  disabled={!captionsAllowed}
                   onChange={(event) => setCaptions(event.target.checked)}
                 />
                 <label htmlFor="highlights-captions">
                   Burn in captions
-                  {!captionsAvailable && (
+                  {captionsStatus === "checking" && (
+                    <span className="ml-1 text-xs text-zinc-500 dark:text-zinc-400">
+                      (checking…)
+                    </span>
+                  )}
+                  {captionsStatus === "unavailable" && (
                     <span className="ml-1 text-xs text-zinc-500 dark:text-zinc-400">
                       (needs uv sync --extra captions)
                     </span>
@@ -363,7 +370,7 @@ export function HighlightsDialog({
           <div className="flex flex-col gap-3" aria-live="polite">
             <p>
               The highlights video is ready ({formatTime(stage.duration_s)}
-              {captionsAvailable && captions ? " · captioned" : ""}).
+              {captionsAllowed && captions ? " · captioned" : ""}).
             </p>
             <div className="flex gap-3">
               <a

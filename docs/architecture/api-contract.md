@@ -1028,10 +1028,10 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 `GET /api/v1/health` returns `200`:
 
 ```json
-{ "status": "ok", "schema_version": "1.0", "job_runner": "mock", "captions_available": true }
+{ "status": "ok", "schema_version": "1.1", "job_runner": "mock", "captions_available": true }
 ```
 
-`job_runner` is `mock` (#28) or `pipeline` (#45), so the UI can show a "mock data" badge. Which runner is active is server configuration, not part of a job request; both produce the same shapes. `captions_available` reports whether the server can burn in speech-to-text captions (`faster-whisper` installed via `uv sync --extra captions`, or a configured transcriber), so clients can fall back to uncaptioned exports and disable caption toggles when captioning isn't installed.
+`job_runner` is `mock` (#28) or `pipeline` (#45), so the UI can show a "mock data" badge. Which runner is active is server configuration, not part of a job request; both produce the same shapes. `captions_available` reports whether the server can burn in speech-to-text captions (`faster-whisper` installed via `uv sync --extra captions` and FFmpeg built with the libass `subtitles` filter, or a configured transcriber), so clients can fall back to uncaptioned exports and disable caption toggles when captioning isn't available.
 
 ### 9.6 Preflight
 
@@ -1080,7 +1080,7 @@ Example:
 
 ## 10. Versioning
 
-- The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` and `Health`; this contract is `1.0`.
+- The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` (`"1.0"`) and `Health` (`"1.1"`, adding `captions_available`).
 - **Minor change** (same path, `1.x`): a new endpoint, a new response field, an optional request field with a default, or a new value in an **open** enum. Clients must already ignore unknown fields and handle unknown open-enum values with a default branch.
 - **Major change** (`/api/v2`): anything else, such as renaming or removing a field, changing a type, unit or meaning, adding a required request field, or adding a value to a **closed** enum.
 - **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, `PreflightCheck.name`, and layouts listed in `export.layouts`. **Closed enums:** job, export and highlights `state`, `source`, `preview.status`, `export.status`, `scorer.kind`, highlights `order`, and preflight `status`. A request's `layout` must be one the server lists.

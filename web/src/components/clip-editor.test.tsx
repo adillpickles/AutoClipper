@@ -116,7 +116,7 @@ function makeExport(
 
 const HEALTH_WITH_CAPTIONS = {
   status: "ok" as const,
-  schema_version: "1.0",
+  schema_version: "1.1",
   job_runner: "mock" as const,
   captions_available: true,
 };
@@ -357,7 +357,7 @@ describe("ClipEditor", () => {
   it("disables captions and submits captions: false when health reports captions_available false", async () => {
     api.getHealth.mockResolvedValue({
       status: "ok",
-      schema_version: "1.0",
+      schema_version: "1.1",
       job_runner: "pipeline",
       captions_available: false,
     });
@@ -379,6 +379,32 @@ describe("ClipEditor", () => {
     });
     expect(screen.getByText(/uv sync --extra captions/)).toBeTruthy();
 
+    fireEvent.click(screen.getByRole("button", { name: "Re-render clip" }));
+    await vi.waitFor(() =>
+      expect(api.createExport).toHaveBeenCalledWith(
+        expect.objectContaining({ captions: false }),
+      ),
+    );
+  });
+
+  it("keeps captions off while /health is still pending so manual exports do not send captions: true prematurely", async () => {
+    api.getHealth.mockReturnValue(new Promise(() => undefined));
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia.mockResolvedValue(AVAILABLE_MEDIA);
+    api.createExport.mockResolvedValue({
+      export: makeExport("done", { captions: false }),
+      created: true,
+    });
+
+    render(<ClipEditor />);
+
+    const checkbox = (await screen.findByLabelText(
+      "Burn in captions",
+    )) as HTMLInputElement;
+    expect(checkbox.disabled).toBe(true);
+    expect(checkbox.checked).toBe(false);
+
+    await screen.findByLabelText("Center crop (9:16)");
     fireEvent.click(screen.getByRole("button", { name: "Re-render clip" }));
     await vi.waitFor(() =>
       expect(api.createExport).toHaveBeenCalledWith(

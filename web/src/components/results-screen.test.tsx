@@ -122,7 +122,7 @@ describe("ResultsScreen captions capability and fallback", () => {
   it("exports without captions and shows a notice when /health reports captions_available false", async () => {
     api.getHealth.mockResolvedValue({
       status: "ok",
-      schema_version: "1.0",
+      schema_version: "1.1",
       job_runner: "pipeline",
       captions_available: false,
     });
@@ -146,7 +146,7 @@ describe("ResultsScreen captions capability and fallback", () => {
   it("exports with captions when /health reports captions_available true", async () => {
     api.getHealth.mockResolvedValue({
       status: "ok",
-      schema_version: "1.0",
+      schema_version: "1.1",
       job_runner: "mock",
       captions_available: true,
     });
@@ -193,13 +193,99 @@ describe("ResultsScreen captions capability and fallback", () => {
     expect(await screen.findByText(/1 of 1 clips ready/)).toBeTruthy();
     expect(
       screen.getByText(
-        "Captioning failed on the server, so clips were rendered without captions.",
+        "Captioning failed on the server for one or more clips, so they were rendered without captions.",
       ),
     ).toBeTruthy();
     expect(api.createExport).toHaveBeenCalledTimes(2);
     expect(api.createExport.mock.calls[0][0]).toMatchObject({ captions: true });
     expect(api.createExport.mock.calls[1][0]).toMatchObject({
       captions: false,
+    });
+  });
+
+  it("preserves custom trim and layout from a remembered failed captioned export and keeps fallback local to the failed clip", async () => {
+    window.localStorage.setItem(
+      "autoclipper.exports.job_1",
+      JSON.stringify({ c001: "exp_custom_failed" }),
+    );
+    const twoCandidates: AnalysisResult = {
+      ...RESULT,
+      candidates: [
+        RESULT.candidates[0],
+        {
+          candidate_id: "c002",
+          rank: 2,
+          score: 2.8,
+          start_s: 200,
+          end_s: 230,
+          source: "discovered",
+          n_viewer_clips: 0,
+          top_signals: ["audio_rms_max_z"],
+        },
+      ],
+    };
+    api.getHealth.mockResolvedValue({
+      status: "ok",
+      schema_version: "1.1",
+      job_runner: "pipeline",
+      captions_available: true,
+    });
+    api.getResult.mockResolvedValue(twoCandidates);
+    api.getExport.mockResolvedValueOnce(
+      makeExport(
+        {
+          job_id: "job_1",
+          candidate_id: "c001",
+          start_s: 112.5,
+          end_s: 151.0,
+          layout: "stacked",
+          captions: true,
+        },
+        {
+          export_id: "exp_custom_failed",
+          state: "failed",
+          download_url: null,
+          error: {
+            code: "captioning_failed",
+            message: "Captions couldn't be generated for this clip.",
+            details: null,
+          },
+        },
+      ),
+    );
+    api.getCandidateMedia.mockImplementation(
+      async (_jobId: string, candidateId: string) => ({
+        ...MEDIA,
+        candidate_id: candidateId,
+        export: {
+          ...MEDIA.export,
+          layouts: ["center_crop", "stacked"],
+        },
+      }),
+    );
+    api.createExport.mockImplementation(async (req: CreateExportRequest) => ({
+      export: makeExport(req),
+      created: true,
+    }));
+
+    render(<ResultsScreen />);
+
+    expect(await screen.findByText(/2 of 2 clips ready/)).toBeTruthy();
+    expect(api.createExport).toHaveBeenCalledWith({
+      job_id: "job_1",
+      candidate_id: "c001",
+      start_s: 112.5,
+      end_s: 151.0,
+      layout: "stacked",
+      captions: false,
+    });
+    expect(api.createExport).toHaveBeenCalledWith({
+      job_id: "job_1",
+      candidate_id: "c002",
+      start_s: 200,
+      end_s: 230,
+      layout: "center_crop",
+      captions: true,
     });
   });
 });

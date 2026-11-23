@@ -47,7 +47,7 @@ __all__ = [
     "parse_vod",
 ]
 
-SCHEMA_VERSION: Final = "1.0"
+SCHEMA_VERSION: Final = "1.1"
 
 type State = Literal["queued", "running", "done", "failed"]
 type Layout = Literal["center_crop", "configured_region", "stacked"]

@@ -27,8 +27,19 @@ export const TOP_CLIPS = 10;
 const FIRST_BACKOFF_MS = 2000;
 const MAX_BACKOFF_MS = 10_000;
 const GIVE_UP_AFTER_MS = 60_000;
+const HEALTH_TIMEOUT_MS = 3000;
 // Spacing between the clicks of "Download all", so the browser starts every download.
 const DOWNLOAD_SPACING_MS = 400;
+
+const KNOWN_LAYOUTS: readonly Layout[] = [
+  "center_crop",
+  "configured_region",
+  "stacked",
+];
+
+function isKnownLayout(value: string): value is Layout {
+  return (KNOWN_LAYOUTS as readonly string[]).includes(value);
+}
 
 const exportsKey = (jobId: string) => `autoclipper.exports.${jobId}`;
 
@@ -75,9 +86,9 @@ export function ResultsScreen() {
     null,
   );
   const [highlightsOpen, setHighlightsOpen] = useState(false);
-  const [captionsAvailable, setCaptionsAvailable] = useState<boolean | null>(
-    null,
-  );
+  const [captionsStatus, setCaptionsStatus] = useState<
+    "checking" | "available" | "unavailable" | "unknown"
+  >("checking");
   const [captionsFallback, setCaptionsFallback] = useState(false);
 
   useEffect(() => {
@@ -138,40 +149,62 @@ export function ResultsScreen() {
     const wait = (ms: number) =>
       new Promise<void>((resolve) => timers.push(setTimeout(resolve, ms)));
 
-    // Check `/health` once so servers without faster-whisper export cleanly without captions
-    // instead of failing every card with `captioning_failed`.
-    let captionsEnabled = true;
-    const healthReady = client
-      .getHealth()
-      .then((health) => {
-        if (cancelled) return;
-        const available = health.captions_available !== false;
-        captionsEnabled = available;
-        setCaptionsAvailable(available);
-      })
-      .catch(() => {
-        // Health check failed transiently: try with captions and fall back on captioning_failed.
-      });
+    // Check `/health` once (bounded by a timeout so a hung health endpoint never blocks
+    // automatic exports) so servers without captioning export cleanly without captions.
+    let serverCaptionsAvailable = true;
+    const healthReady = new Promise<void>((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve();
+      };
+      const timeout = setTimeout(() => {
+        if (!cancelled) setCaptionsStatus("unknown");
+        done();
+      }, HEALTH_TIMEOUT_MS);
+      timers.push(timeout);
+      client
+        .getHealth()
+        .then((health) => {
+          if (settled || cancelled) return;
+          const available = health.captions_available !== false;
+          serverCaptionsAvailable = available;
+          setCaptionsStatus(available ? "available" : "unavailable");
+          done();
+        })
+        .catch(() => {
+          if (settled || cancelled) return;
+          setCaptionsStatus("unknown");
+          done();
+        });
+    });
 
     async function start(
       candidate: Candidate,
       fresh: boolean,
-      forceNoCaptions = false,
+      fallbackFrom: Export | null = null,
     ): Promise<Export | null> {
       await healthReady;
       if (cancelled) return null;
-      const useCaptions = forceNoCaptions ? false : captionsEnabled;
-      const known = fresh
-        ? null
-        : rememberedExport(jobId, candidate.candidate_id);
+      const useCaptions = fallbackFrom ? false : serverCaptionsAvailable;
+      let retrySource = fallbackFrom;
+      const known =
+        fresh || retrySource
+          ? null
+          : rememberedExport(jobId, candidate.candidate_id);
       if (known) {
         try {
           const existing = await client.getExport(known);
-          if (!(
+          if (
             !useCaptions &&
             existing.state === "failed" &&
+            existing.captions &&
             existing.error?.code === "captioning_failed"
-          )) {
+          ) {
+            retrySource = existing;
+          } else {
             return existing;
           }
         } catch (error) {
@@ -193,11 +226,17 @@ export function ResultsScreen() {
         });
         return null;
       }
-      const layout = availability.layouts.includes("center_crop")
+      const defaultLayout = availability.layouts.includes("center_crop")
         ? "center_crop"
         : availability.layouts.find(
             (l): l is Layout => l === "configured_region",
           );
+      const layout =
+        retrySource &&
+        isKnownLayout(retrySource.layout) &&
+        availability.layouts.includes(retrySource.layout)
+          ? retrySource.layout
+          : defaultLayout;
       if (!layout) {
         set(candidate.candidate_id, {
           kind: "unavailable",
@@ -206,9 +245,11 @@ export function ResultsScreen() {
         });
         return null;
       }
+      const startS = retrySource ? retrySource.start_s : candidate.start_s;
+      const endS = retrySource ? retrySource.end_s : candidate.end_s;
       if (
         availability.max_duration_s !== null &&
-        candidate.end_s - candidate.start_s > availability.max_duration_s
+        endS - startS > availability.max_duration_s
       ) {
         set(candidate.candidate_id, {
           kind: "unavailable",
@@ -219,10 +260,10 @@ export function ResultsScreen() {
       const { export: created } = await client.createExport({
         job_id: jobId,
         candidate_id: candidate.candidate_id,
-        start_s: candidate.start_s,
-        end_s: candidate.end_s,
+        start_s: startS,
+        end_s: endS,
         layout,
-        captions: useCaptions,
+        captions: retrySource ? false : useCaptions,
       });
       rememberExport(jobId, candidate.candidate_id, created.export_id);
       return created;
@@ -233,13 +274,13 @@ export function ResultsScreen() {
       let backoff = FIRST_BACKOFF_MS;
       let current: Export | null = null;
       let forceFresh = fresh;
-      let forceNoCaptions = false;
+      let fallbackFrom: Export | null = null;
       let retriedWithoutCaptions = false;
       while (!cancelled) {
         try {
           current =
             current === null
-              ? await start(candidate, forceFresh, forceNoCaptions)
+              ? await start(candidate, forceFresh, fallbackFrom)
               : await client.getExport(current.export_id);
           if (current === null) return;
           failingSince = null;
@@ -251,9 +292,8 @@ export function ResultsScreen() {
             !retriedWithoutCaptions
           ) {
             retriedWithoutCaptions = true;
-            forceNoCaptions = true;
+            fallbackFrom = current;
             forceFresh = true;
-            captionsEnabled = false;
             if (!cancelled) setCaptionsFallback(true);
             current = null;
             continue;
@@ -394,12 +434,12 @@ export function ResultsScreen() {
             {warning.message}
           </p>
         ))}
-        {(captionsAvailable === false || captionsFallback) && (
+        {(captionsStatus === "unavailable" || captionsFallback) && (
           <p
             role="status"
             className="rounded-lg bg-zinc-100 px-4 py-3 text-sm text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-300"
           >
-            {captionsAvailable === false ? (
+            {captionsStatus === "unavailable" ? (
               <>
                 Clips are rendered without captions because faster-whisper
                 isn&apos;t installed on the server. Run{" "}
@@ -409,7 +449,7 @@ export function ResultsScreen() {
                 to enable them.
               </>
             ) : (
-              "Captioning failed on the server, so clips were rendered without captions."
+              "Captioning failed on the server for one or more clips, so they were rendered without captions."
             )}
           </p>
         )}
@@ -539,7 +579,7 @@ export function ResultsScreen() {
           videoId={vod.video_id}
           vodDurationS={vod.duration_s}
           candidates={top}
-          captionsAvailable={captionsAvailable !== false}
+          captionsStatus={captionsStatus}
           onClose={() => setHighlightsOpen(false)}
         />
       )}
