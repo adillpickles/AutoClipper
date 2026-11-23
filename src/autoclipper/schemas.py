@@ -37,6 +37,9 @@ __all__ = [
     "HighlightsSegment",
     "HighlightsVideo",
     "Job",
+    "PreflightCheck",
+    "PreflightReport",
+    "PreflightStatus",
     "PreviewMedia",
     "Progress",
     "ScorerInfo",
@@ -49,6 +52,7 @@ SCHEMA_VERSION: Final = "1.0"
 type State = Literal["queued", "running", "done", "failed"]
 type Layout = Literal["center_crop", "configured_region", "stacked"]
 type Order = Literal["chronological", "rank"]
+type PreflightStatus = Literal["ok", "warn", "fail"]
 
 # api-contract.md § 3.1, case-insensitive; the ID is in group 1 or 2.
 VOD_PATTERN: Final = re.compile(
@@ -252,3 +256,20 @@ class Health(_Response):
     status: Literal["ok"] = "ok"
     schema_version: str = SCHEMA_VERSION
     job_runner: Literal["mock", "pipeline"]
+
+
+class PreflightCheck(_Response):
+    """One local-environment readiness check (§ 9.6)."""
+
+    name: str
+    label: str
+    status: PreflightStatus
+    message: str
+    fix: str | None
+
+
+class PreflightReport(_Response):
+    """``GET /api/v1/preflight`` (§ 9.6)."""
+
+    status: PreflightStatus
+    checks: tuple[PreflightCheck, ...]

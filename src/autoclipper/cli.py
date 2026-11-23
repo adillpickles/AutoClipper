@@ -855,6 +855,31 @@ class JobRunner(StrEnum):
 
 
 @app.command()
+def doctor(
+    jobs: Annotated[
+        JobRunner,
+        typer.Option(
+            help="Check readiness for pipeline (real VODs) or mock (built-in scenarios) jobs."
+        ),
+    ] = JobRunner.PIPELINE,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print the preflight report as JSON."),
+    ] = False,
+) -> None:
+    """Check local tools, optional extras and credentials before running AutoClipper."""
+    from autoclipper.preflight import format_preflight_summary, run_preflight
+
+    report = run_preflight(get_settings(), job_runner=jobs.value)
+    if json_output:
+        typer.echo(report.model_dump_json(indent=2))
+    else:
+        typer.echo(format_preflight_summary(report))
+    if report.status == "fail":
+        raise typer.Exit(ExitCode.USER_ERROR)
+
+
+@app.command()
 def serve(
     host: Annotated[str, typer.Option(help="Address to listen on.")] = "127.0.0.1",
     port: Annotated[int, typer.Option(min=1, max=65535, help="Port to listen on.")] = 8000,
@@ -881,8 +906,11 @@ def serve(
 
     from autoclipper.api.app import create_app
     from autoclipper.api.service import MockService, ensure_sample_media
+    from autoclipper.preflight import format_preflight_summary, run_preflight
 
     settings = get_settings()
+    report = run_preflight(settings, job_runner=jobs.value)
+    typer.echo(format_preflight_summary(report))
     typer.echo("Preparing the mock sample videos (first run takes a few seconds)...")
     try:
         samples = ensure_sample_media(settings.artifacts_dir / "mock-media")
@@ -932,12 +960,6 @@ def serve(
             tools_for=tools_for,
             segment_fetcher=fetch_segment,
         )
-        if not (settings.twitch_client_id and settings.twitch_client_secret):
-            typer.echo(
-                "Note: TWITCH_CLIENT_ID/SECRET are not set; pipeline jobs will fail with "
-                "upstream_unavailable until they are (--jobs mock for the built-in scenarios).",
-                err=True,
-            )
     from autoclipper.export.reframe import load_channel_stacked_layouts
 
     service = MockService(
@@ -948,6 +970,10 @@ def serve(
         channel_layouts=load_channel_stacked_layouts(channels),
         **options,
     )
-    api = create_app(service, cors_origins=settings.cors_origins)
+    api = create_app(
+        service,
+        cors_origins=settings.cors_origins,
+        preflight=lambda: run_preflight(settings, job_runner=jobs.value),
+    )
     typer.echo(f"AutoClipper API ({jobs.value} jobs) on http://{host}:{port} (docs at /docs)")
     uvicorn.run(api, host=host, port=port, log_level="warning")
