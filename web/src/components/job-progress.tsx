@@ -79,7 +79,11 @@ export function JobProgress() {
   }, [jobId, attempt]);
 
   if (view.kind === "loading") {
-    return <h1 className="text-2xl font-semibold tracking-tight">Loading…</h1>;
+    return (
+      <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-primary">
+        Loading…
+      </h1>
+    );
   }
   if (view.kind === "missing") {
     return (
@@ -114,7 +118,7 @@ export function JobProgress() {
         <button
           type="button"
           onClick={retry}
-          className="self-start rounded-lg bg-amber-500 px-5 py-3 font-semibold text-zinc-950 hover:bg-amber-400 focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:outline-none"
+          className="self-start rounded-control bg-accent px-5 py-3 text-sm font-semibold text-accent-ink shadow-card transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-canvas focus-visible:outline-none"
         >
           Retry
         </button>
@@ -163,51 +167,55 @@ function JobStatus({
   }
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6 rounded-panel border border-border-subtle bg-surface-panel p-6 shadow-panel sm:p-8">
       <div className="flex flex-col gap-2">
-        <p className="text-sm font-medium text-zinc-600 dark:text-zinc-400">
+        <p className="inline-flex w-fit items-center gap-2 rounded-pill border border-border-subtle bg-surface-elevated px-3 py-1 font-mono text-xs font-medium text-ink-secondary">
           VOD {job.video_id}
         </p>
         <h1
-          className="text-2xl font-semibold tracking-tight sm:text-3xl"
+          className="font-display text-2xl font-semibold tracking-tight text-ink-primary sm:text-3xl"
           aria-live="polite"
         >
           {headline}
         </h1>
         {job.state === "queued" && (
-          <p className="text-zinc-600 dark:text-zinc-400">
+          <p className="text-sm text-ink-secondary">
             The server starts it as soon as it&apos;s free.
           </p>
         )}
       </div>
 
       {fraction !== null && progress && (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 rounded-card border border-border-subtle bg-surface-elevated p-4">
           <div
             role="progressbar"
             aria-label={progress.message}
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={Math.round(fraction * 100)}
-            className="h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800"
+            className="h-2 overflow-hidden rounded-pill bg-surface-subtle"
           >
             <div
-              className="h-full rounded-full bg-amber-500 transition-[width] duration-500"
+              className="h-full rounded-pill bg-accent transition-[width] duration-500"
               style={{ width: `${Math.round(fraction * 100)}%` }}
             />
           </div>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          <p className="font-mono text-xs text-ink-secondary tabular-nums">
             {Math.round(fraction * 100)}% of this step
           </p>
         </div>
       )}
 
       {knownStages && (
-        <ol role="list" className="flex flex-col gap-3" aria-label={listLabel}>
+        <ol
+          role="list"
+          className="flex flex-col gap-3 border-t border-border-subtle pt-5"
+          aria-label={listLabel}
+        >
           {JOB_STAGES.map((stage, i) => {
             const status = statusOf(i + 1);
             return (
-              <li key={stage.stage} className="flex items-center gap-3">
+              <li key={stage.stage} className="flex items-center gap-3 text-sm">
                 <StepIcon status={status} />
                 <span className={STEP_TEXT[status]}>
                   {stage.message}
@@ -224,7 +232,7 @@ function JobStatus({
           {job.warnings.map((warning) => (
             <li
               key={warning.code}
-              className="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-400/10 dark:text-amber-100"
+              className="rounded-control border border-signal-border bg-signal-soft px-4 py-3 text-sm text-signal-soft-ink"
             >
               {warning.message}
             </li>
@@ -242,15 +250,15 @@ function JobStatus({
       )}
 
       {job.state === "done" && result && (
-        <div className="flex flex-col items-start gap-4">
-          <p className="text-lg" role="status">
+        <div className="flex flex-col items-start gap-4 border-t border-border-subtle pt-5">
+          <p className="text-base font-medium text-ink-primary" role="status">
             {result.candidates.length === 0
               ? "No moments stood out in this VOD."
               : `Found ${result.candidates.length} ${result.candidates.length === 1 ? "moment" : "moments"}.`}
           </p>
           <Link
             href={`/jobs/${job.job_id}/results`}
-            className="rounded-lg bg-amber-500 px-5 py-3 font-semibold text-zinc-950 hover:bg-amber-400 focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:outline-none"
+            className="rounded-control bg-accent px-5 py-3 text-sm font-semibold text-accent-ink shadow-card transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-panel focus-visible:outline-none"
           >
             {result.candidates.length === 0
               ? "See the results"
@@ -263,10 +271,10 @@ function JobStatus({
 }
 
 const STEP_TEXT: Record<StepStatus, string> = {
-  done: "text-zinc-700 dark:text-zinc-300",
-  current: "font-medium",
-  failed: "font-medium text-red-700 dark:text-red-300",
-  pending: "text-zinc-500 dark:text-zinc-400",
+  done: "text-ink-secondary",
+  current: "font-semibold text-ink-primary",
+  failed: "font-semibold text-danger",
+  pending: "text-ink-tertiary",
 };
 
 const STEP_SUFFIX: Record<StepStatus, string> = {
@@ -278,32 +286,35 @@ const STEP_SUFFIX: Record<StepStatus, string> = {
 
 function StepIcon({ status }: { status: StepStatus }) {
   const base =
-    "flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-bold";
+    "flex size-6 shrink-0 items-center justify-center rounded-pill text-xs font-bold";
   if (status === "done") {
     return (
-      <span aria-hidden="true" className={`${base} bg-emerald-600 text-white`}>
+      <span
+        aria-hidden="true"
+        className={`${base} bg-source-both text-source-both-ink`}
+      >
         ✓
       </span>
     );
   }
   if (status === "failed") {
     return (
-      <span aria-hidden="true" className={`${base} bg-red-600 text-white`}>
+      <span aria-hidden="true" className={`${base} bg-danger text-danger-ink`}>
         !
       </span>
     );
   }
   if (status === "current") {
     return (
-      <span aria-hidden="true" className={`${base} border-2 border-amber-500`}>
-        <span className="size-2 animate-pulse rounded-full bg-amber-500" />
+      <span aria-hidden="true" className={`${base} border-2 border-accent`}>
+        <span className="size-2 animate-pulse rounded-pill bg-accent" />
       </span>
     );
   }
   return (
     <span
       aria-hidden="true"
-      className={`${base} border-2 border-zinc-300 dark:border-zinc-700`}
+      className={`${base} border-2 border-border-strong`}
     />
   );
 }
@@ -324,18 +335,18 @@ function Problem({
   return (
     <div
       role={alert ? "alert" : undefined}
-      className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-5 dark:border-red-900 dark:bg-red-950/40"
+      className="flex flex-col gap-3 rounded-card border border-danger-border bg-danger-soft p-5"
     >
       <Heading
-        className={`font-semibold text-red-900 dark:text-red-200 ${Heading === "h1" ? "text-2xl" : ""}`}
+        className={`font-display font-semibold text-danger-soft-ink ${Heading === "h1" ? "text-2xl" : "text-base"}`}
       >
         {title}
       </Heading>
-      <p className="text-red-900 dark:text-red-100">{message}</p>
+      <p className="text-sm text-danger-soft-ink">{message}</p>
       {action && (
         <Link
           href="/"
-          className="self-start rounded-lg bg-white px-4 py-2 font-medium text-zinc-900 ring-1 ring-zinc-300 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none dark:bg-zinc-900 dark:text-zinc-100 dark:ring-zinc-700"
+          className="self-start rounded-control border border-border-strong bg-surface-panel px-4 py-2 text-sm font-medium text-ink-primary transition-colors hover:bg-surface-elevated focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-panel focus-visible:outline-none"
         >
           {action}
         </Link>

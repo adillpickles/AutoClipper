@@ -9,9 +9,7 @@ export default function JobPage() {
       <SiteHeader />
       <main className="flex flex-1 flex-col py-10 sm:py-16">
         <Suspense
-          fallback={
-            <p className="text-zinc-600 dark:text-zinc-400">Loading…</p>
-          }
+          fallback={<p className="text-sm text-ink-secondary">Loading…</p>}
         >
           <JobProgress />
         </Suspense>

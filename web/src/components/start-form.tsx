@@ -58,9 +58,16 @@ export function StartForm() {
   }
 
   return (
-    <form onSubmit={submit} noValidate className="flex flex-col gap-6">
+    <form
+      onSubmit={submit}
+      noValidate
+      className="flex flex-col gap-6 rounded-panel border border-border-subtle bg-surface-panel p-6 shadow-panel sm:p-7"
+    >
       <div className="flex flex-col gap-2">
-        <label htmlFor={vodId} className="font-medium">
+        <label
+          htmlFor={vodId}
+          className="text-sm font-semibold text-ink-primary"
+        >
           Twitch VOD link
         </label>
         <input
@@ -75,32 +82,30 @@ export function StartForm() {
           onChange={(event) => setVod(event.target.value)}
           aria-invalid={vodError !== null}
           aria-describedby={vodError ? `${vodId}-error` : `${vodId}-hint`}
-          className="rounded-lg border border-zinc-300 bg-white px-4 py-3 text-base outline-none focus-visible:ring-2 focus-visible:ring-amber-500 aria-invalid:border-red-600 dark:border-zinc-700 dark:bg-zinc-900 dark:aria-invalid:border-red-400"
+          className="rounded-control border border-border-strong bg-surface-elevated px-4 py-3 text-base text-ink-primary transition-colors placeholder:text-ink-tertiary focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none aria-invalid:border-danger"
         />
         {vodError ? (
           <p
             id={`${vodId}-error`}
             role="alert"
-            className="text-sm text-red-700 dark:text-red-300"
+            className="text-sm font-medium text-danger"
           >
             {vodError}
           </p>
         ) : (
-          <p
-            id={`${vodId}-hint`}
-            className="text-sm text-zinc-600 dark:text-zinc-400"
-          >
+          <p id={`${vodId}-hint`} className="text-sm text-ink-secondary">
             A past broadcast, or just its numeric ID.
           </p>
         )}
       </div>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor={pathId} className="font-medium">
+        <label
+          htmlFor={pathId}
+          className="text-sm font-semibold text-ink-primary"
+        >
           VOD file on this computer{" "}
-          <span className="font-normal text-zinc-500 dark:text-zinc-400">
-            (optional)
-          </span>
+          <span className="font-normal text-ink-tertiary">(optional)</span>
         </label>
         <input
           id={pathId}
@@ -113,21 +118,18 @@ export function StartForm() {
           onChange={(event) => setVideoPath(event.target.value)}
           aria-invalid={pathError !== null}
           aria-describedby={pathError ? `${pathId}-error` : `${pathId}-hint`}
-          className="rounded-lg border border-zinc-300 bg-white px-4 py-3 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-amber-500 aria-invalid:border-red-600 dark:border-zinc-700 dark:bg-zinc-900 dark:aria-invalid:border-red-400"
+          className="rounded-control border border-border-strong bg-surface-elevated px-4 py-3 font-mono text-sm text-ink-primary transition-colors placeholder:text-ink-tertiary focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none aria-invalid:border-danger"
         />
         {pathError ? (
           <p
             id={`${pathId}-error`}
             role="alert"
-            className="text-sm text-red-700 dark:text-red-300"
+            className="text-sm font-medium text-danger"
           >
             {pathError}
           </p>
         ) : (
-          <p
-            id={`${pathId}-hint`}
-            className="text-sm text-zinc-600 dark:text-zinc-400"
-          >
+          <p id={`${pathId}-hint`} className="text-sm text-ink-secondary">
             Already downloaded the VOD? Paste the file&apos;s full path and
             clips are cut from it instead of downloading the video again.
           </p>
@@ -137,7 +139,7 @@ export function StartForm() {
       {formError && (
         <p
           role="alert"
-          className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800 dark:bg-red-950/50 dark:text-red-200"
+          className="rounded-control border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger-soft-ink"
         >
           {formError}
         </p>
@@ -146,7 +148,7 @@ export function StartForm() {
       <button
         type="submit"
         disabled={submitting}
-        className="self-start rounded-lg bg-amber-500 px-5 py-3 font-semibold text-zinc-950 hover:bg-amber-400 focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:ring-offset-2 focus-visible:outline-none disabled:opacity-60 dark:focus-visible:ring-offset-zinc-950"
+        className="self-start rounded-control bg-accent px-5 py-3 text-sm font-semibold text-accent-ink shadow-card transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-panel focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
       >
         {submitting ? "Starting…" : "Find the best moments"}
       </button>
