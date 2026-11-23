@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { looksAbsolute, parseVod } from "@/lib/api/vod";
+import { looksAbsolute, parseVod, vodInputMessage } from "@/lib/api/vod";
 
 describe("parseVod", () => {
   it.each([
@@ -22,6 +22,32 @@ describe("parseVod", () => {
     "https://evil.example/twitch.tv/videos/1",
   ])("rejects %s", (input) => {
     expect(parseVod(input)).toBeNull();
+  });
+});
+
+describe("vodInputMessage", () => {
+  it("accepts a parsed VOD link", () => {
+    expect(vodInputMessage(" twitch.tv/videos/2345678901 ")).toBeNull();
+  });
+
+  it("asks for a link when the field is empty", () => {
+    expect(vodInputMessage("  ")).toMatch(/Paste a Twitch VOD link/);
+  });
+
+  it("explains a channel page, a clip link, and a YouTube link", () => {
+    expect(vodInputMessage("https://www.twitch.tv/somechannel")).toMatch(
+      /channel page/,
+    );
+    expect(vodInputMessage("https://clips.twitch.tv/AbcdEfgh")).toMatch(
+      /clip link/,
+    );
+    expect(vodInputMessage("https://youtu.be/dQw4w9WgXcQ")).toMatch(
+      /Twitch VODs/,
+    );
+  });
+
+  it("falls back to the server's invalid-link message", () => {
+    expect(vodInputMessage("not a link")).toMatch(/isn't a Twitch VOD link/);
   });
 });
 
