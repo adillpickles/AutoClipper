@@ -18,6 +18,48 @@ export const INVALID_VOD_MESSAGE =
 const EMPTY_VOD_MESSAGE =
   "Paste a Twitch VOD link, like twitch.tv/videos/2345678901, or just the numeric ID.";
 
+const CLIP_LINK_MESSAGE =
+  "That's a clip link. Paste the VOD it came from — twitch.tv/videos/<id> — or just the numeric ID.";
+
+const CHANNEL_PAGE_MESSAGE =
+  "That's a channel page. Open a past broadcast and copy its twitch.tv/videos/<id> link, or paste the numeric ID.";
+
+const PLAYER_EMBED_MESSAGE =
+  "That's a Twitch player embed. Paste the VOD link (twitch.tv/videos/<id>) or just the numeric ID.";
+
+const OTHER_PLATFORM_MESSAGE =
+  "AutoClipper reads Twitch VODs. Paste a link like twitch.tv/videos/<id> or just the numeric ID.";
+
+/** Placeholder shapes shown on the start form. They are not a VOD the user chose. */
+export const VOD_FORMAT_EXAMPLES = [
+  "https://www.twitch.tv/videos/2345678901",
+  "twitch.tv/videos/2345678901",
+  "2345678901",
+] as const;
+
+/** True when the field still holds one of `VOD_FORMAT_EXAMPLES`, unchanged. */
+export function isVodFormatExample(text: string): boolean {
+  const trimmed = text.trim();
+  return (VOD_FORMAT_EXAMPLES as readonly string[]).includes(trimmed);
+}
+
+function httpUrl(text: string): URL | null {
+  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(text)
+    ? text
+    : `https://${text}`;
+  try {
+    const url = new URL(candidate);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function siteHost(url: URL): string {
+  return url.hostname.replace(/^www\./i, "").toLowerCase();
+}
+
 /**
  * Instant feedback for the start form. `null` when `parseVod` accepts the text. The server
  * remains authoritative and still answers with `INVALID_VOD_MESSAGE` for anything it rejects.
@@ -26,16 +68,28 @@ export function vodInputMessage(text: string): string | null {
   const trimmed = text.trim();
   if (parseVod(trimmed) !== null) return null;
   if (trimmed === "") return EMPTY_VOD_MESSAGE;
-  if (/clips\.twitch\.tv/i.test(trimmed)) {
-    return "That's a clip link. Paste the VOD it came from — twitch.tv/videos/<id> — or just the numeric ID.";
+
+  const url = httpUrl(trimmed);
+  if (!url) return INVALID_VOD_MESSAGE;
+  const host = siteHost(url);
+  const path = url.pathname;
+
+  if (
+    host === "clips.twitch.tv" ||
+    (host === "twitch.tv" && /\/clip\//i.test(path))
+  ) {
+    return CLIP_LINK_MESSAGE;
   }
   if (
-    /(?:^https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(trimmed)
+    host === "youtube.com" ||
+    host === "youtu.be" ||
+    host.endsWith(".youtube.com")
   ) {
-    return "AutoClipper reads Twitch VODs. Paste a link like twitch.tv/videos/<id> or just the numeric ID.";
+    return OTHER_PLATFORM_MESSAGE;
   }
-  if (/twitch\.tv\//i.test(trimmed) && !/twitch\.tv\/videos\//i.test(trimmed)) {
-    return "That's a channel page. Open a past broadcast and copy its twitch.tv/videos/<id> link, or paste the numeric ID.";
+  if (host === "player.twitch.tv") return PLAYER_EMBED_MESSAGE;
+  if (host === "twitch.tv" || host === "m.twitch.tv") {
+    return CHANNEL_PAGE_MESSAGE;
   }
   return INVALID_VOD_MESSAGE;
 }

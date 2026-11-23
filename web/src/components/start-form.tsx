@@ -3,25 +3,26 @@
 import { useRouter } from "next/navigation";
 import { useId, useState, type FormEvent } from "react";
 
-import { ApiRequestError, getApiClient } from "@/lib/api/client";
-import { looksAbsolute, parseVod, vodInputMessage } from "@/lib/api/vod";
+import { ApiRequestError, getApiClient, isMockMode } from "@/lib/api/client";
+import {
+  isVodFormatExample,
+  looksAbsolute,
+  parseVod,
+  VOD_FORMAT_EXAMPLES,
+  vodInputMessage,
+} from "@/lib/api/vod";
 
 const PATH_MESSAGE =
   "Use the full path of the file, like /Users/you/Videos/vod.mp4 or C:\\Videos\\vod.mp4.";
 
 const VOD_EXAMPLES = [
-  {
-    label: "Full link",
-    value: "https://www.twitch.tv/videos/2345678901",
-  },
-  { label: "Short link", value: "twitch.tv/videos/2345678901" },
-  { label: "VOD ID", value: "2345678901" },
+  { label: "Full link", value: VOD_FORMAT_EXAMPLES[0] },
+  { label: "Short link", value: VOD_FORMAT_EXAMPLES[1] },
+  { label: "VOD ID", value: VOD_FORMAT_EXAMPLES[2] },
 ] as const;
 
-const PATH_EXAMPLES = [
-  { label: "macOS path", value: "/Users/you/Videos/vod.mp4" },
-  { label: "Windows path", value: "C:\\Videos\\vod.mp4" },
-] as const;
+const EXAMPLE_VOD_MESSAGE =
+  "That's an example of the format. Replace 2345678901 with your own VOD before analyzing.";
 
 export function StartForm() {
   const router = useRouter();
@@ -34,11 +35,14 @@ export function StartForm() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const parsedId = parseVod(vod);
+  const exampleOnly = isVodFormatExample(vod) && !isMockMode();
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setFormError(null);
-    const nextVodError = vodInputMessage(vod);
+    const nextVodError = exampleOnly
+      ? EXAMPLE_VOD_MESSAGE
+      : vodInputMessage(vod);
     const badPath = videoPath.trim() !== "" && !looksAbsolute(videoPath);
     setVodError(nextVodError);
     setPathError(badPath ? PATH_MESSAGE : null);
@@ -128,9 +132,11 @@ export function StartForm() {
           </p>
         ) : (
           <p id={`${vodId}-hint`} className="text-sm text-ink-secondary">
-            {parsedId
-              ? `Ready to analyze VOD ${parsedId}. Chat and viewer clips come from this broadcast.`
-              : "A past broadcast: a twitch.tv/videos/… link, or just its numeric ID."}
+            {exampleOnly
+              ? EXAMPLE_VOD_MESSAGE
+              : parsedId
+                ? `Ready to analyze VOD ${parsedId}. Chat and viewer clips come from this broadcast.`
+                : "A past broadcast: a twitch.tv/videos/… link, or just its numeric ID."}
           </p>
         )}
         <div className="flex flex-col gap-2 pt-1">
@@ -138,7 +144,7 @@ export function StartForm() {
             id={`${vodId}-examples`}
             className="text-xs font-medium text-ink-tertiary"
           >
-            Fill the field with an example format
+            Example formats — replace the sample ID with your VOD
           </p>
           <div
             className="flex flex-wrap gap-2"
@@ -203,28 +209,11 @@ export function StartForm() {
             link above is still required for chat and viewer clips.
           </p>
         )}
-        <div
-          className="flex flex-wrap gap-2"
-          role="group"
-          aria-label="Example file paths"
-        >
-          <p id={`${pathId}-examples`} className="sr-only">
-            Example file paths
-          </p>
-          {PATH_EXAMPLES.map((example) => (
-            <button
-              key={example.label}
-              type="button"
-              onClick={() => {
-                setVideoPath(example.value);
-                setPathError(null);
-              }}
-              className="rounded-pill border border-border-subtle bg-surface-elevated px-3 py-1 text-xs font-medium text-ink-secondary transition-colors hover:border-accent-border hover:text-ink-primary focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"
-            >
-              {example.label}
-            </button>
-          ))}
-        </div>
+        <p id={`${pathId}-examples`} className="text-xs text-ink-tertiary">
+          Examples: <code className="font-mono">/Users/you/Videos/vod.mp4</code>
+          {" or "}
+          <code className="font-mono">C:\Videos\vod.mp4</code>
+        </p>
       </div>
 
       {formError && (

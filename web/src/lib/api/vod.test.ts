@@ -34,15 +34,24 @@ describe("vodInputMessage", () => {
     expect(vodInputMessage("  ")).toMatch(/Paste a Twitch VOD link/);
   });
 
-  it("explains a channel page, a clip link, and a YouTube link", () => {
+  it("explains a channel page, a clip link, a player embed, and a YouTube link", () => {
     expect(vodInputMessage("https://www.twitch.tv/somechannel")).toMatch(
       /channel page/,
     );
+    expect(
+      vodInputMessage("https://www.twitch.tv/somechannel/clip/SomeSlug"),
+    ).toMatch(/clip link/);
     expect(vodInputMessage("https://clips.twitch.tv/AbcdEfgh")).toMatch(
       /clip link/,
     );
+    expect(vodInputMessage("https://player.twitch.tv/?video=v12345")).toMatch(
+      /player embed/,
+    );
     expect(vodInputMessage("https://youtu.be/dQw4w9WgXcQ")).toMatch(
       /Twitch VODs/,
+    );
+    expect(vodInputMessage("https://example.com/clips.twitch.tv")).toMatch(
+      /isn't a Twitch VOD link/,
     );
   });
 

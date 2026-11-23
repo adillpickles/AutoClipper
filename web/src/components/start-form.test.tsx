@@ -8,6 +8,7 @@ import { StartForm } from "@/components/start-form";
 const state = vi.hoisted(() => ({
   push: vi.fn(),
   createJob: vi.fn(),
+  mockMode: true,
 }));
 
 vi.mock("next/navigation", () => ({
@@ -21,6 +22,7 @@ vi.mock("@/lib/api/client", async () => {
     );
   return {
     ...actual,
+    isMockMode: () => state.mockMode,
     getApiClient: () => ({ createJob: state.createJob }),
   };
 });
@@ -28,6 +30,7 @@ vi.mock("@/lib/api/client", async () => {
 describe("StartForm", () => {
   afterEach(() => {
     cleanup();
+    state.mockMode = true;
     vi.clearAllMocks();
   });
 
@@ -71,10 +74,33 @@ describe("StartForm", () => {
     expect(screen.getByRole("alert").textContent).toMatch(/full path/);
     expect(state.createJob).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Windows path" }));
     const path = screen.getByLabelText(
       /VOD file on this computer/,
     ) as HTMLInputElement;
-    expect(path.value).toBe("C:\\Videos\\vod.mp4");
+    expect(path.value).toBe("vod.mp4");
+    expect(
+      screen.getByText("/Users/you/Videos/vod.mp4", { selector: "code" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("C:\\Videos\\vod.mp4", { selector: "code" }),
+    ).toBeTruthy();
+  });
+
+  it("refuses to analyze an unchanged example when a real backend is configured", () => {
+    state.mockMode = false;
+    render(<StartForm />);
+
+    fireEvent.click(screen.getByRole("button", { name: "VOD ID" }));
+    expect(
+      screen.getByText(/Replace 2345678901 with your own VOD/),
+    ).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Find the best moments" }),
+    );
+    expect(screen.getByRole("alert").textContent).toMatch(
+      /example of the format/,
+    );
+    expect(state.createJob).not.toHaveBeenCalled();
   });
 });
