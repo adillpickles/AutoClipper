@@ -15,11 +15,14 @@ import type {
   Health,
   HighlightsVideo,
   Job,
+  PreflightReport,
 } from "@/lib/api/types";
 
 export interface ApiClient {
   /** `GET /health`: liveness and whether the backend runs mock or pipeline jobs (§ 9.5). */
   getHealth(): Promise<Health>;
+  /** `GET /preflight`: local setup readiness checks (§ 9.6). */
+  getPreflight(): Promise<PreflightReport>;
   /** `POST /jobs`: `created` is false when a queued or running job for the same input came back. */
   createJob(request: CreateJobRequest): Promise<{ job: Job; created: boolean }>;
   /** `GET /jobs/{job_id}`. */

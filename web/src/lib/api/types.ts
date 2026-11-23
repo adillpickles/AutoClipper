@@ -179,3 +179,18 @@ export interface Health {
   schema_version: string;
   job_runner: "mock" | "pipeline";
 }
+
+export type PreflightStatus = "ok" | "warn" | "fail";
+
+export interface PreflightCheck {
+  name: string; // open enum
+  label: string;
+  status: PreflightStatus;
+  message: string;
+  fix: string | null;
+}
+
+export interface PreflightReport {
+  status: PreflightStatus;
+  checks: PreflightCheck[];
+}

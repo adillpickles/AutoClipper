@@ -1,3 +1,4 @@
+import { PreflightBanner } from "@/components/preflight-banner";
 import { SiteHeader } from "@/components/site-header";
 import { StartForm } from "@/components/start-form";
 
@@ -16,6 +17,7 @@ export default function Home() {
             ready-to-post vertical clips.
           </p>
         </div>
+        <PreflightBanner />
         <StartForm />
       </main>
     </div>
