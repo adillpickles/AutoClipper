@@ -119,6 +119,57 @@ describe("StreamTimeline", () => {
     ).toBe("/jobs/job_1/results/c002");
   });
 
+  it("renders a true-time anchor inside an enlarged hit area for short clips and labels candidate activity", () => {
+    const sixHours = 21600;
+    const lateClip: Candidate = {
+      candidate_id: "c_late",
+      rank: 1,
+      score: 4.1,
+      start_s: 21570,
+      end_s: 21600,
+      source: "both",
+      n_viewer_clips: 2,
+      top_signals: ["chat_msg_rate_z"],
+    };
+
+    render(
+      <StreamTimeline
+        jobId="job_6h"
+        videoId="9000000001"
+        durationS={sixHours}
+        candidates={[lateClip]}
+        selectedId="c_late"
+        onSelect={vi.fn()}
+        clips={{}}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    // Activity strip is explicitly labeled as candidate activity.
+    expect(screen.getByText("Candidate activity")).toBeTruthy();
+    expect(
+      screen.getByRole("img", { name: /Candidate activity/i }),
+    ).toBeTruthy();
+
+    // The clickable button uses the enlarged hit area, while its inner anchor sits at exact start_s.
+    const button = screen.getByRole("button", { name: /^Rank #1/ });
+    expect(button.getAttribute("data-short")).toBe("true");
+    expect(button.getAttribute("data-anchor-left-pct")).toBe("99.86");
+    expect(button.style.left).toBe("90%");
+    expect(button.style.width).toBe("10%");
+
+    const anchor = button.querySelector(
+      '[data-timeline-anchor="true"]',
+    ) as HTMLElement | null;
+    expect(anchor).toBeTruthy();
+    // Anchor left inside the [90%, 100%] hit box is exactly ((99.8611 - 90) / 10) * 100 = 98.611...%
+    const renderedLeftPct = Number.parseFloat(anchor?.style.left ?? "NaN");
+    expect(renderedLeftPct).toBeCloseTo(
+      (((21570 / sixHours) * 100 - 90) / 10) * 100,
+      3,
+    );
+  });
+
   it("resets video error state when switching from a failed preview to another clip", () => {
     const clips: Record<string, ClipExport> = {
       c001: readyClip(OVERLAPPING_CANDIDATES[0]),

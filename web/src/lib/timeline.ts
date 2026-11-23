@@ -3,18 +3,34 @@
 import type { Candidate } from "@/lib/api/types";
 
 /**
- * Minimum horizontal bar width (% of timeline) so short clips stay wide enough to show their
- * rank and stay clickable even on a 320 px viewport (~19 px at 6%).
+ * Minimum horizontal interactive hit-area width (% of timeline) so short clips stay clickable and
+ * fit their rank badge cleanly inside the button even on a 320 px viewport (~25 px at 10%).
+ *
+ * The visual anchor for short clips is drawn at the true start/span (`anchorLeftPct`,
+ * `anchorWidthPct`) inside this hit area so a 30 s clip near the end of a 6 h VOD is never drawn
+ * minutes early.
  */
-export const MIN_MARKER_WIDTH_PCT = 6.0;
+export const MIN_MARKER_WIDTH_PCT = 10.0;
 
 /** Minimum horizontal breathing room (% of timeline) before two markers share a lane. */
 const LANE_GAP_PCT = 1.0;
 
 export interface TimelineMarker {
   candidate: Candidate;
-  leftPct: number;
-  widthPct: number;
+  /** Exact start position on `[0, 100]%` of `durationS` (true VOD time). */
+  anchorLeftPct: number;
+  /** Exact interval span on `[0, 100]%` of `durationS` (true VOD duration). */
+  anchorWidthPct: number;
+  /** Enlarged interactive hit-area left edge (`[0, 100 - hitWidthPct]%`), used for lane packing. */
+  hitLeftPct: number;
+  /** Enlarged interactive hit-area width (`>= MIN_MARKER_WIDTH_PCT` and `<= 100`). */
+  hitWidthPct: number;
+  /** True when the real interval is narrower than the minimum hit area and uses an anchor pin. */
+  isShort: boolean;
+  /** Anchor start offset inside the hit area (`[0, 100]%` of `hitWidthPct`). */
+  anchorOffsetInHitPct: number;
+  /** Anchor span width inside the hit area (`[0, 100]%` of `hitWidthPct`). */
+  anchorSpanInHitPct: number;
   lane: number;
   scoreFraction: number;
 }
@@ -35,8 +51,8 @@ function clamp(value: number, low: number, high: number): number {
 }
 
 /**
- * Place every candidate on `[0, 100]%` of `durationS` and pack overlapping markers into
- * non-overlapping horizontal lanes so every marker stays visible and clickable.
+ * Place every candidate on `[0, 100]%` of `durationS`, keeping its true-time anchor intact while
+ * packing enlarged clickable hit areas into non-overlapping horizontal lanes.
  */
 export function layoutTimelineMarkers(
   candidates: readonly Candidate[],
@@ -58,45 +74,84 @@ export function layoutTimelineMarkers(
   const scale = (score: number) =>
     high > low ? 0.15 + (0.85 * (score - low)) / (high - low) : 1;
 
-  // Sort chronologically for deterministic greedy lane packing; ties go to higher rank.
-  const ordered = [...candidates].sort(
-    (a, b) => a.start_s - b.start_s || a.end_s - b.end_s || a.rank - b.rank,
+  // Compute true-time anchor and enlarged hit-area geometry before lane packing.
+  const positioned = candidates.map((candidate) => {
+    const anchorLeftPct = clamp(
+      (candidate.start_s / safeDuration) * 100,
+      0,
+      100,
+    );
+    const anchorRightPct = clamp(
+      (candidate.end_s / safeDuration) * 100,
+      anchorLeftPct,
+      100,
+    );
+    const anchorWidthPct = anchorRightPct - anchorLeftPct;
+    const isShort = anchorWidthPct < MIN_MARKER_WIDTH_PCT;
+    const hitWidthPct = Math.min(
+      100,
+      Math.max(MIN_MARKER_WIDTH_PCT, anchorWidthPct),
+    );
+    const hitLeftPct = isShort
+      ? clamp(
+          anchorLeftPct + anchorWidthPct / 2 - hitWidthPct / 2,
+          0,
+          100 - hitWidthPct,
+        )
+      : Math.min(anchorLeftPct, 100 - hitWidthPct);
+    const anchorOffsetInHitPct = isShort
+      ? clamp(((anchorLeftPct - hitLeftPct) / hitWidthPct) * 100, 0, 100)
+      : 0;
+    const anchorSpanInHitPct = isShort
+      ? clamp(
+          (anchorWidthPct / hitWidthPct) * 100,
+          0,
+          100 - anchorOffsetInHitPct,
+        )
+      : 100;
+
+    return {
+      candidate,
+      anchorLeftPct,
+      anchorWidthPct,
+      hitLeftPct,
+      hitWidthPct,
+      isShort,
+      anchorOffsetInHitPct,
+      anchorSpanInHitPct,
+      scoreFraction: scale(candidate.score),
+    };
+  });
+
+  // Sort by hit-area left edge so greedy lane packing guarantees non-overlapping lanes.
+  positioned.sort(
+    (a, b) =>
+      a.hitLeftPct - b.hitLeftPct ||
+      a.anchorLeftPct - b.anchorLeftPct ||
+      a.candidate.end_s - b.candidate.end_s ||
+      a.candidate.rank - b.candidate.rank,
   );
 
-  // Track the rightmost visual edge (%) occupied in each lane.
+  // Track the rightmost hit-area edge (%) occupied in each lane.
   const laneEnds: number[] = [];
   const markers: TimelineMarker[] = [];
 
-  for (const candidate of ordered) {
-    const rawLeft = clamp((candidate.start_s / safeDuration) * 100, 0, 100);
-    const rawRight = clamp(
-      (candidate.end_s / safeDuration) * 100,
-      rawLeft,
-      100,
-    );
-    const widthPct = Math.min(
-      100,
-      Math.max(MIN_MARKER_WIDTH_PCT, rawRight - rawLeft),
-    );
-    const leftPct = Math.min(rawLeft, 100 - widthPct);
-    const visualRight = leftPct + widthPct;
+  for (const item of positioned) {
+    const hitRightPct = item.hitLeftPct + item.hitWidthPct;
 
     let lane = laneEnds.findIndex(
-      (laneEnd) => laneEnd + LANE_GAP_PCT <= leftPct,
+      (laneEnd) => laneEnd + LANE_GAP_PCT <= item.hitLeftPct,
     );
     if (lane === -1) {
       lane = laneEnds.length;
-      laneEnds.push(visualRight);
+      laneEnds.push(hitRightPct);
     } else {
-      laneEnds[lane] = visualRight;
+      laneEnds[lane] = hitRightPct;
     }
 
     markers.push({
-      candidate,
-      leftPct,
-      widthPct,
+      ...item,
       lane,
-      scoreFraction: scale(candidate.score),
     });
   }
 
@@ -104,8 +159,9 @@ export function layoutTimelineMarkers(
 }
 
 /**
- * Compute normalized `[0, 1]` activity intensity bins across `[0, durationS]` from candidate
- * intervals and scores, for the timeline heatmap strip.
+ * Compute normalized `[0, 1]` candidate-activity intensity bins across `[0, durationS]` from
+ * selected candidate intervals and scores only (blank bins mean no candidate fell in that span,
+ * not that the stream had zero chat or audio activity).
  */
 export function buildActivityBins(
   candidates: readonly Candidate[],
