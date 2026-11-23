@@ -47,25 +47,57 @@ describe("timeline layout helpers", () => {
       c003: 2,
       c004: 0,
     });
+    for (const marker of layout.markers) {
+      expect(marker.isShort).toBe(false);
+      expect(marker.hitLeftPct).toBeCloseTo(marker.anchorLeftPct);
+      expect(marker.hitWidthPct).toBeCloseTo(marker.anchorWidthPct);
+      expect(marker.anchorOffsetInHitPct).toBe(0);
+      expect(marker.anchorSpanInHitPct).toBe(100);
+    }
   });
 
-  it("enforces minimum clickable marker width and separates visually close short clips", () => {
+  it("keeps short moments anchored at their true time inside an enlarged clickable hit area", () => {
+    const durationS = 21600; // 6-hour VOD
     const items = [
-      candidate("c001", 1, 10, 30, 3.0), // 20s in a 6-hour VOD (~0.09%)
-      candidate("c002", 2, 100, 120, 2.5), // visually within c001's 6% min width -> lane 1
-      candidate("c003", 3, 21580, 21600, 2.0), // right at the VOD's end
+      candidate("c001", 1, 10, 30, 3.0), // 20 s near start (~0.05%)
+      candidate("c002", 2, 100, 120, 2.5), // visually within c001's 6% hit area -> lane 1
+      candidate("c003", 3, 10800, 10830, 2.2), // 30 s right at the 3 h midpoint (50%)
+      candidate("c004", 4, 21570, 21600, 2.0), // 30 s right at the VOD's end (~99.86%)
     ];
 
-    const layout = layoutTimelineMarkers(items, 21600);
+    const layout = layoutTimelineMarkers(items, durationS);
 
     for (const marker of layout.markers) {
-      expect(marker.widthPct).toBeGreaterThanOrEqual(MIN_MARKER_WIDTH_PCT);
-      expect(marker.leftPct).toBeGreaterThanOrEqual(0);
-      expect(marker.leftPct + marker.widthPct).toBeLessThanOrEqual(100);
+      expect(marker.isShort).toBe(true);
+      expect(marker.hitWidthPct).toBeGreaterThanOrEqual(MIN_MARKER_WIDTH_PCT);
+      expect(marker.hitLeftPct).toBeGreaterThanOrEqual(0);
+      expect(marker.hitLeftPct + marker.hitWidthPct).toBeLessThanOrEqual(100);
+      // True anchor always lies inside the hit area.
+      expect(marker.anchorLeftPct).toBeGreaterThanOrEqual(marker.hitLeftPct);
+      expect(marker.anchorLeftPct + marker.anchorWidthPct).toBeLessThanOrEqual(
+        marker.hitLeftPct + marker.hitWidthPct + 1e-9,
+      );
     }
-    expect(layout.markers[0].lane).toBe(0);
-    expect(layout.markers[1].lane).toBe(1);
-    expect(layout.markers[2].lane).toBe(0);
+
+    const byId = Object.fromEntries(
+      layout.markers.map((m) => [m.candidate.candidate_id, m]),
+    );
+
+    // End-of-VOD 30 s moment stays anchored at ~99.86%, not shifted back to 94%.
+    expect(byId.c004.anchorLeftPct).toBeCloseTo((21570 / durationS) * 100, 4);
+    expect(byId.c004.anchorWidthPct).toBeCloseTo((30 / durationS) * 100, 4);
+    expect(byId.c004.hitLeftPct).toBeCloseTo(100 - MIN_MARKER_WIDTH_PCT, 4);
+    expect(byId.c004.anchorOffsetInHitPct).toBeGreaterThan(95);
+
+    // Mid-VOD 30 s moment centers its hit area around 50% and anchors near the middle of the hit box.
+    expect(byId.c003.anchorLeftPct).toBeCloseTo(50, 4);
+    expect(byId.c003.anchorOffsetInHitPct).toBeCloseTo(49.31, 1);
+
+    // Nearby short clips still separate into distinct lanes; distant ones reuse lane 0.
+    expect(byId.c001.lane).toBe(0);
+    expect(byId.c002.lane).toBe(1);
+    expect(byId.c003.lane).toBe(0);
+    expect(byId.c004.lane).toBe(0);
   });
 
   it("handles negative z-scores, aligned tick percentages, and empty lists cleanly", () => {
@@ -92,7 +124,7 @@ describe("timeline layout helpers", () => {
     expect(layout.markers[1].scoreFraction).toBeCloseTo(0.15);
   });
 
-  it("builds activity heatmap bins concentrated over candidate intervals", () => {
+  it("builds candidate activity bins concentrated over candidate intervals", () => {
     const bins = buildActivityBins(
       [candidate("c001", 1, 180, 210, 5.0)],
       360,
