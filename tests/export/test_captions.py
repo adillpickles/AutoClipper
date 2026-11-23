@@ -160,6 +160,39 @@ def test_captions_available_reflects_faster_whisper_and_ffmpeg_subtitles(
     assert captions.captions_available() is True
 
 
+def test_ffmpeg_supports_subtitles_matches_filter_name_not_description(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autoclipper.ffmpeg import CommandResult
+
+    captions.ffmpeg_supports_subtitles.cache_clear()
+    try:
+        monkeypatch.setattr(
+            captions,
+            "run_command",
+            lambda *_args, **_kwargs: CommandResult(
+                0,
+                b" .. ass               V->V       Render ASS subtitles onto input video.\n",
+                b"",
+            ),
+        )
+        assert captions.ffmpeg_supports_subtitles() is False
+
+        captions.ffmpeg_supports_subtitles.cache_clear()
+        monkeypatch.setattr(
+            captions,
+            "run_command",
+            lambda *_args, **_kwargs: CommandResult(
+                0,
+                b" .. subtitles         V->V       Render text subtitles onto input video.\n",
+                b"",
+            ),
+        )
+        assert captions.ffmpeg_supports_subtitles() is True
+    finally:
+        captions.ffmpeg_supports_subtitles.cache_clear()
+
+
 # --- FFmpeg ------------------------------------------------------------------------------------
 
 

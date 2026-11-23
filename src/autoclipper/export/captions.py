@@ -355,7 +355,8 @@ def ffmpeg_supports_subtitles() -> bool:
     except FFmpegError:
         return False
     stdout = result.stdout.decode("utf-8", errors="replace")
-    return re.search(r"\bsubtitles\b", stdout) is not None
+    # Match the filter-name column (e.g. " .. subtitles         V->V ..."), not descriptions.
+    return re.search(r"^\s*[A-Z.]{2,}\s+subtitles\s+", stdout, re.MULTILINE) is not None
 
 
 def captions_available() -> bool:

@@ -303,7 +303,7 @@ export function HighlightsDialog({
                   )}
                   {captionsStatus === "unavailable" && (
                     <span className="ml-1 text-xs text-zinc-500 dark:text-zinc-400">
-                      (needs uv sync --extra captions)
+                      (needs uv sync --extra captions and FFmpeg libass)
                     </span>
                   )}
                 </label>

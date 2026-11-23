@@ -426,6 +426,7 @@ export function ClipEditor() {
       return;
     }
     const runId = ++pollRunRef.current;
+    captionsTouchedRef.current = true;
     const wait = (ms: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -833,8 +834,9 @@ export function ClipEditor() {
             )}
             {captionsStatus === "unavailable" && (
               <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                Unavailable on this server — install with{" "}
-                <code>uv sync --extra captions</code>.
+                Unavailable on this server — requires{" "}
+                <code>uv sync --extra captions</code> and FFmpeg with libass{" "}
+                <code>subtitles</code> support.
               </p>
             )}
           </div>

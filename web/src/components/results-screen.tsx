@@ -89,7 +89,9 @@ export function ResultsScreen() {
   const [captionsStatus, setCaptionsStatus] = useState<
     "checking" | "available" | "unavailable" | "unknown"
   >("checking");
-  const [captionsFallback, setCaptionsFallback] = useState(false);
+  const [captionsFallback, setCaptionsFallback] = useState<
+    "none" | "retrying" | "done"
+  >("none");
 
   useEffect(() => {
     let cancelled = false;
@@ -152,6 +154,7 @@ export function ResultsScreen() {
     // Check `/health` once (bounded by a timeout so a hung health endpoint never blocks
     // automatic exports) so servers without captioning export cleanly without captions.
     let serverCaptionsAvailable = true;
+    let healthUnknown = false;
     const healthReady = new Promise<void>((resolve) => {
       let settled = false;
       const done = () => {
@@ -161,6 +164,7 @@ export function ResultsScreen() {
         resolve();
       };
       const timeout = setTimeout(() => {
+        healthUnknown = true;
         if (!cancelled) setCaptionsStatus("unknown");
         done();
       }, HEALTH_TIMEOUT_MS);
@@ -169,13 +173,20 @@ export function ResultsScreen() {
         .getHealth()
         .then((health) => {
           if (settled || cancelled) return;
-          const available = health.captions_available !== false;
+          if (typeof health.captions_available !== "boolean") {
+            healthUnknown = true;
+            setCaptionsStatus("unknown");
+            done();
+            return;
+          }
+          const available = health.captions_available;
           serverCaptionsAvailable = available;
           setCaptionsStatus(available ? "available" : "unavailable");
           done();
         })
         .catch(() => {
           if (settled || cancelled) return;
+          healthUnknown = true;
           setCaptionsStatus("unknown");
           done();
         });
@@ -287,16 +298,29 @@ export function ResultsScreen() {
           backoff = FIRST_BACKOFF_MS;
           if (
             current.state === "failed" &&
-            current.error?.code === "captioning_failed" &&
             current.captions &&
-            !retriedWithoutCaptions
+            !retriedWithoutCaptions &&
+            (current.error?.code === "captioning_failed" ||
+              (healthUnknown && current.error?.code === "render_failed"))
           ) {
             retriedWithoutCaptions = true;
             fallbackFrom = current;
             forceFresh = true;
-            if (!cancelled) setCaptionsFallback(true);
+            if (!cancelled) {
+              setCaptionsFallback((prev) =>
+                prev === "done" ? "done" : "retrying",
+              );
+            }
             current = null;
             continue;
+          }
+          if (
+            retriedWithoutCaptions &&
+            !current.captions &&
+            current.state === "done" &&
+            !cancelled
+          ) {
+            setCaptionsFallback("done");
           }
           const url = current.download_url
             ? client.resolveUrl(current.download_url)
@@ -434,22 +458,28 @@ export function ResultsScreen() {
             {warning.message}
           </p>
         ))}
-        {(captionsStatus === "unavailable" || captionsFallback) && (
+        {(captionsStatus === "unavailable" || captionsFallback !== "none") && (
           <p
             role="status"
             className="rounded-lg bg-zinc-100 px-4 py-3 text-sm text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-300"
           >
             {captionsStatus === "unavailable" ? (
               <>
-                Clips are rendered without captions because faster-whisper
-                isn&apos;t installed on the server. Run{" "}
+                Clips are rendered without captions because captioning
+                isn&apos;t available on this server. Captions need{" "}
                 <code className="rounded bg-zinc-200 px-1 py-0.5 text-xs dark:bg-zinc-700">
                   uv sync --extra captions
                 </code>{" "}
-                to enable them.
+                and an FFmpeg build with the libass{" "}
+                <code className="rounded bg-zinc-200 px-1 py-0.5 text-xs dark:bg-zinc-700">
+                  subtitles
+                </code>{" "}
+                filter.
               </>
-            ) : (
+            ) : captionsFallback === "done" ? (
               "Captioning failed on the server for one or more clips, so they were rendered without captions."
+            ) : (
+              "Captioning failed on the server for one or more clips; retrying without captions…"
             )}
           </p>
         )}
