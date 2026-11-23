@@ -15,6 +15,7 @@ import type {
   Health,
   HighlightsVideo,
   Job,
+  PreflightReport,
 } from "@/lib/api/types";
 
 const API_PREFIX = "/api/v1";
@@ -90,6 +91,11 @@ export function createHttpClient(
   return {
     async getHealth(): Promise<Health> {
       const { data } = await request<Health>("/health");
+      return data;
+    },
+
+    async getPreflight(): Promise<PreflightReport> {
+      const { data } = await request<PreflightReport>("/preflight");
       return data;
     },
 

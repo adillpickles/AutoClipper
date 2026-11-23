@@ -56,6 +56,33 @@ describe("HTTP API client", () => {
     expect(init?.cache).toBe("no-store");
   });
 
+  it("calls GET /preflight with no-store caching", async () => {
+    const report = {
+      status: "warn",
+      checks: [
+        {
+          name: "captions",
+          label: "Captions extra",
+          status: "warn",
+          message: "faster-whisper is not installed.",
+          fix: "uv sync --extra captions",
+        },
+      ],
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse(report));
+    const client = createHttpClient("http://127.0.0.1:8000", fetchMock);
+
+    const preflight = await client.getPreflight();
+
+    expect(preflight).toEqual(report);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8000/api/v1/preflight");
+    expect(new Headers(init?.headers).has("Content-Type")).toBe(false);
+    expect(init?.cache).toBe("no-store");
+  });
+
   it("distinguishes 201 created from 200 deduplicated on POST endpoints", async () => {
     const job = { job_id: "job_1", video_id: "9000000001", state: "queued" };
     const exp = { export_id: "exp_1", state: "queued" };

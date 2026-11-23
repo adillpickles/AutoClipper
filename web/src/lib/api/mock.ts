@@ -636,6 +636,13 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       };
     },
 
+    async getPreflight() {
+      return {
+        status: "ok" as const,
+        checks: [],
+      };
+    },
+
     async createJob(request: CreateJobRequest) {
       const videoId = parseVod(request.vod);
       if (videoId === null) {

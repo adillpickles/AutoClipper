@@ -95,6 +95,14 @@ describe("jobAt", () => {
 describe("createMockClient", () => {
   beforeEach(() => resetMockStore());
 
+  it("reports ok preflight in browser mock mode", async () => {
+    const client = createMockClient(() => T0);
+    await expect(client.getPreflight()).resolves.toEqual({
+      status: "ok",
+      checks: [],
+    });
+  });
+
   it("runs a job to its scenario's result", async () => {
     let now = T0;
     const client = createMockClient(() => now);
