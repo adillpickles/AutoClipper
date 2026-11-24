@@ -1,9 +1,12 @@
 "use client";
 
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { Button, ButtonLink } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { JobProgressSkeleton } from "@/components/ui/skeleton";
 import {
   ApiRequestError,
   getApiClient,
@@ -79,19 +82,20 @@ export function JobProgress() {
   }, [jobId, attempt]);
 
   if (view.kind === "loading") {
-    return (
-      <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-primary">
-        Loading…
-      </h1>
-    );
+    return <JobProgressSkeleton heading="h1" />;
   }
   if (view.kind === "missing") {
     return (
-      <Problem
+      <ErrorState
         heading="h1"
+        tone="signal"
         title="This analysis no longer exists"
         message={view.message}
-        action="Start again"
+        primaryAction={
+          <ButtonLink href="/" variant="primary" size="lg">
+            Start a new analysis
+          </ButtonLink>
+        }
       />
     );
   }
@@ -101,28 +105,30 @@ export function JobProgress() {
       setAttempt((n) => n + 1);
     };
     return (
-      <div className="flex flex-col gap-4">
-        <Problem
-          heading="h1"
-          title={
-            view.kind === "offline"
-              ? "Can't reach the server"
-              : "Something went wrong"
-          }
-          message={
-            view.kind === "offline"
-              ? "Check that AutoClipper is running, then try again."
-              : view.message
-          }
-        />
-        <button
-          type="button"
-          onClick={retry}
-          className="self-start rounded-control bg-accent px-5 py-3 text-sm font-semibold text-accent-ink shadow-card transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-canvas focus-visible:outline-none"
-        >
-          Retry
-        </button>
-      </div>
+      <ErrorState
+        heading="h1"
+        alert
+        title={
+          view.kind === "offline"
+            ? "Can't reach the server"
+            : "Something went wrong"
+        }
+        message={
+          view.kind === "offline"
+            ? "Check that AutoClipper is running, then try again."
+            : view.message
+        }
+        primaryAction={
+          <Button variant="primary" size="lg" onClick={retry}>
+            Retry
+          </Button>
+        }
+        secondaryAction={
+          <ButtonLink href="/" variant="secondary" size="lg">
+            Start another VOD
+          </ButtonLink>
+        }
+      />
     );
   }
   return <JobStatus job={view.job} result={view.result} />;
@@ -167,13 +173,13 @@ function JobStatus({
   }
 
   return (
-    <div className="flex flex-col gap-6 rounded-panel border border-border-subtle bg-surface-panel p-6 shadow-panel sm:p-8">
+    <div className="flex flex-col gap-6 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-panel sm:p-8">
       <div className="flex flex-col gap-2">
-        <p className="inline-flex w-fit items-center gap-2 rounded-pill border border-border-subtle bg-surface-elevated px-3 py-1 font-mono text-xs font-medium text-ink-secondary">
+        <p className="inline-flex w-fit max-w-full items-center gap-2 rounded-pill border border-border-subtle bg-surface-elevated px-3 py-1 font-mono text-xs font-medium break-all text-ink-secondary">
           VOD {job.video_id}
         </p>
         <h1
-          className="font-display text-2xl font-semibold tracking-tight text-ink-primary sm:text-3xl"
+          className="font-display text-2xl font-semibold tracking-tight text-balance text-ink-primary sm:text-3xl"
           aria-live="polite"
         >
           {headline}
@@ -215,9 +221,13 @@ function JobStatus({
           {JOB_STAGES.map((stage, i) => {
             const status = statusOf(i + 1);
             return (
-              <li key={stage.stage} className="flex items-center gap-3 text-sm">
+              <li
+                key={stage.stage}
+                aria-current={status === "current" ? "step" : undefined}
+                className="flex items-center gap-3 text-sm"
+              >
                 <StepIcon status={status} />
-                <span className={STEP_TEXT[status]}>
+                <span className={`min-w-0 ${STEP_TEXT[status]}`}>
                   {stage.message}
                   <span className="sr-only">{STEP_SUFFIX[status]}</span>
                 </span>
@@ -228,7 +238,11 @@ function JobStatus({
       )}
 
       {job.warnings.length > 0 && (
-        <ul role="list" className="flex flex-col gap-2">
+        <ul
+          role="list"
+          aria-label="Analysis warnings"
+          className="flex flex-col gap-2"
+        >
           {job.warnings.map((warning) => (
             <li
               key={warning.code}
@@ -241,31 +255,66 @@ function JobStatus({
       )}
 
       {job.state === "failed" && job.error && (
-        <Problem
+        <ErrorState
+          heading="h2"
+          alert
           title="What happened"
           message={job.error.message}
-          action="Try another VOD"
-          alert
+          primaryAction={
+            <ButtonLink href="/" variant="primary">
+              Try another VOD
+            </ButtonLink>
+          }
         />
       )}
 
-      {job.state === "done" && result && (
-        <div className="flex flex-col items-start gap-4 border-t border-border-subtle pt-5">
-          <p className="text-base font-medium text-ink-primary" role="status">
-            {result.candidates.length === 0
-              ? "No moments stood out in this VOD."
-              : `Found ${result.candidates.length} ${result.candidates.length === 1 ? "moment" : "moments"}.`}
-          </p>
-          <Link
-            href={`/jobs/${job.job_id}/results`}
-            className="rounded-control bg-accent px-5 py-3 text-sm font-semibold text-accent-ink shadow-card transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-panel focus-visible:outline-none"
-          >
-            {result.candidates.length === 0
-              ? "See the results"
-              : "See the clips"}
-          </Link>
-        </div>
-      )}
+      {job.state === "done" &&
+        result &&
+        (result.candidates.length === 0 ? (
+          <div className="border-t border-border-subtle pt-5">
+            <EmptyState
+              heading="h2"
+              title="No moments stood out"
+              description={
+                result.warnings.length > 0
+                  ? "Nothing could be ranked from the signals that were available for this VOD."
+                  : "Chat and audio stayed steady through this VOD, so there's nothing to rank."
+              }
+              action={
+                <ButtonLink href="/" variant="primary">
+                  Try another VOD
+                </ButtonLink>
+              }
+              secondaryAction={
+                <ButtonLink
+                  href={`/jobs/${job.job_id}/results`}
+                  variant="secondary"
+                >
+                  See the results
+                </ButtonLink>
+              }
+            />
+          </div>
+        ) : (
+          <div className="flex flex-col items-start gap-4 border-t border-border-subtle pt-5">
+            <p className="text-base font-medium text-ink-primary" role="status">
+              Found {result.candidates.length}{" "}
+              {result.candidates.length === 1 ? "moment" : "moments"}.
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <ButtonLink
+                href={`/jobs/${job.job_id}/results`}
+                variant="primary"
+                size="lg"
+              >
+                See the clips
+              </ButtonLink>
+              <ButtonLink href="/" variant="secondary" size="lg">
+                Analyze another VOD
+              </ButtonLink>
+            </div>
+          </div>
+        ))}
     </div>
   );
 }
@@ -307,7 +356,7 @@ function StepIcon({ status }: { status: StepStatus }) {
   if (status === "current") {
     return (
       <span aria-hidden="true" className={`${base} border-2 border-accent`}>
-        <span className="size-2 animate-pulse rounded-pill bg-accent" />
+        <span className="size-2 rounded-pill bg-accent motion-safe:animate-pulse" />
       </span>
     );
   }
@@ -316,41 +365,5 @@ function StepIcon({ status }: { status: StepStatus }) {
       aria-hidden="true"
       className={`${base} border-2 border-border-strong`}
     />
-  );
-}
-
-function Problem({
-  title,
-  message,
-  action,
-  heading: Heading = "h2",
-  alert = false,
-}: {
-  title: string;
-  message: string;
-  action?: string;
-  heading?: "h1" | "h2";
-  alert?: boolean;
-}) {
-  return (
-    <div
-      role={alert ? "alert" : undefined}
-      className="flex flex-col gap-3 rounded-card border border-danger-border bg-danger-soft p-5"
-    >
-      <Heading
-        className={`font-display font-semibold text-danger-soft-ink ${Heading === "h1" ? "text-2xl" : "text-base"}`}
-      >
-        {title}
-      </Heading>
-      <p className="text-sm text-danger-soft-ink">{message}</p>
-      {action && (
-        <Link
-          href="/"
-          className="self-start rounded-control border border-border-strong bg-surface-panel px-4 py-2 text-sm font-medium text-ink-primary transition-colors hover:bg-surface-elevated focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-panel focus-visible:outline-none"
-        >
-          {action}
-        </Link>
-      )}
-    </div>
   );
 }

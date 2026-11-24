@@ -28,14 +28,15 @@ export function SiteHeader() {
   }, [browserMock]);
 
   return (
-    <header className="flex items-center justify-between gap-4 border-b border-border-subtle py-5">
+    <header className="flex items-center justify-between gap-3 border-b border-border-subtle py-4 sm:gap-4 sm:py-5">
       <Link
         href="/"
-        className="group inline-flex items-center gap-2.5 rounded-control font-display text-lg font-bold tracking-tight text-ink-primary transition-colors hover:text-accent focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-canvas focus-visible:outline-none"
+        aria-label="AutoClipper home"
+        className="group inline-flex min-h-10 min-w-0 items-center gap-2.5 rounded-control font-display text-lg font-bold tracking-tight text-ink-primary transition-colors hover:text-accent focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-canvas focus-visible:outline-none"
       >
         <span
           aria-hidden="true"
-          className="flex size-8 items-center justify-center rounded-control bg-accent text-accent-ink shadow-card transition-transform group-hover:scale-[1.03]"
+          className="flex size-8 shrink-0 items-center justify-center rounded-control bg-accent text-accent-ink shadow-card transition-transform motion-safe:group-hover:scale-[1.03]"
         >
           <svg
             viewBox="0 0 24 24"
@@ -54,10 +55,10 @@ export function SiteHeader() {
             />
           </svg>
         </span>
-        <span>AutoClipper</span>
+        <span className="truncate">AutoClipper</span>
       </Link>
       {badge === "mock" && (
-        <span className="inline-flex items-center gap-1.5 rounded-pill border border-signal-border bg-signal-soft px-3 py-1 font-mono text-xs font-medium text-signal-soft-ink">
+        <span className="inline-flex shrink-0 items-center gap-1.5 rounded-pill border border-signal-border bg-signal-soft px-3 py-1 font-mono text-xs font-medium text-signal-soft-ink">
           <span
             aria-hidden="true"
             className="size-1.5 rounded-full bg-signal"
