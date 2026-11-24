@@ -114,6 +114,12 @@ class Settings(BaseSettings):
             the ``stacked`` vertical layout (#68), as ``x,y,width,height`` fractions (0-1). None
             means no default facecam region is configured (channel presets in
             ``configs/channels.yaml`` still apply).
+        audio_events_enabled: ``AUTOCLIPPER_AUDIO_EVENTS``: opt-in toggle for Phase 2 pretrained
+            audio-event features (``audio_evt_*``, #63). Off (False) by default; requires
+            ``uv sync --extra audio-events``.
+        audio_events_top_k: ``AUTOCLIPPER_AUDIO_EVENTS_TOP_K``: default maximum number of
+            top-scoring windows evaluated when running audio-event detection on a scored subset
+            (defaults to 100 so a laptop CPU can handle multi-hour VODs).
 
     Both directories are absolute. A relative value, including the defaults, is taken relative to
     the working directory at the time the settings are loaded (the directory ``.env`` is read
@@ -165,6 +171,10 @@ class Settings(BaseSettings):
     )
     export_facecam_region: Annotated[tuple[float, float, float, float] | None, NoDecode] = Field(
         default=None, validation_alias="AUTOCLIPPER_EXPORT_FACECAM_REGION"
+    )
+    audio_events_enabled: bool = Field(default=False, validation_alias="AUTOCLIPPER_AUDIO_EVENTS")
+    audio_events_top_k: int = Field(
+        default=100, ge=1, validation_alias="AUTOCLIPPER_AUDIO_EVENTS_TOP_K"
     )
 
     @field_validator("twitch_client_id", "twitch_client_secret", "chat_hash_salt", mode="before")

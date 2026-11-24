@@ -977,3 +977,122 @@ def serve(
     )
     typer.echo(f"AutoClipper API ({jobs.value} jobs) on http://{host}:{port} (docs at /docs)")
     uvicorn.run(api, host=host, port=port, log_level="warning")
+
+
+@app.command(name="audio-events")
+def audio_events(
+    wav: Annotated[
+        Path,
+        typer.Argument(help="Normalized 16 kHz mono 16-bit WAV for one VOD."),
+    ],
+    windows: Annotated[
+        Path,
+        typer.Option(help="Parquet file with the VOD's windows table.", show_default=False),
+    ],
+    scores: Annotated[
+        Path | None,
+        typer.Option(
+            help="Optional Parquet file with window_id and score columns to score only the top "
+            "windows.",
+            show_default=False,
+        ),
+    ] = None,
+    top_k: Annotated[
+        int | None,
+        typer.Option(
+            min=1,
+            help="Number of top-scoring windows to run when --scores is given "
+            "(default: AUTOCLIPPER_AUDIO_EVENTS_TOP_K, 100).",
+            show_default=False,
+        ),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Where to write the Parquet table. Default: <artifacts dir>/features/"
+            "<video_id>_audio_events.parquet.",
+            show_default=False,
+        ),
+    ] = None,
+    cache_dir: Annotated[
+        Path | None,
+        typer.Option(
+            help="Directory for cached YAMNet ONNX weights. Default: <artifacts dir>/cache/"
+            "audio_events.",
+            show_default=False,
+        ),
+    ] = None,
+    force: Annotated[bool, typer.Option(help="Replace an existing output Parquet file.")] = False,
+) -> None:
+    """Extract opt-in YAMNet audio-event probabilities (audio_evt_*) per window."""
+    import polars as pl
+
+    from autoclipper.features.audio import AudioFormatError
+    from autoclipper.features.audio_events import (
+        AUDIO_EVENTS_FEATURE_VERSION,
+        FEATURE_COLUMNS,
+        AudioEventsError,
+        compute_audio_event_features,
+    )
+
+    if top_k is not None and scores is None:
+        typer.echo("Error: --top-k requires --scores", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    if not wav.is_file():
+        typer.echo(f"Error: WAV file not found: {wav}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    if not windows.is_file():
+        typer.echo(f"Error: windows Parquet not found: {windows}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    if scores is not None and not scores.is_file():
+        typer.echo(f"Error: scores Parquet not found: {scores}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+
+    settings = get_settings()
+    try:
+        windows_df = pl.read_parquet(windows)
+        scores_df = pl.read_parquet(scores) if scores is not None else None
+    except Exception as exc:
+        typer.echo(f"Error: can't read input Parquet: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+
+    video_id = (
+        str(windows_df["video_id"][0])
+        if "video_id" in windows_df.columns and windows_df.height > 0
+        else wav.stem
+    )
+    target = out or settings.artifacts_dir / "features" / f"{video_id}_audio_events.parquet"
+    if target.exists() and not force:
+        typer.echo(f"Error: {target} exists; pass --force to replace it", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+
+    effective_top_k = (
+        (top_k if top_k is not None else settings.audio_events_top_k)
+        if scores_df is not None
+        else None
+    )
+    resolved_cache = (
+        cache_dir if cache_dir is not None else settings.artifacts_dir / "cache" / "audio_events"
+    )
+    try:
+        result = compute_audio_event_features(
+            windows_df,
+            wav,
+            scores=scores_df,
+            top_k=effective_top_k,
+            cache_dir=resolved_cache,
+        )
+    except (ValueError, AudioFormatError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    except AudioEventsError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    result.write_parquet(target)
+    scored = result.height - result[FEATURE_COLUMNS[0]].null_count() if result.height > 0 else 0
+    typer.echo(
+        f"Wrote {target} ({scored} of {result.height} windows scored, "
+        f"feature_version={AUDIO_EVENTS_FEATURE_VERSION})"
+    )
