@@ -115,11 +115,16 @@ class InvalidHighlightsBoundsError(ExportError, ValueError):
 
 @dataclass(frozen=True, slots=True)
 class Segment:
-    """One moment of the video: a trimmed interval and the candidate it came from."""
+    """One moment of the video: a trimmed interval and the candidate it came from.
+
+    When `source` is set, this segment is cut (and captioned) from that file instead of
+    `HighlightsRequest.source`, with `start_s`/`end_s` in that file's timeline.
+    """
 
     candidate_id: str
     start_s: float
     end_s: float
+    source: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,7 +132,8 @@ class HighlightsRequest:
     """What to render.
 
     Attributes:
-        source: The VOD's video file; it must start at VOD time 0 (times are file times).
+        source: Default video file for segments whose `Segment.source` is None (times are
+            file times in that source).
         segments: The resolved segments, in the order they appear in the video.
         output: Where to write the MP4. Its directory is created if needed.
         order: As resolved, recorded in the result.
@@ -284,7 +290,8 @@ def render_highlights(
         runner: Executes FFmpeg and FFprobe. Defaults to `run_subprocess`; tests pass a fake.
 
     Raises:
-        FileNotFoundError: `request.source` isn't a file.
+        FileNotFoundError: An effective segment source file (`segment.source or request.source`)
+            isn't a file.
         FileExistsError: `request.output` exists and `request.overwrite` is False.
         InvalidHighlightsBoundsError: No segments, a segment longer than
             `MAX_SEGMENT_DURATION_S`, a total longer than `MAX_TOTAL_DURATION_S`, or a
@@ -298,12 +305,14 @@ def render_highlights(
     encode = EncodeSettings() if settings is None else settings
     output = request.output.absolute()
     _check_bounds(request.segments)
-    if not request.source.is_file():
-        raise FileNotFoundError(f"video file not found: {request.source}")
-    if output.resolve() == request.source.resolve():
-        # Overwriting the source with the highlights would destroy the VOD (the clip
-        # exporter guards the same way, `UnsupportedSourceError`).
-        raise UnsupportedSourceError(f"the output path is the source file: {output}")
+    sources = {segment.source or request.source for segment in request.segments}
+    for source in sources:
+        if not source.is_file():
+            raise FileNotFoundError(f"video file not found: {source}")
+        if output.resolve() == source.resolve():
+            # Overwriting the source with the highlights would destroy the VOD (the clip
+            # exporter guards the same way, `UnsupportedSourceError`).
+            raise UnsupportedSourceError(f"the output path is the source file: {output}")
     if output.exists() and not request.overwrite:
         raise FileExistsError(f"highlights output already exists (pass overwrite): {output}")
 
@@ -326,17 +335,22 @@ def render_highlights(
             transcriber = transcriber_for(get_settings().whisper_model)
     with tempfile.TemporaryDirectory(prefix="autoclipper-highlights-") as work_name:
         work = Path(work_name)
-        source_probe = _probe_source_once(request.source, runner=runner)
+        source_probes: dict[Path, _SourceProbe | None] = {}
         pieces: list[Path] = []
         planned_s = 0.0
-        for index in range(len(request.segments)):
-            if source_probe is not None and file_key(request.source) != source_probe.key:
-                source_probe = _probe_source_once(request.source, runner=runner)
+        for index, segment in enumerate(request.segments):
+            seg_source = segment.source or request.source
+            cached_probe = source_probes.get(seg_source)
+            if seg_source not in source_probes or (
+                cached_probe is not None and file_key(seg_source) != cached_probe.key
+            ):
+                cached_probe = _probe_source_once(seg_source, runner=runner)
+                source_probes[seg_source] = cached_probe
             piece, duration_s = _render_segment(
                 request,
                 index,
                 work,
-                source_probe=source_probe,
+                source_probe=cached_probe,
                 transcriber=transcriber,
                 settings=encode,
                 runner=runner,
@@ -486,14 +500,15 @@ def _render_segment(
     """
     n = len(request.segments)
     segment = request.segments[index]
+    source = segment.source or request.source
     interval = Interval(segment.start_s, segment.end_s)
     piece = work_dir / f"segment-{index:03d}.mp4"
     # Times are on the timeline analysis uses. For a source without resets, `source_probe`
     # already holds its metadata and covered span; for a reset source, cut from a corrected copy.
     window_ctx = (
-        contextlib.nullcontext(Window(request.source, 0.0))
+        contextlib.nullcontext(Window(source, 0.0))
         if source_probe is not None
-        else timeline_window(request.source, interval, runner=runner)
+        else timeline_window(source, interval, runner=runner)
     )
     with window_ctx as window:
         local = window.local(interval)
@@ -507,7 +522,7 @@ def _render_segment(
         else:
             info, source_times = probe_media_and_times(window.path, runner=runner)
             if not info.video_streams:
-                raise UnsupportedSourceError(f"{request.source} has no video stream")
+                raise UnsupportedSourceError(f"{source} has no video stream")
             video = info.video_streams[0]
             audio = info.audio_streams[0] if info.audio_streams else None
             used_streams = [video.index] if audio is None else [video.index, audio.index]
@@ -562,7 +577,7 @@ def _render_segment(
             # instead of staying bright over the black transition. A segment without audio
             # has no speech to caption, like the clip captioner.
             lines = caption_lines_for(
-                request.source,
+                source,
                 actual,
                 transcriber,
                 work_dir,

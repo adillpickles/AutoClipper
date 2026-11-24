@@ -2177,6 +2177,228 @@ def test_a_highlights_video_fetches_one_span_and_shifts_all_segments(
     assert video_done["state"] == "done", video_done["error"]
 
 
+def test_highlights_fetches_per_moment_segments_and_merges_overlapping_spans(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """Highlights fetch separate segments for distant moments instead of downloading the whole
+    span between the first and last moment, while merging overlapping padded spans and keeping
+    the requested segment order."""
+    video = make_test_media("vod.mp4", duration_s=20.0)
+    fetcher = FakeSegmentFetcher(video, tmp_path / "raw" / "video")
+    renderer = FakeHighlightsRenderer()
+    client, _ = segment_client(make_client, tmp_path, fetcher, highlights_render=renderer)
+    job = done_job(client)
+
+    # c003 (40-62 -> span 10-92) and c001 (118-148 -> span 88-178) overlap -> one fetch 10-178.
+    # c002 (251.5-276.5 -> span 221.5-306.5) is separate -> its own fetch 221.5-306.5.
+    # Rank order puts c001, c002, c003 to confirm ordering is preserved across merged groups.
+    created = client.post(
+        f"{API}/highlights",
+        json={
+            "job_id": job["job_id"],
+            "segments": [
+                {"candidate_id": "c001", "start_s": 118.0, "end_s": 148.0},
+                {"candidate_id": "c002", "start_s": 251.5, "end_s": 276.5},
+                {"candidate_id": "c003", "start_s": 40.0, "end_s": 62.0},
+            ],
+            "order": "rank",
+        },
+    )
+
+    assert created.status_code == 201
+    assert fetcher.calls == [
+        ("9000000001", 10.0, 178.0),
+        ("9000000001", 221.5, 306.5),
+    ]
+    (request,) = renderer.requests
+    merged_file = fetcher.output_dir / "9000000001" / "segment-10-178.mp4"
+    distant_file = fetcher.output_dir / "9000000001" / "segment-221.5-306.5.mp4"
+    assert [(s.candidate_id, s.start_s, s.end_s, s.source) for s in request.segments] == [
+        ("c001", 108.0, 138.0, merged_file),
+        ("c002", 30.0, 55.0, distant_file),
+        ("c003", 30.0, 52.0, merged_file),
+    ]
+    done = client.get(f"{API}/highlights/{created.json()['highlights_id']}").json()
+    assert done["state"] == "done", done["error"]
+
+
+def test_highlights_reuses_ready_segments_and_releases_leases_on_failure(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """Highlights reuse already-downloaded candidate segments without re-fetching, and release
+    every acquired lease if a later segment fetch fails."""
+    from autoclipper.ingest.media import DownloadNetworkError
+
+    video = make_test_media("vod.mp4", duration_s=20.0)
+    fetcher = FakeSegmentFetcher(video, tmp_path / "raw" / "video")
+    renderer = FakeHighlightsRenderer()
+    client, service = segment_client(make_client, tmp_path, fetcher, highlights_render=renderer)
+    job = done_job(client)
+
+    # Preview c001 first so its segment (88-178) is already ready in service state.
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["status"] == "available"
+    assert len(fetcher.calls) == 1
+
+    # Highlights with c001 + c002 fetches only c002 (221.5-306.5), reusing c001's ready file.
+    created = client.post(
+        f"{API}/highlights",
+        json={
+            "job_id": job["job_id"],
+            "segments": [
+                {"candidate_id": "c001", "start_s": 118.0, "end_s": 148.0},
+                {"candidate_id": "c002", "start_s": 251.5, "end_s": 276.5},
+            ],
+            "order": "chronological",
+        },
+    )
+    assert created.status_code == 201
+    assert fetcher.calls == [
+        ("9000000001", 88.0, 178.0),
+        ("9000000001", 221.5, 306.5),
+    ]
+    (request,) = renderer.requests
+    assert request.segments[0].source == fetcher.output_dir / "9000000001" / "segment-88-178.mp4"
+    assert request.segments[1].source == (
+        fetcher.output_dir / "9000000001" / "segment-221.5-306.5.mp4"
+    )
+    assert not service._active_segment_paths
+
+    # If a later fetch fails, the lease acquired on the reused c001 segment is still released.
+    fetcher.error = DownloadNetworkError("9000000001", "connection reset")
+    failed_req = client.post(
+        f"{API}/highlights",
+        json={
+            "job_id": job["job_id"],
+            "segments": [
+                {"candidate_id": "c001", "start_s": 118.0, "end_s": 148.0},
+                {"candidate_id": "c003", "start_s": 40.0, "end_s": 62.0},
+            ],
+            "order": "chronological",
+        },
+    )
+    assert failed_req.status_code == 201
+    failed = client.get(f"{API}/highlights/{failed_req.json()['highlights_id']}").json()
+    assert failed["state"] == "failed"
+    assert failed["error"]["details"] == {"reason": "fetch_failed"}
+    assert not service._active_segment_paths
+
+
+def test_highlights_refetches_deleted_cached_segment(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """If a previously downloaded segment is deleted from disk while the server runs,
+    highlights skip the missing path and re-fetch instead of failing with local_file_missing."""
+    video = make_test_media("vod.mp4", duration_s=20.0)
+    raw_dir = tmp_path / "raw" / "video"
+    fetcher = FakeSegmentFetcher(video, raw_dir)
+    renderer = FakeHighlightsRenderer()
+    client, _ = segment_client(make_client, tmp_path, fetcher, highlights_render=renderer)
+    job = done_job(client)
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["status"] == "available"
+    cached_file = raw_dir / "9000000001" / "segment-88-178.mp4"
+    cached_file.unlink()
+
+    created = client.post(
+        f"{API}/highlights",
+        json={
+            "job_id": job["job_id"],
+            "segments": [{"candidate_id": "c001", "start_s": 118.0, "end_s": 148.0}],
+            "order": "chronological",
+        },
+    )
+    assert created.status_code == 201
+    done = client.get(f"{API}/highlights/{created.json()['highlights_id']}").json()
+    assert done["state"] == "done", done["error"]
+    assert len(fetcher.calls) == 2
+    assert cached_file.is_file()
+
+
+@pytest.mark.ffmpeg
+def test_highlights_skips_cached_segment_when_audio_ends_before_trim(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """When a cached segment's audio stops before its video (and before the requested trim),
+    highlights fetch a fresh padded span instead of failing inside render_highlights."""
+    short_audio = tmp_path / "short-audio.mp4"
+    run_command(
+        ffmpeg_command(
+            "-y",
+            *("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=5"),
+            *("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=4.2"),
+            *("-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac"),
+            short_audio,
+        ),
+        timeout_s=120.0,
+    )
+    full_audio = make_test_media("full.mp4", duration_s=10.0)
+    raw_dir = tmp_path / "raw" / "video"
+    base = _scenario_result("9000000001")
+    result = base.model_copy(
+        update={
+            "vod": base.vod.model_copy(update={"duration_s": 100.0}),
+            "candidates": (base.candidates[0].model_copy(update={"start_s": 1.0, "end_s": 3.5}),),
+        }
+    )
+
+    calls: list[tuple[str, float, float]] = []
+
+    def fetcher(video_id: str, begin_s: float, end_s: float, /) -> VideoSegment:
+        calls.append((video_id, begin_s, end_s))
+        directory = raw_dir / video_id
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"segment-{round(begin_s)}-{round(end_s)}.mp4"
+        if len(calls) == 1:
+            shutil.copyfile(short_audio, path)
+            return VideoSegment(path, 0.0, probe(path).duration_s)
+        shutil.copyfile(full_audio, path)
+        return VideoSegment(path, 0.0, probe(path).duration_s)
+
+    probe_runner = PipelineProbe(result)
+    client, service = make_client(
+        job_runner="pipeline",
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=IngestTools,
+        analyze=probe_runner,
+        segment_fetcher=fetcher,
+        highlights_render=render_highlights,
+    )
+    probe_runner.service = service
+    job = done_job(client)
+
+    # First preview caches short_audio (0..5 s container, audio ends at 4.2 s).
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["status"] == "available"
+    assert len(calls) == 1
+
+    # Highlights trim 1.0..4.8 falls inside 0..5.0 container duration, but past 4.2 s audio end:
+    # must reject cache reuse and fetch a fresh padded span (call #2) so rendering succeeds.
+    created = client.post(
+        f"{API}/highlights",
+        json={
+            "job_id": job["job_id"],
+            "segments": [{"candidate_id": "c001", "start_s": 1.0, "end_s": 4.8}],
+            "order": "chronological",
+        },
+    )
+    assert created.status_code == 201
+    done = client.get(f"{API}/highlights/{created.json()['highlights_id']}").json()
+    assert done["state"] == "done", done["error"]
+    assert len(calls) == 2
+
+
 def test_a_jobs_own_video_file_is_served_for_preview(
     client: TestClient, make_test_media: Callable[..., Path], tmp_path: Path
 ) -> None:
