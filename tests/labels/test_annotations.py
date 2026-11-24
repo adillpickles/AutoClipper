@@ -154,3 +154,70 @@ def test_bad_keys_and_intervals_are_rejected() -> None:
             split="train",
             mature=True,
         )
+
+
+def test_label_windows_handles_empty_windows_and_rejects_invalid_inputs() -> None:
+    clips = clips_frame(("a", 100, 20, 10))
+    moments = merge_clips_into_moments(clips).moments
+    win = make_windows("v", 30)
+
+    # Empty windows frame returns an empty frame with the exact labels schema.
+    empty = label_windows(
+        win.head(0),
+        moments.head(0),
+        clips,
+        broadcaster_id="b",
+        split="train",
+        mature=True,
+    )
+    assert empty.is_empty()
+    assert empty.schema == LABELS_SCHEMA
+
+    # Multiple VODs in one call are rejected.
+    two_vods = pl.concat([win, make_windows("v2", 30)])
+    with pytest.raises(ValueError, match="one VOD at a time"):
+        label_windows(two_vods, moments, clips, broadcaster_id="b", split="train", mature=True)
+
+    # Moments from another VOD are rejected.
+    other_moments = moments.with_columns(video_id=pl.lit("other"))
+    with pytest.raises(ValueError, match="moments must belong"):
+        label_windows(win, other_moments, clips, broadcaster_id="b", split="train", mature=True)
+
+    # Overlapping moments are rejected.
+    overlapping = pl.concat(
+        [
+            moments,
+            moments.with_columns(
+                moment_id=pl.lit("v:m1"),
+                start_s=pl.lit(110.0),
+                end_s=pl.lit(130.0),
+            ),
+        ]
+    )
+    with pytest.raises(ValueError, match="must not overlap"):
+        label_windows(win, overlapping, clips, broadcaster_id="b", split="train", mature=True)
+
+    # Negative view counts are rejected.
+    neg_views = clips_frame(("a", 100, 20, -1))
+    with pytest.raises(ValueError, match="non-negative"):
+        label_windows(win, moments, neg_views, broadcaster_id="b", split="train", mature=True)
+
+    # Invalid placed clip intervals are rejected.
+    bad_clip = clips_frame(("a", -5, 20, 10))
+    with pytest.raises(ValueError, match="invalid clip interval"):
+        label_windows(win, moments, bad_clip, broadcaster_id="b", split="train", mature=True)
+
+    # Missing required columns and unexpected nulls are rejected.
+    with pytest.raises(ValueError, match="missing columns"):
+        label_windows(
+            win.drop("end_s"), moments, clips, broadcaster_id="b", split="train", mature=True
+        )
+    with pytest.raises(ValueError, match="must not be null"):
+        label_windows(
+            win.with_columns(start_s=pl.lit(None, dtype=pl.Float64)),
+            moments,
+            clips,
+            broadcaster_id="b",
+            split="train",
+            mature=True,
+        )

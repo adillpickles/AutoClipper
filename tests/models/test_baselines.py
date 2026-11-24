@@ -17,6 +17,7 @@ from autoclipper.models.base import (
     ScorerError,
     load_scorer,
     make_scorer,
+    register_scorer,
     scorer_names,
 )
 from autoclipper.models.baselines import BASELINES, RandomScorer, random_scorers
@@ -120,6 +121,24 @@ def test_loading_a_broken_or_unknown_scorer_fails_clearly(tmp_path: Path) -> Non
     (tmp_path / "scorer.json").write_text('{"name": "nope"}', encoding="utf-8")
     with pytest.raises(ScorerError, match="unknown scorer"):
         load_scorer(tmp_path)
+    (tmp_path / "scorer.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(ScorerError, match="has no scorer name"):
+        load_scorer(tmp_path)
+    (tmp_path / "scorer.json").write_text('{"name": "chat_spike", "params": []}', encoding="utf-8")
+    with pytest.raises(ScorerError, match="params must be an object"):
+        load_scorer(tmp_path)
+
+
+def test_register_scorer_rejects_duplicate_name_for_distinct_class() -> None:
+    class _Duplicate(Scorer):
+        name = "chat_spike"
+        kind = "heuristic"
+
+        def score(self, features: pl.DataFrame) -> pl.DataFrame:
+            return features.select("window_id").with_columns(score=pl.lit(0.0))
+
+    with pytest.raises(ValueError, match="already registered"):
+        register_scorer(_Duplicate)
 
 
 def test_all_four_baselines_run_through_the_evaluation_on_the_synthetic_dataset(

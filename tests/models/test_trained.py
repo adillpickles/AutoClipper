@@ -193,3 +193,63 @@ def test_logistic_regression_warns_when_it_does_not_converge(
     with caplog.at_level(logging.WARNING):
         LogisticRegressionScorer(max_iter=1).fit(features, labels)
     assert "did not converge" in caplog.text
+
+
+def test_trained_scorer_validation_and_corrupt_artifact_errors(tmp_path: Path) -> None:
+    features, labels = labeled_windows()
+
+    # Null labels or weights are rejected.
+    null_labels = pl.Series("label", [True, None, *labels.to_list()[2:]], dtype=pl.Boolean)
+    with pytest.raises(ScorerError, match="must not be null"):
+        LogisticRegressionScorer().fit(features, null_labels)
+
+    null_weights = pl.Series("w", [1.0, None, *([1.0] * (features.height - 2))], dtype=pl.Float64)
+    with pytest.raises(ScorerError, match="must not be null"):
+        LogisticRegressionScorer().fit(features, labels, weights=null_weights)
+
+    # Labels outside {0, 1} and negative/infinite weights are rejected.
+    bad_labels = pl.Series("label", [0, 2, *([1] * (features.height - 2))], dtype=pl.Int64)
+    with pytest.raises(ScorerError, match="boolean or 0/1"):
+        LogisticRegressionScorer().fit(features, bad_labels)
+
+    neg_weights = pl.Series("w", [-1.0, *([1.0] * (features.height - 1))], dtype=pl.Float64)
+    with pytest.raises(ScorerError, match="finite and non-negative"):
+        LogisticRegressionScorer().fit(features, labels, weights=neg_weights)
+
+    inf_weights = pl.Series("w", [float("inf"), *([1.0] * (features.height - 1))], dtype=pl.Float64)
+    with pytest.raises(ScorerError, match="finite and non-negative"):
+        LogisticRegressionScorer().fit(features, labels, weights=inf_weights)
+
+    # Scoring non-numeric columns or non-finite margins raises ScorerError.
+    logreg = LogisticRegressionScorer().fit(features, labels)
+    bad_dtype = features.with_columns(chat_msg_rate_z=pl.lit("not-a-number"))
+    with pytest.raises(ScorerError, match="feature columns must be numeric"):
+        logreg.score(bad_dtype)
+
+    logreg._intercept = float("nan")
+    with pytest.raises(ScorerError, match="score isn't finite"):
+        logreg.score(features)
+
+    # Unfitted LightGBMScorer fails on importances/save.
+    unfitted_lgb = LightGBMScorer()
+    with pytest.raises(ScorerError, match="isn't trained yet"):
+        unfitted_lgb.importances()
+    with pytest.raises(ScorerError, match="isn't trained yet"):
+        unfitted_lgb.save(tmp_path / "unfitted-lgb")
+
+    # Corrupt features.json and mismatched model weight/booster feature counts are rejected.
+    logreg_dir = tmp_path / "logreg-bad"
+    LogisticRegressionScorer().fit(features, labels).save(logreg_dir)
+    (logreg_dir / "features.json").write_text('{"not": "a list"}', encoding="utf-8")
+    with pytest.raises(ScorerError, match=r"features\.json must list feature names"):
+        load_scorer(logreg_dir)
+
+    (logreg_dir / "features.json").write_text('["chat_rate"]', encoding="utf-8")
+    with pytest.raises(ScorerError, match="doesn't match the feature list"):
+        load_scorer(logreg_dir)
+
+    lgb_dir = tmp_path / "lgb-bad"
+    LightGBMScorer(n_estimators=5, min_child_samples=1).fit(features, labels).save(lgb_dir)
+    (lgb_dir / "features.json").write_text('["chat_rate"]', encoding="utf-8")
+    with pytest.raises(ScorerError, match="doesn't match the feature list"):
+        load_scorer(lgb_dir)

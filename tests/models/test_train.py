@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 from autoclipper.cli import app
 from autoclipper.eval.harness import evaluate, evaluate_mean
 from autoclipper.labels.dataset import build_dataset
-from autoclipper.models.base import Scorer, load_scorer
+from autoclipper.models.base import Scorer, load_scorer, make_scorer
 from autoclipper.models.baselines import random_scorers
 from autoclipper.models.candidates import candidates_frame, generate_candidates
 from autoclipper.models.train import RunExistsError, TrainConfig, load_config, train
@@ -269,3 +269,53 @@ def test_the_train_command_runs_a_config_file(
     assert bad.exit_code == 1
     missing = runner.invoke(app, ["train", "--config", str(tmp_path / "nope.yaml")])
     assert missing.exit_code == 1
+
+
+def test_train_rejects_corrupt_manifest_missing_table_empty_features_and_bad_scorer(
+    pilot: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import autoclipper.models.train as train_mod
+
+    # Invalid model params convert ScorerError to ValueError.
+    with pytest.raises(ValueError, match="bad parameters"):
+        run(pilot, tmp_path, config("logreg", params={"c": -1.0}))
+
+    # Non-TrainedScorer returned by make_scorer is rejected.
+    with monkeypatch.context() as scoped:
+        scoped.setattr(train_mod, "make_scorer", lambda *_a, **_kw: make_scorer("chat_spike"))
+        with pytest.raises(ValueError, match="isn't a trained model"):
+            run(pilot, tmp_path, config("logreg"))
+
+    # Excluding every column of a selected feature family leaves no features.
+    audio_cols = [
+        c
+        for c in dataset_table(pilot, "features_audio").columns
+        if c not in {"window_id", "feature_version"}
+    ]
+    with pytest.raises(ValueError, match="no feature columns left"):
+        run(
+            pilot,
+            tmp_path,
+            config("logreg", feature_families=["audio"], exclude_features=audio_cols),
+        )
+
+    # Split manifest that isn't a JSON object fails clearly.
+    bad_root = tmp_path / "bad-manifest"
+    (bad_root / "splits").mkdir(parents=True)
+    (bad_root / "splits" / f"{VERSION}.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="expected a JSON object"):
+        train(config("logreg"), data_dir=bad_root, artifacts_dir=tmp_path, run_id="bad-m")
+
+    # Missing dataset parquet table fails clearly.
+    copy = tmp_path / "missing-table"
+    generate_dataset(copy, seed=1, pilot=True, video=None)
+    build_dataset(copy, version=VERSION, seed=1, lexicon_path=LEXICON)
+    (copy / "processed" / "datasets" / VERSION / "features_audio.parquet").unlink()
+    with pytest.raises(ValueError, match="is missing"):
+        train(config("logreg"), data_dir=copy, artifacts_dir=tmp_path, run_id="missing-t")
+
+    # _publish refuses to overwrite an existing output directory when force=False.
+    out = tmp_path / "existing-run"
+    out.mkdir()
+    with pytest.raises(RunExistsError, match="already exists"):
+        train_mod._publish(out, make_scorer("chat_spike"), config("logreg"), {}, force=False)

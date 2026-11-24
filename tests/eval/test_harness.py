@@ -16,6 +16,7 @@ from autoclipper.eval.harness import (
     default_run_id,
     evaluate,
     evaluate_files,
+    evaluate_mean,
     write_report,
 )
 from autoclipper.labels.moments import merge_clips_into_moments
@@ -373,3 +374,61 @@ def test_evaluate_command_rejects_unsafe_names(
 
     assert result.exit_code == 1
     assert message in result.output
+
+
+def test_evaluate_validation_edge_cases_and_missing_clip_views_summary(
+    tmp_path: Path, inputs: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]
+) -> None:
+    candidates, moments, clips = inputs
+
+    with pytest.raises(ValueError, match="clips is missing columns: video_id"):
+        evaluate(candidates, moments, clips.drop("video_id"), seed=0)
+
+    bad_bound = candidates.with_columns(end_s=pl.lit(float("inf")))
+    with pytest.raises(ValueError, match="start_s or end_s that isn't finite"):
+        evaluate(bad_bound, moments, clips, seed=0)
+
+    null_col = candidates.with_columns(score=pl.lit(None, dtype=pl.Float64))
+    with pytest.raises(ValueError, match="candidates has nulls in: score"):
+        evaluate(null_col, moments, clips, seed=0)
+
+    with pytest.raises(ValueError, match="runs is empty"):
+        evaluate_mean([], moments, clips, seed=0)
+
+    # Moments whose clip_ids have no view rows exclude top-clip recall only; hit rate still holds.
+    no_views_result = evaluate(candidates, moments, clips.head(0), seed=0, video_ids=["a"])
+    assert no_views_result.excluded["a"] == "no clip views for top-clip recall"
+    assert no_views_result.per_vod["hit_rate_at_10"].to_list() == [0.5]
+    assert no_views_result.summary["hit_rate_at_10"] is not None
+    assert no_views_result.summary["hit_rate_at_10"].mean == pytest.approx(0.5)
+    assert no_views_result.summary["top_clip_recall_at_10"] is None
+    _, summary_path = write_report(
+        no_views_result,
+        tmp_path / "report",
+        run_id="no-views",
+        dataset_version="v1",
+        git_sha="abc123",
+        seed=0,
+        scorer="chat_spike",
+    )
+    assert "| top_clip_recall_at_10 | n/a | n/a | 0 |" in summary_path.read_text(encoding="utf-8")
+
+    # Corrupt Parquet file raises ValueError from evaluate_files.
+    corrupt = tmp_path / "corrupt.parquet"
+    corrupt.write_bytes(b"not a parquet file")
+    m_path = tmp_path / "moments.parquet"
+    c_path = tmp_path / "clips.parquet"
+    moments.write_parquet(m_path)
+    clips.write_parquet(c_path)
+    with pytest.raises(ValueError, match="can't read the inputs as Parquet"):
+        evaluate_files(
+            corrupt,
+            m_path,
+            c_path,
+            out_dir=tmp_path / "corrupt-report",
+            run_id="corrupt",
+            dataset_version="v1",
+            scorer="chat_spike",
+            seed=0,
+            git_sha="abc123",
+        )

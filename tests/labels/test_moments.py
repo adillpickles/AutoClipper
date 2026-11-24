@@ -205,6 +205,16 @@ def test_missing_columns_are_named() -> None:
         merge_clips_into_moments(clips_frame(("a", "v", 1.0, 2.0)).drop("view_count"))
 
 
+def test_negative_gap_and_null_clip_id_are_rejected() -> None:
+    clips = clips_frame(("a", "v", 1.0, 2.0))
+    with pytest.raises(ValueError, match="gap_s must be >= 0"):
+        merge_clips_into_moments(clips, gap_s=-0.1)
+
+    null_id = clips.with_columns(clip_id=pl.lit(None, dtype=pl.String))
+    with pytest.raises(ValueError, match="null clip_id"):
+        merge_clips_into_moments(null_id)
+
+
 def test_no_clips_give_no_moments() -> None:
     result = merge_clips_into_moments(clips_frame())
 
