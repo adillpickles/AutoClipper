@@ -2453,6 +2453,140 @@ def test_a_transient_segment_fetch_failure_is_retryable(
     assert client.get(f"{API}/exports/{made.json()['export_id']}").json()["state"] == "done"
 
 
+def test_a_short_segment_becomes_retryable_failure_and_invalidates_file(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A downloaded segment shorter than the candidate doesn't leave preview stuck in
+    `preparing`: it reports retryable `fetch_failed` and removes the short cached file."""
+    video = make_test_media("vod.mp4", duration_s=20.0)
+    raw_dir = tmp_path / "raw" / "video"
+    # Planned span for c001 (118-148) is 88-178; a 50 s file ends at 138 < 148.
+    fetcher = FakeSegmentFetcher(video, raw_dir, duration_s=50.0)
+    client, _ = segment_client(make_client, tmp_path, fetcher)
+    job = done_job(client)
+
+    first = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert first["preview"]["status"] == "unavailable"
+    assert first["preview"]["reason"] == "fetch_failed"
+    assert first["export"]["status"] == "available"
+    short_file = raw_dir / "9000000001" / "segment-88-178.mp4"
+    assert not short_file.exists()
+
+    # Retrying after the short file was invalidated downloads a fresh full-length segment.
+    fetcher.duration_s = None
+    retried = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert retried["preview"]["status"] == "available"
+    assert retried["preview"]["media_start_s"] == pytest.approx(88.0)
+    assert retried["preview"]["media_end_s"] == pytest.approx(178.0)
+    assert short_file.is_file()
+    assert len(fetcher.calls) == 2
+
+
+def test_a_short_segment_for_render_fails_with_fetch_failed_and_invalidates_file(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A render whose downloaded segment doesn't cover its trim fails with retryable
+    `fetch_failed` and deletes the short file so the next attempt re-downloads cleanly."""
+    video = make_test_media("vod.mp4", duration_s=20.0)
+    raw_dir = tmp_path / "raw" / "video"
+    # Trim 118-148 fetches 88-178; 50 s stops at 138 < 148.
+    fetcher = FakeSegmentFetcher(video, raw_dir, duration_s=50.0)
+    renderer = FakeRenderer()
+    client, _ = segment_client(make_client, tmp_path, fetcher, render=renderer)
+    job = done_job(client)
+
+    first = client.post(f"{API}/exports", json=export_body(job["job_id"]))
+    assert first.status_code == 201
+    failed = client.get(f"{API}/exports/{first.json()['export_id']}").json()
+    assert failed["state"] == "failed"
+    assert failed["error"]["code"] == "media_unavailable"
+    assert failed["error"]["details"] == {"reason": "fetch_failed"}
+    short_file = raw_dir / "9000000001" / "segment-88-178.mp4"
+    assert not short_file.exists()
+    assert renderer.specs == []
+
+    # Retrying once full footage arrives succeeds.
+    fetcher.duration_s = None
+    second = client.post(f"{API}/exports", json=export_body(job["job_id"]))
+    assert second.status_code == 201
+    done = client.get(f"{API}/exports/{second.json()['export_id']}").json()
+    assert done["state"] == "done"
+    assert len(fetcher.calls) == 2
+
+
+def test_store_segment_fail_if_short_never_leaves_preparing_stuck(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """Defense in depth: `_store_segment(..., fail_if_short=True)` converts a short ready
+    state into retryable `fetch_failed` and removes the short file, while never overwriting
+    already-ready usable media."""
+    from autoclipper.api.service import _SegmentState
+
+    video = make_test_media("vod.mp4", duration_s=20.0)
+    fetcher = FakeSegmentFetcher(video, tmp_path / "raw" / "video")
+    client, service = segment_client(make_client, tmp_path, fetcher)
+    job_data = done_job(client)
+    job = service._jobs[job_data["job_id"]]
+    candidate = service._candidate(job, "c001")
+    key = (job.job_id, "c001")
+
+    short_file = tmp_path / "short.mp4"
+    short_file.write_bytes(b"short")
+    service._segments[key] = _SegmentState("preparing", 88.0, 178.0)
+    service._store_segment(
+        job,
+        candidate,
+        _SegmentState(
+            "ready",
+            planned_begin_s=88.0,
+            planned_end_s=178.0,
+            path=short_file,
+            begin_s=88.0,
+            end_s=138.0,
+        ),
+        fail_if_short=True,
+    )
+    assert service._segments[key].status == "failed"
+    assert service._segments[key].reason == "fetch_failed"
+    assert not short_file.exists()
+
+    # An existing ready segment is never overwritten by a late short segment.
+    good_file = tmp_path / "good.mp4"
+    good_file.write_bytes(b"good")
+    late_short = tmp_path / "late-short.mp4"
+    late_short.write_bytes(b"short")
+    service._segments[key] = _SegmentState(
+        "ready",
+        planned_begin_s=88.0,
+        planned_end_s=178.0,
+        path=good_file,
+        begin_s=88.0,
+        end_s=178.0,
+    )
+    service._store_segment(
+        job,
+        candidate,
+        _SegmentState(
+            "ready",
+            planned_begin_s=88.0,
+            planned_end_s=178.0,
+            path=late_short,
+            begin_s=88.0,
+            end_s=138.0,
+        ),
+        fail_if_short=True,
+    )
+    assert service._segments[key].status == "ready"
+    assert service._segments[key].path == good_file
+    assert not late_short.exists()
+
+
 def test_local_video_preview_preparation_runs_in_background(
     make_client: Callable[..., tuple[TestClient, MockService]],
     make_test_media: Callable[..., Path],

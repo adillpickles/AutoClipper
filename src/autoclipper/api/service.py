@@ -20,6 +20,7 @@ export. Highlights videos are real too (#72): the worker joins the job's resolve
 1920x1080, fades, optional captions) from the same source, one file per highlights video.
 """
 
+import contextlib
 import logging
 import queue
 import secrets
@@ -59,6 +60,7 @@ from autoclipper.export.reframe import StackedLayout, stacked_layout_from_region
 from autoclipper.features.chat import Lexicon
 from autoclipper.ffmpeg import FFmpegError, ffmpeg_command, probe, run_command
 from autoclipper.ingest.media import (
+    DownloadIntegrityError,
     VideoSegment,
     VodAccessRestrictedError,
     VodUnavailableError,
@@ -1451,7 +1453,13 @@ class MockService:
             end,
         )
         try:
-            segment = self._fetch_coordinated(video_id, begin, end)
+            segment = self._fetch_coordinated(
+                video_id,
+                begin,
+                end,
+                need_begin_s=candidate.start_s,
+                need_end_s=candidate.end_s,
+            )
         except Exception as exc:  # the downloader's typed errors (§ 5.2 reasons)
             reason = (
                 "source_unavailable"
@@ -1477,6 +1485,7 @@ class MockService:
                 media_id=media_id,
                 preview_failed=media_id is None,
             ),
+            fail_if_short=True,
         )
         with self._lock:
             self._fetches_done += 1
@@ -1489,14 +1498,38 @@ class MockService:
             segment.path,
         )
 
-    def _fetch_coordinated(self, video_id: str, begin_s: float, end_s: float) -> VideoSegment:
+    def _invalidate_short_segment(self, path: Path) -> None:
+        """Delete a short downloaded segment so retries fetch fresh instead of reusing cache."""
+        with self._lock:
+            in_use = any(
+                state.status == "ready" and state.path == path for state in self._segments.values()
+            )
+        if in_use:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("couldn't remove short video segment path=%s: %s", path, exc)
+
+    def _fetch_coordinated(
+        self,
+        video_id: str,
+        begin_s: float,
+        end_s: float,
+        *,
+        need_begin_s: float | None = None,
+        need_end_s: float | None = None,
+    ) -> VideoSegment:
         """One fetch per (VOD, range) at a time.
 
         A caller for a range already in flight waits for it (bounded) and then fetches again,
-        which the segment cache serves at once.
+        which the segment cache serves at once. When `need_begin_s`/`need_end_s` are given, a
+        returned file that doesn't cover that interval is deleted before releasing the range
+        key so waiting or retrying callers don't reuse the short cached file.
 
         Raises:
             TimeoutError: A fetch of the same range is taking longer than `FETCH_WAIT_S`.
+            DownloadIntegrityError: The returned segment doesn't cover the needed interval.
         """
         assert self.segment_fetcher is not None  # pipeline mode validates it
         # The downloader rounds ranges to whole seconds, and ranges that round together write
@@ -1508,7 +1541,19 @@ class MockService:
                     raise TimeoutError(f"still fetching {video_id} {begin_s:g}-{end_s:g} s")
             self._fetching.add(key)
         try:
-            return self.segment_fetcher(video_id, begin_s, end_s)
+            segment = self.segment_fetcher(video_id, begin_s, end_s)
+            if (
+                need_begin_s is not None
+                and need_end_s is not None
+                and not (segment.begin_s <= need_begin_s and need_end_s <= segment.end_s)
+            ):
+                self._invalidate_short_segment(segment.path)
+                raise DownloadIntegrityError(
+                    video_id,
+                    f"segment {segment.begin_s:.2f}-{segment.end_s:.2f} s doesn't cover "
+                    f"{need_begin_s:.2f}-{need_end_s:.2f} s",
+                )
+            return segment
         finally:
             with self._fetch_done:
                 self._fetching.discard(key)
@@ -1524,22 +1569,39 @@ class MockService:
         assert self.segment_fetcher is not None  # pipeline mode validates it
         span = self._segment_span(job, begin_s, end_s)
         try:
-            return self._fetch_coordinated(job.video_id, *span)
+            return self._fetch_coordinated(
+                job.video_id,
+                *span,
+                need_begin_s=begin_s,
+                need_end_s=end_s,
+            )
         except Exception as exc:
             if isinstance(exc, VodUnavailableError | VodAccessRestrictedError):
                 raise _MediaUnavailable("source_unavailable", _SOURCE_EXPORT_UNAVAILABLE) from None
             log.warning("video segment fetch failed video_id=%s: %s", job.video_id, exc)
             raise _MediaUnavailable("fetch_failed", _FETCH_FAILED_EXPORT) from None
 
-    def _store_segment(self, job: _JobRecord, candidate: Candidate, new: _SegmentState) -> None:
+    def _store_segment(
+        self,
+        job: _JobRecord,
+        candidate: Candidate,
+        new: _SegmentState,
+        *,
+        fail_if_short: bool = False,
+    ) -> None:
         """Record a candidate's segment state, never letting it regress (#46).
 
         A `failed` fetch never overwrites usable media (a render may have installed a segment
         while the preview's own fetch failed), a `ready` segment never replaces one that
         already covers the candidate as well or better, and a segment that doesn't cover the
-        candidate's own bounds never becomes its preview at all.
+        candidate's own bounds never becomes its preview at all. When `fail_if_short` is set,
+        a short `ready` segment turns into a retryable `fetch_failed` state (unless usable
+        media is already present) and its file is invalidated rather than leaving `preparing`
+        stuck forever.
         """
         key = (job.job_id, candidate.candidate_id)
+        short_path: Path | None = None
+        stale_playable: Path | None = None
         with self._lock:
             current = self._segments.get(key)
             if new.status == "ready":
@@ -1549,8 +1611,19 @@ class MockService:
                     or not new.begin_s <= candidate.start_s
                     or not candidate.end_s <= new.end_s
                 ):
-                    return  # the render's narrow span: keep the preview's own coverage
-                if (
+                    if not fail_if_short:
+                        return  # the render's narrow span: keep the preview's own coverage
+                    short_path = new.path
+                    if new.media_id is not None:
+                        stale_playable = self._media.pop(new.media_id, None)
+                    if current is None or current.status != "ready":
+                        self._segments[key] = _SegmentState(
+                            "failed",
+                            planned_begin_s=new.planned_begin_s,
+                            planned_end_s=new.planned_end_s,
+                            reason="fetch_failed",
+                        )
+                elif (
                     current is not None
                     and current.status == "ready"
                     and current.begin_s is not None
@@ -1559,9 +1632,17 @@ class MockService:
                     and new.end_s <= current.end_s
                 ):
                     return  # no better than what is already served
+                else:
+                    self._segments[key] = new
             elif new.status == "failed" and current is not None and current.status == "ready":
                 return  # usable media beats a late failure
-            self._segments[key] = new
+            else:
+                self._segments[key] = new
+        if short_path is not None:
+            self._invalidate_short_segment(short_path)
+        if stale_playable is not None and stale_playable != short_path:
+            with contextlib.suppress(OSError):
+                stale_playable.unlink(missing_ok=True)
 
     def _register_segment_media(self, segment: VideoSegment) -> str | None:
         """Return a playable media ID (§ 5.1), or None if preparation fails (#46).
@@ -1604,21 +1685,22 @@ class MockService:
             assert state.path is not None
             return VideoSegment(state.path, state.begin_s, state.end_s)
         segment = self._fetch_segment(job, begin_needed_s, end_needed_s)
-        media_id = self._register_segment_media(segment)
-        self._store_segment(
-            job,
-            candidate,
-            _SegmentState(
-                "ready",
-                planned_begin_s=segment.begin_s,
-                planned_end_s=segment.end_s,
-                path=segment.path,
-                begin_s=segment.begin_s,
-                end_s=segment.end_s,
-                media_id=media_id,
-                preview_failed=media_id is None,
-            ),
-        )
+        if segment.begin_s <= candidate.start_s and candidate.end_s <= segment.end_s:
+            media_id = self._register_segment_media(segment)
+            self._store_segment(
+                job,
+                candidate,
+                _SegmentState(
+                    "ready",
+                    planned_begin_s=segment.begin_s,
+                    planned_end_s=segment.end_s,
+                    path=segment.path,
+                    begin_s=segment.begin_s,
+                    end_s=segment.end_s,
+                    media_id=media_id,
+                    preview_failed=media_id is None,
+                ),
+            )
         return segment
 
     def _render_source(
