@@ -750,3 +750,13 @@ def test_missing_source_raises_file_not_found(tmp_path: Path) -> None:
         export_clip(request(tmp_path / "missing.mp4", 0.0, 10.0), runner=runner)
 
     assert runner.commands == []
+
+
+def test_export_clip_avoids_redundant_ffprobe_calls_on_regular_source(source: Path) -> None:
+    runner = FakeRunner(output=output_for(10.0), packet_ends_s={0: 600.0, 1: 600.0})
+
+    export_clip(request(source, 5.0, 15.0), runner=runner)
+
+    ffprobe_calls = [c for c in runner.commands if c.program == "ffprobe"]
+    # 1 combined source probe, 1 stream_ends, 1 keyframe search, 1 combined output probe.
+    assert len(ffprobe_calls) == 4

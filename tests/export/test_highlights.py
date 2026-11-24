@@ -668,3 +668,86 @@ def test_the_cli_reports_unexpected_failures_as_internal_error(
     error_lines = [line for line in done.output.splitlines() if "internal_error" in line]
     assert error_lines
     assert all("a bug" not in line for line in error_lines)
+
+
+def test_render_highlights_probes_regular_source_only_once_across_segments(
+    tmp_path: Path, make_test_media: Callable[..., Path]
+) -> None:
+    from autoclipper.ffmpeg import CommandResult, FFmpegCommand, run_subprocess
+
+    video = make_test_media("vod.mp4", duration_s=12.0)
+    commands: list[FFmpegCommand] = []
+
+    def recording_runner(command: FFmpegCommand, /, *, timeout_s: float) -> CommandResult:
+        commands.append(command)
+        return run_subprocess(command, timeout_s=timeout_s)
+
+    segments = [
+        Segment("c001", 1.0, 3.0),
+        Segment("c002", 4.0, 6.0),
+        Segment("c003", 7.0, 9.0),
+    ]
+    out = tmp_path / "highlights.mp4"
+    render_highlights(
+        HighlightsRequest(source=video, segments=segments, output=out),
+        settings=LOSSLESS,
+        runner=recording_runner,
+    )
+
+    source_probes = [
+        c for c in commands if c.program == "ffprobe" and c.args[-1] == str(video.absolute())
+    ]
+    # 1 combined media+times probe + 1 stream_ends probe + 1 keyframe probe per segment (3).
+    assert len(source_probes) == 2 + len(segments)
+
+
+def test_render_highlights_reprobes_when_source_is_replaced_between_segments(
+    tmp_path: Path, make_test_media: Callable[..., Path]
+) -> None:
+    """Replacing a video-only source with one that has audio between segments picks up the audio."""
+    import numpy as np
+
+    from autoclipper.ffmpeg import CommandResult, FFmpegCommand, run_subprocess
+
+    source = tmp_path / "vod.mp4"
+    run_command(
+        ffmpeg_command(
+            "-y",
+            *("-f", "lavfi", "-i", "color=black:size=320x180:rate=25:duration=8"),
+            *("-c:v", "libx264", "-preset", "ultrafast", "-g", "50", source),
+        ),
+        timeout_s=TIMEOUT_S,
+    )
+    with_audio = make_test_media("vod_with_audio.mp4", duration_s=8.0, tone_hz=880.0)
+    swapped = False
+
+    def swap_after_first_segment(command: FFmpegCommand, /, *, timeout_s: float) -> CommandResult:
+        nonlocal swapped
+        result = run_subprocess(command, timeout_s=timeout_s)
+        if (
+            not swapped
+            and command.program == "ffprobe"
+            and command.args[-1].endswith("segment-000.mp4")
+        ):
+            swapped = True
+            with_audio.replace(source)
+        return result
+
+    out = tmp_path / "highlights.mp4"
+    render_highlights(
+        HighlightsRequest(
+            source=source,
+            segments=[Segment("c001", 1.0, 3.0), Segment("c002", 5.0, 7.0)],
+            output=out,
+        ),
+        settings=LOSSLESS,
+        runner=swap_after_first_segment,
+    )
+
+    assert swapped
+    pcm = run_command(
+        ffmpeg_command("-ss", "3", "-i", out, "-t", "0.5", "-vn", "-ac", "1", "-f", "s16le", "-"),
+        timeout_s=TIMEOUT_S,
+    ).stdout
+    samples = np.frombuffer(pcm, dtype="<i2")
+    assert int(np.abs(samples).max()) > 500

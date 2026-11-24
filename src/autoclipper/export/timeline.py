@@ -44,6 +44,7 @@ from autoclipper.export.errors import ExportError
 from autoclipper.ffmpeg import (
     TIMELINE_OPTIONS,
     FFmpegOutputError,
+    MediaInfo,
     Runner,
     ffmpeg_command,
     ffprobe_command,
@@ -92,31 +93,51 @@ class ResetTimeline:
     n_resets: int
 
 
-_cache: dict[tuple[str, int, int], ResetTimeline | None] = {}
+type FileKey = tuple[str, int, int]
+
+
+def file_key(path: Path) -> FileKey:
+    """Identity of a file's current version: resolved path, byte size and mtime in nanoseconds."""
+    stat = path.stat()
+    return (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+
+
+_cache: dict[FileKey, ResetTimeline | None] = {}
 _cache_lock = threading.Lock()
 
 
-def read_reset_timeline(source: Path, *, runner: Runner | None = None) -> ResetTimeline | None:
+def read_reset_timeline(
+    source: Path,
+    *,
+    runner: Runner | None = None,
+    info: MediaInfo | None = None,
+    info_key: FileKey | None = None,
+) -> ResetTimeline | None:
     """The corrected keyframe times of `source`, or None when its timestamps never jump back.
 
-    Kept per file (path, size and modification time) for the rest of the process.
+    Kept per file (path, size and modification time) for the rest of the process. Pass `info`
+    and the `info_key` taken before probing `source` to avoid a redundant ffprobe call while
+    still discarding the probe if the file was replaced in the meantime.
 
     Raises:
         TimelineError: The resets FFmpeg reports don't match the ones in the packet list.
         FFmpegError: FFmpeg or FFprobe failed.
     """
-    stat = source.stat()
-    key = (str(source.resolve()), stat.st_size, stat.st_mtime_ns)
+    key = file_key(source)
     with _cache_lock:
         if key in _cache:
             return _cache[key]
-    info = probe(source, runner=runner)
-    formats = set(info.format_name.split(","))
+    use_info = info is not None and (info_key is None or info_key == key)
+    probed = info if use_info else probe(source, runner=runner)
+    assert probed is not None
+    formats = set(probed.format_name.split(","))
     timeline = None
-    if formats & _DISCONTINUOUS_FORMATS and info.video_streams:
-        timeline = _read(source, runner=runner, has_audio=bool(info.audio_streams))
-    with _cache_lock:
-        _cache[key] = timeline
+    if formats & _DISCONTINUOUS_FORMATS and probed.video_streams:
+        timeline = _read(source, runner=runner, has_audio=bool(probed.audio_streams))
+    # Only cache when the file on disk still matches the version that was probed and read.
+    if file_key(source) == key:
+        with _cache_lock:
+            _cache[key] = timeline
     return timeline
 
 
@@ -278,7 +299,12 @@ class Window:
 
 @contextlib.contextmanager
 def timeline_window(
-    source: Path, interval: Interval, *, runner: Runner | None = None
+    source: Path,
+    interval: Interval,
+    *,
+    runner: Runner | None = None,
+    info: MediaInfo | None = None,
+    info_key: FileKey | None = None,
 ) -> Iterator[Window]:
     """A file to cut `interval` (corrected timeline) from, valid inside the ``with`` block.
 
@@ -289,7 +315,7 @@ def timeline_window(
         TimelineError: The timeline can't be mapped, or the window came out empty.
         FFmpegError: FFmpeg or FFprobe failed.
     """
-    timeline = read_reset_timeline(source, runner=runner)
+    timeline = read_reset_timeline(source, runner=runner, info=info, info_key=info_key)
     if timeline is None:
         yield Window(source, 0.0)
         return

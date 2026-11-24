@@ -23,7 +23,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from autoclipper.export.errors import ExportError
-from autoclipper.ffmpeg import FFmpegOutputError, Runner, ffprobe_command, run_command
+from autoclipper.ffmpeg import (
+    PROBE_TIMEOUT_S,
+    FFmpegOutputError,
+    MediaInfo,
+    Runner,
+    ffprobe_command,
+    parse_probe_output,
+    run_command,
+)
+
+# Combined ffprobe fields for `probe_media_and_times`: reads MediaInfo and StreamTimes in one call.
+_MEDIA_AND_TIMES_ENTRIES = (
+    "format=format_name,duration,start_time"
+    ":stream=index,codec_type,codec_name,width,height,pix_fmt,sample_rate,channels,"
+    "start_time,duration"
+)
 
 # The first window searched for a keyframe ends at the start and reaches this far back. Each
 # further window is `_WINDOW_GROWTH` times longer, until the last one starts at the beginning of
@@ -206,7 +221,32 @@ def probe_stream_times(
         "format=start_time:stream=index,codec_type,start_time,duration",
         path,
     )
-    root = _json_object(run_command(command, timeout_s=timeout_s, runner=runner).stdout, path)
+    return _parse_stream_times(
+        run_command(command, timeout_s=timeout_s, runner=runner).stdout, path
+    )
+
+
+def probe_media_and_times(
+    path: Path, *, runner: Runner | None = None, timeout_s: float = PROBE_TIMEOUT_S
+) -> tuple[MediaInfo, StreamTimes]:
+    """Read both `MediaInfo` and `StreamTimes` in a single ffprobe invocation.
+
+    Raises:
+        FileNotFoundError: `path` is not an existing file.
+        FFmpegNotFoundError, FFmpegTimeoutError, FFmpegExitError: As for `run_command`.
+        FFmpegOutputError: ffprobe's output isn't the expected JSON or lacks required fields.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(f"media file not found: {path}")
+    command = ffprobe_command(
+        "-print_format", "json", "-show_entries", _MEDIA_AND_TIMES_ENTRIES, path
+    )
+    stdout = run_command(command, timeout_s=timeout_s, runner=runner).stdout
+    return parse_probe_output(stdout, path), _parse_stream_times(stdout, path)
+
+
+def _parse_stream_times(stdout: bytes, path: Path) -> StreamTimes:
+    root = _json_object(stdout, path)
     container = root.get("format")
     container_start_s = _optional_seconds(
         container.get("start_time") if isinstance(container, dict) else None, path
