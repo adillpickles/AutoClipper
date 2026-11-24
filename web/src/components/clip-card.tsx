@@ -88,7 +88,7 @@ export function ClipCard({
             {span}
           </span>
         </div>
-        <p className="text-sm leading-snug font-medium text-pretty text-ink-primary">
+        <p className="text-sm leading-snug font-medium text-pretty break-words text-ink-primary">
           {reasonFor(candidate)}
         </p>
         <div className="flex items-center gap-2.5">

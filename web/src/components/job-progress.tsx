@@ -179,7 +179,7 @@ function JobStatus({
           VOD {job.video_id}
         </p>
         <h1
-          className="font-display text-2xl font-semibold tracking-tight text-balance text-ink-primary sm:text-3xl"
+          className="font-display text-2xl font-semibold tracking-tight text-balance break-words text-ink-primary sm:text-3xl"
           aria-live="polite"
         >
           {headline}
@@ -278,7 +278,7 @@ function JobStatus({
               description={
                 result.warnings.length > 0
                   ? "Nothing could be ranked from the signals that were available for this VOD."
-                  : "Chat and audio stayed steady through this VOD, so there's nothing to rank."
+                  : "Analysis finished, but no moments stood out to rank for this VOD."
               }
               action={
                 <ButtonLink href="/" variant="primary">

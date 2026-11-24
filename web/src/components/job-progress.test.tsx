@@ -67,10 +67,11 @@ describe("JobProgress", () => {
 
   it("shows a loading skeleton while fetching the job", () => {
     state.getJob.mockReturnValue(new Promise(() => {}));
-    render(<JobProgress />);
+    const { container } = render(<JobProgress />);
 
     const status = screen.getByRole("status");
-    expect(status.getAttribute("aria-busy")).toBe("true");
+    expect(status.getAttribute("aria-busy")).toBeNull();
+    expect(container.querySelector('[aria-busy="true"]')).toBeTruthy();
     expect(
       screen.getByRole("heading", {
         level: 1,

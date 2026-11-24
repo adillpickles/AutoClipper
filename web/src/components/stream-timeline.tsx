@@ -97,7 +97,15 @@ export function StreamTimeline({
     event: KeyboardEvent<HTMLButtonElement>,
     candidateId: string,
   ) {
-    if (chronological.length <= 1) return;
+    if (
+      chronological.length <= 1 ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      event.shiftKey
+    ) {
+      return;
+    }
     const index = chronological.findIndex(
       (item) => item.candidate.candidate_id === candidateId,
     );
@@ -117,7 +125,6 @@ export function StreamTimeline({
     if (nextIndex === null) return;
     event.preventDefault();
     const target = chronological[nextIndex].candidate;
-    onSelect(target);
     buttonRefs.current[target.candidate_id]?.focus();
   }
 
@@ -197,7 +204,8 @@ export function StreamTimeline({
           id={hintId}
           className="sr-only sm:not-sr-only sm:text-xs sm:text-ink-tertiary"
         >
-          Use Left and Right arrow keys, Home, or End to move between moments.
+          Use Left and Right arrow keys, Home, or End to move between moments,
+          then press Enter or Space to open one.
         </p>
 
         {/* Non-overlapping marker lanes across [0, durationS] */}

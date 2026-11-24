@@ -211,7 +211,7 @@ describe("StreamTimeline", () => {
     );
   });
 
-  it("supports keyboard navigation with Arrow keys, Home, and End", () => {
+  it("moves focus with Arrow keys, Home, and End without auto-selecting, and ignores modified keys", () => {
     const onSelect = vi.fn();
     render(
       <StreamTimeline
@@ -232,16 +232,21 @@ describe("StreamTimeline", () => {
 
     marker1.focus();
     fireEvent.keyDown(marker1, { key: "ArrowRight" });
-    expect(onSelect).toHaveBeenLastCalledWith(OVERLAPPING_CANDIDATES[1]);
+    expect(document.activeElement).toBe(marker2);
+    expect(onSelect).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(marker2, { key: "End", ctrlKey: true });
     expect(document.activeElement).toBe(marker2);
 
     fireEvent.keyDown(marker2, { key: "End" });
-    expect(onSelect).toHaveBeenLastCalledWith(OVERLAPPING_CANDIDATES[2]);
     expect(document.activeElement).toBe(marker3);
 
     fireEvent.keyDown(marker3, { key: "Home" });
-    expect(onSelect).toHaveBeenLastCalledWith(OVERLAPPING_CANDIDATES[0]);
     expect(document.activeElement).toBe(marker1);
+    expect(onSelect).not.toHaveBeenCalled();
+
+    fireEvent.click(marker3);
+    expect(onSelect).toHaveBeenCalledWith(OVERLAPPING_CANDIDATES[2]);
   });
 
   it("renders an empty state when there are no candidates", () => {

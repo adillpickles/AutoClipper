@@ -17,40 +17,38 @@ export function JobProgressSkeleton({
   label?: string;
 }) {
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      aria-busy="true"
-      className="flex flex-col gap-6 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-panel sm:p-8"
-    >
-      {heading === "h1" ? (
-        <h1 className="sr-only">{label}</h1>
-      ) : (
-        <span className="sr-only">{label}</span>
-      )}
-
-      <div className="flex flex-col gap-3">
-        <Skeleton className="h-6 w-28 rounded-pill" />
-        <Skeleton className="h-8 w-3/4 max-w-md" />
-        <Skeleton className="h-4 w-56 max-w-full" />
+    <div className="flex flex-col">
+      <div role="status" aria-live="polite" className="sr-only">
+        {heading === "h1" ? <h1>{label}</h1> : <span>{label}</span>}
       </div>
+      <div
+        aria-busy="true"
+        aria-label={label}
+        className="flex flex-col gap-6 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-panel sm:p-8"
+      >
+        <div className="flex flex-col gap-3">
+          <Skeleton className="h-6 w-28 rounded-pill" />
+          <Skeleton className="h-8 w-3/4 max-w-md" />
+          <Skeleton className="h-4 w-56 max-w-full" />
+        </div>
 
-      <div className="flex flex-col gap-2 rounded-card border border-border-subtle bg-surface-elevated p-4">
-        <Skeleton className="h-2 w-full rounded-pill" />
-        <Skeleton className="h-3.5 w-28" />
-      </div>
+        <div className="flex flex-col gap-2 rounded-card border border-border-subtle bg-surface-elevated p-4">
+          <Skeleton className="h-2 w-full rounded-pill" />
+          <Skeleton className="h-3.5 w-28" />
+        </div>
 
-      <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
-        {JOB_STAGES.map((stage, index) => (
-          <div key={stage.stage} className="flex items-center gap-3">
-            <Skeleton className="size-6 shrink-0 rounded-pill" />
-            <Skeleton
-              className={`h-4 ${
-                index % 3 === 0 ? "w-44" : index % 3 === 1 ? "w-56" : "w-36"
-              } max-w-[75%]`}
-            />
-          </div>
-        ))}
+        <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
+          {JOB_STAGES.map((stage, index) => (
+            <div key={stage.stage} className="flex items-center gap-3">
+              <Skeleton className="size-6 shrink-0 rounded-pill" />
+              <Skeleton
+                className={`h-4 ${
+                  index % 3 === 0 ? "w-44" : index % 3 === 1 ? "w-56" : "w-36"
+                } max-w-[75%]`}
+              />
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -101,43 +99,37 @@ export function ClipListSkeleton({
   label?: string;
 }) {
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      aria-busy="true"
-      className="flex flex-col gap-8"
-    >
-      {heading === "h1" ? (
-        <h1 className="sr-only">{label}</h1>
-      ) : (
-        <span className="sr-only">{label}</span>
-      )}
-
-      <div className="flex flex-col gap-3">
-        <Skeleton className="h-4 w-56 max-w-full" />
-        <Skeleton className="h-9 w-2/3 max-w-lg" />
+    <div className="flex flex-col">
+      <div role="status" aria-live="polite" className="sr-only">
+        {heading === "h1" ? <h1>{label}</h1> : <span>{label}</span>}
       </div>
+      <div aria-busy="true" aria-label={label} className="flex flex-col gap-8">
+        <div className="flex flex-col gap-3">
+          <Skeleton className="h-4 w-56 max-w-full" />
+          <Skeleton className="h-9 w-2/3 max-w-lg" />
+        </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-col gap-2">
-          <Skeleton className="h-6 w-36" />
-          <Skeleton className="h-4 w-52 max-w-full" />
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-6 w-36" />
+            <Skeleton className="h-4 w-52 max-w-full" />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Skeleton className="h-10 w-36" />
+            <Skeleton className="h-10 w-40" />
+            <Skeleton className="h-10 w-32" />
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Skeleton className="h-10 w-36" />
-          <Skeleton className="h-10 w-40" />
-          <Skeleton className="h-10 w-32" />
-        </div>
+
+        <ol
+          role="list"
+          className="grid grid-cols-1 gap-5 min-[480px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+        >
+          {Array.from({ length: count }, (_, index) => (
+            <ClipCardSkeleton key={index} />
+          ))}
+        </ol>
       </div>
-
-      <ol
-        role="list"
-        className="grid grid-cols-1 gap-5 min-[480px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
-      >
-        {Array.from({ length: count }, (_, index) => (
-          <ClipCardSkeleton key={index} />
-        ))}
-      </ol>
     </div>
   );
 }
@@ -150,45 +142,39 @@ export function ClipEditorSkeleton({
   label?: string;
 }) {
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      aria-busy="true"
-      className="flex flex-col gap-8"
-    >
-      {heading === "h1" ? (
-        <h1 className="sr-only">{label}</h1>
-      ) : (
-        <span className="sr-only">{label}</span>
-      )}
-
-      <div className="flex flex-col gap-2">
-        <Skeleton className="h-4 w-28" />
-        <Skeleton className="h-4 w-60 max-w-full" />
-        <Skeleton className="h-8 w-2/3 max-w-lg" />
+    <div className="flex flex-col">
+      <div role="status" aria-live="polite" className="sr-only">
+        {heading === "h1" ? <h1>{label}</h1> : <span>{label}</span>}
       </div>
-
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
-        <div className="flex flex-col gap-4 lg:col-span-7">
-          <div
-            aria-hidden="true"
-            className="aspect-video w-full rounded-panel border border-border-subtle bg-surface-media motion-safe:animate-pulse"
-          />
-          <div className="flex flex-wrap gap-2">
-            <Skeleton className="h-10 w-32" />
-            <Skeleton className="h-10 w-40" />
-            <Skeleton className="h-10 w-36" />
-          </div>
+      <div aria-busy="true" aria-label={label} className="flex flex-col gap-8">
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-4 w-28" />
+          <Skeleton className="h-4 w-60 max-w-full" />
+          <Skeleton className="h-8 w-2/3 max-w-lg" />
         </div>
-        <div className="flex flex-col gap-5 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-panel sm:p-6 lg:col-span-5">
-          <div className="flex items-center justify-between gap-2">
-            <Skeleton className="h-6 w-32" />
-            <Skeleton className="h-9 w-16" />
+
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
+          <div className="flex flex-col gap-4 lg:col-span-7">
+            <div
+              aria-hidden="true"
+              className="aspect-video w-full rounded-panel border border-border-subtle bg-surface-media motion-safe:animate-pulse"
+            />
+            <div className="flex flex-wrap gap-2">
+              <Skeleton className="h-10 w-32" />
+              <Skeleton className="h-10 w-40" />
+              <Skeleton className="h-10 w-36" />
+            </div>
           </div>
-          <Skeleton className="h-16 w-full" />
-          <Skeleton className="h-16 w-full" />
-          <Skeleton className="h-20 w-full" />
-          <Skeleton className="h-11 w-full" />
+          <div className="flex flex-col gap-5 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-panel sm:p-6 lg:col-span-5">
+            <div className="flex items-center justify-between gap-2">
+              <Skeleton className="h-6 w-32" />
+              <Skeleton className="h-9 w-16" />
+            </div>
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-20 w-full" />
+            <Skeleton className="h-11 w-full" />
+          </div>
         </div>
       </div>
     </div>

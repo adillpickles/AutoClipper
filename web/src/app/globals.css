@@ -239,7 +239,6 @@ body {
   color: var(--ink-primary);
   font-family: var(--font-sans);
   font-size: var(--type-body);
-  overflow-x: clip;
   text-rendering: optimizeLegibility;
 }
 

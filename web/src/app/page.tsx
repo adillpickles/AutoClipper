@@ -36,7 +36,11 @@ export default function Home() {
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 sm:px-8">
       <SiteHeader />
-      <main className="flex flex-1 flex-col gap-8 py-8 sm:gap-10 sm:py-14">
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className="flex flex-1 flex-col gap-8 py-8 focus:outline-none sm:gap-10 sm:py-14"
+      >
         <section className="flex flex-col gap-5">
           <p className="text-xs font-semibold tracking-[0.14em] text-accent uppercase">
             Twitch VOD to clips

@@ -54,8 +54,10 @@ describe("UI primitives", () => {
     const statuses = screen.getAllByRole("status");
     expect(statuses).toHaveLength(3);
     for (const status of statuses) {
-      expect(status.getAttribute("aria-busy")).toBe("true");
+      expect(status.getAttribute("aria-busy")).toBeNull();
     }
+    const busyRegions = container.querySelectorAll('[aria-busy="true"]');
+    expect(busyRegions).toHaveLength(3);
     expect(
       screen.getByRole("heading", {
         level: 1,
