@@ -421,16 +421,49 @@ def test_highlights_accepts_video_when_corrected_duration_matches(
     assert str(out) in _plain(result.output)
 
 
+def test_highlights_rejects_unknown_candidate_id_in_segments_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    analysis_file = tmp_path / "result.json"
+    analysis_file.write_text(_sample_analysis_result(120.0).model_dump_json(), encoding="utf-8")
+    video = tmp_path / "vod.mp4"
+    video.write_bytes(b"stub")
+    seg_file = tmp_path / "segments.json"
+    seg_file.write_text(
+        json.dumps({"segments": [{"candidate_id": "c999", "start_s": 10.0, "end_s": 25.0}]}),
+        encoding="utf-8",
+    )
+
+    def _unexpected_render(_req: HighlightsRequest) -> HighlightsResult:
+        pytest.fail("render_highlights should not be called for an unknown candidate_id")
+
+    monkeypatch.setattr(export_highlights_mod, "render_highlights", _unexpected_render)
+
+    result = runner.invoke(
+        app,
+        [
+            "highlights",
+            str(analysis_file),
+            "--video",
+            str(video),
+            "--segments",
+            str(seg_file),
+        ],
+    )
+
+    assert result.exit_code == ExitCode.USER_ERROR
+    assert "c999" in _plain(result.output)
+
+
 @pytest.mark.parametrize(
     ("exc", "expected_code"),
     [
-        pytest.param(ValueError("unknown candidate c999"), "unknown candidate c999", id="value"),
         pytest.param(CaptioningError("whisper missing"), "captioning_failed", id="captioning"),
         pytest.param(ExportError("bad layout"), "render_failed", id="export"),
         pytest.param(FFmpegError("ffmpeg failed"), "render_failed", id="ffmpeg"),
     ],
 )
-def test_highlights_maps_render_and_resolution_errors_to_user_error(
+def test_highlights_maps_render_errors_to_user_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     exc: Exception,
@@ -498,7 +531,14 @@ def test_ingest_closes_helix_client_and_exits_0_when_all_steps_succeed(
     assert "vod_meta: ok - saved" in _plain(result.output)
 
 
-def test_analyze_rejects_missing_model_dir_and_bad_lexicon(tmp_path: Path) -> None:
+def test_analyze_rejects_missing_model_dir_and_bad_lexicon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _unexpected_analyze(*_args: object, **_kwargs: object) -> AnalysisResult:
+        pytest.fail("analyze_vod should not be called when CLI input validation fails")
+
+    monkeypatch.setattr(analyze_mod, "analyze_vod", _unexpected_analyze)
+
     missing_model = runner.invoke(
         app, ["analyze", "123456", "--model", str(tmp_path / "no-such-model")]
     )
@@ -509,6 +549,8 @@ def test_analyze_rejects_missing_model_dir_and_bad_lexicon(tmp_path: Path) -> No
     bad_lexicon.write_text("not_a_valid_lexicon: true\n", encoding="utf-8")
     bad_lex_res = runner.invoke(app, ["analyze", "123456", "--lexicon", str(bad_lexicon)])
     assert bad_lex_res.exit_code == ExitCode.USER_ERROR
+    assert "Error:" in _plain(bad_lex_res.output)
+    assert "lexicon" in _plain(bad_lex_res.output).lower()
 
 
 def test_analyze_closes_helix_and_maps_scorer_error_when_salt_is_missing(
@@ -574,12 +616,19 @@ def test_serve_pipeline_exits_with_user_error_for_bad_lexicon(
         "ensure_sample_media",
         lambda _dir: api_service_mod.SampleMedia(sample_path),
     )
+
+    def _unexpected_run(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("uvicorn.run should not be called when the lexicon is invalid")
+
+    monkeypatch.setattr(uvicorn, "run", _unexpected_run)
     bad_lexicon = tmp_path / "bad-lexicon.yaml"
     bad_lexicon.write_text("bad: 1\n", encoding="utf-8")
 
     result = runner.invoke(app, ["serve", "--jobs", "pipeline", "--lexicon", str(bad_lexicon)])
 
     assert result.exit_code == ExitCode.USER_ERROR
+    assert "Error:" in _plain(result.output)
+    assert "lexicon" in _plain(result.output).lower()
 
 
 def test_serve_mock_starts_without_lexicon_or_credentials(
@@ -688,6 +737,16 @@ def test_serve_pipeline_wires_tools_for_and_segment_fetcher(
     assert segment_calls == [("987654", 10.0, 40.0, tmp_path / "data" / "raw" / "video" / "987654")]
 
     # Second run with credentials/salt configured to verify HelixClient and salt are wired.
+    seen_creds: list[Any] = []
+
+    class _FakeHelix:
+        def __init__(self, creds: Any) -> None:  # noqa: ANN401
+            seen_creds.append(creds)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(twitch_api_mod, "HelixClient", _FakeHelix)
     monkeypatch.setenv("TWITCH_CLIENT_ID", "fake-id")
     monkeypatch.setenv("TWITCH_CLIENT_SECRET", "fake-secret")
     monkeypatch.setenv("AUTOCLIPPER_CHAT_HASH_SALT", "fake-salt")
@@ -707,10 +766,9 @@ def test_serve_pipeline_wires_tools_for_and_segment_fetcher(
     )
     assert res_configured.exit_code == ExitCode.SUCCESS, res_configured.output
     tools_ok = captured_service_kwargs["tools_for"]()
-    try:
-        assert tools_ok.helix is not None
-        assert tools_ok.salt is not None
-        assert tools_ok.salt.get_secret_value() == "fake-salt"
-    finally:
-        if tools_ok.helix is not None:
-            tools_ok.helix.close()
+    assert isinstance(tools_ok.helix, _FakeHelix)
+    assert len(seen_creds) == 1
+    assert seen_creds[0].client_id.get_secret_value() == "fake-id"
+    assert seen_creds[0].client_secret.get_secret_value() == "fake-secret"
+    assert tools_ok.salt is not None
+    assert tools_ok.salt.get_secret_value() == "fake-salt"
