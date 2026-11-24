@@ -4,7 +4,10 @@
 // keeps short moments anchored at their true start time inside an enlarged clickable hit area,
 // shows a candidate-activity strip, and opens the selected candidate's ClipCard below.
 
+import { useId, useRef, type KeyboardEvent } from "react";
+
 import { ClipCard, type ClipExport } from "@/components/clip-card";
+import { EmptyState } from "@/components/ui/empty-state";
 import type { Candidate } from "@/lib/api/types";
 import { formatTime } from "@/lib/format";
 import { reasonFor } from "@/lib/reason";
@@ -55,8 +58,26 @@ export function StreamTimeline({
   clips: Record<string, ClipExport>;
   onRetry: (candidate: Candidate) => void;
 }) {
+  const hintId = useId();
+  const buttonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  if (candidates.length === 0) {
+    return (
+      <EmptyState
+        heading="h3"
+        title="No moments on this timeline"
+        description="This analysis did not find any moments to plot across the stream."
+      />
+    );
+  }
+
   const layout = layoutTimelineMarkers(candidates, durationS);
   const activityBins = buildActivityBins(candidates, durationS, 48);
+  const chronological = [...layout.markers].sort(
+    (a, b) =>
+      a.candidate.start_s - b.candidate.start_s ||
+      a.candidate.rank - b.candidate.rank,
+  );
   const topRanked =
     layout.markers.length > 0
       ? layout.markers.reduce((best, item) =>
@@ -72,11 +93,46 @@ export function StreamTimeline({
       ? layout.laneCount * LANE_HEIGHT_PX + (layout.laneCount - 1) * LANE_GAP_PX
       : LANE_HEIGHT_PX;
 
+  function handleMarkerKeyDown(
+    event: KeyboardEvent<HTMLButtonElement>,
+    candidateId: string,
+  ) {
+    if (
+      chronological.length <= 1 ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      event.shiftKey
+    ) {
+      return;
+    }
+    const index = chronological.findIndex(
+      (item) => item.candidate.candidate_id === candidateId,
+    );
+    if (index === -1) return;
+
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = Math.min(chronological.length - 1, index + 1);
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = Math.max(0, index - 1);
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = chronological.length - 1;
+    }
+
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const target = chronological[nextIndex].candidate;
+    buttonRefs.current[target.candidate_id]?.focus();
+  }
+
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-4 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-panel">
+    <div className="flex min-w-0 flex-col gap-6">
+      <div className="flex min-w-0 flex-col gap-4 rounded-panel border border-border-subtle bg-surface-panel p-4 shadow-panel sm:p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
+          <div className="min-w-0">
             <h3 className="font-display text-base font-semibold text-ink-primary">
               Stream timeline
             </h3>
@@ -87,7 +143,10 @@ export function StreamTimeline({
                 ` Overlapping moments are arranged into ${layout.laneCount} rows.`}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-3 text-xs text-ink-secondary">
+          <div
+            aria-label="Moment sources"
+            className="flex flex-wrap items-center gap-3 text-xs text-ink-secondary"
+          >
             <span className="inline-flex items-center gap-1.5">
               <span
                 aria-hidden="true"
@@ -114,7 +173,7 @@ export function StreamTimeline({
 
         {/* Candidate activity strip (reflects selected candidate scores only) */}
         <div className="flex flex-col gap-1.5">
-          <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs">
             <span className="font-medium text-ink-primary">
               Candidate activity
             </span>
@@ -141,11 +200,20 @@ export function StreamTimeline({
           </div>
         </div>
 
+        <p
+          id={hintId}
+          className="sr-only sm:not-sr-only sm:text-xs sm:text-ink-tertiary"
+        >
+          Use Left and Right arrow keys, Home, or End to move between moments,
+          then press Enter or Space to open one.
+        </p>
+
         {/* Non-overlapping marker lanes across [0, durationS] */}
         <div
           role="group"
           aria-label="Highlighted moments along the stream"
-          className="relative w-full rounded-card bg-surface-elevated py-2 ring-1 ring-border-subtle ring-inset"
+          aria-describedby={hintId}
+          className="relative w-full overflow-hidden rounded-card bg-surface-elevated py-2 ring-1 ring-border-subtle ring-inset"
           style={{ height: `${trackHeightPx + 16}px` }}
         >
           {layout.markers.map((marker) => {
@@ -165,6 +233,9 @@ export function StreamTimeline({
               return (
                 <button
                   key={candidate.candidate_id}
+                  ref={(node) => {
+                    buttonRefs.current[candidate.candidate_id] = node;
+                  }}
                   type="button"
                   data-lane={marker.lane}
                   data-short="true"
@@ -173,13 +244,16 @@ export function StreamTimeline({
                   aria-label={`Rank #${candidate.rank}, ${span}: ${reasonFor(candidate)}`}
                   title={`#${candidate.rank} (${span}) · ${reasonFor(candidate)}`}
                   onClick={() => onSelect(candidate)}
+                  onKeyDown={(event) =>
+                    handleMarkerKeyDown(event, candidate.candidate_id)
+                  }
                   style={{
                     left: `${marker.hitLeftPct}%`,
                     width: `${marker.hitWidthPct}%`,
                     top: `${topPx}px`,
                     height: `${LANE_HEIGHT_PX}px`,
                   }}
-                  className={`group absolute box-border flex min-w-0 items-center overflow-hidden rounded-control bg-transparent transition hover:bg-surface-subtle/80 focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none ${labelAlign} ${
+                  className={`group absolute box-border flex min-w-0 items-center overflow-hidden rounded-control bg-transparent transition hover:bg-surface-subtle/80 focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-elevated focus-visible:outline-none ${labelAlign} ${
                     isSelected
                       ? "z-10 bg-surface-subtle ring-2 ring-ink-primary ring-offset-2 ring-offset-surface-elevated"
                       : ""
@@ -218,6 +292,9 @@ export function StreamTimeline({
             return (
               <button
                 key={candidate.candidate_id}
+                ref={(node) => {
+                  buttonRefs.current[candidate.candidate_id] = node;
+                }}
                 type="button"
                 data-lane={marker.lane}
                 data-short="false"
@@ -226,13 +303,16 @@ export function StreamTimeline({
                 aria-label={`Rank #${candidate.rank}, ${span}: ${reasonFor(candidate)}`}
                 title={`#${candidate.rank} (${span}) · ${reasonFor(candidate)}`}
                 onClick={() => onSelect(candidate)}
+                onKeyDown={(event) =>
+                  handleMarkerKeyDown(event, candidate.candidate_id)
+                }
                 style={{
                   left: `${marker.hitLeftPct}%`,
                   width: `${marker.hitWidthPct}%`,
                   top: `${topPx}px`,
                   height: `${LANE_HEIGHT_PX}px`,
                 }}
-                className={`absolute box-border flex min-w-0 items-center justify-center overflow-hidden rounded-control px-0.5 font-mono text-xs font-semibold transition focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none ${MARKER_STYLE[candidate.source]} ${
+                className={`absolute box-border flex min-w-0 items-center justify-center overflow-hidden rounded-control px-0.5 font-mono text-xs font-semibold transition focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-elevated focus-visible:outline-none ${MARKER_STYLE[candidate.source]} ${
                   isSelected
                     ? "z-10 ring-2 ring-ink-primary ring-offset-2 ring-offset-surface-elevated"
                     : ""
@@ -245,7 +325,10 @@ export function StreamTimeline({
         </div>
 
         {/* Stream time axis ticks anchored to the exact marker percentage scale */}
-        <div className="relative h-4 w-full text-xs text-ink-tertiary tabular-nums">
+        <div
+          aria-hidden="true"
+          className="relative h-4 w-full text-xs text-ink-tertiary tabular-nums"
+        >
           {layout.ticks.map((tick) => {
             const align =
               tick.pct === 0

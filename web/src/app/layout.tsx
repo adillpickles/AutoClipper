@@ -2,6 +2,8 @@ import "@fontsource-variable/jetbrains-mono";
 import "@fontsource-variable/plus-jakarta-sans";
 import "@fontsource-variable/space-grotesk";
 import type { Metadata } from "next";
+
+import { SkipLink } from "@/components/ui/skip-link";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,6 +16,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className="h-full antialiased">
       <body className="flex min-h-full flex-col bg-surface-canvas font-sans text-ink-primary">
+        <SkipLink />
         {children}
       </body>
     </html>

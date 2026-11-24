@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 
+import { Button, buttonClasses, ButtonLink } from "@/components/ui/button";
 import type { Candidate, Export } from "@/lib/api/types";
 import { formatTime } from "@/lib/format";
 import { reasonFor } from "@/lib/reason";
@@ -49,7 +49,7 @@ export function ClipCard({
   const filename = `autoclipper_${videoId}_${candidate.start_s}-${candidate.end_s}.mp4`;
 
   return (
-    <li className="flex flex-col overflow-hidden rounded-card border border-border-subtle bg-surface-panel shadow-card transition-colors hover:border-border-strong">
+    <li className="flex min-w-0 flex-col overflow-hidden rounded-card border border-border-subtle bg-surface-panel shadow-card transition-colors hover:border-border-strong">
       <div className="relative aspect-[9/16] w-full bg-surface-media">
         {ready && !videoFailed ? (
           <video
@@ -62,7 +62,7 @@ export function ClipCard({
             aria-label={`Clip ${candidate.rank}, ${span} in the stream`}
           />
         ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 p-5 text-center text-sm text-zinc-300">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-5 text-center text-sm text-slate-200">
             <ClipPlaceholder
               clip={clip}
               videoFailed={videoFailed}
@@ -76,7 +76,7 @@ export function ClipCard({
         </span>
       </div>
 
-      <div className="flex flex-1 flex-col gap-3 p-4">
+      <div className="flex flex-1 flex-col gap-3 p-3.5 sm:p-4">
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
           <span
             className={`rounded-pill border px-2.5 py-0.5 font-medium ${SOURCE_STYLE[candidate.source]}`}
@@ -88,7 +88,7 @@ export function ClipCard({
             {span}
           </span>
         </div>
-        <p className="text-sm leading-snug font-medium text-pretty text-ink-primary">
+        <p className="text-sm leading-snug font-medium text-pretty break-words text-ink-primary">
           {reasonFor(candidate)}
         </p>
         <div className="flex items-center gap-2.5">
@@ -115,7 +115,7 @@ export function ClipCard({
             <a
               href={clip.url ?? undefined}
               download={filename}
-              className="inline-flex rounded-control bg-accent px-4 py-2 text-sm font-semibold text-accent-ink shadow-card transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-panel focus-visible:outline-none"
+              className={buttonClasses({ variant: "primary", size: "md" })}
             >
               Download<span className="sr-only"> clip {candidate.rank}</span>
             </a>
@@ -123,7 +123,7 @@ export function ClipCard({
             <button
               type="button"
               disabled
-              className="inline-flex cursor-not-allowed rounded-control bg-surface-subtle px-4 py-2 text-sm font-semibold text-ink-tertiary"
+              className="inline-flex min-h-10 cursor-not-allowed items-center justify-center rounded-control bg-surface-subtle px-4 py-2 text-sm font-semibold text-ink-tertiary"
             >
               Download
               <span className="sr-only">
@@ -132,12 +132,13 @@ export function ClipCard({
               </span>
             </button>
           )}
-          <Link
+          <ButtonLink
             href={`/jobs/${jobId}/results/${candidate.candidate_id}`}
-            className="inline-flex rounded-control border border-border-strong bg-surface-elevated px-3.5 py-2 text-sm font-medium text-ink-primary transition-colors hover:bg-surface-subtle focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-panel focus-visible:outline-none"
+            variant="subtle"
+            size="md"
           >
             Edit <span className="sr-only">clip {candidate.rank}</span>
-          </Link>
+          </ButtonLink>
         </div>
       </div>
     </li>
@@ -155,12 +156,19 @@ function ClipPlaceholder({
 }) {
   if (videoFailed) {
     return (
-      <p>
-        The clip is ready but can&apos;t be played here. Download it instead.
+      <p role="status" className="max-w-52 text-pretty text-slate-200">
+        The clip is ready but can&apos;t be played here. Download it below
+        instead.
       </p>
     );
   }
-  if (clip.kind === "unavailable") return <p>{clip.message}</p>;
+  if (clip.kind === "unavailable") {
+    return (
+      <p role="status" className="max-w-52 text-pretty text-slate-200">
+        {clip.message}
+      </p>
+    );
+  }
   if (
     clip.kind === "error" ||
     (clip.kind === "export" && clip.export.state === "failed")
@@ -170,29 +178,35 @@ function ClipPlaceholder({
         ? clip.message
         : (clip.export.error?.message ?? "Rendering failed.");
     return (
-      <>
-        <p className="text-red-300">{message}</p>
-        <button
-          type="button"
-          onClick={onRetry}
-          className="rounded-control border border-white/25 bg-white/10 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-focus-ring-media focus-visible:ring-offset-2 focus-visible:ring-offset-surface-media focus-visible:outline-none"
-        >
+      <div role="alert" className="flex flex-col items-center gap-3">
+        <p className="max-w-56 text-pretty text-red-200">{message}</p>
+        <Button variant="media" size="sm" onClick={onRetry}>
           Try again
-        </button>
-      </>
+        </Button>
+      </div>
     );
   }
   if (clip.kind === "pending" || clip.export.state === "queued") {
-    return <p>Waiting to render…</p>;
+    return (
+      <div role="status" className="flex flex-col items-center gap-2">
+        <span
+          aria-hidden="true"
+          className="size-2.5 rounded-pill bg-accent motion-safe:animate-pulse"
+        />
+        <p>Waiting to render…</p>
+      </div>
+    );
   }
   const progress = clip.export.progress;
   return (
-    <>
+    <div role="status" className="flex flex-col items-center gap-2.5">
       <span
-        className="size-6 animate-spin rounded-pill border-2 border-accent border-t-transparent"
+        className="size-6 rounded-pill border-2 border-accent border-t-transparent motion-safe:animate-spin"
         aria-hidden="true"
       />
-      <p>{progress ? `Rendering… ${progress.message}` : "Rendering…"}</p>
-    </>
+      <p className="max-w-52 text-pretty">
+        {progress ? `Rendering… ${progress.message}` : "Rendering…"}
+      </p>
+    </div>
   );
 }

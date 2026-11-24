@@ -210,4 +210,64 @@ describe("StreamTimeline", () => {
       "/mock-media/c002.mp4",
     );
   });
+
+  it("moves focus with Arrow keys, Home, and End without auto-selecting, and ignores modified keys", () => {
+    const onSelect = vi.fn();
+    render(
+      <StreamTimeline
+        jobId="job_1"
+        videoId="9000000001"
+        durationS={360}
+        candidates={OVERLAPPING_CANDIDATES}
+        selectedId="c001"
+        onSelect={onSelect}
+        clips={{}}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    const marker1 = screen.getByRole("button", { name: /^Rank #1/ });
+    const marker2 = screen.getByRole("button", { name: /^Rank #2/ });
+    const marker3 = screen.getByRole("button", { name: /^Rank #3/ });
+
+    marker1.focus();
+    fireEvent.keyDown(marker1, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(marker2);
+    expect(onSelect).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(marker2, { key: "End", ctrlKey: true });
+    expect(document.activeElement).toBe(marker2);
+
+    fireEvent.keyDown(marker2, { key: "End" });
+    expect(document.activeElement).toBe(marker3);
+
+    fireEvent.keyDown(marker3, { key: "Home" });
+    expect(document.activeElement).toBe(marker1);
+    expect(onSelect).not.toHaveBeenCalled();
+
+    fireEvent.click(marker3);
+    expect(onSelect).toHaveBeenCalledWith(OVERLAPPING_CANDIDATES[2]);
+  });
+
+  it("renders an empty state when there are no candidates", () => {
+    render(
+      <StreamTimeline
+        jobId="job_1"
+        videoId="9000000006"
+        durationS={360}
+        candidates={[]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        clips={{}}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", {
+        level: 3,
+        name: "No moments on this timeline",
+      }),
+    ).toBeTruthy();
+  });
 });
