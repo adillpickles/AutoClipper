@@ -485,8 +485,9 @@ class MockService:
     _preview_media_id: str = field(default="", init=False)
     _file_media: dict[str, _FileMediaState] = field(default_factory=dict, init=False)
     _segments: dict[tuple[str, str], _SegmentState] = field(default_factory=dict, init=False)
-    _active_render_paths: Counter[Path] = field(default_factory=Counter, init=False)
+    _active_segment_paths: Counter[Path] = field(default_factory=Counter, init=False)
     _pending_invalidations: set[Path] = field(default_factory=set, init=False)
+    _detached_segments: list[Path] = field(default_factory=list, init=False)
     _fetching: set[tuple[str, int, int]] = field(default_factory=set, init=False)
     _fetches_done: int = field(default=0, init=False)
     _fetch_done: threading.Condition = field(
@@ -535,17 +536,22 @@ class MockService:
 
     def close(self) -> None:
         """Stop the workers: queued work is dropped, the work in hand finishes."""
-        if self.synchronous:
-            return
-        for work in (self._analysis_queue, self._render_queue, self._fetch_queue):
-            while True:  # queued work is dropped, like everything else on restart (§ 9.3)
-                try:
-                    work.get_nowait()
-                except queue.Empty:
-                    break
-            work.put(None)
-        for thread in self._threads:
-            thread.join(timeout=5)
+        if not self.synchronous:
+            for work in (self._analysis_queue, self._render_queue, self._fetch_queue):
+                while True:  # queued work is dropped, like everything else on restart (§ 9.3)
+                    try:
+                        work.get_nowait()
+                    except queue.Empty:
+                        break
+                work.put(None)
+            for thread in self._threads:
+                thread.join(timeout=5)
+        with self._lock:
+            detached = list(self._detached_segments)
+            self._detached_segments.clear()
+        for path in detached:
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
 
     # --- Jobs ----------------------------------------------------------------------------------
 
@@ -1428,18 +1434,22 @@ class MockService:
             ):
                 return
             segment = VideoSegment(state.path, state.begin_s, state.end_s)
-        self._sleep()
-        media_id = self._register_segment_media(segment)
-        with self._lock:
-            current = self._segments.get(key)
-            if current is None or current.status != "ready" or current.media_id is not None:
-                return
-            self._segments[key] = replace(
-                current,
-                media_id=media_id,
-                preview_preparing=False,
-                preview_failed=media_id is None,
-            )
+            self._active_segment_paths[segment.path] += 1
+        try:
+            self._sleep()
+            media_id = self._register_segment_media(segment)
+            with self._lock:
+                current = self._segments.get(key)
+                if current is None or current.status != "ready" or current.media_id is not None:
+                    return
+                self._segments[key] = replace(
+                    current,
+                    media_id=media_id,
+                    preview_preparing=False,
+                    preview_failed=media_id is None,
+                )
+        finally:
+            self._release_segment_path(segment.path)
 
     def _run_fetch(self, job_id: str, candidate_id: str) -> None:
         """Download one candidate's video segment in the background and record it (#46)."""
@@ -1464,6 +1474,7 @@ class MockService:
                 end,
                 need_begin_s=candidate.start_s,
                 need_end_s=candidate.end_s,
+                lease_path=True,
             )
         except Exception as exc:  # the downloader's typed errors (§ 5.2 reasons)
             reason = (
@@ -1476,22 +1487,25 @@ class MockService:
             with self._lock:
                 self._fetches_done += 1
             return
-        media_id = self._register_segment_media(segment)
-        self._store_segment(
-            job,
-            candidate,
-            _SegmentState(
-                "ready",
-                planned_begin_s=state.planned_begin_s,
-                planned_end_s=state.planned_end_s,
-                path=segment.path,
-                begin_s=segment.begin_s,
-                end_s=segment.end_s,
-                media_id=media_id,
-                preview_failed=media_id is None,
-            ),
-            fail_if_short=True,
-        )
+        try:
+            media_id = self._register_segment_media(segment)
+            self._store_segment(
+                job,
+                candidate,
+                _SegmentState(
+                    "ready",
+                    planned_begin_s=state.planned_begin_s,
+                    planned_end_s=state.planned_end_s,
+                    path=segment.path,
+                    begin_s=segment.begin_s,
+                    end_s=segment.end_s,
+                    media_id=media_id,
+                    preview_failed=media_id is None,
+                ),
+                fail_if_short=True,
+            )
+        finally:
+            self._release_segment_path(segment.path)
         with self._lock:
             self._fetches_done += 1
         log.info(
@@ -1506,14 +1520,16 @@ class MockService:
     def _invalidate_short_segment(self, path: Path) -> None:
         """Remove a short downloaded segment from the cache slot so retries fetch fresh.
 
-        If an active render is currently reading `path`, defer invalidation until the render
-        finishes so FFmpeg never loses its input file mid-render. If another candidate's ready
-        preview still points at `path`, relocate it to a detached sibling (ignored by
-        `download_video_segment`'s cache lookup) and update those ready records atomically so
-        existing previews/exports keep working while retries download fresh footage.
+        If an active render or preview preparation is currently reading `path`, defer
+        invalidation until it finishes so FFmpeg never loses its input file mid-operation. If
+        another candidate's ready preview still points at `path`, relocate it to a detached
+        sibling (ignored by `download_video_segment`'s cache lookup) and update both ready
+        segment records and published `_media` URLs atomically so existing previews and exports
+        keep working while retries download fresh footage. Detached files are reclaimed on
+        `close()`.
         """
         with self._lock:
-            if self._active_render_paths.get(path, 0) > 0:
+            if self._active_segment_paths.get(path, 0) > 0:
                 self._pending_invalidations.add(path)
                 return
             ready_keys = [
@@ -1521,7 +1537,8 @@ class MockService:
                 for key, state in self._segments.items()
                 if state.status == "ready" and state.path == path
             ]
-            if ready_keys:
+            media_ids = [mid for mid, media_path in self._media.items() if media_path == path]
+            if ready_keys or media_ids:
                 if path.exists():
                     detached = path.with_name(
                         f"{path.stem}.pinned-{secrets.token_hex(4)}{path.suffix}"
@@ -1535,24 +1552,27 @@ class MockService:
                             exc,
                         )
                     else:
+                        self._detached_segments.append(detached)
                         for key in ready_keys:
                             self._segments[key] = replace(self._segments[key], path=detached)
+                        for mid in media_ids:
+                            self._media[mid] = detached
                 return
             try:
                 path.unlink(missing_ok=True)
             except OSError as exc:
                 log.warning("couldn't remove short video segment path=%s: %s", path, exc)
 
-    def _release_render_path(self, path: Path | None) -> None:
-        """Release a render's lease on a downloaded segment and run any deferred invalidation."""
+    def _release_segment_path(self, path: Path | None) -> None:
+        """Release a lease on a downloaded segment and run any deferred invalidation."""
         if path is None:
             return
         with self._lock:
-            remaining = self._active_render_paths.get(path, 0) - 1
+            remaining = self._active_segment_paths.get(path, 0) - 1
             if remaining > 0:
-                self._active_render_paths[path] = remaining
+                self._active_segment_paths[path] = remaining
                 return
-            self._active_render_paths.pop(path, None)
+            self._active_segment_paths.pop(path, None)
             should_invalidate = path in self._pending_invalidations
             self._pending_invalidations.discard(path)
         if should_invalidate:
@@ -1567,7 +1587,7 @@ class MockService:
         need_begin_s: float | None = None,
         need_end_s: float | None = None,
         end_tolerance_s: float = 0.0,
-        lease_for_render: bool = False,
+        lease_path: bool = False,
     ) -> VideoSegment:
         """One fetch per (VOD, range) at a time.
 
@@ -1575,9 +1595,9 @@ class MockService:
         which the segment cache serves at once. When `need_begin_s`/`need_end_s` are given, a
         returned file that doesn't cover that interval (within `end_tolerance_s` at the end)
         is invalidated from the cache slot before releasing the range key so waiting or
-        retrying callers fetch fresh footage. When `lease_for_render` is True, a render lease
-        is acquired on the returned path before releasing the range key so a concurrent fetch
-        cannot remove or rename it while the render runs.
+        retrying callers fetch fresh footage. When `lease_path` is True, a lease is acquired on
+        the returned path before releasing the range key so a concurrent fetch cannot remove or
+        rename it while the caller prepares previews or renders.
 
         Raises:
             TimeoutError: A fetch of the same range is taking longer than `FETCH_WAIT_S`.
@@ -1608,9 +1628,9 @@ class MockService:
                     f"segment {segment.begin_s:.2f}-{segment.end_s:.2f} s doesn't cover "
                     f"{need_begin_s:.2f}-{need_end_s:.2f} s",
                 )
-            if lease_for_render:
+            if lease_path:
                 with self._lock:
-                    self._active_render_paths[segment.path] += 1
+                    self._active_segment_paths[segment.path] += 1
             return segment
         finally:
             with self._fetch_done:
@@ -1623,7 +1643,7 @@ class MockService:
         begin_s: float,
         end_s: float,
         *,
-        lease_for_render: bool = False,
+        lease_path: bool = False,
     ) -> VideoSegment:
         """Fetch a video segment inline, a render's first stage (#46, § 6.3 and § 7.3).
 
@@ -1640,7 +1660,7 @@ class MockService:
                 need_begin_s=begin_s,
                 need_end_s=end_s,
                 end_tolerance_s=_RENDER_END_TOLERANCE_S,
-                lease_for_render=lease_for_render,
+                lease_path=lease_path,
             )
         except Exception as exc:
             if isinstance(exc, VodUnavailableError | VodAccessRestrictedError):
@@ -1734,7 +1754,7 @@ class MockService:
         begin_needed_s: float,
         end_needed_s: float,
         *,
-        lease_for_render: bool = False,
+        lease_path: bool = False,
     ) -> VideoSegment:
         """The segment a render cuts from.
 
@@ -1754,14 +1774,12 @@ class MockService:
                 and end_needed_s <= state.end_s + _RENDER_END_TOLERANCE_S
             ):
                 assert state.path is not None
-                if lease_for_render:
-                    self._active_render_paths[state.path] += 1
+                if lease_path:
+                    self._active_segment_paths[state.path] += 1
                 return VideoSegment(state.path, state.begin_s, state.end_s)
         if state is not None and state.status == "failed" and state.reason == "source_unavailable":
             raise _MediaUnavailable(state.reason, _SOURCE_EXPORT_UNAVAILABLE)
-        segment = self._fetch_segment(
-            job, begin_needed_s, end_needed_s, lease_for_render=lease_for_render
-        )
+        segment = self._fetch_segment(job, begin_needed_s, end_needed_s, lease_path=lease_path)
         try:
             if segment.begin_s <= candidate.start_s and candidate.end_s <= segment.end_s:
                 media_id = self._register_segment_media(segment)
@@ -1780,8 +1798,8 @@ class MockService:
                     ),
                 )
         except Exception:
-            if lease_for_render:
-                self._release_render_path(segment.path)
+            if lease_path:
+                self._release_segment_path(segment.path)
             raise
         return segment
 
@@ -1792,7 +1810,7 @@ class MockService:
 
         The job's `video_path` is read directly; a mock-scenario job serves the sample; a
         pipeline job without a file gets a downloaded segment around the needed span with a
-        render lease that the caller must release via `_release_render_path`.
+        lease that the caller must release via `_release_segment_path`.
         """
         if job.video_path is not None:
             source = Path(job.video_path)
@@ -1802,7 +1820,7 @@ class MockService:
         if not self._needs_segment(job):
             return self.samples.preview, 0.0, None
         segment = self._segment_for_render(
-            job, candidate, begin_needed_s, end_needed_s, lease_for_render=True
+            job, candidate, begin_needed_s, end_needed_s, lease_path=True
         )
         return segment.path, segment.begin_s, segment.path
 
@@ -1837,7 +1855,7 @@ class MockService:
                 # same footage; the moments' VOD times shift into the segment's own time.
                 begin = min(segment.start_s for segment in record.segments)
                 end = max(segment.end_s for segment in record.segments)
-                video = self._fetch_segment(job, begin, end, lease_for_render=True)
+                video = self._fetch_segment(job, begin, end, lease_path=True)
                 source, offset_s, leased_path = video.path, video.begin_s, video.path
             else:
                 # No per-candidate span here: the job's file or the sample.
@@ -1896,7 +1914,7 @@ class MockService:
                 self._finish_render(record, error=_RENDER_FAILED)
                 return
         finally:
-            self._release_render_path(leased_path)
+            self._release_segment_path(leased_path)
         # The finished file's probed duration replaces the planned total, published together
         # with the done state (§ 7.2).
         self._finish_render(record, file=result.output, duration_s=result.duration_s)
@@ -2009,7 +2027,7 @@ class MockService:
                 self._finish_render(record, error=_RENDER_FAILED)
                 return
         finally:
-            self._release_render_path(leased_path)
+            self._release_segment_path(leased_path)
         if not target.is_file():  # a renderer that returned without writing is a bug
             raise RuntimeError(f"the renderer wrote no file for {record.render_id}")
         self._finish_render(record, file=target)
