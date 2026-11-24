@@ -34,7 +34,7 @@ from typing import Final, Literal, Protocol, TypeVar
 from autoclipper.analysis import AnalysisResult, AnalysisWarning, Candidate
 from autoclipper.analyze import DEFAULT_SCORER, AnalyzeError, analyze_vod
 from autoclipper.api import mock
-from autoclipper.export.captions import CaptioningError, Stage, Transcriber
+from autoclipper.export.captions import CaptioningError, Stage, Transcriber, captions_available
 from autoclipper.export.clip import (
     MAX_CLIP_DURATION_S,
     ClipSpec,
@@ -462,6 +462,7 @@ class MockService:
     export_facecam_region: tuple[float, float, float, float] | None = None
     channel_layouts: Mapping[str, StackedLayout] | None = None
     transcriber: Transcriber | None = None
+    captions_supported: bool | None = None
     render: ClipRenderer = render_clip
     highlights_render: HighlightsRenderer = render_highlights
     job_runner: Literal["mock", "pipeline"] = "mock"
@@ -517,6 +518,13 @@ class MockService:
             thread = threading.Thread(target=target, name=f"autoclipper-{name}", daemon=True)
             thread.start()
             self._threads.append(thread)
+
+    @property
+    def captions_available(self) -> bool:
+        """Whether this server can transcribe speech for burned-in captions (§ 9.5)."""
+        if self.captions_supported is not None:
+            return self.captions_supported
+        return self.transcriber is not None or captions_available()
 
     def close(self) -> None:
         """Stop the workers: queued work is dropped, the work in hand finishes."""

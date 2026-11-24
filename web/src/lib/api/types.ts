@@ -178,6 +178,7 @@ export interface Health {
   status: "ok";
   schema_version: string;
   job_runner: "mock" | "pipeline";
+  captions_available: boolean;
 }
 
 export type PreflightStatus = "ok" | "warn" | "fail";

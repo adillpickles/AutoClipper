@@ -36,8 +36,9 @@ describe("HTTP API client", () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
         status: "ok",
-        schema_version: "1.0",
+        schema_version: "1.1",
         job_runner: "pipeline",
+        captions_available: true,
       }),
     );
     const client = createHttpClient("http://127.0.0.1:8000", fetchMock);
@@ -46,8 +47,9 @@ describe("HTTP API client", () => {
 
     expect(health).toEqual({
       status: "ok",
-      schema_version: "1.0",
+      schema_version: "1.1",
       job_runner: "pipeline",
+      captions_available: true,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];

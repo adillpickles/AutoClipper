@@ -32,8 +32,9 @@ describe("SiteHeader", () => {
     state.mockMode = false;
     state.getHealth.mockResolvedValue({
       status: "ok",
-      schema_version: "1.0",
+      schema_version: "1.1",
       job_runner: "mock",
+      captions_available: true,
     });
 
     render(<SiteHeader />);
@@ -45,8 +46,9 @@ describe("SiteHeader", () => {
     state.mockMode = false;
     state.getHealth.mockResolvedValue({
       status: "ok",
-      schema_version: "1.0",
+      schema_version: "1.1",
       job_runner: "pipeline",
+      captions_available: false,
     });
 
     render(<SiteHeader />);

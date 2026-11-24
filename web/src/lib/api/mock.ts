@@ -631,8 +631,9 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
     async getHealth() {
       return {
         status: "ok" as const,
-        schema_version: "1.0",
+        schema_version: "1.1",
         job_runner: "mock" as const,
+        captions_available: true,
       };
     },
 

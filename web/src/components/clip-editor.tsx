@@ -35,6 +35,7 @@ import {
 const FIRST_BACKOFF_MS = 2000;
 const MAX_BACKOFF_MS = 10_000;
 const GIVE_UP_AFTER_MS = 60_000;
+const HEALTH_TIMEOUT_MS = 3000;
 
 const KNOWN_LAYOUTS: readonly Layout[] = [
   "center_crop",
@@ -97,12 +98,50 @@ export function ClipEditor() {
   const [startInput, setStartInput] = useState("0");
   const [endInput, setEndInput] = useState("0");
   const [layout, setLayout] = useState<Layout>("center_crop");
-  const [captions, setCaptions] = useState(true);
+  const [captions, setCaptions] = useState(false);
+  const [captionsStatus, setCaptionsStatus] = useState<
+    "checking" | "available" | "unavailable" | "unknown"
+  >("checking");
   const [render, setRender] = useState<RenderState>({ kind: "idle" });
   const [videoFailed, setVideoFailed] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const pollRunRef = useRef(0);
+  const captionsTouchedRef = useRef(false);
+
+  // Check whether the server has captioning installed; keep captions off while checking so
+  // manual uncaptioned renders stay usable without submitting `captions: true` prematurely.
+  useEffect(() => {
+    let cancelled = false;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled || cancelled) return;
+      settled = true;
+      setCaptionsStatus("unknown");
+    }, HEALTH_TIMEOUT_MS);
+    getApiClient()
+      .getHealth()
+      .then((health) => {
+        if (settled || cancelled) return;
+        settled = true;
+        clearTimeout(timeout);
+        const available = health.captions_available !== false;
+        setCaptionsStatus(available ? "available" : "unavailable");
+        if (!captionsTouchedRef.current) {
+          setCaptions(available);
+        }
+      })
+      .catch(() => {
+        if (settled || cancelled) return;
+        settled = true;
+        clearTimeout(timeout);
+        setCaptionsStatus("unknown");
+      });
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
+  }, []);
 
   // Load the analysis result and locate this candidate.
   useEffect(() => {
@@ -387,17 +426,20 @@ export function ClipEditor() {
       return;
     }
     const runId = ++pollRunRef.current;
+    captionsTouchedRef.current = true;
     const wait = (ms: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, ms));
 
     try {
+      const captionsAllowed =
+        captionsStatus === "available" || captionsStatus === "unknown";
       const { export: started } = await client.createExport({
         job_id: jobId,
         candidate_id: candidate.candidate_id,
         start_s: effective.startS,
         end_s: effective.endS,
         layout,
-        captions,
+        captions: captionsAllowed ? captions : false,
       });
       if (pollRunRef.current !== runId) return;
       rememberExport(jobId, candidate.candidate_id, started.export_id);
@@ -764,17 +806,44 @@ export function ClipEditor() {
             )}
           </fieldset>
 
-          <label className="flex items-center gap-2 text-sm font-medium">
-            <input
-              type="checkbox"
-              checked={captions}
-              onChange={(event) => {
-                setCaptions(event.target.checked);
-                clearStaleRender();
-              }}
-            />
-            Burn in captions
-          </label>
+          <div className="flex flex-col gap-1">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={
+                  (captionsStatus === "available" ||
+                    captionsStatus === "unknown") &&
+                  captions
+                }
+                disabled={
+                  captionsStatus === "checking" ||
+                  captionsStatus === "unavailable"
+                }
+                onChange={(event) => {
+                  captionsTouchedRef.current = true;
+                  setCaptions(event.target.checked);
+                  clearStaleRender();
+                }}
+              />
+              Burn in captions
+            </label>
+            {captionsStatus === "checking" && (
+              <p className="text-xs text-ink-tertiary">
+                Checking server caption support…
+              </p>
+            )}
+            {captionsStatus === "unavailable" && (
+              <p className="text-xs text-ink-tertiary">
+                Unavailable on this server — requires{" "}
+                <code className="font-mono text-ink-secondary">
+                  uv sync --extra captions
+                </code>{" "}
+                and FFmpeg with libass{" "}
+                <code className="font-mono text-ink-secondary">subtitles</code>{" "}
+                support.
+              </p>
+            )}
+          </div>
 
           {exportInfo?.status === "unavailable" && (
             <div

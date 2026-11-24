@@ -47,7 +47,7 @@ __all__ = [
     "parse_vod",
 ]
 
-SCHEMA_VERSION: Final = "1.0"
+SCHEMA_VERSION: Final = "1.1"
 
 type State = Literal["queued", "running", "done", "failed"]
 type Layout = Literal["center_crop", "configured_region", "stacked"]
@@ -256,6 +256,7 @@ class Health(_Response):
     status: Literal["ok"] = "ok"
     schema_version: str = SCHEMA_VERSION
     job_runner: Literal["mock", "pipeline"]
+    captions_available: bool = False
 
 
 class PreflightCheck(_Response):

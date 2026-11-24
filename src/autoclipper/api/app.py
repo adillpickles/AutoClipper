@@ -161,7 +161,12 @@ def create_app(
 
     @app.get(f"{API_PREFIX}/health", response_model=Health)
     def health() -> Response:
-        return _json(Health(job_runner=service.job_runner))
+        return _json(
+            Health(
+                job_runner=service.job_runner,
+                captions_available=service.captions_available,
+            )
+        )
 
     @app.get(f"{API_PREFIX}/preflight", response_model=PreflightReport)
     def get_preflight() -> Response:

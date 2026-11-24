@@ -27,8 +27,19 @@ export const TOP_CLIPS = 10;
 const FIRST_BACKOFF_MS = 2000;
 const MAX_BACKOFF_MS = 10_000;
 const GIVE_UP_AFTER_MS = 60_000;
+const HEALTH_TIMEOUT_MS = 3000;
 // Spacing between the clicks of "Download all", so the browser starts every download.
 const DOWNLOAD_SPACING_MS = 400;
+
+const KNOWN_LAYOUTS: readonly Layout[] = [
+  "center_crop",
+  "configured_region",
+  "stacked",
+];
+
+function isKnownLayout(value: string): value is Layout {
+  return (KNOWN_LAYOUTS as readonly string[]).includes(value);
+}
 
 const exportsKey = (jobId: string) => `autoclipper.exports.${jobId}`;
 
@@ -75,6 +86,12 @@ export function ResultsScreen() {
     null,
   );
   const [highlightsOpen, setHighlightsOpen] = useState(false);
+  const [captionsStatus, setCaptionsStatus] = useState<
+    "checking" | "available" | "unavailable" | "unknown"
+  >("checking");
+  const [captionsFallback, setCaptionsFallback] = useState<
+    "none" | "retrying" | "done"
+  >("none");
 
   useEffect(() => {
     let cancelled = false;
@@ -134,16 +151,73 @@ export function ResultsScreen() {
     const wait = (ms: number) =>
       new Promise<void>((resolve) => timers.push(setTimeout(resolve, ms)));
 
+    // Check `/health` once (bounded by a timeout so a hung health endpoint never blocks
+    // automatic exports) so servers without captioning export cleanly without captions.
+    let serverCaptionsAvailable = true;
+    let healthUnknown = false;
+    const healthReady = new Promise<void>((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve();
+      };
+      const timeout = setTimeout(() => {
+        healthUnknown = true;
+        if (!cancelled) setCaptionsStatus("unknown");
+        done();
+      }, HEALTH_TIMEOUT_MS);
+      timers.push(timeout);
+      client
+        .getHealth()
+        .then((health) => {
+          if (settled || cancelled) return;
+          if (typeof health.captions_available !== "boolean") {
+            healthUnknown = true;
+            setCaptionsStatus("unknown");
+            done();
+            return;
+          }
+          const available = health.captions_available;
+          serverCaptionsAvailable = available;
+          setCaptionsStatus(available ? "available" : "unavailable");
+          done();
+        })
+        .catch(() => {
+          if (settled || cancelled) return;
+          healthUnknown = true;
+          setCaptionsStatus("unknown");
+          done();
+        });
+    });
+
     async function start(
       candidate: Candidate,
       fresh: boolean,
+      fallbackFrom: Export | null = null,
     ): Promise<Export | null> {
-      const known = fresh
-        ? null
-        : rememberedExport(jobId, candidate.candidate_id);
+      await healthReady;
+      if (cancelled) return null;
+      const useCaptions = fallbackFrom ? false : serverCaptionsAvailable;
+      let retrySource = fallbackFrom;
+      const known =
+        fresh || retrySource
+          ? null
+          : rememberedExport(jobId, candidate.candidate_id);
       if (known) {
         try {
-          return await client.getExport(known);
+          const existing = await client.getExport(known);
+          if (
+            !useCaptions &&
+            existing.state === "failed" &&
+            existing.captions &&
+            existing.error?.code === "captioning_failed"
+          ) {
+            retrySource = existing;
+          } else {
+            return existing;
+          }
         } catch (error) {
           if (!(error instanceof ApiRequestError && error.status === 404))
             throw error;
@@ -163,11 +237,17 @@ export function ResultsScreen() {
         });
         return null;
       }
-      const layout = availability.layouts.includes("center_crop")
+      const defaultLayout = availability.layouts.includes("center_crop")
         ? "center_crop"
         : availability.layouts.find(
             (l): l is Layout => l === "configured_region",
           );
+      const layout =
+        retrySource &&
+        isKnownLayout(retrySource.layout) &&
+        availability.layouts.includes(retrySource.layout)
+          ? retrySource.layout
+          : defaultLayout;
       if (!layout) {
         set(candidate.candidate_id, {
           kind: "unavailable",
@@ -176,9 +256,11 @@ export function ResultsScreen() {
         });
         return null;
       }
+      const startS = retrySource ? retrySource.start_s : candidate.start_s;
+      const endS = retrySource ? retrySource.end_s : candidate.end_s;
       if (
         availability.max_duration_s !== null &&
-        candidate.end_s - candidate.start_s > availability.max_duration_s
+        endS - startS > availability.max_duration_s
       ) {
         set(candidate.candidate_id, {
           kind: "unavailable",
@@ -189,10 +271,10 @@ export function ResultsScreen() {
       const { export: created } = await client.createExport({
         job_id: jobId,
         candidate_id: candidate.candidate_id,
-        start_s: candidate.start_s,
-        end_s: candidate.end_s,
+        start_s: startS,
+        end_s: endS,
         layout,
-        captions: true,
+        captions: retrySource ? false : useCaptions,
       });
       rememberExport(jobId, candidate.candidate_id, created.export_id);
       return created;
@@ -202,15 +284,44 @@ export function ResultsScreen() {
       let failingSince: number | null = null;
       let backoff = FIRST_BACKOFF_MS;
       let current: Export | null = null;
+      let forceFresh = fresh;
+      let fallbackFrom: Export | null = null;
+      let retriedWithoutCaptions = false;
       while (!cancelled) {
         try {
           current =
             current === null
-              ? await start(candidate, fresh)
+              ? await start(candidate, forceFresh, fallbackFrom)
               : await client.getExport(current.export_id);
           if (current === null) return;
           failingSince = null;
           backoff = FIRST_BACKOFF_MS;
+          if (
+            current.state === "failed" &&
+            current.captions &&
+            !retriedWithoutCaptions &&
+            (current.error?.code === "captioning_failed" ||
+              (healthUnknown && current.error?.code === "render_failed"))
+          ) {
+            retriedWithoutCaptions = true;
+            fallbackFrom = current;
+            forceFresh = true;
+            if (!cancelled) {
+              setCaptionsFallback((prev) =>
+                prev === "done" ? "done" : "retrying",
+              );
+            }
+            current = null;
+            continue;
+          }
+          if (
+            retriedWithoutCaptions &&
+            !current.captions &&
+            current.state === "done" &&
+            !cancelled
+          ) {
+            setCaptionsFallback("done");
+          }
           const url = current.download_url
             ? client.resolveUrl(current.download_url)
             : null;
@@ -347,6 +458,31 @@ export function ResultsScreen() {
             {warning.message}
           </p>
         ))}
+        {(captionsStatus === "unavailable" || captionsFallback !== "none") && (
+          <p
+            role="status"
+            className="rounded-control border border-border-subtle bg-surface-elevated px-4 py-3 text-sm text-ink-secondary"
+          >
+            {captionsStatus === "unavailable" ? (
+              <>
+                Clips are rendered without captions because captioning
+                isn&apos;t available on this server. Captions need{" "}
+                <code className="rounded bg-surface-subtle px-1 py-0.5 font-mono text-xs text-ink-primary">
+                  uv sync --extra captions
+                </code>{" "}
+                and an FFmpeg build with the libass{" "}
+                <code className="rounded bg-surface-subtle px-1 py-0.5 font-mono text-xs text-ink-primary">
+                  subtitles
+                </code>{" "}
+                filter.
+              </>
+            ) : captionsFallback === "done" ? (
+              "Captioning failed on the server for one or more clips, so they were rendered without captions."
+            ) : (
+              "Captioning failed on the server for one or more clips; retrying without captions…"
+            )}
+          </p>
+        )}
       </div>
 
       {top.length === 0 ? (
@@ -473,6 +609,7 @@ export function ResultsScreen() {
           videoId={vod.video_id}
           vodDurationS={vod.duration_s}
           candidates={top}
+          captionsStatus={captionsStatus}
           onClose={() => setHighlightsOpen(false)}
         />
       )}

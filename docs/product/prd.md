@@ -109,7 +109,7 @@ A whole-stream timeline with the top moments highlighted is a Should, as a secon
 The cutting rules are in [architecture § Export](../architecture/overview.md#46-export); the API is in the [API contract](../architecture/api-contract.md).
 
 - **Vertical clips.** Cut the selected interval from the source video exactly as trimmed (times are already aligned; no extra chat-lag shift). Reframe to 9:16 by center crop or a configured region (smart crop is a Could). Burn in captions from speech-to-text (faster-whisper). Output H.264/AAC MP4, 1080×1920, at most 90 s.
-- **Auto-render.** When analysis finishes, the app requests clip exports for the top 10 candidates (center crop, captions on) and fills in the cards as they finish.
+- **Auto-render.** When analysis finishes, the app requests clip exports for the top 10 candidates (center crop, captions on when `/health` reports `captions_available`, falling back to uncaptioned exports when captioning isn't available on the server or fails for a clip) and fills in the cards as they finish.
 - **Highlights video.** On request, join the chosen moments (default: the top 10 with their current trims) in stream order into one H.264/AAC MP4 at 1920×1080, original framing, with a 0.5 s fade between moments, captions optional (off by default), at most 15 minutes.
 
 ### Interface

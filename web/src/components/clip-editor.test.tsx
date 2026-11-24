@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ClipEditor } from "@/components/clip-editor";
 import type { AnalysisResult, CandidateMedia, Export } from "@/lib/api/types";
@@ -9,6 +9,7 @@ import type { AnalysisResult, CandidateMedia, Export } from "@/lib/api/types";
 const params = vi.hoisted(() => ({ jobId: "job_1", candidateId: "c001" }));
 
 const api = vi.hoisted(() => ({
+  getHealth: vi.fn(),
   getResult: vi.fn(),
   getCandidateMedia: vi.fn(),
   createExport: vi.fn(),
@@ -113,7 +114,18 @@ function makeExport(
   };
 }
 
+const HEALTH_WITH_CAPTIONS = {
+  status: "ok" as const,
+  schema_version: "1.1",
+  job_runner: "mock" as const,
+  captions_available: true,
+};
+
 describe("ClipEditor", () => {
+  beforeEach(() => {
+    api.getHealth.mockResolvedValue(HEALTH_WITH_CAPTIONS);
+  });
+
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
@@ -174,6 +186,7 @@ describe("ClipEditor", () => {
       ["local_file_missing", "Local file missing"],
       ["fetch_failed", "Download failed"],
     ] as const) {
+      api.getHealth.mockResolvedValue(HEALTH_WITH_CAPTIONS);
       api.getResult.mockResolvedValue(RESULT);
       api.getCandidateMedia.mockResolvedValue({
         job_id: "job_1",
@@ -339,5 +352,69 @@ describe("ClipEditor", () => {
 
     // The obsolete in-flight render must never surface a Download link under the new trim.
     expect(screen.queryByRole("link", { name: "Download clip" })).toBeNull();
+  });
+
+  it("disables captions and submits captions: false when health reports captions_available false", async () => {
+    api.getHealth.mockResolvedValue({
+      status: "ok",
+      schema_version: "1.1",
+      job_runner: "pipeline",
+      captions_available: false,
+    });
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia.mockResolvedValue(AVAILABLE_MEDIA);
+    api.createExport.mockResolvedValue({
+      export: makeExport("done", { captions: false }),
+      created: true,
+    });
+
+    render(<ClipEditor />);
+
+    const checkbox = (await screen.findByLabelText(
+      "Burn in captions",
+    )) as HTMLInputElement;
+    await vi.waitFor(() => {
+      expect(checkbox.disabled).toBe(true);
+      expect(checkbox.checked).toBe(false);
+    });
+    expect(screen.getByText(/uv sync --extra captions/)).toBeTruthy();
+
+    await screen.findByLabelText("Center crop (9:16)");
+    const rerenderButton = screen.getByRole("button", {
+      name: "Re-render clip",
+    }) as HTMLButtonElement;
+    await vi.waitFor(() => expect(rerenderButton.disabled).toBe(false));
+    fireEvent.click(rerenderButton);
+    await vi.waitFor(() =>
+      expect(api.createExport).toHaveBeenCalledWith(
+        expect.objectContaining({ captions: false }),
+      ),
+    );
+  });
+
+  it("keeps captions off while /health is still pending so manual exports do not send captions: true prematurely", async () => {
+    api.getHealth.mockReturnValue(new Promise(() => undefined));
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia.mockResolvedValue(AVAILABLE_MEDIA);
+    api.createExport.mockResolvedValue({
+      export: makeExport("done", { captions: false }),
+      created: true,
+    });
+
+    render(<ClipEditor />);
+
+    const checkbox = (await screen.findByLabelText(
+      "Burn in captions",
+    )) as HTMLInputElement;
+    expect(checkbox.disabled).toBe(true);
+    expect(checkbox.checked).toBe(false);
+
+    await screen.findByLabelText("Center crop (9:16)");
+    fireEvent.click(screen.getByRole("button", { name: "Re-render clip" }));
+    await vi.waitFor(() =>
+      expect(api.createExport).toHaveBeenCalledWith(
+        expect.objectContaining({ captions: false }),
+      ),
+    );
   });
 });

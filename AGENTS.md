@@ -70,7 +70,7 @@ Also planned: `experiments/`, `notebooks/`, and git-ignored `data/` and `artifac
 Run from the repo root. First-time setup is in [setup](docs/development/setup.md).
 
 ```bash
-uv sync                        # create .venv with Python 3.12 and the locked deps
+uv sync --extra captions       # create .venv with Python 3.12, locked deps and captions (`uv sync` skips captions)
 uv run pre-commit install      # once per clone
 uv run ruff check .            # lint (add --fix to apply safe fixes)
 uv run ruff format --check .   # format check (uv run ruff format . reformats)

@@ -20,6 +20,7 @@ Times are seconds from the clip's start. A clip without speech is exported witho
 import contextlib
 import functools
 import importlib
+import importlib.util
 import logging
 import math
 import re
@@ -344,6 +345,23 @@ def caption_lines_for(
 def transcriber_for(model_size: str) -> FasterWhisperTranscriber:
     """One shared `FasterWhisperTranscriber` per model size, so the model loads once per process."""
     return FasterWhisperTranscriber(model_size)
+
+
+@functools.cache
+def ffmpeg_supports_subtitles() -> bool:
+    """Whether the installed FFmpeg build includes the libass ``subtitles`` filter."""
+    try:
+        result = run_command(ffmpeg_command("-hide_banner", "-filters"), timeout_s=10.0)
+    except FFmpegError:
+        return False
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    # Match the filter-name column (e.g. " .. subtitles         V->V ..."), not descriptions.
+    return re.search(r"^\s*[A-Z.]{2,}\s+subtitles\s+", stdout, re.MULTILINE) is not None
+
+
+def captions_available() -> bool:
+    """Whether burned-in captions can run (``faster-whisper`` and FFmpeg ``subtitles`` filter)."""
+    return importlib.util.find_spec("faster_whisper") is not None and ffmpeg_supports_subtitles()
 
 
 def export_clip_with_captions(
