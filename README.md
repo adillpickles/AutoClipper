@@ -28,7 +28,7 @@ Start with the task guide and current state, then read what's relevant:
 
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — manages the Python **3.12** environment pinned in [`.python-version`](.python-version) (`uv sync` downloads 3.12 if needed).
 - **[Node.js 24 LTS](https://nodejs.org/)** — pinned in [`web/.nvmrc`](web/.nvmrc) (`npm` is included).
-- **FFmpeg & FFprobe** (6+) on `PATH` — required by `autoclipper serve`, audio normalization, clip export and highlights rendering.
+- **FFmpeg & FFprobe** (6+, with `libx264` and `libass` for captions) on `PATH` — required by `autoclipper serve`, audio normalization, clip export and highlights rendering.
 - **[TwitchDownloaderCLI 1.56.5](https://github.com/lay295/TwitchDownloader/releases/tag/1.56.5)** on `PATH` — pinned release used for chat replay and automatic video segment downloads (optional if you only run `--jobs mock` or provide a local VOD file without chat).
 
 Platform-specific install commands, PowerShell equivalents, git hooks and troubleshooting live in [`docs/development/setup.md`](docs/development/setup.md).
@@ -38,12 +38,14 @@ Platform-specific install commands, PowerShell equivalents, git hooks and troubl
 From the repository root:
 
 ```bash
-# Python backend and CLI (with faster-whisper for burned-in captions; omit `--extra captions` to skip captions)
+# Python backend and CLI (includes faster-whisper for burned-in captions, used by default on web clip exports)
 uv sync --extra captions
 
 # Web frontend
 cd web && npm ci && cd ..
 ```
+
+If you omit `--extra captions`, CLI exports work with captions off (the default) and web exports work when you turn captions off in the clip editor; automatic captioned exports on the results screen need `faster-whisper`.
 
 ### 3. Configure `.env`
 
@@ -99,7 +101,7 @@ cp web/.env.example web/.env.local    # sets NEXT_PUBLIC_API_ORIGIN=http://127.0
 cd web && npm run dev                 # open http://localhost:3000
 ```
 
-`AUTOCLIPPER_CORS_ORIGINS` already allows `http://localhost:3000` and `http://127.0.0.1:3000` by default. Leave `NEXT_PUBLIC_API_ORIGIN` unset (or set `NEXT_PUBLIC_API_MODE=mock`) to run the web app in browser-only mock mode without starting the backend.
+`AUTOCLIPPER_CORS_ORIGINS` already allows `http://localhost:3000` and `http://127.0.0.1:3000` by default. Leave `NEXT_PUBLIC_API_ORIGIN` unset (or set `NEXT_PUBLIC_API_MODE=mock`) to run the web app in browser-only mock mode without starting the backend; on a fresh checkout, run `npm run mock-media` inside `web/` once (needs FFmpeg) to generate the sample MP4s it plays.
 
 ### 6. Avoid segment downloads with a local VOD file
 
