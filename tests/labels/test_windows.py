@@ -153,6 +153,35 @@ def test_null_muted_segments_is_an_error_not_no_muting() -> None:
         windows_for_vods(vods)
 
 
+@pytest.mark.parametrize(
+    ("video_id", "duration_s"),
+    [
+        pytest.param(None, 10.0, id="null-video-id"),
+        pytest.param("v1", None, id="null-duration"),
+    ],
+)
+def test_null_video_id_or_duration_is_rejected(
+    video_id: str | None, duration_s: float | None
+) -> None:
+    vods = pl.DataFrame(
+        {
+            "video_id": [video_id],
+            "duration_s": [duration_s],
+            "muted_segments": [[]],
+        },
+        schema={
+            "video_id": pl.String,
+            "duration_s": pl.Float64,
+            "muted_segments": pl.List(
+                pl.Struct({"offset_s": pl.Float64, "duration_s": pl.Float64})
+            ),
+        },
+    )
+
+    with pytest.raises(ValueError, match="null video_id or duration_s"):
+        windows_for_vods(vods)
+
+
 def test_empty_vods_table_gives_no_windows() -> None:
     vods = pl.DataFrame(
         schema={

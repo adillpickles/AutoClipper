@@ -30,3 +30,15 @@ def test_requires_five_streamers(ids: list[str]) -> None:
 def test_unsafe_version_is_rejected(version: str) -> None:
     with pytest.raises(ValueError, match="portable"):
         validate_version(version)
+
+
+def test_make_folds_and_split_for_reject_invalid_inputs() -> None:
+    ids = [f"b{i}" for i in range(5)]
+    with pytest.raises(ValueError, match="non-negative"):
+        make_folds(ids, seed=-1)
+    with pytest.raises(ValueError, match="non-empty strings"):
+        make_folds(["b0", "", "b2", "b3", "b4"], seed=0)
+
+    folds = make_folds(ids, seed=0)
+    with pytest.raises(ValueError, match="no split for broadcaster unknown"):
+        split_for("unknown", folds[0])
