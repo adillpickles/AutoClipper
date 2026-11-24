@@ -72,11 +72,11 @@ from autoclipper.export.seek import (
     StreamTimes,
     covered_span,
     find_keyframe,
+    probe_media_and_times,
     probe_stream_ends,
-    probe_stream_times,
     seek_point,
 )
-from autoclipper.export.timeline import timeline_window
+from autoclipper.export.timeline import file_key, timeline_window
 from autoclipper.ffmpeg import (
     TIMELINE_OPTIONS,
     AudioStream,
@@ -86,7 +86,6 @@ from autoclipper.ffmpeg import (
     Runner,
     VideoStream,
     ffmpeg_command,
-    probe,
     run_command,
 )
 
@@ -413,14 +412,30 @@ def export_clip(
         raise UnsupportedSourceError(f"the output path is the source file: {output}")
     if not request.source.is_file():
         raise FileNotFoundError(f"media file not found: {request.source}")
+    # Probe the source once for both reset-timeline detection and cut planning, binding the probe
+    # to the file version read so a concurrent replacement is never cached or reused.
+    key_before = file_key(request.source)
+    source_probed = probe_media_and_times(request.source, runner=runner)
+    probed_info = source_probed[0] if file_key(request.source) == key_before else None
     # Times are on the timeline analysis uses. For a source whose timestamps restart, the cut
     # comes from a corrected copy of the part around the interval (`autoclipper.export.timeline`).
     span = Interval(
         max(0.0, request.interval.start_s - request.padding.before_s),
         request.interval.end_s + request.padding.after_s,
     )
-    with timeline_window(request.source, span, runner=runner) as window:
+    with timeline_window(
+        request.source,
+        span,
+        runner=runner,
+        info=probed_info,
+        info_key=key_before if probed_info is not None else None,
+    ) as window:
         if window.offset_s == 0.0 and window.path == request.source:
+            reusable = (
+                source_probed
+                if probed_info is not None and file_key(request.source) == key_before
+                else None
+            )
             return _export(
                 request,
                 settings=settings,
@@ -428,6 +443,7 @@ def export_clip(
                 filters_for_cut=filters_for_cut,
                 runner=runner,
                 timeout_s=timeout_s,
+                probed=reusable,
             )
         local = replace(request, source=window.path, interval=window.local(request.interval))
 
@@ -443,6 +459,7 @@ def export_clip(
                 filters_for_cut=None if filters_for_cut is None else local_filters,
                 runner=runner,
                 timeout_s=timeout_s,
+                probed=None,
             )
         except IntervalTooShortError as exc:
             # The message would quote the temporary copy's own times; use the caller's.
@@ -466,13 +483,15 @@ def _export(
     filters_for_cut: Callable[[Interval], Sequence[str]] | None,
     runner: Runner | None,
     timeout_s: float | None,
+    probed: tuple[MediaInfo, StreamTimes] | None,
 ) -> ExportResult:
     """`export_clip` for a source whose own times are the analysis timeline."""
     encode = EncodeSettings() if settings is None else settings
     output = request.output.absolute()
-    info = probe(request.source, runner=runner)
+    info, source_times = (
+        probe_media_and_times(request.source, runner=runner) if probed is None else probed
+    )
     video, audio = _pick_streams(info)
-    source_times = probe_stream_times(request.source, runner=runner)
     used_streams = [video.index] if audio is None else [video.index, audio.index]
     stream_ends_s = probe_stream_ends(
         request.source,
@@ -535,9 +554,8 @@ def _export(
         )
         limit_s = encode_timeout_s(cut.actual.duration_s) if timeout_s is None else timeout_s
         run_command(command, timeout_s=limit_s, runner=runner)
-        result = _check_output(
-            probe(temp, runner=runner), probe_stream_times(temp, runner=runner), cut, encode
-        )
+        out_info, out_times = probe_media_and_times(temp, runner=runner)
+        result = _check_output(out_info, out_times, cut, encode)
         publish_output(temp, output, overwrite=request.overwrite)
     except BaseException:
         # Keep the original error even if the temporary file can't be removed.

@@ -567,10 +567,15 @@ def probe(
         raise FileNotFoundError(f"media file not found: {path}")
     command = ffprobe_command("-print_format", "json", "-show_entries", _PROBE_ENTRIES, path)
     result = run_command(command, timeout_s=timeout_s, runner=runner)
-    return _parse_probe_output(result.stdout, path)
+    return parse_probe_output(result.stdout, path)
 
 
-def _parse_probe_output(stdout: bytes, path: Path) -> MediaInfo:
+def parse_probe_output(stdout: bytes, path: Path) -> MediaInfo:
+    """Parse ``ffprobe -print_format json`` stdout into a validated `MediaInfo`.
+
+    Raises:
+        FFmpegOutputError: The output is not valid JSON or is missing a required field.
+    """
     try:
         return _parse_probe_json(stdout, path)
     except _InvalidProbeOutput as exc:
@@ -639,7 +644,7 @@ def _parse_probe_json(stdout: bytes, path: Path) -> MediaInfo:
 
 
 class _InvalidProbeOutput(ValueError):
-    """A field in ffprobe's JSON is missing or invalid; `_parse_probe_output` adds the path."""
+    """A field in ffprobe's JSON is missing or invalid; `parse_probe_output` adds the path."""
 
 
 def _is_present(value: object) -> bool:

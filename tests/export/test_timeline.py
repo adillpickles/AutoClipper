@@ -299,3 +299,41 @@ def test_an_exported_clip_keeps_an_audio_gap_as_real_silence(tmp_path: Path) -> 
 
     # Decoded sample by sample, without filling gaps: the silence must be in the file itself.
     assert onset_s(decoded_audio(result.output, tmp_path)) == pytest.approx(4.0, abs=0.05)
+
+
+def test_source_replaced_during_probe_does_not_poison_reset_timeline_cache(tmp_path: Path) -> None:
+    """Replacing an MP4 with a reset MPEG-TS during probing must not cache None for the new file."""
+    from autoclipper.export.timeline import read_reset_timeline
+    from autoclipper.ffmpeg import CommandResult, FFmpegCommand, run_subprocess
+
+    source = tmp_path / "vod"
+    run_command(
+        ffmpeg_command(
+            "-y",
+            *("-f", "lavfi", "-i", "color=black:size=320x180:rate=25:duration=4"),
+            *("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=4"),
+            *("-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-c:a", "aac"),
+            *("-f", "mp4", source),
+        ),
+        timeout_s=60,
+    )
+    replacement = joined(tmp_path)
+    swapped = False
+
+    def swap_on_first_probe(command: FFmpegCommand, /, *, timeout_s: float) -> CommandResult:
+        nonlocal swapped
+        result = run_subprocess(command, timeout_s=timeout_s)
+        if not swapped and command.program == "ffprobe" and command.args[-1] == str(source):
+            swapped = True
+            replacement.replace(source)
+        return result
+
+    result = export_clip(
+        ExportRequest(source, Interval(6.0, 7.0), tmp_path / "clip.mp4"),
+        runner=swap_on_first_probe,
+        settings=FAST,
+    )
+
+    assert swapped
+    assert result.cut.actual == Interval(6.0, 7.0)
+    assert read_reset_timeline(source) is not None

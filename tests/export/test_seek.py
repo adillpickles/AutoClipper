@@ -17,6 +17,7 @@ from autoclipper.export.seek import (
     StreamTimes,
     covered_span,
     find_keyframe,
+    probe_media_and_times,
     probe_stream_ends,
     probe_stream_times,
     seek_point,
@@ -430,3 +431,59 @@ def test_unexpected_packet_ends_output_raises(source: Path, stdout: bytes) -> No
         probe_stream_ends(
             source, [0], container_start_s=0.0, duration_hint_s=5.0, runner=answer(stdout)
         )
+
+
+def test_probe_media_and_times_reads_both_in_one_ffprobe_call(source: Path) -> None:
+    payload = {
+        "format": {"format_name": "mov,mp4", "duration": "60.5", "start_time": "1.5"},
+        "streams": [
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "h264",
+                "width": 1920,
+                "height": 1080,
+                "start_time": "1.5",
+                "duration": "60.5",
+            },
+            {
+                "index": 1,
+                "codec_type": "audio",
+                "codec_name": "aac",
+                "sample_rate": "48000",
+                "channels": 2,
+                "start_time": "1.5",
+                "duration": "60.4",
+            },
+        ],
+    }
+    calls: list[FFmpegCommand] = []
+
+    def runner(command: FFmpegCommand, /, *, timeout_s: float) -> CommandResult:
+        calls.append(command)
+        return CommandResult(0, stdout=json.dumps(payload).encode())
+
+    info, times = probe_media_and_times(source, runner=runner)
+
+    assert len(calls) == 1
+    assert info.duration_s == pytest.approx(60.5)
+    assert info.video_streams[0].width == 1920
+    assert info.audio_streams[0].sample_rate_hz == 48_000
+    assert times.container_start_s == pytest.approx(1.5)
+    assert times.streams[0].start_s == pytest.approx(0.0)
+    assert times.streams[1].duration_s == pytest.approx(60.4)
+
+
+def test_probe_media_and_times_raises_file_not_found_before_running_ffprobe(
+    tmp_path: Path,
+) -> None:
+    calls: list[FFmpegCommand] = []
+
+    def runner(command: FFmpegCommand, /, *, timeout_s: float) -> CommandResult:
+        calls.append(command)
+        return CommandResult(0)
+
+    with pytest.raises(FileNotFoundError, match="media file not found"):
+        probe_media_and_times(tmp_path / "missing.mp4", runner=runner)
+
+    assert calls == []

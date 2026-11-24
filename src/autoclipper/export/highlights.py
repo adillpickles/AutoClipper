@@ -47,13 +47,20 @@ from autoclipper.export.encode import (
 from autoclipper.export.errors import ExportError
 from autoclipper.export.reframe import PixelRect, ReframePlan
 from autoclipper.export.seek import (
+    StreamTimes,
     covered_span,
     find_keyframe,
+    probe_media_and_times,
     probe_stream_ends,
-    probe_stream_times,
     seek_point,
 )
-from autoclipper.export.timeline import timeline_window
+from autoclipper.export.timeline import (
+    FileKey,
+    Window,
+    file_key,
+    read_reset_timeline,
+    timeline_window,
+)
 from autoclipper.ffmpeg import (
     FFmpegOutputError,
     MediaInfo,
@@ -319,11 +326,20 @@ def render_highlights(
             transcriber = transcriber_for(get_settings().whisper_model)
     with tempfile.TemporaryDirectory(prefix="autoclipper-highlights-") as work_name:
         work = Path(work_name)
+        source_probe = _probe_source_once(request.source, runner=runner)
         pieces: list[Path] = []
         planned_s = 0.0
         for index in range(len(request.segments)):
+            if source_probe is not None and file_key(request.source) != source_probe.key:
+                source_probe = _probe_source_once(request.source, runner=runner)
             piece, duration_s = _render_segment(
-                request, index, work, transcriber=transcriber, settings=encode, runner=runner
+                request,
+                index,
+                work,
+                source_probe=source_probe,
+                transcriber=transcriber,
+                settings=encode,
+                runner=runner,
             )
             pieces.append(piece)
             planned_s += duration_s
@@ -407,11 +423,58 @@ def _letterbox_plan(video: VideoStream) -> ReframePlan:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _SourceProbe:
+    """Source metadata and covered span probed once for a non-reset highlights source."""
+
+    key: FileKey
+    info: MediaInfo
+    times: StreamTimes
+    media_start_s: float
+    media_end_s: float
+
+
+def _probe_source_once(source: Path, *, runner: Runner | None) -> _SourceProbe | None:
+    """Probe `source` once when its timestamps don't reset; return None when it has resets."""
+    key_before = file_key(source)
+    info, source_times = probe_media_and_times(source, runner=runner)
+    if not info.video_streams:
+        raise UnsupportedSourceError(f"{source} has no video stream")
+    probed_info = info if file_key(source) == key_before else None
+    if (
+        read_reset_timeline(
+            source,
+            runner=runner,
+            info=probed_info,
+            info_key=key_before if probed_info is not None else None,
+        )
+        is not None
+    ):
+        return None
+    video = info.video_streams[0]
+    audio = info.audio_streams[0] if info.audio_streams else None
+    used_streams = [video.index] if audio is None else [video.index, audio.index]
+    stream_ends_s = probe_stream_ends(
+        source,
+        used_streams,
+        container_start_s=source_times.container_start_s,
+        duration_hint_s=info.duration_s,
+        runner=runner,
+    )
+    if file_key(source) != key_before:
+        return None
+    media_start_s, media_end_s = covered_span(
+        source_times, used_streams, info.duration_s, stream_ends_s
+    )
+    return _SourceProbe(key_before, info, source_times, media_start_s, media_end_s)
+
+
 def _render_segment(
     request: HighlightsRequest,
     index: int,
     work_dir: Path,
     *,
+    source_probe: _SourceProbe | None,
     transcriber: Transcriber | None,
     settings: EncodeSettings,
     runner: Runner | None,
@@ -425,27 +488,39 @@ def _render_segment(
     segment = request.segments[index]
     interval = Interval(segment.start_s, segment.end_s)
     piece = work_dir / f"segment-{index:03d}.mp4"
-    # Times are on the timeline analysis uses. For a source whose timestamps restart, the
-    # cut comes from a corrected copy of the part around the interval.
-    with timeline_window(request.source, interval, runner=runner) as window:
+    # Times are on the timeline analysis uses. For a source without resets, `source_probe`
+    # already holds its metadata and covered span; for a reset source, cut from a corrected copy.
+    window_ctx = (
+        contextlib.nullcontext(Window(request.source, 0.0))
+        if source_probe is not None
+        else timeline_window(request.source, interval, runner=runner)
+    )
+    with window_ctx as window:
         local = window.local(interval)
-        info = probe(window.path, runner=runner)
-        if not info.video_streams:
-            raise UnsupportedSourceError(f"{request.source} has no video stream")
-        video = info.video_streams[0]
-        audio = info.audio_streams[0] if info.audio_streams else None
-        used_streams = [video.index] if audio is None else [video.index, audio.index]
-        source_times = probe_stream_times(window.path, runner=runner)
-        stream_ends_s = probe_stream_ends(
-            window.path,
-            used_streams,
-            container_start_s=source_times.container_start_s,
-            duration_hint_s=info.duration_s,
-            runner=runner,
-        )
-        media_start_s, media_end_s = covered_span(
-            source_times, used_streams, info.duration_s, stream_ends_s
-        )
+        if source_probe is not None:
+            info = source_probe.info
+            source_times = source_probe.times
+            media_start_s = source_probe.media_start_s
+            media_end_s = source_probe.media_end_s
+            video = info.video_streams[0]
+            audio = info.audio_streams[0] if info.audio_streams else None
+        else:
+            info, source_times = probe_media_and_times(window.path, runner=runner)
+            if not info.video_streams:
+                raise UnsupportedSourceError(f"{request.source} has no video stream")
+            video = info.video_streams[0]
+            audio = info.audio_streams[0] if info.audio_streams else None
+            used_streams = [video.index] if audio is None else [video.index, audio.index]
+            stream_ends_s = probe_stream_ends(
+                window.path,
+                used_streams,
+                container_start_s=source_times.container_start_s,
+                duration_hint_s=info.duration_s,
+                runner=runner,
+            )
+            media_start_s, media_end_s = covered_span(
+                source_times, used_streams, info.duration_s, stream_ends_s
+            )
         try:
             cut = plan_cut(
                 local,
