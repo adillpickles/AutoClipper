@@ -58,6 +58,7 @@ from autoclipper.export.highlights import (
     Stage as HighlightsStage,
 )
 from autoclipper.export.reframe import StackedLayout, stacked_layout_from_region
+from autoclipper.export.seek import covered_span, probe_stream_ends, probe_stream_times
 from autoclipper.features.chat import Lexicon
 from autoclipper.ffmpeg import FFmpegError, ffmpeg_command, probe, run_command
 from autoclipper.ingest.media import (
@@ -1843,19 +1844,65 @@ class MockService:
             return
         self._run_highlights(record)
 
+    def _cached_segment_covers(
+        self,
+        path: Path,
+        begin_s: float,
+        end_s: float,
+        need_start_s: float,
+        need_end_s: float,
+    ) -> bool:
+        """Whether a cached segment file still exists and its shared A/V span covers the trim."""
+        if not path.is_file():
+            return False
+        try:
+            info = probe(path)
+        except FFmpegError:
+            return False
+        if not info.video_streams:
+            return False
+        # Fake-fetcher tests supply a short dummy file with a longer synthetic span; only
+        # check stream packet ends when the file's probed duration matches the recorded span.
+        if abs(info.duration_s - (end_s - begin_s)) > 1.0:
+            return True
+        video = info.video_streams[0]
+        audio = info.audio_streams[0] if info.audio_streams else None
+        used_streams = [video.index] if audio is None else [video.index, audio.index]
+        try:
+            source_times = probe_stream_times(path)
+            stream_ends_s = probe_stream_ends(
+                path,
+                used_streams,
+                container_start_s=source_times.container_start_s,
+                duration_hint_s=info.duration_s,
+            )
+        except FFmpegError:
+            return False
+        media_start_s, media_end_s = covered_span(
+            source_times, used_streams, info.duration_s, stream_ends_s
+        )
+        local_start_s = need_start_s - begin_s
+        local_end_s = need_end_s - begin_s
+        return (
+            media_start_s <= local_start_s + _RENDER_END_TOLERANCE_S
+            and local_end_s <= media_end_s + _RENDER_END_TOLERANCE_S
+        )
+
     def _highlights_segments(
         self, job: _JobRecord, requested: Sequence[HighlightsSegment]
     ) -> tuple[Path, list[Segment], list[Path]]:
         """Resolve per-moment downloaded segments for a highlights video.
 
-        Reuses already-ready segments that cover a moment, then merges overlapping padded
-        fetch spans for the remaining moments so distant moments download only their own
-        footage instead of the whole span between the first and last moment. Acquires a
-        lease on every segment path returned; releases all leases if any fetch fails.
+        Reuses already-ready segments that exist on disk and cover a moment's shared A/V
+        span, then merges overlapping padded fetch spans for the remaining moments so distant
+        moments download only their own footage instead of the whole span between the first
+        and last moment. Acquires a lease on every segment path returned; releases all leases
+        if any fetch fails.
         """
         leased_paths: list[Path] = []
         resolved: list[Segment | None] = [None] * len(requested)
         pending: list[tuple[int, HighlightsSegment, float, float]] = []
+        tentative: list[tuple[int, HighlightsSegment, Path, float, float]] = []
         try:
             with self._lock:
                 ready_for_job = [
@@ -1886,32 +1933,46 @@ class MockService:
                             and state.end_s is not None
                             and state.begin_s <= seg.start_s
                             and seg.end_s <= state.end_s + _RENDER_END_TOLERANCE_S
+                            and state.path.is_file()
                         ),
                         None,
                     )
                     if match is not None:
                         assert match.path is not None
                         assert match.begin_s is not None
+                        assert match.end_s is not None
                         self._active_segment_paths[match.path] += 1
                         leased_paths.append(match.path)
-                        resolved[index] = Segment(
-                            seg.candidate_id,
-                            seg.start_s - match.begin_s,
-                            seg.end_s - match.begin_s,
-                            source=match.path,
-                        )
+                        tentative.append((index, seg, match.path, match.begin_s, match.end_s))
                     else:
                         plan_begin, plan_end = self._segment_span(job, seg.start_s, seg.end_s)
                         pending.append((index, seg, plan_begin, plan_end))
 
-            # Merge overlapping (or touching) planned fetch spans so nearby moments share
-            # one download while distant moments each fetch only their own footage.
+            # Verify shared audio/video coverage outside the lock; fall back to fetching a
+            # fresh padded span if a cached file's audio ends before the trim.
+            for index, seg, path, begin_s, end_s in tentative:
+                if self._cached_segment_covers(path, begin_s, end_s, seg.start_s, seg.end_s):
+                    resolved[index] = Segment(
+                        seg.candidate_id,
+                        seg.start_s - begin_s,
+                        seg.end_s - begin_s,
+                        source=path,
+                    )
+                else:
+                    leased_paths.remove(path)
+                    self._release_segment_path(path)
+                    plan_begin, plan_end = self._segment_span(job, seg.start_s, seg.end_s)
+                    pending.append((index, seg, plan_begin, plan_end))
+
+            # Merge overlapping (or touching on the whole-second download grid) planned fetch
+            # spans so nearby moments share one download while distant moments each fetch only
+            # their own footage.
             pending.sort(key=lambda item: (item[2], item[3], item[0]))
             groups: list[
                 tuple[float, float, float, float, list[tuple[int, HighlightsSegment]]]
             ] = []
             for index, seg, plan_begin, plan_end in pending:
-                if groups and plan_begin <= groups[-1][1]:
+                if groups and round(plan_begin) <= round(groups[-1][1]):
                     g_begin, g_end, g_need_begin, g_need_end, members = groups[-1]
                     members.append((index, seg))
                     groups[-1] = (

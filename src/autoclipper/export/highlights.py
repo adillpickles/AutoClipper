@@ -132,7 +132,8 @@ class HighlightsRequest:
     """What to render.
 
     Attributes:
-        source: The VOD's video file; it must start at VOD time 0 (times are file times).
+        source: Default video file for segments whose `Segment.source` is None (times are
+            file times in that source).
         segments: The resolved segments, in the order they appear in the video.
         output: Where to write the MP4. Its directory is created if needed.
         order: As resolved, recorded in the result.
@@ -289,7 +290,8 @@ def render_highlights(
         runner: Executes FFmpeg and FFprobe. Defaults to `run_subprocess`; tests pass a fake.
 
     Raises:
-        FileNotFoundError: `request.source` isn't a file.
+        FileNotFoundError: An effective segment source file (`segment.source or request.source`)
+            isn't a file.
         FileExistsError: `request.output` exists and `request.overwrite` is False.
         InvalidHighlightsBoundsError: No segments, a segment longer than
             `MAX_SEGMENT_DURATION_S`, a total longer than `MAX_TOTAL_DURATION_S`, or a
