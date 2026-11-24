@@ -38,8 +38,14 @@ describe("vodInputMessage", () => {
     expect(vodInputMessage("https://www.twitch.tv/somechannel")).toMatch(
       /channel page/,
     );
+    expect(vodInputMessage("https://www.twitch.tv/somechannel/videos")).toMatch(
+      /channel page/,
+    );
     expect(
       vodInputMessage("https://www.twitch.tv/somechannel/clip/SomeSlug"),
+    ).toMatch(/clip link/);
+    expect(
+      vodInputMessage("https://m.twitch.tv/somechannel/clip/SomeSlug"),
     ).toMatch(/clip link/);
     expect(vodInputMessage("https://clips.twitch.tv/AbcdEfgh")).toMatch(
       /clip link/,
@@ -53,6 +59,18 @@ describe("vodInputMessage", () => {
     expect(vodInputMessage("https://example.com/clips.twitch.tv")).toMatch(
       /isn't a Twitch VOD link/,
     );
+  });
+
+  it("uses the invalid-link message for malformed Twitch VOD paths", () => {
+    expect(vodInputMessage("https://www.twitch.tv/videos/v12345")).toMatch(
+      /isn't a Twitch VOD link/,
+    );
+    expect(
+      vodInputMessage("https://www.twitch.tv/videos/2345678901/extra"),
+    ).toMatch(/isn't a Twitch VOD link/);
+    expect(
+      vodInputMessage("https://www.twitch.tv/user_001/video/9000000001"),
+    ).toMatch(/isn't a Twitch VOD link/);
   });
 
   it("falls back to the server's invalid-link message", () => {

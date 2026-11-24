@@ -103,4 +103,23 @@ describe("StartForm", () => {
     );
     expect(state.createJob).not.toHaveBeenCalled();
   });
+
+  it("allows manually entered VOD IDs matching the sample when a real backend is configured", async () => {
+    state.mockMode = false;
+    state.createJob.mockResolvedValue({ job: { job_id: "job_123" } });
+    render(<StartForm />);
+
+    fireEvent.change(screen.getByLabelText("Twitch VOD link"), {
+      target: { value: "2345678901" },
+    });
+    expect(screen.getByText(/Ready to analyze VOD 2345678901/)).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Find the best moments" }),
+    );
+    expect(state.createJob).toHaveBeenCalledWith({
+      vod: "2345678901",
+      video_path: null,
+    });
+  });
 });

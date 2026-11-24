@@ -29,13 +29,15 @@ export function StartForm() {
   const vodId = useId();
   const pathId = useId();
   const [vod, setVod] = useState("");
+  const [filledFromExample, setFilledFromExample] = useState(false);
   const [videoPath, setVideoPath] = useState("");
   const [vodError, setVodError] = useState<string | null>(null);
   const [pathError, setPathError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const parsedId = parseVod(vod);
-  const exampleOnly = isVodFormatExample(vod) && !isMockMode();
+  const exampleOnly =
+    filledFromExample && isVodFormatExample(vod) && !isMockMode();
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -114,6 +116,7 @@ export function StartForm() {
           value={vod}
           onChange={(event) => {
             setVod(event.target.value);
+            setFilledFromExample(false);
             setVodError(null);
           }}
           aria-invalid={vodError !== null}
@@ -157,6 +160,7 @@ export function StartForm() {
                 type="button"
                 onClick={() => {
                   setVod(example.value);
+                  setFilledFromExample(true);
                   setVodError(null);
                 }}
                 className="rounded-pill border border-border-subtle bg-surface-elevated px-3 py-1 text-xs font-medium text-ink-secondary transition-colors hover:border-accent-border hover:text-ink-primary focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"

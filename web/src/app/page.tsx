@@ -9,7 +9,7 @@ const STEPS = [
   },
   {
     title: "Analyze",
-    body: "Chat, loudness, and viewer clips score the stream and pick the strongest moments.",
+    body: "Chat activity and loudness score the stream, then viewer-made clips are merged into the shortlist.",
   },
   {
     title: "Review",

@@ -60,6 +60,23 @@ function siteHost(url: URL): string {
   return url.hostname.replace(/^www\./i, "").toLowerCase();
 }
 
+const TWITCH_NON_CHANNEL_ROUTES = new Set([
+  "videos",
+  "directory",
+  "search",
+  "settings",
+  "downloads",
+  "p",
+]);
+
+const TWITCH_CHANNEL_TABS = new Set([
+  "videos",
+  "clips",
+  "about",
+  "schedule",
+  "home",
+]);
+
 /**
  * Instant feedback for the start form. `null` when `parseVod` accepts the text. The server
  * remains authoritative and still answers with `INVALID_VOD_MESSAGE` for anything it rejects.
@@ -73,11 +90,9 @@ export function vodInputMessage(text: string): string | null {
   if (!url) return INVALID_VOD_MESSAGE;
   const host = siteHost(url);
   const path = url.pathname;
+  const isTwitchHost = host === "twitch.tv" || host === "m.twitch.tv";
 
-  if (
-    host === "clips.twitch.tv" ||
-    (host === "twitch.tv" && /\/clip\//i.test(path))
-  ) {
+  if (host === "clips.twitch.tv" || (isTwitchHost && /\/clip\//i.test(path))) {
     return CLIP_LINK_MESSAGE;
   }
   if (
@@ -88,8 +103,18 @@ export function vodInputMessage(text: string): string | null {
     return OTHER_PLATFORM_MESSAGE;
   }
   if (host === "player.twitch.tv") return PLAYER_EMBED_MESSAGE;
-  if (host === "twitch.tv" || host === "m.twitch.tv") {
-    return CHANNEL_PAGE_MESSAGE;
+  if (isTwitchHost) {
+    const segments = path.split("/").filter(Boolean);
+    const first = segments[0]?.toLowerCase();
+    const second = segments[1]?.toLowerCase();
+    const isChannelPath =
+      first !== undefined &&
+      !TWITCH_NON_CHANNEL_ROUTES.has(first) &&
+      (segments.length === 1 ||
+        (segments.length === 2 &&
+          second !== undefined &&
+          TWITCH_CHANNEL_TABS.has(second)));
+    if (isChannelPath) return CHANNEL_PAGE_MESSAGE;
   }
   return INVALID_VOD_MESSAGE;
 }
