@@ -2177,6 +2177,117 @@ def test_a_highlights_video_fetches_one_span_and_shifts_all_segments(
     assert video_done["state"] == "done", video_done["error"]
 
 
+def test_highlights_fetches_per_moment_segments_and_merges_overlapping_spans(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """Highlights fetch separate segments for distant moments instead of downloading the whole
+    span between the first and last moment, while merging overlapping padded spans and keeping
+    the requested segment order."""
+    video = make_test_media("vod.mp4", duration_s=20.0)
+    fetcher = FakeSegmentFetcher(video, tmp_path / "raw" / "video")
+    renderer = FakeHighlightsRenderer()
+    client, _ = segment_client(make_client, tmp_path, fetcher, highlights_render=renderer)
+    job = done_job(client)
+
+    # c003 (40-62 -> span 10-92) and c001 (118-148 -> span 88-178) overlap -> one fetch 10-178.
+    # c002 (251.5-276.5 -> span 221.5-306.5) is separate -> its own fetch 221.5-306.5.
+    # Rank order puts c001, c002, c003 to confirm ordering is preserved across merged groups.
+    created = client.post(
+        f"{API}/highlights",
+        json={
+            "job_id": job["job_id"],
+            "segments": [
+                {"candidate_id": "c001", "start_s": 118.0, "end_s": 148.0},
+                {"candidate_id": "c002", "start_s": 251.5, "end_s": 276.5},
+                {"candidate_id": "c003", "start_s": 40.0, "end_s": 62.0},
+            ],
+            "order": "rank",
+        },
+    )
+
+    assert created.status_code == 201
+    assert fetcher.calls == [
+        ("9000000001", 10.0, 178.0),
+        ("9000000001", 221.5, 306.5),
+    ]
+    (request,) = renderer.requests
+    merged_file = fetcher.output_dir / "9000000001" / "segment-10-178.mp4"
+    distant_file = fetcher.output_dir / "9000000001" / "segment-221.5-306.5.mp4"
+    assert [(s.candidate_id, s.start_s, s.end_s, s.source) for s in request.segments] == [
+        ("c001", 108.0, 138.0, merged_file),
+        ("c002", 30.0, 55.0, distant_file),
+        ("c003", 30.0, 52.0, merged_file),
+    ]
+    done = client.get(f"{API}/highlights/{created.json()['highlights_id']}").json()
+    assert done["state"] == "done", done["error"]
+
+
+def test_highlights_reuses_ready_segments_and_releases_leases_on_failure(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """Highlights reuse already-downloaded candidate segments without re-fetching, and release
+    every acquired lease if a later segment fetch fails."""
+    from autoclipper.ingest.media import DownloadNetworkError
+
+    video = make_test_media("vod.mp4", duration_s=20.0)
+    fetcher = FakeSegmentFetcher(video, tmp_path / "raw" / "video")
+    renderer = FakeHighlightsRenderer()
+    client, service = segment_client(make_client, tmp_path, fetcher, highlights_render=renderer)
+    job = done_job(client)
+
+    # Preview c001 first so its segment (88-178) is already ready in service state.
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["status"] == "available"
+    assert len(fetcher.calls) == 1
+
+    # Highlights with c001 + c002 fetches only c002 (221.5-306.5), reusing c001's ready file.
+    created = client.post(
+        f"{API}/highlights",
+        json={
+            "job_id": job["job_id"],
+            "segments": [
+                {"candidate_id": "c001", "start_s": 118.0, "end_s": 148.0},
+                {"candidate_id": "c002", "start_s": 251.5, "end_s": 276.5},
+            ],
+            "order": "chronological",
+        },
+    )
+    assert created.status_code == 201
+    assert fetcher.calls == [
+        ("9000000001", 88.0, 178.0),
+        ("9000000001", 221.5, 306.5),
+    ]
+    (request,) = renderer.requests
+    assert request.segments[0].source == fetcher.output_dir / "9000000001" / "segment-88-178.mp4"
+    assert request.segments[1].source == (
+        fetcher.output_dir / "9000000001" / "segment-221.5-306.5.mp4"
+    )
+    assert not service._active_segment_paths
+
+    # If a later fetch fails, the lease acquired on the reused c001 segment is still released.
+    fetcher.error = DownloadNetworkError("9000000001", "connection reset")
+    failed_req = client.post(
+        f"{API}/highlights",
+        json={
+            "job_id": job["job_id"],
+            "segments": [
+                {"candidate_id": "c001", "start_s": 118.0, "end_s": 148.0},
+                {"candidate_id": "c003", "start_s": 40.0, "end_s": 62.0},
+            ],
+            "order": "chronological",
+        },
+    )
+    assert failed_req.status_code == 201
+    failed = client.get(f"{API}/highlights/{failed_req.json()['highlights_id']}").json()
+    assert failed["state"] == "failed"
+    assert failed["error"]["details"] == {"reason": "fetch_failed"}
+    assert not service._active_segment_paths
+
+
 def test_a_jobs_own_video_file_is_served_for_preview(
     client: TestClient, make_test_media: Callable[..., Path], tmp_path: Path
 ) -> None:

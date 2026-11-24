@@ -517,6 +517,76 @@ def test_a_covered_quarter_second_segment_renders(
     assert rendered.duration_s == pytest.approx(0.25, abs=2 * TOLERANCE_S)
 
 
+def test_render_highlights_cuts_and_captions_per_segment_sources(tmp_path: Path) -> None:
+    """When segments carry their own `source` files, each segment is cut (and captioned)
+    from its own file rather than `request.source`."""
+    dark = tmp_path / "seg-a.mp4"
+    bright = tmp_path / "seg-b.mp4"
+    for path, luma, freq in ((dark, 40, 440), (bright, 200, 880)):
+        run_command(
+            ffmpeg_command(
+                "-n",
+                "-f",
+                "lavfi",
+                "-i",
+                f"nullsrc=size=320x180:rate=25:duration=4,geq=lum='{luma}':cb=128:cr=128",
+                "-f",
+                "lavfi",
+                "-i",
+                f"sine=frequency={freq}:sample_rate=48000:duration=4",
+                "-c:v",
+                "libx264",
+                "-qp",
+                "0",
+                "-c:a",
+                "aac",
+                "-shortest",
+                path,
+            ),
+            timeout_s=TIMEOUT_S,
+        )
+
+    transcribed_durations: list[float] = []
+
+    class FakeTranscriber:
+        def __call__(self, wav: Path) -> list[Word]:
+            transcribed_durations.append(probe(wav).duration_s)
+            return [Word(text="hello", start_s=0.5, end_s=1.5)]
+
+    rendered = render_highlights(
+        HighlightsRequest(
+            source=dark,
+            segments=[
+                Segment("c001", 0.5, 2.5, source=dark),
+                Segment("c002", 1.0, 3.0, source=bright),
+            ],
+            output=tmp_path / "out.mp4",
+            captions=True,
+        ),
+        transcriber=FakeTranscriber(),  # type: ignore[arg-type]
+        settings=LOSSLESS,
+    )
+
+    assert rendered.duration_s == pytest.approx(4.0, abs=3 * TOLERANCE_S)
+    # Midpoint of segment 0 (t=1.0 s -> frame 30 at 30 fps) is dark (luma ~40);
+    # midpoint of segment 1 (t=3.0 s -> frame 90 at 30 fps) is bright (luma ~200).
+    assert frame_luma(rendered.output, 30) == pytest.approx(40.0, abs=4.0)
+    assert frame_luma(rendered.output, 90) == pytest.approx(200.0, abs=4.0)
+    assert len(transcribed_durations) == 2
+
+    with pytest.raises(FileNotFoundError):
+        render_highlights(
+            HighlightsRequest(
+                source=dark,
+                segments=[
+                    Segment("c001", 0.5, 2.0, source=dark),
+                    Segment("c002", 0.5, 2.0, source=tmp_path / "missing.mp4"),
+                ],
+                output=tmp_path / "missing-out.mp4",
+            )
+        )
+
+
 # --- The CLI ----------------------------------------------------------------------------------
 
 

@@ -1843,24 +1843,146 @@ class MockService:
             return
         self._run_highlights(record)
 
+    def _highlights_segments(
+        self, job: _JobRecord, requested: Sequence[HighlightsSegment]
+    ) -> tuple[Path, list[Segment], list[Path]]:
+        """Resolve per-moment downloaded segments for a highlights video.
+
+        Reuses already-ready segments that cover a moment, then merges overlapping padded
+        fetch spans for the remaining moments so distant moments download only their own
+        footage instead of the whole span between the first and last moment. Acquires a
+        lease on every segment path returned; releases all leases if any fetch fails.
+        """
+        leased_paths: list[Path] = []
+        resolved: list[Segment | None] = [None] * len(requested)
+        pending: list[tuple[int, HighlightsSegment, float, float]] = []
+        try:
+            with self._lock:
+                ready_for_job = [
+                    state
+                    for (seg_job_id, _), state in self._segments.items()
+                    if seg_job_id == job.job_id
+                    and state.status == "ready"
+                    and state.path is not None
+                    and state.begin_s is not None
+                    and state.end_s is not None
+                ]
+                for index, seg in enumerate(requested):
+                    own = self._segments.get((job.job_id, seg.candidate_id))
+                    if (
+                        own is not None
+                        and own.status == "failed"
+                        and own.reason == "source_unavailable"
+                    ):
+                        raise _MediaUnavailable(own.reason, _SOURCE_EXPORT_UNAVAILABLE)
+                    candidates = [own, *ready_for_job] if own is not None else ready_for_job
+                    match = next(
+                        (
+                            state
+                            for state in candidates
+                            if state.status == "ready"
+                            and state.path is not None
+                            and state.begin_s is not None
+                            and state.end_s is not None
+                            and state.begin_s <= seg.start_s
+                            and seg.end_s <= state.end_s + _RENDER_END_TOLERANCE_S
+                        ),
+                        None,
+                    )
+                    if match is not None:
+                        assert match.path is not None
+                        assert match.begin_s is not None
+                        self._active_segment_paths[match.path] += 1
+                        leased_paths.append(match.path)
+                        resolved[index] = Segment(
+                            seg.candidate_id,
+                            seg.start_s - match.begin_s,
+                            seg.end_s - match.begin_s,
+                            source=match.path,
+                        )
+                    else:
+                        plan_begin, plan_end = self._segment_span(job, seg.start_s, seg.end_s)
+                        pending.append((index, seg, plan_begin, plan_end))
+
+            # Merge overlapping (or touching) planned fetch spans so nearby moments share
+            # one download while distant moments each fetch only their own footage.
+            pending.sort(key=lambda item: (item[2], item[3], item[0]))
+            groups: list[
+                tuple[float, float, float, float, list[tuple[int, HighlightsSegment]]]
+            ] = []
+            for index, seg, plan_begin, plan_end in pending:
+                if groups and plan_begin <= groups[-1][1]:
+                    g_begin, g_end, g_need_begin, g_need_end, members = groups[-1]
+                    members.append((index, seg))
+                    groups[-1] = (
+                        g_begin,
+                        max(g_end, plan_end),
+                        min(g_need_begin, seg.start_s),
+                        max(g_need_end, seg.end_s),
+                        members,
+                    )
+                else:
+                    groups.append((plan_begin, plan_end, seg.start_s, seg.end_s, [(index, seg)]))
+
+            for plan_begin, plan_end, need_begin, need_end, members in groups:
+                try:
+                    video = self._fetch_coordinated(
+                        job.video_id,
+                        plan_begin,
+                        plan_end,
+                        need_begin_s=need_begin,
+                        need_end_s=need_end,
+                        end_tolerance_s=_RENDER_END_TOLERANCE_S,
+                        lease_path=True,
+                    )
+                except Exception as exc:
+                    if isinstance(exc, VodUnavailableError | VodAccessRestrictedError):
+                        raise _MediaUnavailable(
+                            "source_unavailable", _SOURCE_EXPORT_UNAVAILABLE
+                        ) from None
+                    log.warning("video segment fetch failed video_id=%s: %s", job.video_id, exc)
+                    raise _MediaUnavailable("fetch_failed", _FETCH_FAILED_EXPORT) from None
+                leased_paths.append(video.path)
+                for index, seg in members:
+                    resolved[index] = Segment(
+                        seg.candidate_id,
+                        seg.start_s - video.begin_s,
+                        seg.end_s - video.begin_s,
+                        source=video.path,
+                    )
+        except Exception:
+            for path in leased_paths:
+                self._release_segment_path(path)
+            raise
+
+        segments = [seg for seg in resolved if seg is not None]
+        assert len(segments) == len(requested)
+        assert segments[0].source is not None
+        return segments[0].source, segments, leased_paths
+
     def _run_highlights(self, record: _RenderRecord) -> None:
         """Render one highlights video for real (§ 7.3): obtain the media, transcribe, join."""
         self._set_render_stage(record, "obtaining_media")
         with self._lock:
             job = self._jobs[record.job_id]
-        leased_path: Path | None = None
+        leased_paths: list[Path] = []
         try:
             if self._needs_segment(job):
-                # One fetch covering every chosen moment (#46), so all cuts come from the
-                # same footage; the moments' VOD times shift into the segment's own time.
-                begin = min(segment.start_s for segment in record.segments)
-                end = max(segment.end_s for segment in record.segments)
-                video = self._fetch_segment(job, begin, end, lease_path=True)
-                source, offset_s, leased_path = video.path, video.begin_s, video.path
+                source, segments, leased_paths = self._highlights_segments(job, record.segments)
             else:
                 # No per-candidate span here: the job's file or the sample.
                 first = self._candidate(job, record.segments[0].candidate_id)
-                source, offset_s, leased_path = self._render_source(job, first, 0.0, 0.0)
+                source, offset_s, leased = self._render_source(job, first, 0.0, 0.0)
+                if leased is not None:
+                    leased_paths.append(leased)
+                segments = [
+                    Segment(
+                        segment.candidate_id,
+                        segment.start_s - offset_s,
+                        segment.end_s - offset_s,
+                    )
+                    for segment in record.segments
+                ]
         except _MediaUnavailable as exc:
             self._finish_render(
                 record,
@@ -1876,14 +1998,7 @@ class MockService:
             target = folder / f"{record.render_id}.mp4"
             request = HighlightsRequest(
                 source=source,
-                segments=[
-                    Segment(
-                        segment.candidate_id,
-                        segment.start_s - offset_s,
-                        segment.end_s - offset_s,
-                    )
-                    for segment in record.segments
-                ],
+                segments=segments,
                 output=target,
                 order=record.order,
                 captions=record.captions,
@@ -1914,7 +2029,8 @@ class MockService:
                 self._finish_render(record, error=_RENDER_FAILED)
                 return
         finally:
-            self._release_segment_path(leased_path)
+            for path in leased_paths:
+                self._release_segment_path(path)
         # The finished file's probed duration replaces the planned total, published together
         # with the done state (§ 7.2).
         self._finish_render(record, file=result.output, duration_s=result.duration_s)
