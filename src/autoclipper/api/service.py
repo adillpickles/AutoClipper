@@ -26,6 +26,7 @@ import queue
 import secrets
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -45,7 +46,7 @@ from autoclipper.export.clip import (
     render_clip,
 )
 from autoclipper.export.cut import Interval, IntervalTooShortError
-from autoclipper.export.encode import encode_timeout_s
+from autoclipper.export.encode import EncodeSettings, encode_timeout_s
 from autoclipper.export.errors import ExportError
 from autoclipper.export.highlights import (
     HighlightsRequest,
@@ -93,6 +94,8 @@ MAX_HIGHLIGHTS_DURATION_S: Final = 900.0  # § 7.1
 # How much more than a candidate (or trim) is fetched for preview and cuts (#46): room to move
 # a trim without another download, kept well under the 90 s export bound.
 SEGMENT_MARGIN_S: Final = 30.0
+# Same one-output-frame slack that `render_clip` and `render_highlights` allow at segment ends.
+_RENDER_END_TOLERANCE_S: Final = 1.0 / EncodeSettings().frame_rate
 _PREPARING_MESSAGE: Final = "Fetching the video for this moment…"
 _PREPARING_LOCAL_MESSAGE: Final = "Preparing the video for playback…"
 _FETCH_FAILED_PREVIEW: Final = (
@@ -482,6 +485,8 @@ class MockService:
     _preview_media_id: str = field(default="", init=False)
     _file_media: dict[str, _FileMediaState] = field(default_factory=dict, init=False)
     _segments: dict[tuple[str, str], _SegmentState] = field(default_factory=dict, init=False)
+    _active_render_paths: Counter[Path] = field(default_factory=Counter, init=False)
+    _pending_invalidations: set[Path] = field(default_factory=set, init=False)
     _fetching: set[tuple[str, int, int]] = field(default_factory=set, init=False)
     _fetches_done: int = field(default=0, init=False)
     _fetch_done: threading.Condition = field(
@@ -1499,17 +1504,59 @@ class MockService:
         )
 
     def _invalidate_short_segment(self, path: Path) -> None:
-        """Delete a short downloaded segment so retries fetch fresh instead of reusing cache."""
+        """Remove a short downloaded segment from the cache slot so retries fetch fresh.
+
+        If an active render is currently reading `path`, defer invalidation until the render
+        finishes so FFmpeg never loses its input file mid-render. If another candidate's ready
+        preview still points at `path`, relocate it to a detached sibling (ignored by
+        `download_video_segment`'s cache lookup) and update those ready records atomically so
+        existing previews/exports keep working while retries download fresh footage.
+        """
         with self._lock:
-            in_use = any(
-                state.status == "ready" and state.path == path for state in self._segments.values()
-            )
-        if in_use:
+            if self._active_render_paths.get(path, 0) > 0:
+                self._pending_invalidations.add(path)
+                return
+            ready_keys = [
+                key
+                for key, state in self._segments.items()
+                if state.status == "ready" and state.path == path
+            ]
+            if ready_keys:
+                if path.exists():
+                    detached = path.with_name(
+                        f"{path.stem}.pinned-{secrets.token_hex(4)}{path.suffix}"
+                    )
+                    try:
+                        path.replace(detached)
+                    except OSError as exc:
+                        log.warning(
+                            "couldn't detach short video segment path=%s: %s",
+                            path,
+                            exc,
+                        )
+                    else:
+                        for key in ready_keys:
+                            self._segments[key] = replace(self._segments[key], path=detached)
+                return
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                log.warning("couldn't remove short video segment path=%s: %s", path, exc)
+
+    def _release_render_path(self, path: Path | None) -> None:
+        """Release a render's lease on a downloaded segment and run any deferred invalidation."""
+        if path is None:
             return
-        try:
-            path.unlink(missing_ok=True)
-        except OSError as exc:
-            log.warning("couldn't remove short video segment path=%s: %s", path, exc)
+        with self._lock:
+            remaining = self._active_render_paths.get(path, 0) - 1
+            if remaining > 0:
+                self._active_render_paths[path] = remaining
+                return
+            self._active_render_paths.pop(path, None)
+            should_invalidate = path in self._pending_invalidations
+            self._pending_invalidations.discard(path)
+        if should_invalidate:
+            self._invalidate_short_segment(path)
 
     def _fetch_coordinated(
         self,
@@ -1519,13 +1566,18 @@ class MockService:
         *,
         need_begin_s: float | None = None,
         need_end_s: float | None = None,
+        end_tolerance_s: float = 0.0,
+        lease_for_render: bool = False,
     ) -> VideoSegment:
         """One fetch per (VOD, range) at a time.
 
         A caller for a range already in flight waits for it (bounded) and then fetches again,
         which the segment cache serves at once. When `need_begin_s`/`need_end_s` are given, a
-        returned file that doesn't cover that interval is deleted before releasing the range
-        key so waiting or retrying callers don't reuse the short cached file.
+        returned file that doesn't cover that interval (within `end_tolerance_s` at the end)
+        is invalidated from the cache slot before releasing the range key so waiting or
+        retrying callers fetch fresh footage. When `lease_for_render` is True, a render lease
+        is acquired on the returned path before releasing the range key so a concurrent fetch
+        cannot remove or rename it while the render runs.
 
         Raises:
             TimeoutError: A fetch of the same range is taking longer than `FETCH_WAIT_S`.
@@ -1545,7 +1597,10 @@ class MockService:
             if (
                 need_begin_s is not None
                 and need_end_s is not None
-                and not (segment.begin_s <= need_begin_s and need_end_s <= segment.end_s)
+                and not (
+                    segment.begin_s <= need_begin_s
+                    and need_end_s <= segment.end_s + end_tolerance_s
+                )
             ):
                 self._invalidate_short_segment(segment.path)
                 raise DownloadIntegrityError(
@@ -1553,13 +1608,23 @@ class MockService:
                     f"segment {segment.begin_s:.2f}-{segment.end_s:.2f} s doesn't cover "
                     f"{need_begin_s:.2f}-{need_end_s:.2f} s",
                 )
+            if lease_for_render:
+                with self._lock:
+                    self._active_render_paths[segment.path] += 1
             return segment
         finally:
             with self._fetch_done:
                 self._fetching.discard(key)
                 self._fetch_done.notify_all()
 
-    def _fetch_segment(self, job: _JobRecord, begin_s: float, end_s: float) -> VideoSegment:
+    def _fetch_segment(
+        self,
+        job: _JobRecord,
+        begin_s: float,
+        end_s: float,
+        *,
+        lease_for_render: bool = False,
+    ) -> VideoSegment:
         """Fetch a video segment inline, a render's first stage (#46, § 6.3 and § 7.3).
 
         Raises:
@@ -1574,6 +1639,8 @@ class MockService:
                 *span,
                 need_begin_s=begin_s,
                 need_end_s=end_s,
+                end_tolerance_s=_RENDER_END_TOLERANCE_S,
+                lease_for_render=lease_for_render,
             )
         except Exception as exc:
             if isinstance(exc, VodUnavailableError | VodAccessRestrictedError):
@@ -1661,7 +1728,13 @@ class MockService:
         return media_id
 
     def _segment_for_render(
-        self, job: _JobRecord, candidate: Candidate, begin_needed_s: float, end_needed_s: float
+        self,
+        job: _JobRecord,
+        candidate: Candidate,
+        begin_needed_s: float,
+        end_needed_s: float,
+        *,
+        lease_for_render: bool = False,
     ) -> VideoSegment:
         """The segment a render cuts from.
 
@@ -1672,54 +1745,66 @@ class MockService:
         key = (job.job_id, candidate.candidate_id)
         with self._lock:
             state = self._segments.get(key)
+            if (
+                state is not None
+                and state.status == "ready"
+                and state.begin_s is not None
+                and state.end_s is not None
+                and state.begin_s <= begin_needed_s
+                and end_needed_s <= state.end_s + _RENDER_END_TOLERANCE_S
+            ):
+                assert state.path is not None
+                if lease_for_render:
+                    self._active_render_paths[state.path] += 1
+                return VideoSegment(state.path, state.begin_s, state.end_s)
         if state is not None and state.status == "failed" and state.reason == "source_unavailable":
             raise _MediaUnavailable(state.reason, _SOURCE_EXPORT_UNAVAILABLE)
-        if (
-            state is not None
-            and state.status == "ready"
-            and state.begin_s is not None
-            and state.end_s is not None
-            and state.begin_s <= begin_needed_s
-            and end_needed_s <= state.end_s
-        ):
-            assert state.path is not None
-            return VideoSegment(state.path, state.begin_s, state.end_s)
-        segment = self._fetch_segment(job, begin_needed_s, end_needed_s)
-        if segment.begin_s <= candidate.start_s and candidate.end_s <= segment.end_s:
-            media_id = self._register_segment_media(segment)
-            self._store_segment(
-                job,
-                candidate,
-                _SegmentState(
-                    "ready",
-                    planned_begin_s=segment.begin_s,
-                    planned_end_s=segment.end_s,
-                    path=segment.path,
-                    begin_s=segment.begin_s,
-                    end_s=segment.end_s,
-                    media_id=media_id,
-                    preview_failed=media_id is None,
-                ),
-            )
+        segment = self._fetch_segment(
+            job, begin_needed_s, end_needed_s, lease_for_render=lease_for_render
+        )
+        try:
+            if segment.begin_s <= candidate.start_s and candidate.end_s <= segment.end_s:
+                media_id = self._register_segment_media(segment)
+                self._store_segment(
+                    job,
+                    candidate,
+                    _SegmentState(
+                        "ready",
+                        planned_begin_s=segment.begin_s,
+                        planned_end_s=segment.end_s,
+                        path=segment.path,
+                        begin_s=segment.begin_s,
+                        end_s=segment.end_s,
+                        media_id=media_id,
+                        preview_failed=media_id is None,
+                    ),
+                )
+        except Exception:
+            if lease_for_render:
+                self._release_render_path(segment.path)
+            raise
         return segment
 
     def _render_source(
         self, job: _JobRecord, candidate: Candidate, begin_needed_s: float, end_needed_s: float
-    ) -> tuple[Path, float]:
-        """The file a render cuts from, and the VOD time at that file's time 0 (#46).
+    ) -> tuple[Path, float, Path | None]:
+        """The file a render cuts from, its VOD time at file time 0, and any leased path (#46).
 
         The job's `video_path` is read directly; a mock-scenario job serves the sample; a
-        pipeline job without a file gets a downloaded segment around the needed span.
+        pipeline job without a file gets a downloaded segment around the needed span with a
+        render lease that the caller must release via `_release_render_path`.
         """
         if job.video_path is not None:
             source = Path(job.video_path)
             if not source.is_file():
                 raise _MediaUnavailable("local_file_missing", _LOCAL_FILE_MISSING)
-            return source, 0.0
+            return source, 0.0, None
         if not self._needs_segment(job):
-            return self.samples.preview, 0.0
-        segment = self._segment_for_render(job, candidate, begin_needed_s, end_needed_s)
-        return segment.path, segment.begin_s
+            return self.samples.preview, 0.0, None
+        segment = self._segment_for_render(
+            job, candidate, begin_needed_s, end_needed_s, lease_for_render=True
+        )
+        return segment.path, segment.begin_s, segment.path
 
     def _run_render_safely(self, render_id: str) -> None:
         try:
@@ -1745,18 +1830,19 @@ class MockService:
         self._set_render_stage(record, "obtaining_media")
         with self._lock:
             job = self._jobs[record.job_id]
+        leased_path: Path | None = None
         try:
             if self._needs_segment(job):
                 # One fetch covering every chosen moment (#46), so all cuts come from the
                 # same footage; the moments' VOD times shift into the segment's own time.
                 begin = min(segment.start_s for segment in record.segments)
                 end = max(segment.end_s for segment in record.segments)
-                video = self._fetch_segment(job, begin, end)
-                source, offset_s = video.path, video.begin_s
+                video = self._fetch_segment(job, begin, end, lease_for_render=True)
+                source, offset_s, leased_path = video.path, video.begin_s, video.path
             else:
                 # No per-candidate span here: the job's file or the sample.
                 first = self._candidate(job, record.segments[0].candidate_id)
-                source, offset_s = self._render_source(job, first, 0.0, 0.0)
+                source, offset_s, leased_path = self._render_source(job, first, 0.0, 0.0)
         except _MediaUnavailable as exc:
             self._finish_render(
                 record,
@@ -1767,47 +1853,50 @@ class MockService:
                 ),
             )
             return
-        folder = self.output_dir / "highlights"
-        target = folder / f"{record.render_id}.mp4"
-        request = HighlightsRequest(
-            source=source,
-            segments=[
-                Segment(
-                    segment.candidate_id,
-                    segment.start_s - offset_s,
-                    segment.end_s - offset_s,
-                )
-                for segment in record.segments
-            ],
-            output=target,
-            order=record.order,
-            captions=record.captions,
-            overwrite=True,
-        )
         try:
-            result = self.highlights_render(
-                request,
-                transcriber=self.transcriber,
-                on_stage=lambda stage: self._set_render_stage(record, stage),
+            folder = self.output_dir / "highlights"
+            target = folder / f"{record.render_id}.mp4"
+            request = HighlightsRequest(
+                source=source,
+                segments=[
+                    Segment(
+                        segment.candidate_id,
+                        segment.start_s - offset_s,
+                        segment.end_s - offset_s,
+                    )
+                    for segment in record.segments
+                ],
+                output=target,
+                order=record.order,
+                captions=record.captions,
+                overwrite=True,
             )
-        except CaptioningError as exc:
-            log.warning("highlights captions failed id=%s: %s", record.render_id, exc)
-            self._finish_render(record, error=_CAPTIONING_FAILED)
-            return
-        except (SourceMissingError, FileNotFoundError):
-            self._finish_render(
-                record,
-                error=ApiError(
-                    code="media_unavailable",
-                    message=_LOCAL_FILE_MISSING,
-                    details={"reason": "local_file_missing"},
-                ),
-            )
-            return
-        except (ExportError, FFmpegError, OSError) as exc:
-            log.warning("highlights render failed id=%s: %s", record.render_id, exc)
-            self._finish_render(record, error=_RENDER_FAILED)
-            return
+            try:
+                result = self.highlights_render(
+                    request,
+                    transcriber=self.transcriber,
+                    on_stage=lambda stage: self._set_render_stage(record, stage),
+                )
+            except CaptioningError as exc:
+                log.warning("highlights captions failed id=%s: %s", record.render_id, exc)
+                self._finish_render(record, error=_CAPTIONING_FAILED)
+                return
+            except (SourceMissingError, FileNotFoundError):
+                self._finish_render(
+                    record,
+                    error=ApiError(
+                        code="media_unavailable",
+                        message=_LOCAL_FILE_MISSING,
+                        details={"reason": "local_file_missing"},
+                    ),
+                )
+                return
+            except (ExportError, FFmpegError, OSError) as exc:
+                log.warning("highlights render failed id=%s: %s", record.render_id, exc)
+                self._finish_render(record, error=_RENDER_FAILED)
+                return
+        finally:
+            self._release_render_path(leased_path)
         # The finished file's probed duration replaces the planned total, published together
         # with the done state (§ 7.2).
         self._finish_render(record, file=result.output, duration_s=result.duration_s)
@@ -1862,7 +1951,9 @@ class MockService:
             job = self._jobs[record.job_id]
             candidate = self._candidate(job, request.candidate_id)
         try:
-            source, offset_s = self._render_source(job, candidate, request.start_s, request.end_s)
+            source, offset_s, leased_path = self._render_source(
+                job, candidate, request.start_s, request.end_s
+            )
         except _MediaUnavailable as exc:
             self._finish_render(
                 record,
@@ -1873,47 +1964,52 @@ class MockService:
                 ),
             )
             return
-        folder = self.output_dir / "exports"
-        target = folder / f"{record.render_id}.mp4"
-        # A downloaded segment starts at VOD time `offset_s`; the trim is VOD time, so the
-        # cut's interval is the trim shifted into the file (#46).
-        spec = ClipSpec(
-            source=source,
-            interval=Interval(request.start_s - offset_s, request.end_s - offset_s),
-            output=target,
-            layout=request.layout,
-            captions=request.captions,
-            stacked_layout=(self._stacked_layout_for(job) if request.layout == "stacked" else None),
-        )
         try:
-            self.render(
-                spec,
-                region=self.export_region,
-                transcriber=self.transcriber,
-                on_stage=lambda stage: self._set_render_stage(record, stage),
-            )
-        except CaptioningError as exc:
-            log.warning("export captions failed id=%s: %s", record.render_id, exc)
-            self._finish_render(record, error=_CAPTIONING_FAILED)
-            return
-        except SourceMissingError:
-            self._finish_render(
-                record,
-                error=ApiError(
-                    code="media_unavailable",
-                    message=_LOCAL_FILE_MISSING,
-                    details={"reason": "local_file_missing"},
+            folder = self.output_dir / "exports"
+            target = folder / f"{record.render_id}.mp4"
+            # A downloaded segment starts at VOD time `offset_s`; the trim is VOD time, so the
+            # cut's interval is the trim shifted into the file (#46).
+            spec = ClipSpec(
+                source=source,
+                interval=Interval(request.start_s - offset_s, request.end_s - offset_s),
+                output=target,
+                layout=request.layout,
+                captions=request.captions,
+                stacked_layout=(
+                    self._stacked_layout_for(job) if request.layout == "stacked" else None
                 ),
             )
-            return
-        except (IntervalOutsideMediaError, IntervalTooShortError) as exc:
-            log.warning("export outside the media id=%s: %s", record.render_id, exc)
-            self._finish_render(record, error=_OUTSIDE_MEDIA)
-            return
-        except (ExportError, FFmpegError, OSError) as exc:  # OSError: e.g. the disk is full
-            log.warning("export render failed id=%s: %s", record.render_id, exc)
-            self._finish_render(record, error=_RENDER_FAILED)
-            return
+            try:
+                self.render(
+                    spec,
+                    region=self.export_region,
+                    transcriber=self.transcriber,
+                    on_stage=lambda stage: self._set_render_stage(record, stage),
+                )
+            except CaptioningError as exc:
+                log.warning("export captions failed id=%s: %s", record.render_id, exc)
+                self._finish_render(record, error=_CAPTIONING_FAILED)
+                return
+            except SourceMissingError:
+                self._finish_render(
+                    record,
+                    error=ApiError(
+                        code="media_unavailable",
+                        message=_LOCAL_FILE_MISSING,
+                        details={"reason": "local_file_missing"},
+                    ),
+                )
+                return
+            except (IntervalOutsideMediaError, IntervalTooShortError) as exc:
+                log.warning("export outside the media id=%s: %s", record.render_id, exc)
+                self._finish_render(record, error=_OUTSIDE_MEDIA)
+                return
+            except (ExportError, FFmpegError, OSError) as exc:  # OSError: e.g. the disk is full
+                log.warning("export render failed id=%s: %s", record.render_id, exc)
+                self._finish_render(record, error=_RENDER_FAILED)
+                return
+        finally:
+            self._release_render_path(leased_path)
         if not target.is_file():  # a renderer that returned without writing is a bug
             raise RuntimeError(f"the renderer wrote no file for {record.render_id}")
         self._finish_render(record, file=target)
