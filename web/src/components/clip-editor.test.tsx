@@ -379,7 +379,12 @@ describe("ClipEditor", () => {
     });
     expect(screen.getByText(/uv sync --extra captions/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Re-render clip" }));
+    await screen.findByLabelText("Center crop (9:16)");
+    const rerenderButton = screen.getByRole("button", {
+      name: "Re-render clip",
+    }) as HTMLButtonElement;
+    await vi.waitFor(() => expect(rerenderButton.disabled).toBe(false));
+    fireEvent.click(rerenderButton);
     await vi.waitFor(() =>
       expect(api.createExport).toHaveBeenCalledWith(
         expect.objectContaining({ captions: false }),
