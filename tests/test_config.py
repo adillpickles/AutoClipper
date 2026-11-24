@@ -654,3 +654,49 @@ def test_empty_whisper_model_means_the_default(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("AUTOCLIPPER_WHISPER_MODEL", "")
 
     assert get_settings().whisper_model == "base"
+
+
+def test_cors_origins_parses_comma_separated_origins_and_strips_trailing_slash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "AUTOCLIPPER_CORS_ORIGINS",
+        " http://localhost:3000/ , https://app.example.com/ , ",
+    )
+
+    assert get_settings().cors_origins == ("http://localhost:3000", "https://app.example.com")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("localhost:3000", id="missing-scheme"),
+        pytest.param("ftp://localhost:3000", id="non-http-scheme"),
+        pytest.param("http://localhost:3000/api", id="contains-path"),
+        pytest.param("http://localhost:3000,https://example.com/app", id="second-origin-has-path"),
+    ],
+)
+def test_invalid_cors_origins_is_a_config_error(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("AUTOCLIPPER_CORS_ORIGINS", value)
+
+    with pytest.raises(ConfigError, match=r"AUTOCLIPPER_CORS_ORIGINS:.*comma-separated origins"):
+        get_settings()
+
+
+def test_tilde_path_raises_config_error_when_home_directory_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_expanduser = Path.expanduser
+
+    def _fail_tilde_expanduser(self: Path) -> Path:
+        if str(self).startswith("~"):
+            raise RuntimeError("Could not determine home directory.")
+        return real_expanduser(self)
+
+    monkeypatch.setattr(Path, "expanduser", _fail_tilde_expanduser)
+    monkeypatch.setenv("AUTOCLIPPER_DATA_DIR", "~/autoclipper-data")
+
+    with pytest.raises(ConfigError, match=r"AUTOCLIPPER_DATA_DIR:.*home directory is unknown"):
+        get_settings()

@@ -251,3 +251,96 @@ def test_each_pilot_channel_stacked_preset_renders_1080x1920(tmp_path: Path, cha
     assert top_b < 80
     assert bot_b > 180
     assert bot_r < 80
+
+
+def test_load_channel_stacked_layouts_handles_missing_and_partial_entries(tmp_path: Path) -> None:
+    assert load_channel_stacked_layouts(tmp_path / "does-not-exist.yaml") == {}
+
+    no_list = tmp_path / "no_list.yaml"
+    no_list.write_text("channels: null\n", encoding="utf-8")
+    assert load_channel_stacked_layouts(no_list) == {}
+
+    mixed = tmp_path / "mixed.yaml"
+    mixed.write_text(
+        "\n".join(
+            [
+                "channels:",
+                "  - not-a-mapping",
+                "  - login: '   '",
+                "    stacked_layout:",
+                "      facecam: [0.0, 0.0, 0.25, 0.3]",
+                "  - login: nocam",
+                "  - login: ' StreamerOne '",
+                "    broadcaster_id: ' 424242 '",
+                "    stacked_layout:",
+                "      facecam: [0.05, 0.05, 0.25, 0.3]",
+                "      gameplay: [0.1, 0.1, 0.8, 0.8]",
+                "      facecam_fraction: 0.4",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    presets = load_channel_stacked_layouts(mixed)
+
+    assert set(presets) == {"streamerone", "424242"}
+    layout = presets["streamerone"]
+    assert presets["424242"] == layout
+    assert layout.facecam == FixedRegion(0.05, 0.05, 0.25, 0.3, fit="crop")
+    assert layout.gameplay == FixedRegion(0.1, 0.1, 0.8, 0.8, fit="crop")
+    assert layout.facecam_fraction == pytest.approx(0.4)
+    assert stacked_layout_for_channel("424242", channels_path=mixed) == layout
+
+
+@pytest.mark.parametrize(
+    ("content", "match"),
+    [
+        pytest.param("- just\n- a\n- list\n", "YAML mapping", id="root-not-mapping"),
+        pytest.param(
+            "channels:\n  - login: demo\n    stacked_layout: invalid\n",
+            "must be a map",
+            id="stacked-layout-not-map",
+        ),
+        pytest.param(
+            "channels:\n  - login: demo\n    stacked_layout:\n      facecam: [0.0, 0.0, 0.2]\n",
+            r"\[x, y, width, height\]",
+            id="facecam-wrong-length",
+        ),
+        pytest.param(
+            "channels:\n  - login: demo\n    stacked_layout:\n"
+            "      facecam: [0.0, 0.0, true, 0.3]\n",
+            "entries must be numbers",
+            id="facecam-bool-entry",
+        ),
+        pytest.param(
+            "channels:\n  - login: demo\n    stacked_layout:\n"
+            "      facecam: [0.0, 0.0, 0.25, 0.3]\n"
+            "      gameplay: [0.0, 0.0, 'bad', 1.0]\n",
+            "entries must be numbers",
+            id="gameplay-string-entry",
+        ),
+        pytest.param(
+            "channels:\n  - login: demo\n    stacked_layout:\n"
+            "      facecam: [0.0, 0.0, 0.25, 0.3]\n"
+            "      facecam_fraction: true\n",
+            "facecam_fraction.*must be a number",
+            id="facecam-fraction-bool",
+        ),
+        pytest.param(
+            "channels:\n  - login: demo\n    stacked_layout:\n"
+            "      facecam: [0.0, 0.0, 0.25, 0.3]\n"
+            "      facecam_fraction: '0.35'\n",
+            "facecam_fraction.*must be a number",
+            id="facecam-fraction-string",
+        ),
+    ],
+)
+def test_load_channel_stacked_layouts_rejects_invalid_yaml(
+    tmp_path: Path, content: str, match: str
+) -> None:
+    path = tmp_path / "channels.yaml"
+    path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(InvalidLayoutError, match=match):
+        load_channel_stacked_layouts(path)
