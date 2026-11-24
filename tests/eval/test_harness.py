@@ -395,9 +395,12 @@ def test_evaluate_validation_edge_cases_and_missing_clip_views_summary(
     with pytest.raises(ValueError, match="runs is empty"):
         evaluate_mean([], moments, clips, seed=0)
 
-    # Moments whose clip_ids have no view rows exclude top-clip recall and format n/a in markdown.
+    # Moments whose clip_ids have no view rows exclude top-clip recall only; hit rate still holds.
     no_views_result = evaluate(candidates, moments, clips.head(0), seed=0, video_ids=["a"])
     assert no_views_result.excluded["a"] == "no clip views for top-clip recall"
+    assert no_views_result.per_vod["hit_rate_at_10"].to_list() == [0.5]
+    assert no_views_result.summary["hit_rate_at_10"] is not None
+    assert no_views_result.summary["hit_rate_at_10"].mean == pytest.approx(0.5)
     assert no_views_result.summary["top_clip_recall_at_10"] is None
     _, summary_path = write_report(
         no_views_result,

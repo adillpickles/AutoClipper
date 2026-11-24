@@ -262,81 +262,92 @@ def test_cli_smoke_and_user_errors(tmp_path: Path) -> None:
     assert "synth --pilot" in result.stderr
 
 
-def test_dataset_rejects_malformed_manifests_and_snapshots(pilot: Path) -> None:
-    # Mismatched snapshot selection on synthetic manifest.
+def test_dataset_rejects_mismatched_synthetic_snapshot_selection(pilot: Path) -> None:
     with pytest.raises(ValueError, match="selected snapshots do not match"):
         build(pilot, snapshots=["wrong-snapshot"])
 
-    # Non-JSON-object manifest fails clearly.
-    manifest_path = pilot / "manifest.json"
-    original_manifest = manifest_path.read_text(encoding="utf-8")
-    manifest_path.write_text("[]", encoding="utf-8")
+
+def test_dataset_rejects_non_object_manifest_json(pilot: Path) -> None:
+    (pilot / "manifest.json").write_text("[]", encoding="utf-8")
     with pytest.raises(ValueError, match="expected a JSON object"):
         build(pilot)
-    manifest_path.write_text(original_manifest, encoding="utf-8")
 
-    # Non-synthetic manifest falls through to processed/clips/*.json; duplicate selection fails.
+
+def test_dataset_rejects_duplicate_snapshot_selection_with_custom_manifest(pilot: Path) -> None:
     ids = ingest_manifests(pilot)
-    manifest_path.write_text(json.dumps({"generator": "custom"}), encoding="utf-8")
+    (pilot / "manifest.json").write_text(json.dumps({"generator": "custom"}), encoding="utf-8")
     with pytest.raises(ValueError, match="snapshot IDs must be unique"):
         build(pilot, snapshots=[ids[0], ids[0]])
 
-    # Snapshot manifest whose snapshot_id disagrees with filename (or missing video_id) is rejected.
-    first_manifest = pilot / "processed" / "clips" / f"{ids[0]}.json"
-    first_data = json.loads(first_manifest.read_text(encoding="utf-8"))
-    first_manifest.write_text(
-        json.dumps({**first_data, "snapshot_id": "mismatch"}), encoding="utf-8"
-    )
-    with pytest.raises(ValueError, match="must identify its snapshot and VOD"):
-        build(pilot, snapshots=[ids[0]])
 
-    # Snapshot ending before it starts is rejected.
-    first_manifest.write_text(
-        json.dumps(
+@pytest.mark.parametrize(
+    ("updates", "match"),
+    [
+        pytest.param(
+            {"snapshot_id": "mismatch"},
+            "must identify its snapshot and VOD",
+            id="snapshot-id-mismatch",
+        ),
+        pytest.param(
+            {"video_id": None},
+            "must identify its snapshot and VOD",
+            id="missing-video-id",
+        ),
+        pytest.param(
             {
-                **first_data,
                 "capture_started_at": "2026-10-10T12:00:00+00:00",
                 "capture_ended_at": "2026-10-10T11:00:00+00:00",
-            }
+            },
+            "ends before it starts",
+            id="ended-before-started",
         ),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="ends before it starts"):
+        pytest.param(
+            {"video_id": "9999999999"},
+            "unknown VOD 9999999999",
+            id="unknown-vod",
+        ),
+    ],
+)
+def test_dataset_rejects_invalid_snapshot_manifest(
+    pilot: Path, updates: dict[str, object], match: str
+) -> None:
+    ids = ingest_manifests(pilot)
+    manifest_path = pilot / "processed" / "clips" / f"{ids[0]}.json"
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_path.write_text(json.dumps({**data, **updates}), encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
         build(pilot, snapshots=[ids[0]])
 
-    # Snapshot referring to an unknown VOD is rejected.
-    first_manifest.write_text(
-        json.dumps({**first_data, "video_id": "9999999999"}), encoding="utf-8"
-    )
-    with pytest.raises(ValueError, match="unknown VOD 9999999999"):
-        build(pilot, snapshots=[ids[0]])
-    first_manifest.write_text(json.dumps(first_data), encoding="utf-8")
 
-    # Duplicate clip_id in a pinned snapshot parquet is rejected.
-    first_clips_path = pilot / "processed" / "clips" / f"{ids[0]}.parquet"
-    first_clips = pl.read_parquet(first_clips_path)
-    pl.concat([first_clips, first_clips.head(1)]).write_parquet(first_clips_path)
+def test_dataset_rejects_duplicate_clip_id_in_snapshot(pilot: Path) -> None:
+    ids = ingest_manifests(pilot)
+    clips_path = pilot / "processed" / "clips" / f"{ids[0]}.parquet"
+    clips = pl.read_parquet(clips_path)
+    pl.concat([clips, clips.head(1)]).write_parquet(clips_path)
     with pytest.raises(ValueError, match="duplicate clip_id"):
         build(pilot, snapshots=[ids[0]])
-    first_clips.write_parquet(first_clips_path)
 
-    # Clip broadcaster disagreeing with VOD broadcaster is rejected.
-    first_clips.with_columns(broadcaster_id=pl.lit("wrong-broadcaster")).write_parquet(
-        first_clips_path
-    )
+
+def test_dataset_rejects_clip_broadcaster_mismatch(pilot: Path) -> None:
+    ids = ingest_manifests(pilot)
+    clips_path = pilot / "processed" / "clips" / f"{ids[0]}.parquet"
+    clips = pl.read_parquet(clips_path)
+    clips.with_columns(broadcaster_id=pl.lit("wrong-broadcaster")).write_parquet(clips_path)
     with pytest.raises(ValueError, match="clip broadcaster disagrees"):
         build(pilot, snapshots=[ids[0]])
-    first_clips.write_parquet(first_clips_path)
 
-    # Chat file containing another VOD's messages is rejected.
+
+def test_dataset_rejects_chat_file_containing_another_vod(pilot: Path) -> None:
+    ids = ingest_manifests(pilot)
     chat_path = pilot / "interim" / "chat" / "9100000001.parquet"
     chat = pl.read_parquet(chat_path)
     chat.with_columns(video_id=pl.lit("other-vod")).write_parquet(chat_path)
     with pytest.raises(ValueError, match="chat file contains another VOD"):
         build(pilot, snapshots=[ids[0]])
-    chat.write_parquet(chat_path)
 
-    # Null in a required (non-nullable) column of vods.parquet is rejected.
+
+def test_dataset_rejects_null_in_required_vods_column(pilot: Path) -> None:
+    ids = ingest_manifests(pilot)
     vods_path = pilot / "processed" / "vods.parquet"
     vods = pl.read_parquet(vods_path)
     vods.with_columns(broadcaster_id=pl.lit(None, dtype=pl.String)).write_parquet(vods_path)

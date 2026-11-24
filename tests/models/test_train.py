@@ -281,10 +281,10 @@ def test_train_rejects_corrupt_manifest_missing_table_empty_features_and_bad_sco
         run(pilot, tmp_path, config("logreg", params={"c": -1.0}))
 
     # Non-TrainedScorer returned by make_scorer is rejected.
-    monkeypatch.setattr(train_mod, "make_scorer", lambda *_a, **_kw: make_scorer("chat_spike"))
-    with pytest.raises(ValueError, match="isn't a trained model"):
-        run(pilot, tmp_path, config("logreg"))
-    monkeypatch.undo()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(train_mod, "make_scorer", lambda *_a, **_kw: make_scorer("chat_spike"))
+        with pytest.raises(ValueError, match="isn't a trained model"):
+            run(pilot, tmp_path, config("logreg"))
 
     # Excluding every column of a selected feature family leaves no features.
     audio_cols = [
