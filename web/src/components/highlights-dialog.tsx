@@ -297,12 +297,12 @@ export function HighlightsDialog({
                 <label htmlFor="highlights-captions">
                   Burn in captions
                   {captionsStatus === "checking" && (
-                    <span className="ml-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    <span className="ml-1 text-xs text-ink-tertiary">
                       (checking…)
                     </span>
                   )}
                   {captionsStatus === "unavailable" && (
-                    <span className="ml-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    <span className="ml-1 text-xs text-ink-tertiary">
                       (needs uv sync --extra captions and FFmpeg libass)
                     </span>
                   )}

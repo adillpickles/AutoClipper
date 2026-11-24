@@ -461,17 +461,17 @@ export function ResultsScreen() {
         {(captionsStatus === "unavailable" || captionsFallback !== "none") && (
           <p
             role="status"
-            className="rounded-lg bg-zinc-100 px-4 py-3 text-sm text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-300"
+            className="rounded-control border border-border-subtle bg-surface-elevated px-4 py-3 text-sm text-ink-secondary"
           >
             {captionsStatus === "unavailable" ? (
               <>
                 Clips are rendered without captions because captioning
                 isn&apos;t available on this server. Captions need{" "}
-                <code className="rounded bg-zinc-200 px-1 py-0.5 text-xs dark:bg-zinc-700">
+                <code className="rounded bg-surface-subtle px-1 py-0.5 font-mono text-xs text-ink-primary">
                   uv sync --extra captions
                 </code>{" "}
                 and an FFmpeg build with the libass{" "}
-                <code className="rounded bg-zinc-200 px-1 py-0.5 text-xs dark:bg-zinc-700">
+                <code className="rounded bg-surface-subtle px-1 py-0.5 font-mono text-xs text-ink-primary">
                   subtitles
                 </code>{" "}
                 filter.

@@ -828,15 +828,19 @@ export function ClipEditor() {
               Burn in captions
             </label>
             {captionsStatus === "checking" && (
-              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              <p className="text-xs text-ink-tertiary">
                 Checking server caption support…
               </p>
             )}
             {captionsStatus === "unavailable" && (
-              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              <p className="text-xs text-ink-tertiary">
                 Unavailable on this server — requires{" "}
-                <code>uv sync --extra captions</code> and FFmpeg with libass{" "}
-                <code>subtitles</code> support.
+                <code className="font-mono text-ink-secondary">
+                  uv sync --extra captions
+                </code>{" "}
+                and FFmpeg with libass{" "}
+                <code className="font-mono text-ink-secondary">subtitles</code>{" "}
+                support.
               </p>
             )}
           </div>
