@@ -28,7 +28,10 @@ How it works:
 
 import logging
 import math
+import os
 import wave
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Final
 
@@ -43,8 +46,11 @@ AUDIO_FEATURE_VERSION: Final = "audio-v1"
 SAMPLE_RATE_HZ: Final = 16_000
 FRAME_LENGTH: Final = 1024  # samples: 64 ms
 HOP_LENGTH: Final = 512  # samples: 32 ms
-# Frames per read: about 4 minutes. The FFT and its temporaries peak at roughly 250 MB.
-BLOCK_FRAMES: Final = 1 << 13
+# Frames per read: about 65 seconds. Smaller blocks stay cache-friendly and keep peak memory
+# bounded across worker threads while amortizing Python/FFT overhead.
+BLOCK_FRAMES: Final = 1 << 11
+_MAX_WORKERS: Final = 4
+_INV_32768: Final = np.float32(1.0 / 32768.0)
 
 SILENCE_RMS: Final = 10 ** (-60 / 20)  # -60 dBFS, full scale = 1.0
 ONSET_PEAK_FRAMES: Final = 3
@@ -85,6 +91,7 @@ FEATURE_COLUMNS: Final = (
 """The ``features_audio`` feature columns, all Float64, in output order."""
 
 type FloatArray = npt.NDArray[np.float64]
+type Float32Array = npt.NDArray[np.float32]
 
 
 class AudioFormatError(ValueError):
@@ -220,35 +227,144 @@ def frame_features(wav_path: Path) -> FrameFeatures:
         zcr = np.zeros(n_frames)
         centroid = np.zeros(n_frames)
         flux = np.zeros(n_frames)
-        window = np.hanning(FRAME_LENGTH).astype(np.float32)
-        freqs = np.fft.rfftfreq(FRAME_LENGTH, d=1 / SAMPLE_RATE_HZ).astype(np.float32)
-        previous_log: npt.NDArray[np.float32] | None = None
-        for first in range(0, n_frames, BLOCK_FRAMES):
-            count = min(BLOCK_FRAMES, n_frames - first)
-            reader.setpos(first * HOP_LENGTH)
+        if n_frames > 0:
+            _compute_blocks(reader, wav_path, n_frames, rms, zcr, centroid, flux)
+    log.debug("audio frames path=%s n=%d", wav_path, n_frames)
+    return FrameFeatures(rms, zcr, centroid, flux)
+
+
+type _BlockResult = tuple[
+    FloatArray,
+    FloatArray,
+    Float32Array,
+    FloatArray,
+    Float32Array,
+    Float32Array,
+]
+
+
+def _process_block(
+    pcm: npt.NDArray[np.int16],
+    count: int,
+    window: Float32Array,
+    freqs: Float32Array,
+) -> _BlockResult:
+    """Compute RMS, ZCR, spectral centroid and intra-block flux for one block of PCM samples."""
+    samples = pcm.astype(np.float32)
+    samples *= _INV_32768
+    # FRAME_LENGTH == 2 * HOP_LENGTH: compute each non-overlapping half-frame once instead of
+    # squaring and comparing every overlapping sample twice.
+    halves = samples.reshape(count + 1, HOP_LENGTH)
+    half_sq = np.einsum("ij,ij->i", halves, halves, dtype=np.float64)
+    rms_b = np.sqrt((half_sq[:-1] + half_sq[1:]) * (1.0 / FRAME_LENGTH))
+
+    signs = np.signbit(samples)
+    cross = np.empty(samples.size, dtype=np.bool_)
+    np.not_equal(signs[:-1], signs[1:], out=cross[:-1])
+    cross[-1] = False
+    cross_2d = cross.reshape(count + 1, HOP_LENGTH)
+    half_c = cross_2d.sum(axis=1)
+    # cross_2d[i + 1, -1] is the crossing after frame i's last sample; exclude it.
+    zcr_b: FloatArray = (half_c[:-1] + half_c[1:] - cross_2d[1:, -1]).astype(np.float64) * (
+        1.0 / (FRAME_LENGTH - 1)
+    )
+
+    frames = np.lib.stride_tricks.sliding_window_view(samples, FRAME_LENGTH)[::HOP_LENGTH]
+    spec = np.fft.rfft(frames * window, axis=1)
+    magnitude = np.abs(spec)
+    power = magnitude.sum(axis=1)
+    centroid_b = np.divide(
+        magnitude @ freqs, power, out=np.zeros(count, dtype=np.float32), where=power > 0
+    )
+    # Same log-magnitude and the same per-frame sum as the single-pass formula. The first
+    # frame's flux (against the previous block) is filled in by the caller with this sum, so a
+    # block edge cannot change a later onset.
+    log_mag = np.maximum(np.log10(np.maximum(magnitude, 1e-30)), _LOG_FLOOR)
+    flux_b = np.zeros(count, dtype=np.float64)
+    if count > 1:
+        flux_b[1:] = np.maximum(log_mag[1:] - log_mag[:-1], 0.0).sum(axis=1)
+    return rms_b, zcr_b, centroid_b, flux_b, np.array(log_mag[0]), np.array(log_mag[-1])
+
+
+def _compute_blocks(
+    reader: wave.Wave_read,
+    wav_path: Path,
+    n_frames: int,
+    rms: FloatArray,
+    zcr: FloatArray,
+    centroid: FloatArray,
+    flux: FloatArray,
+) -> None:
+    """Stream WAV blocks sequentially and compute frame features (in parallel when multi-block)."""
+    window = np.hanning(FRAME_LENGTH).astype(np.float32)
+    freqs = np.fft.rfftfreq(FRAME_LENGTH, d=1 / SAMPLE_RATE_HZ).astype(np.float32)
+    block_frames = BLOCK_FRAMES
+    overlap = FRAME_LENGTH - HOP_LENGTH
+    max_workers = min(_MAX_WORKERS, os.cpu_count() or 1)
+    use_threads = max_workers > 1 and n_frames > block_frames
+
+    previous_log: Float32Array | None = None
+    prev_tail: npt.NDArray[np.int16] | None = None
+
+    def read_block_pcm(count: int) -> npt.NDArray[np.int16]:
+        nonlocal prev_tail
+        if prev_tail is None:
             n_read = (count - 1) * HOP_LENGTH + FRAME_LENGTH
             raw = reader.readframes(n_read)
             if len(raw) != 2 * n_read:
                 raise AudioFormatError(f"{wav_path} ended early: its header promised more audio")
-            samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-            frames = np.lib.stride_tricks.sliding_window_view(samples, FRAME_LENGTH)[::HOP_LENGTH]
-            block = slice(first, first + count)
-            rms[block] = np.sqrt(np.mean(frames * frames, axis=1, dtype=np.float64))
-            signs = np.signbit(frames)
-            zcr[block] = np.mean(signs[:, 1:] != signs[:, :-1], axis=1)
-            magnitude = np.abs(np.fft.rfft(frames * window, axis=1)).astype(np.float32)
-            power = magnitude.sum(axis=1)
-            centroid[block] = np.divide(
-                magnitude @ freqs, power, out=np.zeros(count, dtype=np.float32), where=power > 0
-            )
-            log_mag = np.maximum(np.log10(np.maximum(magnitude, 1e-30)), _LOG_FLOOR)
-            before = np.vstack(
-                [log_mag[:1] if previous_log is None else previous_log, log_mag[:-1]]
-            )
-            flux[block] = np.maximum(log_mag - before, 0.0).sum(axis=1)
-            previous_log = log_mag[-1:]
-    log.debug("audio frames path=%s n=%d", wav_path, n_frames)
-    return FrameFeatures(rms, zcr, centroid, flux)
+            pcm = np.frombuffer(raw, dtype="<i2")
+        else:
+            n_new = count * HOP_LENGTH
+            raw = reader.readframes(n_new)
+            if len(raw) != 2 * n_new:
+                raise AudioFormatError(f"{wav_path} ended early: its header promised more audio")
+            new_pcm = np.frombuffer(raw, dtype="<i2")
+            pcm = np.empty(overlap + n_new, dtype="<i2")
+            pcm[:overlap] = prev_tail
+            pcm[overlap:] = new_pcm
+        prev_tail = pcm[-overlap:].copy()
+        return pcm
+
+    def store(first: int, count: int, result: _BlockResult) -> None:
+        nonlocal previous_log
+        rms_b, zcr_b, centroid_b, flux_b, first_log, last_log = result
+        block = slice(first, first + count)
+        rms[block] = rms_b
+        zcr[block] = zcr_b
+        centroid[block] = centroid_b
+        if previous_log is not None:
+            flux_b[0] = np.maximum(first_log - previous_log, 0.0).sum()
+        flux[block] = flux_b
+        previous_log = last_log
+
+    if not use_threads:
+        for first in range(0, n_frames, block_frames):
+            count = min(block_frames, n_frames - first)
+            pcm = read_block_pcm(count)
+            store(first, count, _process_block(pcm, count, window, freqs))
+        return
+
+    max_in_flight = max_workers * 2
+    pending: deque[tuple[int, int, Future[_BlockResult]]] = deque()
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        try:
+            for first in range(0, n_frames, block_frames):
+                count = min(block_frames, n_frames - first)
+                pcm = read_block_pcm(count)
+                pending.append(
+                    (first, count, executor.submit(_process_block, pcm, count, window, freqs))
+                )
+                if len(pending) >= max_in_flight:
+                    done_first, done_count, future = pending.popleft()
+                    store(done_first, done_count, future.result())
+            while pending:
+                done_first, done_count, future = pending.popleft()
+                store(done_first, done_count, future.result())
+        except BaseException:
+            for _, _, future in pending:
+                future.cancel()
+            raise
 
 
 def detect_onsets(flux: FloatArray) -> npt.NDArray[np.bool_]:

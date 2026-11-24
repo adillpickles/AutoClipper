@@ -261,3 +261,92 @@ def test_a_vod_shorter_than_half_a_window_gives_an_empty_table(tmp_path: Path) -
 
     assert frame.height == 0
     assert frame.columns == ["window_id", *FEATURE_COLUMNS, "feature_version"]
+
+
+def test_frame_features_matches_direct_reference_across_block_sizes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    samples = quiet_noise(12.0, seed=7)
+    samples[int(2.0 * RATE) : int(3.0 * RATE)] += tone(1.0, 880.0, level=0.5)
+    samples[int(6.0 * RATE) : int(7.5 * RATE)] = 0.0  # digital silence
+    wav = write_wav(tmp_path / "ref.wav", samples)
+
+    with wave.open(str(wav), "rb") as reader:
+        raw = reader.readframes(reader.getnframes())
+    pcm = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    frames = np.lib.stride_tricks.sliding_window_view(pcm, audio.FRAME_LENGTH)[:: audio.HOP_LENGTH]
+    ref_rms = np.sqrt(np.mean(frames * frames, axis=1, dtype=np.float64))
+    signs = np.signbit(frames)
+    ref_zcr = np.mean(signs[:, 1:] != signs[:, :-1], axis=1)
+    window = np.hanning(audio.FRAME_LENGTH).astype(np.float32)
+    freqs = np.fft.rfftfreq(audio.FRAME_LENGTH, d=1 / RATE).astype(np.float32)
+    mag = np.abs(np.fft.rfft(frames * window, axis=1)).astype(np.float32)
+    power = mag.sum(axis=1)
+    ref_centroid = np.divide(
+        mag @ freqs, power, out=np.zeros(len(frames), dtype=np.float32), where=power > 0
+    )
+    log_mag = np.maximum(np.log10(np.maximum(mag, 1e-30)), audio._LOG_FLOOR)
+    before = np.vstack([log_mag[:1], log_mag[:-1]])
+    ref_flux = np.maximum(log_mag - before, 0.0).sum(axis=1)
+
+    for workers in (1, audio._MAX_WORKERS):
+        monkeypatch.setattr(audio, "_MAX_WORKERS", workers)
+        for block_size in (1, 17, 256, audio.BLOCK_FRAMES):
+            monkeypatch.setattr(audio, "BLOCK_FRAMES", block_size)
+            got = audio.frame_features(wav)
+            assert got.rms == pytest.approx(ref_rms, abs=1e-6), (workers, block_size)
+            assert got.zcr == pytest.approx(ref_zcr, abs=1e-12), (workers, block_size)
+            assert got.centroid_hz == pytest.approx(ref_centroid, rel=1e-5, abs=1e-3), (
+                workers,
+                block_size,
+            )
+            assert got.flux == pytest.approx(ref_flux, abs=1e-9), (workers, block_size)
+            assert np.array_equal(audio.detect_onsets(got.flux), audio.detect_onsets(ref_flux))
+
+
+def test_periodic_onsets_do_not_move_when_the_block_size_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Equal-height clicks sit on block edges for some sizes; the onset mask must not move."""
+    seconds = 40.0
+    samples = quiet_noise(seconds, level=0.002, seed=11)
+    click = np.linspace(0.9, 0.0, 64)
+    for start in np.arange(0.03, seconds - 0.05, 0.125):
+        index = int(start * RATE)
+        samples[index : index + len(click)] += click
+    wav = write_wav(tmp_path / "clicks.wav", samples)
+    windows = make_windows("v", seconds)
+
+    masks: list[np.ndarray] = []
+    rates: list[list[float]] = []
+    for block_size in (1, 13, 64, audio.BLOCK_FRAMES):
+        monkeypatch.setattr(audio, "BLOCK_FRAMES", block_size)
+        features = audio.frame_features(wav)
+        masks.append(audio.detect_onsets(features.flux))
+        rates.append(compute_audio_features(windows, wav)["audio_onset_rate"].to_list())
+    for mask, rate in zip(masks[1:], rates[1:], strict=True):
+        assert np.array_equal(mask, masks[0])
+        assert rate == pytest.approx(rates[0], abs=1e-12)
+
+
+def test_frame_features_edge_lengths_and_mid_file_truncation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Fewer samples than one frame -> 0 frames.
+    tiny = write_wav(tmp_path / "tiny.wav", np.zeros(audio.FRAME_LENGTH - 1))
+    empty = audio.frame_features(tiny)
+    assert len(empty.rms) == 0
+
+    # Exactly one frame -> 1 frame, zero flux.
+    one = write_wav(tmp_path / "one.wav", tone(audio.FRAME_LENGTH / RATE, 440.0))
+    single = audio.frame_features(one)
+    assert len(single.rms) == 1
+    assert single.flux[0] == 0.0
+
+    # Truncated on a later block (multi-block path) still raises AudioFormatError.
+    wav = write_wav(tmp_path / "trunc.wav", quiet_noise(5.0))
+    data = wav.read_bytes()
+    wav.write_bytes(data[: 44 + 2 * (audio.FRAME_LENGTH + 4 * audio.HOP_LENGTH)])
+    monkeypatch.setattr(audio, "BLOCK_FRAMES", 2)
+    with pytest.raises(AudioFormatError, match="ended early"):
+        audio.frame_features(wav)
