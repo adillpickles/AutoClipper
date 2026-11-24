@@ -977,3 +977,168 @@ def serve(
     )
     typer.echo(f"AutoClipper API ({jobs.value} jobs) on http://{host}:{port} (docs at /docs)")
     uvicorn.run(api, host=host, port=port, log_level="warning")
+
+
+@app.command(name="audio-events")
+def audio_events(
+    wav: Annotated[
+        Path,
+        typer.Argument(help="Normalized 16 kHz mono 16-bit WAV for one VOD."),
+    ],
+    windows: Annotated[
+        Path,
+        typer.Option(help="Parquet file with the VOD's windows table.", show_default=False),
+    ],
+    scores: Annotated[
+        Path | None,
+        typer.Option(
+            help="Optional Parquet file with window_id and score columns to score only the top "
+            "windows.",
+            show_default=False,
+        ),
+    ] = None,
+    top_k: Annotated[
+        int | None,
+        typer.Option(
+            min=1,
+            help="Number of top-scoring windows to run when --scores is given "
+            "(default: AUTOCLIPPER_AUDIO_EVENTS_TOP_K, 100).",
+            show_default=False,
+        ),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Where to write the Parquet table. Default: <artifacts dir>/features/"
+            "<video_id>_audio_events.parquet.",
+            show_default=False,
+        ),
+    ] = None,
+    cache_dir: Annotated[
+        Path | None,
+        typer.Option(
+            help="Directory for cached YAMNet ONNX weights. Default: <artifacts dir>/cache/"
+            "audio_events.",
+            show_default=False,
+        ),
+    ] = None,
+    force: Annotated[bool, typer.Option(help="Replace an existing output Parquet file.")] = False,
+) -> None:
+    """Extract opt-in YAMNet audio-event probabilities (audio_evt_*) per window."""
+    import tempfile
+
+    import polars as pl
+
+    from autoclipper.features.audio import AudioFormatError
+    from autoclipper.features.audio_events import (
+        AUDIO_EVENTS_FEATURE_VERSION,
+        AudioEventsError,
+        extract_audio_event_features,
+    )
+
+    if top_k is not None and scores is None:
+        typer.echo("Error: --top-k requires --scores", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    if not wav.is_file():
+        typer.echo(f"Error: WAV file not found: {wav}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    if not windows.is_file():
+        typer.echo(f"Error: windows Parquet not found: {windows}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    if scores is not None and not scores.is_file():
+        typer.echo(f"Error: scores Parquet not found: {scores}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+
+    settings = get_settings()
+    try:
+        windows_df = pl.read_parquet(windows)
+        scores_df = pl.read_parquet(scores) if scores is not None else None
+    except Exception as exc:
+        typer.echo(f"Error: can't read input Parquet: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+
+    if out is not None:
+        target = out
+    else:
+        video_id = (
+            str(windows_df["video_id"][0])
+            if "video_id" in windows_df.columns and windows_df.height > 0
+            else wav.stem
+        )
+        if not RUN_ID.fullmatch(video_id) or _is_reserved_name(video_id):
+            typer.echo(
+                f"Error: unsafe video_id {video_id!r} for default output filename; pass --out",
+                err=True,
+            )
+            raise typer.Exit(ExitCode.USER_ERROR)
+        target = settings.artifacts_dir / "features" / f"{video_id}_audio_events.parquet"
+    if target.exists() and not force:
+        typer.echo(f"Error: {target} exists; pass --force to replace it", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+
+    effective_top_k = (
+        (top_k if top_k is not None else settings.audio_events_top_k)
+        if scores_df is not None
+        else None
+    )
+    resolved_cache = (
+        cache_dir if cache_dir is not None else settings.artifacts_dir / "cache" / "audio_events"
+    )
+    total_hint = (
+        min(windows_df.height, effective_top_k)
+        if effective_top_k is not None
+        else windows_df.height
+    )
+    try:
+        with typer.progressbar(length=max(total_hint, 1), label="Scoring audio events") as bar:
+            last_done = 0
+
+            def _advance(done: int, total: int) -> None:
+                nonlocal last_done
+                bar.length = max(total, 1)
+                step = max(0, done - last_done)
+                if step:
+                    bar.update(step)
+                    last_done = done
+
+            extraction = extract_audio_event_features(
+                windows_df,
+                wav,
+                scores=scores_df,
+                top_k=effective_top_k,
+                cache_dir=resolved_cache,
+                on_progress=_advance,
+            )
+    except (ValueError, AudioFormatError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    except AudioEventsError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+
+    tmp_path: Path | None = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp", delete=False
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+        extraction.features.write_parquet(tmp_path)
+        tmp_path.replace(target)
+        tmp_path = None
+    except OSError as exc:
+        typer.echo(f"Error: can't write {target}: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+    empty_note = (
+        f", {extraction.empty_audio_windows} past audio end"
+        if extraction.empty_audio_windows
+        else ""
+    )
+    typer.echo(
+        f"Wrote {target} ({extraction.scored_windows} of {extraction.features.height} windows "
+        f"scored{empty_note}, feature_version={AUDIO_EVENTS_FEATURE_VERSION})"
+    )

@@ -89,8 +89,21 @@ Computed from 16 kHz mono audio with librosa/NumPy. Frame-level values are aggre
 
 | Name | Definition | Notes |
 |---|---|---|
-| `audio_evt_laughter`, `audio_evt_scream`, `audio_evt_cheer`, `audio_evt_music` | Max probability per window from a pretrained audio-event model (PANNs or YAMNet) | Runs on CPU; if too slow for a whole VOD, run it on the windows of the shortlist only |
+| `audio_evt_laughter` | Max probability per window across YAMNet AudioSet laughter classes | Opt-in (`uv sync --extra audio-events`); off by default, not wired into the default scorer |
+| `audio_evt_scream` | Max probability per window across YAMNet AudioSet scream/shout/yell classes | Same; runs on CPU |
+| `audio_evt_cheer` | Max probability per window across YAMNet AudioSet cheer/applause/whoop classes | Same; runs on CPU |
+| `audio_evt_music` | Max probability per window for YAMNet AudioSet `Music` | Same; runs on CPU |
 | `speech_rate`, `speech_exclaim_count`, `speech_keyword_count` | From a Whisper transcript of the shortlist (the top 50 candidates, [modeling plan § 3](modeling-plan.md#3-candidate-generation); #64) | Words per second, exclamations, reaction keywords |
+
+**Implementation (`audio_evt_*`, #63):** `autoclipper.features.audio_events.compute_audio_event_features(windows, wav_path, ...)` runs Google's YAMNet (Apache-2.0, AudioSet-521) exported to ONNX via `onnxruntime` on CPU (optional extra `audio-events`, never a core dependency). Weights (`yamnet.onnx`, ~16 MB) are downloaded at runtime to `<artifacts_dir>/cache/audio_events/` and verified against a pinned SHA-256 digest. Feature version is `audio-events-v1`.
+
+- **Class label mapping (`YAMNET_LABEL_MAP`):** each column takes the maximum probability across all 0.48 s YAMNet frames in the window and across all mapped AudioSet-521 classes:
+  - `audio_evt_laughter`: `13` (`Laughter`), `14` (`Baby laughter`), `15` (`Giggle`), `16` (`Snicker`), `17` (`Belly laugh`), `18` (`Chuckle, chortle`).
+  - `audio_evt_scream`: `6` (`Shout`), `7` (`Bellow`), `9` (`Yell`), `11` (`Screaming`).
+  - `audio_evt_cheer`: `8` (`Whoop`), `58` (`Clapping`), `61` (`Cheering`), `62` (`Applause`).
+  - `audio_evt_music`: `132` (`Music`).
+- **Subset mode:** pass `window_ids` or `scores` + `top_k` (default `100`, configurable via `AUTOCLIPPER_AUDIO_EVENTS_TOP_K`) so a laptop CPU only reads and scores the top windows of a multi-hour VOD. Unselected windows remain in the output table with `null` values (preserving a 1-to-1 join on `window_id`; `logreg` imputes the training mean and LightGBM handles nulls natively). Selected windows past the end of the WAV get `0.0` and log a warning.
+- **Opt-in only:** invoked explicitly through the standalone `autoclipper audio-events` CLI command or `compute_audio_event_features` / `extract_audio_event_features` (`AUTOCLIPPER_AUDIO_EVENTS_TOP_K` configures the default subset size when `--scores` is passed). Off by default and not wired into the default scorer or ranking; impact vs. Phase 1 baselines remains TBD pending dataset v1 (#40–#43).
 
 ## Phase 3: LLM rerank (after Phase 2)
 

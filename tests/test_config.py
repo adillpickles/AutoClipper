@@ -64,6 +64,7 @@ def test_defaults_without_environment_or_env_file(tmp_path: Path) -> None:
     assert settings.log_level == "INFO"
     assert settings.data_dir == tmp_path / "data"
     assert settings.artifacts_dir == tmp_path / "artifacts"
+    assert settings.audio_events_top_k == 100
 
 
 def test_every_env_example_variable_is_a_setting() -> None:

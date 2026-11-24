@@ -55,6 +55,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+audio-events = [
+    { name = "onnxruntime" },
+]
 captions = [
     { name = "faster-whisper" },
 ]
@@ -77,6 +80,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "lightgbm", specifier = ">=4.7.0" },
     { name = "numpy", specifier = ">=2.5.4" },
+    { name = "onnxruntime", marker = "extra == 'audio-events'", specifier = ">=1.20" },
     { name = "polars", specifier = ">=2.1.0" },
     { name = "pyarrow", specifier = ">=26.0.0" },
     { name = "pydantic-settings", specifier = ">=2.16.0" },
@@ -88,7 +92,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.54.0" },
     { name = "yt-dlp", specifier = ">=2026.8.19" },
 ]
-provides-extras = ["captions"]
+provides-extras = ["captions", "audio-events"]
 
 [package.metadata.requires-dev]
 dev = [
