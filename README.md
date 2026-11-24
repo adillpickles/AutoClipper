@@ -3,12 +3,11 @@
 > **Find the highlights in a long Twitch stream.**
 > Paste a Twitch VOD link, get its best moments ranked, preview and trim them, and export vertical, captioned clips ready to post, or one highlights video to watch.
 
-![Status: pre-alpha, foundations](https://img.shields.io/badge/status-foundations-lightgrey)
+![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-lightgrey)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
 > [!IMPORTANT]
-> **Project status: foundations.** The app doesn't work end to end yet.
-> The repo holds the scope, architecture and plan, the Python tooling and CI, and the first building blocks: config and logging, an FFmpeg runner, the Twitch API client, the chat replay parser and a synthetic dataset generator. See [`docs/project/status.md`](docs/project/status.md) for what exists today.
+> **Project status: pre-alpha.** The local CLI pipeline (`ingest`, `analyze`, `export`, `highlights`, `doctor`, `serve`) and Next.js web app are wired up and tested on synthetic data, but there is no real Twitch dataset or model trained on real data yet. See [`docs/project/status.md`](docs/project/status.md) for what exists today.
 
 ---
 
@@ -22,6 +21,99 @@ Start with the task guide and current state, then read what's relevant:
 4. [`docs/architecture/overview.md`](docs/architecture/overview.md): how the system fits together.
 5. [`CONTRIBUTING.md`](CONTRIBUTING.md): how to pick up an issue, open a PR and get it merged.
 6. The issue you're working on ([GitHub issues](https://github.com/adillpickles/AutoClipper/issues), ordered by week in the [roadmap](docs/product/roadmap.md)), plus the docs [`AGENTS.md` § 3](AGENTS.md#3-what-to-read-for-which-task) lists for that kind of task.
+
+## First local run
+
+### 1. Prerequisites
+
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — manages the Python **3.12** environment pinned in [`.python-version`](.python-version) (`uv sync` downloads 3.12 if needed).
+- **[Node.js 24 LTS](https://nodejs.org/)** — pinned in [`web/.nvmrc`](web/.nvmrc) (`npm` is included).
+- **FFmpeg & FFprobe** (6+) on `PATH` — required by `autoclipper serve`, audio normalization, clip export and highlights rendering.
+- **[TwitchDownloaderCLI 1.56.5](https://github.com/lay295/TwitchDownloader/releases/tag/1.56.5)** on `PATH` — pinned release used for chat replay and automatic video segment downloads (optional if you only run `--jobs mock` or provide a local VOD file without chat).
+
+Platform-specific install commands, PowerShell equivalents, git hooks and troubleshooting live in [`docs/development/setup.md`](docs/development/setup.md).
+
+### 2. Install
+
+From the repository root:
+
+```bash
+# Python backend and CLI (with faster-whisper for burned-in captions; omit `--extra captions` to skip captions)
+uv sync --extra captions
+
+# Web frontend
+cd web && npm ci && cd ..
+```
+
+### 3. Configure `.env`
+
+Copy `.env.example` to `.env` in the repository root (`Copy-Item .env.example .env` in PowerShell) and fill in the values privately — never commit `.env`:
+
+```bash
+cp .env.example .env
+```
+
+`autoclipper` reads `.env` from the current working directory (run commands from the repository root), and process environment variables override it:
+
+- `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` — app credentials from the [Twitch Developer Console](https://dev.twitch.tv/console). Required for real VOD analysis; not needed for `--jobs mock`.
+- `AUTOCLIPPER_CHAT_HASH_SALT` — secret HMAC key used to pseudonymize chatter and clip-creator IDs. Generate a random value with:
+
+  ```bash
+  uv run python -c "import secrets; print(secrets.token_hex(32))"
+  ```
+
+All optional variables (storage paths, Whisper model size, export crop regions, CORS origins, log level) are documented in [`.env.example`](.env.example) and [`docs/development/setup.md#configuration`](docs/development/setup.md#configuration).
+
+### 4. Check readiness (`autoclipper doctor`)
+
+Before starting the server, verify local tools, extras and credentials without making network calls or loading models:
+
+```bash
+uv run autoclipper doctor              # checks for real VODs (--jobs pipeline, default)
+uv run autoclipper doctor --jobs mock  # checks for mock scenarios (no Twitch credentials)
+uv run autoclipper doctor --json       # machine-readable PreflightReport JSON
+```
+
+What the preflight statuses mean:
+
+- `[OK]` — ready to use.
+- `[WARN]` — optional or degraded capability (for example, `TwitchDownloaderCLI`, `AUTOCLIPPER_CHAT_HASH_SALT`, or the `captions` extra is missing; or Twitch credentials are unset in `mock` mode). `autoclipper doctor` still exits `0` and `autoclipper serve` starts normally.
+- `[FAIL]` — required setup is missing (`ffmpeg`/`ffprobe` not on `PATH`, or `TWITCH_CLIENT_ID`/`TWITCH_CLIENT_SECRET` unset in `pipeline` mode). `autoclipper doctor` exits `1`.
+
+`autoclipper serve` prints the same preflight summary at startup (never blocking startup on warnings) and serves it at `GET /api/v1/preflight` (no secrets or local file paths are included). When the web app talks to the backend, the start page shows a dismissible banner listing any `warn` or `fail` checks with their fix steps.
+
+### 5. Run the backend and web app
+
+Terminal 1 (repository root):
+
+```bash
+uv run autoclipper serve              # real pipeline jobs on http://127.0.0.1:8000 (API docs at /docs)
+# or, without Twitch credentials (built-in mock scenarios, real FFmpeg exports/highlights):
+uv run autoclipper serve --jobs mock
+```
+
+Terminal 2 (connect the Next.js dev server to the backend):
+
+```bash
+cp web/.env.example web/.env.local    # sets NEXT_PUBLIC_API_ORIGIN=http://127.0.0.1:8000
+cd web && npm run dev                 # open http://localhost:3000
+```
+
+`AUTOCLIPPER_CORS_ORIGINS` already allows `http://localhost:3000` and `http://127.0.0.1:3000` by default. Leave `NEXT_PUBLIC_API_ORIGIN` unset (or set `NEXT_PUBLIC_API_MODE=mock`) to run the web app in browser-only mock mode without starting the backend.
+
+### 6. Avoid segment downloads with a local VOD file
+
+If you already downloaded the full VOD (starting at the VOD's start), pass its file path directly so AutoClipper reads audio and cuts previews, clips and highlights locally instead of downloading audio or video segments from Twitch:
+
+- **Web app:** paste the file's full (absolute) path into **VOD file on this computer (optional)** on the start page (sent as `video_path` to `POST /api/v1/jobs`).
+- **CLI:**
+
+  ```bash
+  uv run autoclipper analyze <vod-url-or-id> --video /path/to/vod.mp4
+  uv run autoclipper highlights artifacts/analysis/<video_id>.json --video /path/to/vod.mp4
+  ```
+
+The local file must cover the full VOD from its start; if its duration differs from Twitch's reported duration by more than 2 seconds, analysis fails with `video_mismatch`.
 
 ## The problem
 
