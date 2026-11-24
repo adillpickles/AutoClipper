@@ -1025,14 +1025,15 @@ def audio_events(
     force: Annotated[bool, typer.Option(help="Replace an existing output Parquet file.")] = False,
 ) -> None:
     """Extract opt-in YAMNet audio-event probabilities (audio_evt_*) per window."""
+    import tempfile
+
     import polars as pl
 
     from autoclipper.features.audio import AudioFormatError
     from autoclipper.features.audio_events import (
         AUDIO_EVENTS_FEATURE_VERSION,
-        FEATURE_COLUMNS,
         AudioEventsError,
-        compute_audio_event_features,
+        extract_audio_event_features,
     )
 
     if top_k is not None and scores is None:
@@ -1056,12 +1057,21 @@ def audio_events(
         typer.echo(f"Error: can't read input Parquet: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
 
-    video_id = (
-        str(windows_df["video_id"][0])
-        if "video_id" in windows_df.columns and windows_df.height > 0
-        else wav.stem
-    )
-    target = out or settings.artifacts_dir / "features" / f"{video_id}_audio_events.parquet"
+    if out is not None:
+        target = out
+    else:
+        video_id = (
+            str(windows_df["video_id"][0])
+            if "video_id" in windows_df.columns and windows_df.height > 0
+            else wav.stem
+        )
+        if not RUN_ID.fullmatch(video_id) or _is_reserved_name(video_id):
+            typer.echo(
+                f"Error: unsafe video_id {video_id!r} for default output filename; pass --out",
+                err=True,
+            )
+            raise typer.Exit(ExitCode.USER_ERROR)
+        target = settings.artifacts_dir / "features" / f"{video_id}_audio_events.parquet"
     if target.exists() and not force:
         typer.echo(f"Error: {target} exists; pass --force to replace it", err=True)
         raise typer.Exit(ExitCode.USER_ERROR)
@@ -1074,14 +1084,31 @@ def audio_events(
     resolved_cache = (
         cache_dir if cache_dir is not None else settings.artifacts_dir / "cache" / "audio_events"
     )
+    total_hint = (
+        min(windows_df.height, effective_top_k)
+        if effective_top_k is not None
+        else windows_df.height
+    )
     try:
-        result = compute_audio_event_features(
-            windows_df,
-            wav,
-            scores=scores_df,
-            top_k=effective_top_k,
-            cache_dir=resolved_cache,
-        )
+        with typer.progressbar(length=max(total_hint, 1), label="Scoring audio events") as bar:
+            last_done = 0
+
+            def _advance(done: int, total: int) -> None:
+                nonlocal last_done
+                bar.length = max(total, 1)
+                step = max(0, done - last_done)
+                if step:
+                    bar.update(step)
+                    last_done = done
+
+            extraction = extract_audio_event_features(
+                windows_df,
+                wav,
+                scores=scores_df,
+                top_k=effective_top_k,
+                cache_dir=resolved_cache,
+                on_progress=_advance,
+            )
     except (ValueError, AudioFormatError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
@@ -1089,10 +1116,29 @@ def audio_events(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    result.write_parquet(target)
-    scored = result.height - result[FEATURE_COLUMNS[0]].null_count() if result.height > 0 else 0
+    tmp_path: Path | None = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp", delete=False
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+        extraction.features.write_parquet(tmp_path)
+        tmp_path.replace(target)
+        tmp_path = None
+    except OSError as exc:
+        typer.echo(f"Error: can't write {target}: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+    empty_note = (
+        f", {extraction.empty_audio_windows} past audio end"
+        if extraction.empty_audio_windows
+        else ""
+    )
     typer.echo(
-        f"Wrote {target} ({scored} of {result.height} windows scored, "
-        f"feature_version={AUDIO_EVENTS_FEATURE_VERSION})"
+        f"Wrote {target} ({extraction.scored_windows} of {extraction.features.height} windows "
+        f"scored{empty_note}, feature_version={AUDIO_EVENTS_FEATURE_VERSION})"
     )

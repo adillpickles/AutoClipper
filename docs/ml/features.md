@@ -103,7 +103,7 @@ Computed from 16 kHz mono audio with librosa/NumPy. Frame-level values are aggre
   - `audio_evt_cheer`: `8` (`Whoop`), `58` (`Clapping`), `61` (`Cheering`), `62` (`Applause`).
   - `audio_evt_music`: `132` (`Music`).
 - **Subset mode:** pass `window_ids` or `scores` + `top_k` (default `100`, configurable via `AUTOCLIPPER_AUDIO_EVENTS_TOP_K`) so a laptop CPU only reads and scores the top windows of a multi-hour VOD. Unselected windows remain in the output table with `null` values (preserving a 1-to-1 join on `window_id`; `logreg` imputes the training mean and LightGBM handles nulls natively). Selected windows past the end of the WAV get `0.0` and log a warning.
-- **Opt-in only:** controlled by `AUTOCLIPPER_AUDIO_EVENTS` (default `false`) and the standalone `autoclipper audio-events` CLI command. Not wired into the default scorer or ranking yet; impact vs. Phase 1 baselines remains TBD pending dataset v1 (#40–#43).
+- **Opt-in only:** invoked explicitly through the standalone `autoclipper audio-events` CLI command or `compute_audio_event_features` / `extract_audio_event_features` (`AUTOCLIPPER_AUDIO_EVENTS_TOP_K` configures the default subset size when `--scores` is passed). Off by default and not wired into the default scorer or ranking; impact vs. Phase 1 baselines remains TBD pending dataset v1 (#40–#43).
 
 ## Phase 3: LLM rerank (after Phase 2)
 

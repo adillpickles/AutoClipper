@@ -27,7 +27,7 @@ import importlib.util
 import logging
 import tempfile
 import wave
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Protocol
@@ -37,7 +37,6 @@ import numpy as np
 import numpy.typing as npt
 import polars as pl
 
-from autoclipper.config import get_settings
 from autoclipper.features.audio import SAMPLE_RATE_HZ, AudioFormatError, _checked_windows
 
 log = logging.getLogger(__name__)
@@ -63,6 +62,15 @@ class AudioSetClass:
     index: int
     mid: str
     display_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class AudioEventExtraction:
+    """Extracted audio-event features alongside actual inference and empty-audio window counts."""
+
+    features: pl.DataFrame
+    scored_windows: int
+    empty_audio_windows: int
 
 
 YAMNET_LABEL_MAP: Final[dict[str, tuple[AudioSetClass, ...]]] = {
@@ -117,8 +125,13 @@ def audio_events_available() -> bool:
 
 
 def default_cache_dir(artifacts_dir: Path | None = None) -> Path:
-    """Return the default directory for cached audio-event model weights."""
-    root = artifacts_dir if artifacts_dir is not None else get_settings().artifacts_dir
+    """Return the default directory for cached audio-event model weights.
+
+    Entry points pass ``get_settings().artifacts_dir`` explicitly; library callers that omit it
+    get ``artifacts/cache/audio_events`` relative to the working directory without triggering
+    global environment validation.
+    """
+    root = artifacts_dir if artifacts_dir is not None else Path("artifacts")
     return root / "cache" / "audio_events"
 
 
@@ -151,21 +164,25 @@ def ensure_yamnet_model(
         Path to the verified cached ONNX model file.
 
     Raises:
-        AudioEventsError: Download failed, HTTP status was non-2xx, or the checksum mismatched.
+        AudioEventsError: Cache setup, download, HTTP status, or SHA-256 verification failed.
     """
     target = cache_dir / YAMNET_MODEL_FILENAME
-    if target.is_file():
-        actual = _sha256_file(target)
-        if actual == expected_sha256:
-            return target
-        log.warning(
-            "cached yamnet model checksum mismatch path=%s expected=%s actual=%s; re-downloading",
-            target,
-            expected_sha256,
-            actual,
-        )
+    try:
+        if target.is_file():
+            actual = _sha256_file(target)
+            if actual == expected_sha256:
+                return target
+            log.warning(
+                "cached yamnet model checksum mismatch path=%s expected=%s actual=%s; "
+                "re-downloading",
+                target,
+                expected_sha256,
+                actual,
+            )
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise AudioEventsError(f"can't prepare YAMNet cache directory {cache_dir}: {exc}") from exc
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
     tmp_path: Path | None = None
     owns_client = client is None
     http = client if client is not None else httpx.Client(follow_redirects=True, timeout=timeout_s)
@@ -209,7 +226,7 @@ class YamnetEventDetector:
 
     Args:
         cache_dir: Where to cache ``yamnet.onnx`` when downloading at runtime. Defaults to
-            ``<artifacts_dir>/cache/audio_events``.
+            `default_cache_dir()`.
         model_path: Optional path to an existing ``yamnet.onnx`` file (skips downloading).
         intra_op_num_threads: Optional ONNX Runtime CPU thread cap (0 lets ORT choose).
     """
@@ -323,6 +340,30 @@ def aggregate_event_probabilities(
     return out
 
 
+def _validate_window_types(windows: pl.DataFrame) -> None:
+    if windows.height == 0:
+        return
+    if "window_id" in windows.columns and windows["window_id"].dtype != pl.String:
+        raise ValueError(
+            f"windows column 'window_id' must be String, got {windows['window_id'].dtype}"
+        )
+    for col in ("start_s", "end_s"):
+        if col not in windows.columns:
+            continue
+        if not windows[col].dtype.is_numeric():
+            raise ValueError(f"windows column {col!r} must be numeric, got {windows[col].dtype}")
+        if windows[col].null_count() == 0:
+            values = windows[col].to_numpy().astype(np.float64, copy=False)
+            if not np.all(np.isfinite(values)):
+                raise ValueError(f"windows column {col!r} must contain finite numbers")
+    if (
+        "start_s" in windows.columns
+        and windows["start_s"].null_count() == 0
+        and float(windows["start_s"].min()) < 0.0  # type: ignore[arg-type]
+    ):
+        raise ValueError("windows column 'start_s' must be >= 0")
+
+
 def select_top_windows(
     windows: pl.DataFrame,
     scores: pl.DataFrame | Sequence[float] | npt.NDArray[np.floating] | pl.Series,
@@ -342,8 +383,8 @@ def select_top_windows(
         ascending ``start_s`` and then ``window_id``.
 
     Raises:
-        ValueError: `top_k` is less than 1, `windows` or `scores` is malformed, lengths or IDs
-            mismatch, or any score is null or non-finite.
+        ValueError: `top_k` is less than 1, `windows` or `scores` is malformed, column types are
+            invalid, lengths or IDs mismatch, or any score is null or non-finite.
     """
     if isinstance(top_k, bool) or top_k < 1:
         raise ValueError(f"top_k must be an integer >= 1, got {top_k!r}")
@@ -354,13 +395,30 @@ def select_top_windows(
         raise ValueError("windows has nulls in window_id or start_s")
     if windows["window_id"].n_unique() != windows.height:
         raise ValueError("windows lists a window_id more than once")
+    if windows.height > 0:
+        if windows["window_id"].dtype != pl.String:
+            raise ValueError(
+                f"windows column 'window_id' must be String, got {windows['window_id'].dtype}"
+            )
+        if not windows["start_s"].dtype.is_numeric():
+            raise ValueError(
+                f"windows column 'start_s' must be numeric, got {windows['start_s'].dtype}"
+            )
 
     if isinstance(scores, pl.DataFrame):
         score_missing = sorted({"window_id", "score"} - set(scores.columns))
         if score_missing:
             raise ValueError(f"scores DataFrame is missing columns: {', '.join(score_missing)}")
+        if scores.height == 0:
+            return []
         if scores["window_id"].null_count() or scores["score"].null_count():
             raise ValueError("scores DataFrame has nulls in window_id or score")
+        if scores["window_id"].dtype != pl.String:
+            raise ValueError(
+                f"scores column 'window_id' must be String, got {scores['window_id'].dtype}"
+            )
+        if not scores["score"].dtype.is_numeric():
+            raise ValueError(f"scores column 'score' must be numeric, got {scores['score'].dtype}")
         if scores["window_id"].n_unique() != scores.height:
             raise ValueError("scores DataFrame lists a window_id more than once")
         known = set(windows["window_id"].to_list())
@@ -373,7 +431,10 @@ def select_top_windows(
             how="inner",
         )
     else:
-        arr = np.asarray(scores, dtype=np.float64)
+        try:
+            arr = np.asarray(scores, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"scores must be numeric: {exc}") from None
         if arr.ndim != 1 or len(arr) != windows.height:
             raise ValueError(
                 f"scores must be 1D with one value per window ({windows.height}), got {arr.shape}"
@@ -392,7 +453,7 @@ def select_top_windows(
     return ranked.head(top_k)["window_id"].to_list()
 
 
-def compute_audio_event_features(
+def extract_audio_event_features(
     windows: pl.DataFrame,
     wav_path: Path,
     *,
@@ -401,8 +462,9 @@ def compute_audio_event_features(
     scores: pl.DataFrame | Sequence[float] | npt.NDArray[np.floating] | pl.Series | None = None,
     top_k: int | None = None,
     cache_dir: Path | None = None,
-) -> pl.DataFrame:
-    """Compute per-window audio-event probabilities for one VOD's normalized WAV.
+    on_progress: Callable[[int, int], None] | None = None,
+) -> AudioEventExtraction:
+    """Compute per-window audio-event features and return extraction counts alongside the table.
 
     Args:
         windows: Rows of the ``windows`` table of one VOD (`autoclipper.labels.windows`).
@@ -415,14 +477,16 @@ def compute_audio_event_features(
             highest-scoring windows to run through the model. Cannot be combined with `window_ids`.
         top_k: Number of top-scoring windows to run when `scores` is passed.
         cache_dir: Model cache directory used by the default `YamnetEventDetector`.
+        on_progress: Optional callback ``(done, total_selected)`` called after each selected
+            window is processed.
 
     Returns:
-        One row per window in ascending ``start_s`` order: ``window_id``, the four
-        `FEATURE_COLUMNS` (``Float64``; ``null`` for unselected windows), and
-        ``feature_version`` (``audio-events-v1``).
+        An `AudioEventExtraction` containing the features DataFrame, the count of windows that
+        actually ran through the detector, and the count of selected windows past the audio end.
 
     Raises:
-        ValueError: Invalid windows table, invalid subset arguments, or non-finite probabilities.
+        ValueError: Invalid windows table, invalid dtypes/timestamps, invalid subset arguments,
+            or non-finite probabilities.
         AudioFormatError: The WAV is missing, unreadable, truncated or not 16 kHz mono 16-bit PCM.
         AudioEventsError: ``onnxruntime`` is not installed or the model failed to load/run.
     """
@@ -431,16 +495,18 @@ def compute_audio_event_features(
     if top_k is not None and scores is None:
         raise ValueError("top_k requires scores")
 
-    # Resolve positional scores against caller's input order before `_checked_windows` sorts rows.
+    # Validate dtypes before `_checked_windows` compares `end_s > start_s`, and resolve positional
+    # scores against caller's input order before `_checked_windows` sorts rows.
+    _validate_window_types(windows)
     selected: set[str] | None = None
     if scores is not None:
         effective_k = DEFAULT_TOP_K if top_k is None else top_k
-        checked_for_selection = _checked_windows(windows)
+        checked = _checked_windows(windows)
         if isinstance(scores, pl.DataFrame):
-            selected = set(select_top_windows(checked_for_selection, scores, top_k=effective_k))
+            selected = set(select_top_windows(checked, scores, top_k=effective_k))
         else:
             selected = set(select_top_windows(windows, scores, top_k=effective_k))
-        windows = checked_for_selection
+        windows = checked
     else:
         windows = _checked_windows(windows)
         if window_ids is not None:
@@ -451,13 +517,14 @@ def compute_audio_event_features(
             selected = set(window_ids)
 
     if windows.height == 0:
-        return pl.DataFrame(
+        empty = pl.DataFrame(
             schema={
                 "window_id": pl.String,
                 **dict.fromkeys(FEATURE_COLUMNS, pl.Float64),
                 "feature_version": pl.String,
             }
         )
+        return AudioEventExtraction(features=empty, scored_windows=0, empty_audio_windows=0)
 
     try:
         reader = wave.open(str(wav_path), "rb")  # noqa: SIM115 (closed below)
@@ -468,6 +535,8 @@ def compute_audio_event_features(
     rows_by_col: dict[str, list[float | None]] = {column: [] for column in FEATURE_COLUMNS}
     empty_selected = 0
     scored_count = 0
+    processed_selected = 0
+    total_selected = windows.height if selected is None else len(selected)
     active_detector = detector
 
     with reader:
@@ -490,27 +559,32 @@ def compute_audio_event_features(
                     rows_by_col[column].append(None)
                 continue
 
-            start_sample = max(0, round(start_s * SAMPLE_RATE_HZ))
-            end_sample = min(total_frames, round(end_s * SAMPLE_RATE_HZ))
+            start_sample = max(0, round(float(start_s) * SAMPLE_RATE_HZ))
+            end_sample = min(total_frames, round(float(end_s) * SAMPLE_RATE_HZ))
             if start_sample >= end_sample:
                 empty_selected += 1
                 for column in FEATURE_COLUMNS:
                     rows_by_col[column].append(0.0)
-                continue
+            else:
+                n_read = end_sample - start_sample
+                reader.setpos(start_sample)
+                raw = reader.readframes(n_read)
+                if len(raw) != 2 * n_read:
+                    raise AudioFormatError(
+                        f"{wav_path} ended early: its header promised more audio"
+                    )
+                waveform = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+                if active_detector is None:
+                    active_detector = YamnetEventDetector(cache_dir=cache_dir)
+                frame_scores = active_detector.score_frames(waveform)
+                event_probs = aggregate_event_probabilities(frame_scores)
+                scored_count += 1
+                for column in FEATURE_COLUMNS:
+                    rows_by_col[column].append(event_probs[column])
 
-            n_read = end_sample - start_sample
-            reader.setpos(start_sample)
-            raw = reader.readframes(n_read)
-            if len(raw) != 2 * n_read:
-                raise AudioFormatError(f"{wav_path} ended early: its header promised more audio")
-            waveform = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-            if active_detector is None:
-                active_detector = YamnetEventDetector(cache_dir=cache_dir)
-            frame_scores = active_detector.score_frames(waveform)
-            event_probs = aggregate_event_probabilities(frame_scores)
-            scored_count += 1
-            for column in FEATURE_COLUMNS:
-                rows_by_col[column].append(event_probs[column])
+            processed_selected += 1
+            if on_progress is not None:
+                on_progress(processed_selected, total_selected)
 
     if empty_selected:
         log.warning(
@@ -521,14 +595,15 @@ def compute_audio_event_features(
             wav_path,
         )
     log.debug(
-        "audio-event features video_id=%s scored=%d total=%d path=%s",
+        "audio-event features video_id=%s scored=%d empty_audio=%d total=%d path=%s",
         windows["video_id"][0],
         scored_count,
+        empty_selected,
         windows.height,
         wav_path,
     )
 
-    return pl.DataFrame(
+    frame = pl.DataFrame(
         {
             "window_id": windows["window_id"],
             **{
@@ -540,3 +615,33 @@ def compute_audio_event_features(
             ),
         }
     )
+    return AudioEventExtraction(
+        features=frame, scored_windows=scored_count, empty_audio_windows=empty_selected
+    )
+
+
+def compute_audio_event_features(
+    windows: pl.DataFrame,
+    wav_path: Path,
+    *,
+    detector: AudioEventDetector | None = None,
+    window_ids: Collection[str] | None = None,
+    scores: pl.DataFrame | Sequence[float] | npt.NDArray[np.floating] | pl.Series | None = None,
+    top_k: int | None = None,
+    cache_dir: Path | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> pl.DataFrame:
+    """Compute per-window audio-event probabilities for one VOD's normalized WAV.
+
+    Returns the features DataFrame from `extract_audio_event_features`.
+    """
+    return extract_audio_event_features(
+        windows,
+        wav_path,
+        detector=detector,
+        window_ids=window_ids,
+        scores=scores,
+        top_k=top_k,
+        cache_dir=cache_dir,
+        on_progress=on_progress,
+    ).features

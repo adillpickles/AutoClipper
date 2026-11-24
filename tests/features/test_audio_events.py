@@ -438,6 +438,62 @@ def test_cli_audio_events_writes_parquet_with_subset_scoring(
     assert bad_flags.exit_code == ExitCode.USER_ERROR
 
 
+def test_review_regressions_validation_cache_progress_and_path_safety(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    windows = make_windows("v", 30.0)
+
+    # Empty scores DataFrame returns [] instead of raising a Polars SchemaError.
+    assert select_top_windows(windows, pl.DataFrame({"window_id": [], "score": []})) == []
+
+    # Non-numeric scores raise ValueError cleanly (not Polars InvalidOperationError).
+    with pytest.raises(ValueError, match="must be numeric"):
+        select_top_windows(windows, pl.DataFrame({"window_id": ["v:0"], "score": ["N/A"]}))
+
+    # Non-finite or negative window timestamps raise ValueError cleanly.
+    wav = write_wav(tmp_path / "v.wav", np.full(10 * RATE, 0.3, dtype=np.float32))
+    bad_inf = make_windows("v", 10.0).with_columns(pl.lit(float("inf")).alias("end_s"))
+    with pytest.raises(ValueError, match="finite"):
+        compute_audio_event_features(bad_inf, wav, detector=FakeDetector())
+    bad_str = make_windows("v", 10.0).with_columns(pl.lit("0.0").alias("start_s"))
+    with pytest.raises(ValueError, match="numeric"):
+        compute_audio_event_features(bad_str, wav, detector=FakeDetector())
+
+    # Cache path pointing to a regular file raises AudioEventsError (not raw FileExistsError).
+    not_a_dir = tmp_path / "file.txt"
+    not_a_dir.write_text("x", encoding="utf-8")
+    with pytest.raises(AudioEventsError, match="cache directory"):
+        ensure_yamnet_model(not_a_dir)
+
+    # Progress callback tracks each selected window, and CLI reports scored vs empty-audio counts.
+    ticks: list[tuple[int, int]] = []
+    compute_audio_event_features(
+        windows,
+        wav,
+        detector=FakeDetector(),
+        on_progress=lambda done, total: ticks.append((done, total)),
+    )
+    assert ticks == [(1, 3), (2, 3), (3, 3)]
+
+    win_path = tmp_path / "short_win.parquet"
+    windows.write_parquet(win_path)
+    out_path = tmp_path / "short_out.parquet"
+    monkeypatch.setattr(audio_events, "YamnetEventDetector", lambda **_: FakeDetector())
+    short_res = runner.invoke(
+        app,
+        ["audio-events", str(wav), "--windows", str(win_path), "--out", str(out_path)],
+    )
+    assert short_res.exit_code == ExitCode.SUCCESS, short_res.output
+    assert "1 of 3 windows scored, 2 past audio end" in short_res.output
+
+    # Unsafe video_id with path traversal is rejected when --out is omitted.
+    unsafe_win = tmp_path / "unsafe.parquet"
+    make_windows("../escape", 10.0).write_parquet(unsafe_win)
+    unsafe_res = runner.invoke(app, ["audio-events", str(wav), "--windows", str(unsafe_win)])
+    assert unsafe_res.exit_code == ExitCode.USER_ERROR
+    assert "unsafe video_id" in unsafe_res.output
+
+
 # --- Opt-in real-model test (skipped in CI) --------------------------------------------------
 
 
