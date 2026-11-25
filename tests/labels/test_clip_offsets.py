@@ -55,6 +55,7 @@ def test_a_planted_clip_is_found_at_its_true_start(vod: tuple[Path, np.ndarray])
     assert match.corr > 0.95
     assert match.margin > 0.3
     assert not match.at_search_edge
+    assert match.clip_length_s == pytest.approx(30.0)
 
 
 def test_a_clip_after_its_reported_start_and_near_the_vod_start(
@@ -161,9 +162,49 @@ def test_select_clips_takes_top_clips_per_channel_within_limits(
     assert max(clips.group_by("video_id").len()["len"].to_list()) <= 2
     assert max(clips.group_by("login").len()["len"].to_list()) <= 3
     assert "post_stream" in clips["clip_class"].to_list()
-    for login, group in clips.group_by("login"):
-        views = group["view_count"].to_list()
-        assert views == sorted(views, reverse=True) or group["clip_class"].n_unique() > 1, login
+
+
+def with_post_stream(vod: study.VodData, every: int = 2) -> study.VodData:
+    """`vod` with every `every`-th clip (in clip ID order) made after the stream."""
+    if vod.clips.height == 0:
+        return vod
+    late = max(vod.clips["created_at"].to_list()) + timedelta(days=30)
+    post_ids = vod.clips.sort("clip_id")["clip_id"].gather_every(every).to_list()
+    clips = vod.clips.with_columns(
+        created_at=pl.when(pl.col("clip_id").is_in(post_ids))
+        .then(pl.lit(late))
+        .otherwise(pl.col("created_at"))
+    )
+    return dataclasses.replace(vod, clips=clips)
+
+
+def test_select_clips_takes_the_most_viewed_of_each_class(
+    pilot: tuple[Path, list[study.VodData]],
+) -> None:
+    root, vods = pilot
+    vods = [with_post_stream(v) for v in vods]
+    selection = co.select_clips(
+        vods, wav_paths=wavs(root, vods), muted={}, per_channel=3, live_per_channel=2,
+        max_per_vod=99,
+    )  # fmt: skip
+    candidates = co.clip_candidates(vods)
+    for login in dict.fromkeys(v.login for v in vods):
+        picked = selection.clips.filter(pl.col("login") == login)
+        pool = candidates.filter(pl.col("login") == login).sort(
+            ["view_count", "clip_id"], descending=[True, False]
+        )
+        if pool.height == 0:  # a channel whose only VOD has no clips
+            assert picked.height == 0
+            continue
+        live = pool.filter(pl.col("clip_class") == "live")["clip_id"].to_list()
+        post = pool.filter(pl.col("clip_class") == "post_stream")["clip_id"].to_list()
+        # The documented rule: the 2 most-viewed live clips and the most-viewed post-stream
+        # one; if a class runs short, the most-viewed remaining clips fill the channel to 3.
+        expected = live[:2] + post[:1]
+        expected += [c for c in pool["clip_id"].to_list() if c not in expected][: 3 - len(expected)]
+        assert set(picked["clip_id"].to_list()) == set(expected), login
+        assert len(live) >= 2, "the test needs two live clips in every channel"
+        assert post, "the test needs a post-stream clip in every channel"
 
 
 def test_select_clips_skips_muted_and_silent_clips(
@@ -196,16 +237,25 @@ def test_shift_vod_moves_clips_by_class_and_rebuilds_moments(
     pilot: tuple[Path, list[study.VodData]],
 ) -> None:
     _, vods = pilot
-    vod = vods[0]
-    moved = co.shift_vod(vod, {"live": -20.0, "post_stream": 5.0})
+    vod = with_post_stream(vods[0])
+    post = pl.col("created_at") > pl.col("ended_at")
+    post_ids = set(vod.clips.filter(post)["clip_id"].to_list())
+    live_ids = set(vod.clips.filter(~post)["clip_id"].to_list())
+    assert post_ids
+    assert live_ids
+    moved = co.shift_vod(vod, {"live": -20.0, "post_stream": 7.0})
     before = dict(vod.clips.select("clip_id", "vod_offset_s").iter_rows())
     after = dict(moved.clips.select("clip_id", "vod_offset_s").iter_rows())
+    assert set(after) & post_ids, "a post-stream clip must survive the move"
     for clip_id, offset in after.items():
-        assert offset == pytest.approx(max(before[clip_id] - 20.0, 0.0))
-    assert min(moved.moments["start_s"].to_list()) == pytest.approx(
-        max(min(vod.moments["start_s"].to_list()) - 20.0, 0.0)
-    )
-    gone = co.shift_vod(vod, {"live": -10_000.0})
+        shift = 7.0 if clip_id in post_ids else -20.0
+        assert offset == pytest.approx(max(before[clip_id] + shift, 0.0)), clip_id
+    # Moving only the post-stream clips leaves the live ones where they were, and vice versa.
+    only_post = co.shift_vod(vod, {"post_stream": 7.0})
+    for clip_id, offset in only_post.clips.select("clip_id", "vod_offset_s").iter_rows():
+        expected = before[clip_id] + (7.0 if clip_id in post_ids else 0.0)
+        assert offset == pytest.approx(expected), clip_id
+    gone = co.shift_vod(vod, {"live": -10_000.0, "post_stream": -10_000.0})
     assert gone.clips.height == 0
     assert gone.moments.height == 0
 
@@ -304,3 +354,20 @@ def test_shift_vod_can_read_positions_as_clip_ends(
         old = before[clip["clip_id"]]
         expected = old["vod_offset_s"] - old["duration_s"] + 1.0
         assert clip["vod_offset_s"] == pytest.approx(max(expected, 0.0))
+
+
+def test_summaries_use_the_downloaded_length_and_keep_the_metadata_one() -> None:
+    frame = matches_frame(
+        [("a1", "live", -30.0, 0.99, 0.5), ("a2", "live", -29.0, 0.99, 0.5)]
+    ).with_columns(
+        # Metadata says 30 s; the downloaded audio is 31 s for the first clip.
+        clip_length_s=pl.Series([31.0, 30.0]),
+    )
+    summary = co.summarize_matches(
+        frame, min_corr=0.6, min_margin=0.1, consistent_iqr_s=10, seed=1, n_resamples=20
+    )
+    audio = summary["end_residual"]["all"]
+    metadata = summary["end_residual_metadata"]["all"]
+    assert (audio["min_s"], audio["max_s"]) == (1.0, 1.0)
+    assert (metadata["min_s"], metadata["max_s"]) == (0.0, 1.0)
+    assert (summary["shift"]["all"]["min_s"], summary["shift"]["all"]["max_s"]) == (-30.0, -29.0)

@@ -218,6 +218,7 @@ def check_clips(
                 "runner_up": match.runner_up if match else None,
                 "margin": match.margin if match else None,
                 "at_search_edge": match.at_search_edge if match else None,
+                "clip_length_s": match.clip_length_s if match else None,
             }
         )
     return pl.DataFrame(rows, infer_schema_length=None, schema_overrides={"error": pl.String})
@@ -251,7 +252,8 @@ def rerun_rule(summary: Mapping[str, Any]) -> dict[str, Any] | None:
     options = []
     for rule, key, per_duration in (
         ("constant", "shift", 0.0),
-        ("end_anchored", "end_residual", -1.0),
+        # Metadata lengths: the correction moves clips by their metadata duration_s.
+        ("end_anchored", "end_residual_metadata", -1.0),
     ):
         shifts = rerun_shifts(summary[key])
         if shifts is not None:

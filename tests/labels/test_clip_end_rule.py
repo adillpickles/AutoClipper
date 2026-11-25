@@ -69,29 +69,53 @@ def test_select_stratified_clips_fills_cells_and_honors_exclusions(
     assert pick(3).clips.equals(clips)
 
 
-def test_select_stratified_clips_skips_clips_silent_at_either_reading(
-    pilot: tuple[Path, list[study.VodData]], tmp_path: Path
+def wav_silent_over(path: Path, length_s: float, silent: tuple[float, float]) -> Path:
+    """Loud noise everywhere except digital silence over `silent` (seconds)."""
+    rate = co.SAMPLE_RATE_HZ
+    samples = np.random.default_rng(0).normal(scale=0.3, size=int(length_s * rate))
+    samples[int(silent[0] * rate) : int(silent[1] * rate)] = 0.0
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(rate)
+        writer.writeframes((np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes())
+    return path
+
+
+@pytest.mark.parametrize(
+    ("reading", "skipped"),
+    [
+        ("end", True),  # [vod_offset - duration, vod_offset]: the reading exp-003 tests
+        ("start", True),  # [vod_offset, vod_offset + duration]: the pipeline's reading today
+        ("neither", False),  # silent after both spans: the clip is kept
+    ],
+)
+def test_select_stratified_clips_skips_a_clip_silent_at_either_reading(
+    pilot: tuple[Path, list[study.VodData]], tmp_path: Path, reading: str, skipped: bool
 ) -> None:
     _, vods = pilot
     vod = vods[0]
-    silent = tmp_path / "silent.wav"
-    with wave.open(str(silent), "wb") as writer:
-        writer.setnchannels(1)
-        writer.setsampwidth(2)
-        writer.setframerate(co.SAMPLE_RATE_HZ)
-        writer.writeframes(np.zeros(int(vod.duration_s * co.SAMPLE_RATE_HZ), "<i2").tobytes())
+    clip = vod.clips.filter(pl.col("vod_offset_s") >= pl.col("duration_s")).head(1)
+    offset, length = float(clip["vod_offset_s"][0]), float(clip["duration_s"][0])
+    one = dataclasses.replace(vod, clips=clip)
+    span = {
+        "end": (offset - length, offset),
+        "start": (offset, offset + length),
+        "neither": (offset + length + 1, offset + 2 * length + 1),
+    }[reading]
+    wav = wav_silent_over(tmp_path / f"{reading}.wav", vod.duration_s + 60, span)
     selection = co.select_stratified_clips(
-        [vod],
-        wav_paths={vod.video_id: silent},
+        [one],
+        wav_paths={vod.video_id: wav},
         muted={},
         exclude=set(),
-        cell_counts=[(2, 0, 2, 0)],
+        cell_counts=[(1, 0, 1, 0)],
         max_per_vod=9,
         max_silent_fraction=0.5,
         seed=1,
     )
-    assert selection.clips.height == 0
-    assert selection.n_skipped_silent > 0
+    assert (selection.clips.height == 0) is skipped
+    assert (selection.n_skipped_silent > 0) is skipped
 
 
 def end_matches(residuals: list[float | None]) -> pl.DataFrame:
@@ -155,6 +179,35 @@ def test_evaluate_end_rule_passes_and_fails_as_written() -> None:
         1,
     )
     assert evaluate([None, None])["result"] == "FAIL"
+
+
+def test_evaluate_end_rule_reports_outliers_and_can_use_audio_lengths() -> None:
+    frame = end_matches([0.5, -1.0, 6.0, -9.0]).with_columns(
+        duration_s=pl.Series([30.0, 30.0, 8.0, 30.0]),
+        # Shifts that give metadata end errors of 0.5, -1, 6 and -9 s.
+        shift_s=pl.Series([0.5 - 30.0, -1.0 - 30.0, 6.0 - 8.0, -9.0 - 30.0]),
+        # The downloaded audio of the third clip is 2 s longer than its metadata length.
+        clip_length_s=pl.Series([30.0, 30.0, 10.0, 30.0]),
+    )
+    kwargs = {
+        "tolerance_s": 2.0,
+        "max_median_abs_error_s": 2.0,
+        "min_corr": 0.6,
+        "min_margin": 0.1,
+        "seed": 1,
+        "n_resamples": 20,
+        "min_share_within_tolerance": 0.7,
+    }
+    metadata = co.evaluate_end_rule(frame, **kwargs)  # type: ignore[arg-type]
+    overall = metadata["overall"]
+    assert metadata["length"] == "metadata"
+    assert (overall["min_signed_s"], overall["max_signed_s"]) == (-9.0, 6.0)
+    assert overall["n_beyond_tolerance"] == 2
+    assert overall["n_beyond_tolerance_short"] == 1  # the 8 s clip
+    audio = co.evaluate_end_rule(frame, length="audio", **kwargs)  # type: ignore[arg-type]
+    assert audio["overall"]["max_signed_s"] == 8.0
+    with pytest.raises(ValueError, match="length"):
+        co.evaluate_end_rule(frame, length="frames", **kwargs)  # type: ignore[arg-type]
 
 
 def test_evaluate_end_rule_breaks_down_by_cell() -> None:

@@ -23,11 +23,13 @@ Usage, with ``CONFIG`` = ``experiments/exp-003-clip-end-confirmation/config.yaml
 import hashlib
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Annotated, Any, Final
 
 import clip_offset_check as coc
+import numpy as np
 import polars as pl
 import typer
 import yaml
@@ -38,7 +40,13 @@ from autoclipper.config import ConfigError, get_settings
 from autoclipper.eval.harness import current_git_sha
 from autoclipper.features.chat import LexiconError, load_lexicon
 from autoclipper.labels import clip_offsets as co
-from autoclipper.labels.alignment_study import StudyConfig, StudyError, load_collection, rounded
+from autoclipper.labels.alignment_study import (
+    StudyConfig,
+    StudyError,
+    VodData,
+    load_collection,
+    rounded,
+)
 from autoclipper.logging import configure_logging
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[1]
@@ -115,6 +123,49 @@ class EndConfig:
             seed=self.seed,
             bootstrap_resamples=self.bootstrap_resamples,
         )
+
+
+def channel_order(vods: Sequence[VodData]) -> list[str]:
+    """Channels in order of first appearance in the VOD list: the order the cells follow."""
+    return list(dict.fromkeys(v.login for v in vods))
+
+
+def cell_count_check(clips: pl.DataFrame, *, channel_order: Sequence[str]) -> dict[str, Any]:
+    """Whether each channel got the cell counts `CELL_COUNTS` gives its position.
+
+    Returns:
+        ``{"channel_order", "expected", "selected", "match"}`` with counts as
+        ``[top-live, top-post, low-live, low-post]`` per channel.
+    """
+    expected = {
+        login: list(CELL_COUNTS[i % len(CELL_COUNTS)]) for i, login in enumerate(channel_order)
+    }
+    selected = {
+        login: [
+            clips.filter(
+                (pl.col("login") == login) & (pl.col("stratum") == s) & (pl.col("clip_class") == c)
+            ).height
+            for s, c in co.CELLS
+        ]
+        for login in channel_order
+    }
+    return {
+        "channel_order": list(channel_order),
+        "expected": expected,
+        "selected": selected,
+        "match": expected == selected,
+    }
+
+
+def _views(frame: pl.DataFrame) -> dict[str, Any] | None:
+    if frame.height == 0:
+        return None
+    views = frame["view_count"].to_numpy()
+    return {
+        "median": float(np.median(views)),
+        "min": int(views.min()),
+        "max": int(views.max()),
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -216,6 +267,19 @@ def main(
         seed=config.seed,
         n_resamples=config.bootstrap_resamples,
     )
+    # Not part of the registered criterion: the same test with the downloaded clips' own
+    # audio length instead of the metadata duration_s.
+    evaluation_audio = co.evaluate_end_rule(
+        matches,
+        tolerance_s=config.tolerance_s,
+        max_median_abs_error_s=config.max_median_abs_error_s,
+        min_share_within_tolerance=config.min_share_within_tolerance,
+        min_corr=config.min_corr,
+        min_margin=config.min_margin,
+        seed=config.seed,
+        n_resamples=config.bootstrap_resamples,
+        length="audio",
+    )
     context = co.summarize_matches(
         matches,
         min_corr=config.min_corr,
@@ -225,6 +289,7 @@ def main(
         n_resamples=config.bootstrap_resamples,
     )
     clips = selection.clips
+    check = cell_count_check(clips, channel_order=channel_order(vods))
     summary: dict[str, Any] = rounded(
         {
             "experiment": config.experiment,
@@ -244,21 +309,21 @@ def main(
                     for login in dict.fromkeys(clips["login"].to_list())
                 },
                 "n_vods": clips["video_id"].n_unique(),
-                "views_mean_top": float(
-                    clips.filter(pl.col("stratum") == "top")["view_count"].to_numpy().mean()
-                )
-                if clips.height
-                else None,
-                "views_max_low": int(
-                    max(clips.filter(pl.col("stratum") == "low")["view_count"].to_list(), default=0)
-                ),
+                "cell_counts": check,
+                "views": {
+                    stratum: _views(clips.filter(pl.col("stratum") == stratum))
+                    for stratum in ("top", "low")
+                },
                 "n_excluded_from_exp002": len(excluded),
+                # The run stops if any selected clip was in exp-002, so this is always 0.
+                "n_overlap_with_exp002": len(set(clips["clip_id"].to_list()) & set(excluded)),
                 "excluded_ids_sha256": hashlib.sha256("\n".join(excluded).encode()).hexdigest(),
                 "n_skipped_muted": selection.n_skipped_muted,
                 "n_skipped_silent": selection.n_skipped_silent,
                 "n_fetch_failed": int(matches["error"].is_not_null().sum()),
             },
             "evaluation": evaluation,
+            "sensitivity_audio_length": evaluation_audio,
             "context": {
                 "shift": context["shift"],
                 "shift_vs_duration": context["shift_vs_duration"],

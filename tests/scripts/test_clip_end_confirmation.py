@@ -57,6 +57,31 @@ def setup(tmp_path: Path, pilot: Path, *, exclude: list[str]) -> tuple[Path, Pat
     return config, artifacts
 
 
+def string_values(value: object) -> list[str]:
+    """Every string in a JSON value, keys included."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in (k, *string_values(v))]
+    if isinstance(value, list):
+        return [s for v in value for s in string_values(v)]
+    return []
+
+
+def leaked(summary_path: Path, pilot: Path) -> list[str]:
+    """Clip IDs, titles, creator or chatter pseudonyms or chat messages found in a summary."""
+    text = summary_path.read_text(encoding="utf-8")
+    strings = set(string_values(json.loads(text)))
+    clips = pl.read_parquet(next((pilot / "processed" / "clips").glob("*.parquet")))
+    chat = pl.concat(
+        [pl.read_parquet(p) for p in sorted((pilot / "interim" / "chat").glob("*.parquet"))]
+    )
+    anywhere = {*clips["clip_id"].to_list(), *clips["creator_hash"].to_list()}
+    anywhere |= set(chat["user_hash"].to_list())
+    exact = {*clips["title"].to_list(), *chat["text"].to_list()}
+    return sorted({s for s in anywhere if s in text} | (exact & strings))
+
+
 def plant(pilot: Path, monkeypatch: pytest.MonkeyPatch, *, end_anchored: bool) -> None:
     """Cut each clip's audio so it ends at (or, if not `end_anchored`, starts at) vod_offset."""
     where = {
@@ -105,12 +130,20 @@ def test_the_rule_passes_only_when_clips_end_at_the_reported_position(
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
     assert summary["evaluation"]["result"] == expected
     assert summary["selection"]["n_excluded_from_exp002"] == 2
+    assert summary["selection"]["n_overlap_with_exp002"] == 0
     report = artifacts / "reports" / "exp-003-clip-end-confirmation" / "matches.parquet"
     matches = pl.read_parquet(report)
     assert matches.height > 0
     assert not set(matches["clip_id"].to_list()) & set(used)
-    text = (tmp_path / "summary.json").read_text(encoding="utf-8")
-    assert not [c for c in clips_of(pilot)["clip_id"].to_list() if c in text]
+    assert summary["sensitivity_audio_length"]["length"] == "audio"
+    assert summary["evaluation"]["length"] == "metadata"
+    assert set(summary["selection"]["cell_counts"]) == {
+        "channel_order",
+        "expected",
+        "selected",
+        "match",
+    }
+    assert leaked(tmp_path / "summary.json", pilot) == []
 
 
 def test_the_exp002_clip_table_is_required(pilot: Path, tmp_path: Path) -> None:
@@ -131,3 +164,20 @@ def test_the_committed_config_states_the_criteria() -> None:
     )
     assert criteria == (2.0, 2.0, 0.7)
     assert config.exclude_experiment == "exp-002-clip-offset-check"
+
+
+def test_cell_count_check_follows_the_channel_order_of_the_list() -> None:
+    def row(login: str, stratum: str, clip_class: str) -> dict[str, str]:
+        return {"login": login, "stratum": stratum, "clip_class": clip_class}
+
+    # (top-live, top-post, low-live, low-post): 3/2/2/3 for the 1st channel, 2/3/3/2 for the 2nd.
+    first = [row("b", "top", "live")] * 3 + [row("b", "top", "post_stream")] * 2
+    first += [row("b", "low", "live")] * 2 + [row("b", "low", "post_stream")] * 3
+    second = [row("a", "top", "live")] * 2 + [row("a", "top", "post_stream")] * 3
+    second += [row("a", "low", "live")] * 3 + [row("a", "low", "post_stream")] * 2
+    clips = pl.DataFrame(first + second)
+    check = cec.cell_count_check(clips, channel_order=["b", "a"])
+    assert check["match"]
+    assert check["expected"] == {"b": [3, 2, 2, 3], "a": [2, 3, 3, 2]}
+    # The same clips read in the other channel order don't match.
+    assert not cec.cell_count_check(clips, channel_order=["a", "b"])["match"]

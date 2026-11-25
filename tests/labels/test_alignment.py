@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,7 @@ from autoclipper.features.chat import compute_chat_features, load_lexicon
 from autoclipper.labels import alignment as al
 from autoclipper.labels.windows import make_windows
 from autoclipper.synthetic import generate_dataset
+from autoclipper.synthetic.scenario import build_scenario
 
 LEXICON = Path(__file__).resolve().parents[2] / "configs" / "lexicon.yaml"
 
@@ -195,7 +197,12 @@ def test_window_signals_of_an_empty_series() -> None:
 
 
 def test_chat_follows_loudness_by_the_planted_lag(synthetic: Path) -> None:
-    """The synthetic VODs put a chat burst 3-8 s after each loud burst, lasting 8-12 s."""
+    """The lag lands where every planted chat burst covers the loud burst it follows.
+
+    For a short loud burst ``[a0, a1]`` and its longer chat burst ``[c0, c1]``, the correlation
+    is highest for lags from ``c0 - a0`` to ``c1 - a1``; the band all of the VOD's events share
+    is the intersection of those ranges (8.0-12.2 s for this VOD).
+    """
     video_id = "9100000001"
     duration, messages, wav = _vod(synthetic, video_id)
     series = al.series_frame(video_id, duration, messages, wav, lexicon=load_lexicon(LEXICON))
@@ -203,7 +210,11 @@ def test_chat_follows_loudness_by_the_planted_lag(synthetic: Path) -> None:
     loud = al.loudness_signal(series["rms_max"].to_numpy(), detrend_bins=61)
     lags = list(range(-30, 61))
     lag = al.peak_lag(lags, al.lagged_correlation(loud, chat, lags))
-    assert 3 <= lag <= 8 + 12
+    events = next(v for v in build_scenario(1).vods if v.plan.video_id == video_id).events
+    low = max(e.chat_burst_s[0] - e.audio_burst_s[0] for e in events)
+    high = min(e.chat_burst_s[1] - e.audio_burst_s[1] for e in events)
+    assert low < high
+    assert math.floor(low) <= lag <= math.ceil(high)
 
 
 def test_loudness_db_floors_silence() -> None:

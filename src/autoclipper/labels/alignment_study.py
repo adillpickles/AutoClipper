@@ -909,10 +909,14 @@ def run_study(vods: Sequence[VodData], config: StudyConfig) -> StudyResult:
     lag_s = int(delay["peak_offset_s"]) if delay else 0
 
     xcorr_lags = [al.peak_lag(m.lags, m.xcorr) for m in measures]
-    xcorr_summary = {
-        group: _median_interval([xcorr_lags[i] for i in idx], config)
-        for group, idx in groups.items()
-    }
+    xcorr_summary: dict[str, Any] = {}
+    for group, idx in groups.items():
+        entry = _median_interval([xcorr_lags[i] for i in idx], config)
+        if entry is not None:
+            peaks = [float(measures[i].xcorr.max()) for i in idx]
+            entry["peak_corr_min"] = min(peaks)
+            entry["peak_corr_max"] = max(peaks)
+        xcorr_summary[group] = entry
 
     # 3. Spike alignment, main setting and sensitivity grid.
     grid = sorted(
@@ -1030,6 +1034,8 @@ def run_study(vods: Sequence[VodData], config: StudyConfig) -> StudyResult:
         },
         "profiles": profiles,
         "alignment": alignment,
+        # Spike alignment at every window size and threshold, over all VODs (means over VODs).
+        "sensitivity": [row for row in sensitivity_rows if row["group"] == ALL],
         "padding": padding_summary,
         "clip_timing": clip_timing(vods),
     }

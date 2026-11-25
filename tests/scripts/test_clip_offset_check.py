@@ -59,6 +59,31 @@ def configs(tmp_path: Path, pilot: Path) -> Path:
     return config
 
 
+def string_values(value: object) -> list[str]:
+    """Every string in a JSON value, keys included."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in (k, *string_values(v))]
+    if isinstance(value, list):
+        return [s for v in value for s in string_values(v)]
+    return []
+
+
+def leaked(summary_path: Path, pilot: Path) -> list[str]:
+    """Clip IDs, titles, creator or chatter pseudonyms or chat messages found in a summary."""
+    text = summary_path.read_text(encoding="utf-8")
+    strings = set(string_values(json.loads(text)))
+    clips = pl.read_parquet(next((pilot / "processed" / "clips").glob("*.parquet")))
+    chat = pl.concat(
+        [pl.read_parquet(p) for p in sorted((pilot / "interim" / "chat").glob("*.parquet"))]
+    )
+    anywhere = {*clips["clip_id"].to_list(), *clips["creator_hash"].to_list()}
+    anywhere |= set(chat["user_hash"].to_list())
+    exact = {*clips["title"].to_list(), *chat["text"].to_list()}
+    return sorted({s for s in anywhere if s in text} | (exact & strings))
+
+
 def plant(pilot: Path, monkeypatch: pytest.MonkeyPatch, *, end_anchored: bool) -> None:
     """Cut each clip's audio from its VOD: `PLANTED_SHIFT_S` from the reported start, or (when
     `end_anchored`) ending at the reported position, as if Twitch reported clips' ends."""
@@ -125,9 +150,12 @@ def test_the_check_recovers_the_planted_shift_and_reruns(pilot: Path, tmp_path: 
     assert "top_with_neither" in summary["rerun"]["corrected_positions"]["alignment"]
     # Clip IDs stay in the git-ignored per-clip table, never in the summary.
     matches = pl.read_parquet(tmp_path / "out" / "matches.parquet")
-    text = (tmp_path / "summary.json").read_text(encoding="utf-8")
     assert matches.height == summary["selection"]["n_selected"]
-    assert not [c for c in matches["clip_id"].to_list() if c in text]
+    assert "clip_length_s" in matches.columns
+    assert matches["clip_length_s"].drop_nulls().len() == matches.height
+    assert summary["matching"]["end_residual_metadata"]["all"] is not None
+    # Clip IDs, titles and pseudonyms stay out of the summary (the clip table keeps the IDs).
+    assert leaked(tmp_path / "summary.json", pilot) == []
 
 
 def test_clips_reported_at_their_end_select_the_end_anchored_rule(
@@ -189,7 +217,7 @@ def test_rerun_rule_picks_the_consistent_rule_with_the_smaller_spread() -> None:
         entry = {"median_s": median, "n_clips": 25, "consistent": iqr <= 10, "iqr_s": iqr}
         return {"all": entry, "live": entry, "post_stream": entry}
 
-    tight_end = {"shift": group(-29.0, 8.0), "end_residual": group(0.5, 1.0)}
+    tight_end = {"shift": group(-29.0, 8.0), "end_residual_metadata": group(0.5, 1.0)}
     rule = coc.rerun_rule(tight_end)
     assert rule is not None
     assert (rule["rule"], rule["per_duration"], rule["shift_s"]["live"]) == (
@@ -197,8 +225,11 @@ def test_rerun_rule_picks_the_consistent_rule_with_the_smaller_spread() -> None:
         -1.0,
         0.5,
     )
-    tight_shift = {"shift": group(-21.0, 0.5), "end_residual": group(5.0, 6.0)}
+    tight_shift = {"shift": group(-21.0, 0.5), "end_residual_metadata": group(5.0, 6.0)}
     rule = coc.rerun_rule(tight_shift)
     assert rule is not None
     assert rule["rule"] == "constant"
-    assert coc.rerun_rule({"shift": group(-29.0, 28.0), "end_residual": group(0.0, 12.0)}) is None
+    assert (
+        coc.rerun_rule({"shift": group(-29.0, 28.0), "end_residual_metadata": group(0.0, 12.0)})
+        is None
+    )

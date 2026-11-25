@@ -11,6 +11,7 @@ from autoclipper.features.chat import load_lexicon
 from autoclipper.labels import alignment_study as study
 from autoclipper.labels.alignment_study import StudyConfig, StudyError
 from autoclipper.synthetic import generate_dataset
+from autoclipper.synthetic.scenario import build_scenario
 
 REPO = Path(__file__).resolve().parents[2]
 LEXICON = REPO / "configs" / "lexicon.yaml"
@@ -184,14 +185,23 @@ def result(vods: list[study.VodData]) -> study.StudyResult:
     return study.run_study(vods, small_config())
 
 
+def planted_offset_s() -> float:
+    """Mean gap between the middles of each planted loud burst and its chat burst (8.8 s)."""
+    events = [e for v in build_scenario(1, pilot=True).vods for e in v.events]
+    gaps = [(sum(e.chat_burst_s) - sum(e.audio_burst_s)) / 2 for e in events]
+    return sum(gaps) / len(gaps)
+
+
 def test_chat_follows_loud_events_by_the_planted_delay(result: study.StudyResult) -> None:
-    # Chat bursts start 3-8 s after each loud burst and last 8-12 s.
+    # The loud event is the burst's loudest second and profiles are smoothed over 5 s, so the
+    # peak lands within a couple of seconds of the planted middle-to-middle gap.
+    expected = planted_offset_s()
     delay = result.summary["chat_delay"]
     pooled = delay["loud_event"]["all"]
-    assert 3 <= pooled["peak_offset_s"] <= 20
+    assert abs(pooled["peak_offset_s"] - expected) <= 2.5
     assert pooled["peak_height_z"] > pooled["chance_peak_height_p95_z"]
     assert delay["shift_lag_s"] == pooled["peak_offset_s"]
-    assert 3 <= delay["whole_vod_xcorr"]["all"]["median"] <= 20
+    assert abs(delay["whole_vod_xcorr"]["all"]["median"] - expected) <= 2.5
     # Smoothing (5 s) moves a loud event's own peak toward the middle of its 2.5-4 s burst.
     loud = result.summary["profiles"]["loudness"]["loud_event"]["all"]["all"]
     assert abs(loud["peak_offset_s"]) <= 3
@@ -218,6 +228,12 @@ def test_run_study_summarizes_every_part(result: study.StudyResult) -> None:
     assert result.per_vod.height == 6
     assert result.xcorr["lag_s"].min() == -30
     assert summary["clip_timing"]["n_post_stream_clips"] == 0
+    # Every number the write-ups cite is in the summary, not only in the artifacts.
+    assert len(summary["sensitivity"]) == 12  # 4 window sizes x 3 thresholds, all VODs
+    assert {row["group"] for row in summary["sensitivity"]} == {"all"}
+    xcorr = summary["chat_delay"]["whole_vod_xcorr"]["all"]
+    assert xcorr["peak_corr_min"] <= xcorr["peak_corr_max"] <= 1
+    assert main["chat_lift"] is None or main["chat_lift"]["n_vods"] <= 6
 
 
 def test_the_summary_holds_no_chat_text_or_ids(result: study.StudyResult, pilot: Path) -> None:

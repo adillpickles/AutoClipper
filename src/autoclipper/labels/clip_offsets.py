@@ -44,6 +44,8 @@ FLOOR_DB: Final = -60.0
 EXCLUSION_S: Final = 1.0
 """The runner-up match is the best one more than this far from the best."""
 CLIP_CLASSES: Final = ("live", "post_stream")
+SHORT_CLIP_S: Final = 10.0
+"""Clips this long or shorter count as short in the end-error breakdown."""
 
 type FloatArray = npt.NDArray[np.float64]
 
@@ -130,6 +132,8 @@ class Match:
         runner_up: The best correlation more than `EXCLUSION_S` from the best position.
         margin: ``corr - runner_up``.
         at_search_edge: The best position is at an end of the searched span (it may lie beyond).
+        clip_length_s: The downloaded clip's own audio length (the metadata ``duration_s`` is
+            rounded, and cut at the VOD's end when placed).
     """
 
     true_start_s: float
@@ -138,6 +142,7 @@ class Match:
     runner_up: float
     margin: float
     at_search_edge: bool
+    clip_length_s: float
 
 
 def match_clip(
@@ -172,6 +177,7 @@ def match_clip(
         runner_up=runner_up,
         margin=float(corr[best]) - runner_up,
         at_search_edge=best in (0, corr.size - 1),
+        clip_length_s=clip_samples.size / SAMPLE_RATE_HZ,
     )
 
 
@@ -423,6 +429,8 @@ def _shift_stats(
         "median_s": median,
         "low_s": ci[0] if ci else None,
         "high_s": ci[1] if ci else None,
+        "min_s": float(shifts.min()),
+        "max_s": float(shifts.max()),
         "p10_s": float(np.percentile(shifts, 10)),
         "p25_s": q25,
         "p75_s": q75,
@@ -436,11 +444,14 @@ def _shift_stats(
 def strong_matches(
     matches: pl.DataFrame, *, min_corr: float, min_margin: float
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """`matches` with a ``strong`` flag, and the strong rows with ``end_residual_s``.
+    """`matches` with a ``strong`` flag, and the strong rows with their end residuals.
 
     A match is strong when its correlation is at least `min_corr`, its margin over the runner-up
-    at least `min_margin` and it isn't at the search edge. ``end_residual_s`` is the true end
-    (true start plus ``duration_s``) minus the reported position.
+    at least `min_margin` and it isn't at the search edge. The end residual is the true end minus
+    the reported position: ``end_residual_s`` takes the true end as the true start plus the
+    downloaded clip's own length (``clip_length_s``, falling back to ``duration_s``);
+    ``end_residual_metadata_s`` uses the metadata ``duration_s`` (rounded, and cut at the VOD's
+    end), which is what a pipeline correction would apply.
     """
     strong_expr = (
         pl.col("corr").is_not_null()
@@ -449,8 +460,14 @@ def strong_matches(
         & ~pl.col("at_search_edge").fill_null(True)
     )
     flagged = matches.with_columns(strong=strong_expr.fill_null(False))
+    length = (
+        pl.col("clip_length_s").fill_null(pl.col("duration_s"))
+        if "clip_length_s" in matches.columns
+        else pl.col("duration_s")
+    )
     strong = flagged.filter(pl.col("strong")).with_columns(
-        end_residual_s=pl.col("shift_s") + pl.col("duration_s")
+        end_residual_s=pl.col("shift_s") + length,
+        end_residual_metadata_s=pl.col("shift_s") + pl.col("duration_s"),
     )
     return flagged, strong
 
@@ -516,7 +533,13 @@ def summarize_matches(
         }
 
     live = strong.filter(pl.col("clip_class") == "live")
-    end_vs_created = (live["true_start_s"] + live["duration_s"] - live["created_s"]).to_numpy()
+    # True end = true start + the downloaded clip's own length (metadata length as fallback).
+    lengths = (
+        live["clip_length_s"].fill_null(live["duration_s"])
+        if "clip_length_s" in live.columns
+        else live["duration_s"]
+    )
+    end_vs_created = (live["true_start_s"] + lengths - live["created_s"]).to_numpy()
     return {
         "n_checked": matches.height,
         "n_strong": strong.height,
@@ -541,6 +564,8 @@ def summarize_matches(
         },
         # The reported position read as the clip's END: true end minus reported offset.
         "end_residual": by_class("end_residual_s"),
+        # The same with metadata lengths: the rule a pipeline correction would apply.
+        "end_residual_metadata": by_class("end_residual_metadata_s"),
         "end_residual_by_channel": {
             login: stats(strong.filter(pl.col("login") == login), "end_residual_s")
             for login in dict.fromkeys(matches["login"].to_list())
@@ -556,16 +581,20 @@ def summarize_matches(
 
 
 def _end_error_stats(
-    frame: pl.DataFrame, *, tolerance_s: float, seed: int, n_resamples: int
+    frame: pl.DataFrame,
+    *,
+    tolerance_s: float,
+    seed: int,
+    n_resamples: int,
+    column: str = "end_residual_metadata_s",
 ) -> dict[str, Any] | None:
     """Signed and absolute end error over `frame`'s strong matches, intervals by VOD resampling."""
     if frame.height == 0:
         return None
-    signed = frame["end_residual_s"].to_numpy()
+    signed = frame[column].to_numpy()
     error = np.abs(signed)
     groups = [
-        np.abs(g["end_residual_s"].to_numpy())
-        for _, g in frame.group_by("video_id", maintain_order=True)
+        np.abs(g[column].to_numpy()) for _, g in frame.group_by("video_id", maintain_order=True)
     ]
 
     def interval(statistic: Callable[[FloatArray], float]) -> tuple[float, float] | None:
@@ -589,6 +618,13 @@ def _end_error_stats(
         "share_within_tolerance_low": share_ci[0] if share_ci else None,
         "share_within_tolerance_high": share_ci[1] if share_ci else None,
         "p90_abs_error_s": float(np.percentile(error, 90)),
+        "min_signed_s": float(signed.min()),
+        "max_signed_s": float(signed.max()),
+        "n_beyond_tolerance": int((error > tolerance_s).sum()),
+        # Of those, clips of at most SHORT_CLIP_S by metadata length.
+        "n_beyond_tolerance_short": int(
+            ((error > tolerance_s) & (frame["duration_s"].to_numpy() <= SHORT_CLIP_S)).sum()
+        ),
     }
 
 
@@ -602,18 +638,26 @@ def evaluate_end_rule(
     min_margin: float,
     seed: int,
     n_resamples: int,
+    length: str = "metadata",
 ) -> dict[str, Any]:
     """Test "true clip end = reported position" against pass criteria fixed in advance.
 
-    The error is ``|true end - vod_offset|`` over strong matches (`strong_matches`). PASS when
+    The error is ``|true end - vod_offset|`` over strong matches (`strong_matches`), the true
+    end being the true start plus the clip's metadata ``duration_s`` (`length` ``"metadata"``,
+    exp-003's registered definition) or its downloaded audio length (``"audio"``). PASS when
     its median is at most `max_median_abs_error_s` and at least `min_share_within_tolerance`
     of clips are within `tolerance_s`; otherwise FAIL. Breakdowns by ``stratum`` (when
     present), clip class and channel are descriptive and carry no criterion.
     """
+    if length not in ("metadata", "audio"):
+        raise ValueError(f"length must be 'metadata' or 'audio', got {length!r}")
+    column = "end_residual_metadata_s" if length == "metadata" else "end_residual_s"
     flagged, strong = strong_matches(matches, min_corr=min_corr, min_margin=min_margin)
 
     def stats(frame: pl.DataFrame) -> dict[str, Any] | None:
-        return _end_error_stats(frame, tolerance_s=tolerance_s, seed=seed, n_resamples=n_resamples)
+        return _end_error_stats(
+            frame, tolerance_s=tolerance_s, seed=seed, n_resamples=n_resamples, column=column
+        )
 
     overall = stats(strong)
     passed = (
@@ -638,6 +682,7 @@ def evaluate_end_rule(
         }
     return {
         "result": "PASS" if passed else "FAIL",
+        "length": length,
         "criteria": {
             "tolerance_s": tolerance_s,
             "max_median_abs_error_s": max_median_abs_error_s,
