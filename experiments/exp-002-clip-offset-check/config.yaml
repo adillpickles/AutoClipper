@@ -1,0 +1,29 @@
+# exp-002: check viewer clips' reported positions against their own audio (#36).
+# Run: uv run python scripts/clip_offset_check.py --config experiments/exp-002-clip-offset-check/config.yaml
+experiment: exp-002-clip-offset-check
+# The VOD list, lexicon and spike-alignment settings come from exp-001, so the rerun with
+# shifted clips is the same measurement.
+exp001_config: experiments/exp-001-chat-lag-alignment/config.yaml
+# Clip selection: the most-viewed clips per channel, half live and half post-stream (either fills
+# in when the other runs out), at most max_per_vod from one VOD.
+per_channel: 10
+live_per_channel: 5
+max_per_vod: 3
+# Skip a clip whose VOD audio is more than this share silent (<= -60 dBFS) over its reported span,
+# besides any overlapping a muted segment Helix reports.
+max_silent_fraction: 0.5
+# Matching: 10 ms log-energy envelopes, searched this far either side of the reported start.
+search_s: 120
+hop_s: 0.01
+# Strong match: envelope correlation >= min_corr, at least min_margin above the best position
+# more than 1 s away, and not at the edge of the search span. Set before the real run.
+min_corr: 0.6
+min_margin: 0.1
+# A group's shift counts as consistent when its interquartile range is at most this; only then
+# are clips moved for the rerun.
+consistent_iqr_s: 10
+# Download: the lowest-bitrate rendition is enough for audio.
+quality: 360p
+download_timeout_s: 300
+seed: 42
+bootstrap_resamples: 1000

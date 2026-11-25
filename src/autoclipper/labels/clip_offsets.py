@@ -1,0 +1,419 @@
+"""Where viewer clips really are in their VOD, found by matching their audio (#36, exp-002).
+
+exp-001 found viewer clips' reported positions (Helix ``vod_offset``) apparently later than
+their content. This module checks that directly: a clip's own audio is matched against the VOD's
+16 kHz WAV near the reported position, and the best match is the clip's true start.
+
+- `envelope`: a log-energy envelope (10 ms frames by default). Clip and VOD audio come from
+  differently encoded copies of the same stream, so their loudness *shape* matches even where
+  the waveforms don't line up sample for sample.
+- `normalized_xcorr` / `match_clip`: Pearson correlation of the clip's envelope with every
+  position of the VOD's envelope in the search span; the best position, its correlation and the
+  best correlation more than `EXCLUSION_S` away (a distinct match has a clear margin).
+- `select_clips`: the most-viewed clips per channel, live and post-stream, spread over VODs,
+  skipping clips that overlap a muted VOD segment or whose VOD audio is mostly silent there.
+- `shift_vod`: a VOD's clips moved by a shift, re-placed and re-merged into moments, to rerun
+  exp-001's measures on corrected positions.
+- `summarize_matches`: shift = true minus reported start, over strong matches only.
+
+All times are seconds of VOD time.
+"""
+
+import math
+import wave
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any, Final
+
+import numpy as np
+import numpy.typing as npt
+import polars as pl
+
+from autoclipper.labels import alignment as al
+from autoclipper.labels.alignment_study import VodData, place_clips, top_clips
+from autoclipper.labels.moments import merge_clips_into_moments
+
+SAMPLE_RATE_HZ: Final = 16_000
+HOP_S: Final = 0.01
+"""Envelope frame length and hop."""
+FLOOR_DB: Final = -60.0
+"""Envelope floor; quieter frames count as this (the features' silence level)."""
+EXCLUSION_S: Final = 1.0
+"""The runner-up match is the best one more than this far from the best."""
+CLIP_CLASSES: Final = ("live", "post_stream")
+
+type FloatArray = npt.NDArray[np.float64]
+
+
+class ClipAudioError(ValueError):
+    """A WAV file isn't 16-bit mono PCM at the expected rate, or is empty."""
+
+
+def read_wav(
+    path: Path, start_s: float = 0.0, end_s: float | None = None
+) -> tuple[FloatArray, float]:
+    """Samples of a 16-bit mono WAV from `start_s` to `end_s` (clamped to the file), full scale 1.
+
+    Returns:
+        ``(samples, actual_start_s)``.
+
+    Raises:
+        ClipAudioError: The file isn't 16-bit mono PCM at `SAMPLE_RATE_HZ`.
+    """
+    with wave.open(str(path), "rb") as reader:
+        if (reader.getnchannels(), reader.getsampwidth(), reader.getframerate()) != (
+            1,
+            2,
+            SAMPLE_RATE_HZ,
+        ):
+            raise ClipAudioError(f"{path.name} isn't 16-bit mono PCM at {SAMPLE_RATE_HZ} Hz")
+        total = reader.getnframes()
+        first = min(total, max(0, math.floor(start_s * SAMPLE_RATE_HZ)))
+        last = total if end_s is None else min(total, max(first, math.ceil(end_s * SAMPLE_RATE_HZ)))
+        reader.setpos(first)
+        raw = reader.readframes(last - first)
+    samples = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 32768.0
+    return samples, first / SAMPLE_RATE_HZ
+
+
+def envelope(samples: FloatArray, *, hop_s: float = HOP_S) -> FloatArray:
+    """Frame energy in dBFS, one value per `hop_s` of 16 kHz audio, floored at `FLOOR_DB`.
+
+    A trailing partial frame is dropped.
+    """
+    hop = round(hop_s * SAMPLE_RATE_HZ)
+    n = samples.size // hop
+    frames = samples[: n * hop].reshape(n, hop)
+    power = (frames * frames).mean(axis=1)
+    return np.maximum(10 * np.log10(np.maximum(power, 1e-12)), FLOOR_DB)
+
+
+def normalized_xcorr(segment: FloatArray, template: FloatArray) -> FloatArray:
+    """Pearson correlation of `template` with each same-length stretch of `segment`.
+
+    Entry ``k`` compares ``segment[k : k + len(template)]`` with `template`. A flat stretch, or a
+    flat template, gives 0. Empty when the template is longer than the segment.
+    """
+    m = template.size
+    count = segment.size - m + 1
+    if m < 2 or count < 1:
+        return np.zeros(max(count, 0), dtype=np.float64)
+    t_std = float(template.std())
+    if t_std == 0:
+        return np.zeros(count, dtype=np.float64)
+    t = (template - template.mean()) / t_std
+    sums = np.concatenate(([0.0], np.cumsum(segment)))
+    squares = np.concatenate(([0.0], np.cumsum(segment * segment)))
+    mean = (sums[m:] - sums[:count]) / m
+    var = (squares[m:] - squares[:count]) / m - mean * mean
+    std = np.sqrt(np.maximum(var, 0.0))
+    # Correlate through the FFT: the segment can be minutes of 10 ms frames.
+    size = 1 << (segment.size + m - 1).bit_length()
+    product = np.fft.irfft(np.fft.rfft(segment, size) * np.conj(np.fft.rfft(t, size)), size)
+    dots = product[:count]
+    out = np.zeros(count, dtype=np.float64)
+    np.divide(dots, m * std, out=out, where=std > 1e-9)
+    return np.clip(out, -1.0, 1.0)
+
+
+@dataclass(frozen=True, slots=True)
+class Match:
+    """Where a clip's audio best matches its VOD.
+
+    Attributes:
+        true_start_s: The matched start of the clip in VOD time.
+        shift_s: ``true_start_s`` minus the reported start.
+        corr: Envelope correlation at the best position (1 = identical shape).
+        runner_up: The best correlation more than `EXCLUSION_S` from the best position.
+        margin: ``corr - runner_up``.
+        at_search_edge: The best position is at an end of the searched span (it may lie beyond).
+    """
+
+    true_start_s: float
+    shift_s: float
+    corr: float
+    runner_up: float
+    margin: float
+    at_search_edge: bool
+
+
+def match_clip(
+    clip_samples: FloatArray,
+    vod_wav: Path,
+    *,
+    reported_s: float,
+    search_s: float,
+    hop_s: float = HOP_S,
+) -> Match | None:
+    """Find a clip's audio in its VOD's WAV within `search_s` of the reported start.
+
+    Returns:
+        The best match, or None when the clip is shorter than two frames or the searched span
+        is shorter than the clip.
+    """
+    clip_env = envelope(clip_samples, hop_s=hop_s)
+    clip_s = clip_env.size * hop_s
+    segment, start_s = read_wav(vod_wav, reported_s - search_s, reported_s + clip_s + search_s)
+    seg_env = envelope(segment, hop_s=hop_s)
+    corr = normalized_xcorr(seg_env, clip_env)
+    if corr.size == 0 or clip_env.size < 2:
+        return None
+    best = int(np.argmax(corr))
+    far = np.abs(np.arange(corr.size) - best) * hop_s > EXCLUSION_S
+    runner_up = float(corr[far].max()) if far.any() else -1.0
+    true_start = start_s + best * hop_s
+    return Match(
+        true_start_s=true_start,
+        shift_s=true_start - reported_s,
+        corr=float(corr[best]),
+        runner_up=runner_up,
+        margin=float(corr[best]) - runner_up,
+        at_search_edge=best in (0, corr.size - 1),
+    )
+
+
+def silent_fraction(vod_wav: Path, start_s: float, end_s: float) -> float:
+    """Share of 10 ms frames of the VOD's audio in ``[start_s, end_s)`` below `FLOOR_DB`.
+
+    1 when the range holds no audio.
+    """
+    samples, _ = read_wav(vod_wav, start_s, end_s)
+    env = envelope(samples)
+    return float((env <= FLOOR_DB).mean()) if env.size else 1.0
+
+
+def _overlaps(start: float, end: float, segments: Sequence[tuple[float, float]]) -> bool:
+    return any(start < offset + duration and offset < end for offset, duration in segments)
+
+
+@dataclass(frozen=True, slots=True)
+class Selection:
+    """The clips to check and what was skipped.
+
+    Attributes:
+        clips: ``video_id``, ``login``, ``clip_id``, ``clip_class``, ``reported_s``,
+            ``duration_s``, ``view_count``, ``created_s`` (creation on the VOD timeline).
+        n_skipped_muted: Candidates overlapping a muted VOD segment.
+        n_skipped_silent: Candidates whose VOD audio is mostly silent at the reported position.
+    """
+
+    clips: pl.DataFrame
+    n_skipped_muted: int
+    n_skipped_silent: int
+
+
+def _created_s(vod: VodData) -> pl.Expr:
+    vod_start = pl.col("ended_at") - pl.duration(seconds=vod.duration_s)
+    return (pl.col("created_at") - vod_start).dt.total_milliseconds().cast(pl.Float64) / 1000
+
+
+def select_clips(
+    vods: Sequence[VodData],
+    *,
+    wav_paths: Mapping[str, Path],
+    muted: Mapping[str, Sequence[tuple[float, float]]],
+    per_channel: int,
+    live_per_channel: int,
+    max_per_vod: int,
+    max_silent_fraction: float = 0.5,
+) -> Selection:
+    """The most-viewed clips of each channel, `live_per_channel` live and the rest post-stream.
+
+    Within a channel, clips are taken by views (ties to the smaller clip ID), at most
+    `max_per_vod` per VOD, live ones until `live_per_channel` and post-stream ones until the
+    channel has `per_channel`; when one kind runs out, the other fills in. A clip overlapping one
+    of its VOD's `muted` segments, or whose VOD audio is more than `max_silent_fraction` silent
+    over its reported span, is skipped and counted.
+    """
+    rows: list[dict[str, Any]] = []
+    for vod in vods:
+        if vod.clips.height == 0:
+            continue
+        ranked = top_clips(vod, vod.clips.height).with_columns(
+            created_s=_created_s(vod),
+            clip_class=pl.when(pl.col("created_at") > pl.col("ended_at"))
+            .then(pl.lit("post_stream"))
+            .otherwise(pl.lit("live")),
+        )
+        for row in ranked.iter_rows(named=True):
+            rows.append(
+                {
+                    "video_id": vod.video_id,
+                    "login": vod.login,
+                    "clip_id": row["clip_id"],
+                    "clip_class": row["clip_class"],
+                    "reported_s": float(row["vod_offset_s"]),
+                    "duration_s": float(row["duration_s"]),
+                    "view_count": int(row["view_count"]),
+                    "created_s": float(row["created_s"]),
+                }
+            )
+    schema = {
+        "video_id": pl.String,
+        "login": pl.String,
+        "clip_id": pl.String,
+        "clip_class": pl.String,
+        "reported_s": pl.Float64,
+        "duration_s": pl.Float64,
+        "view_count": pl.Int64,
+        "created_s": pl.Float64,
+    }
+    candidates = pl.DataFrame(rows, schema=schema)
+    picked: list[dict[str, Any]] = []
+    n_muted = n_silent = 0
+    for login in dict.fromkeys(v.login for v in vods):
+        pool = candidates.filter(pl.col("login") == login).sort(
+            ["view_count", "clip_id"], descending=[True, False]
+        )
+        quota = {"live": live_per_channel, "post_stream": per_channel - live_per_channel}
+        taken: list[dict[str, Any]] = []
+        per_vod: dict[str, int] = {}
+        for fill in (False, True):  # first by quota, then let either kind fill the rest
+            for row in pool.iter_rows(named=True):
+                if len(taken) >= per_channel:
+                    break
+                if row in taken or per_vod.get(row["video_id"], 0) >= max_per_vod:
+                    continue
+                kind_count = sum(t["clip_class"] == row["clip_class"] for t in taken)
+                if not fill and kind_count >= quota[row["clip_class"]]:
+                    continue
+                start, end = row["reported_s"], row["reported_s"] + row["duration_s"]
+                if _overlaps(start, end, muted.get(row["video_id"], ())):
+                    n_muted += 1
+                    continue
+                if silent_fraction(wav_paths[row["video_id"]], start, end) > max_silent_fraction:
+                    n_silent += 1
+                    continue
+                taken.append(row)
+                per_vod[row["video_id"]] = per_vod.get(row["video_id"], 0) + 1
+        picked.extend(taken)
+    return Selection(pl.DataFrame(picked, schema=schema), n_muted, n_silent)
+
+
+def shift_vod(vod: VodData, shift_s: Mapping[str, float]) -> VodData:
+    """`vod` with each clip moved by its class's shift (``live``/``post_stream``), re-merged.
+
+    The moved clips are placed again: clips starting at or after the VOD's end are dropped,
+    clips running past it or before its start are cut at the edge, and moments are rebuilt.
+    """
+    post = pl.col("created_at") > pl.col("ended_at")
+    moved = vod.clips.with_columns(
+        vod_offset_s=pl.col("vod_offset_s")
+        + pl.when(post).then(shift_s.get("post_stream", 0.0)).otherwise(shift_s.get("live", 0.0))
+    )
+    before = pl.col("vod_offset_s") < 0
+    moved = moved.with_columns(
+        duration_s=pl.when(before)
+        .then(pl.col("duration_s") + pl.col("vod_offset_s"))
+        .otherwise(pl.col("duration_s")),
+        vod_offset_s=pl.when(before).then(0.0).otherwise(pl.col("vod_offset_s")),
+    ).filter(pl.col("duration_s") > 0)
+    placed, _, _, _ = place_clips(moved, vod.duration_s)
+    return replace(vod, clips=placed, moments=merge_clips_into_moments(placed).moments)
+
+
+def _shift_stats(
+    frame: pl.DataFrame, *, seed: int, n_resamples: int, consistent_iqr_s: float
+) -> dict[str, Any] | None:
+    if frame.height == 0:
+        return None
+    shifts = frame["shift_s"].to_numpy()
+    by_vod = [g["shift_s"].to_numpy() for _, g in frame.group_by("video_id", maintain_order=True)]
+    ci = al.bootstrap_statistic(
+        len(by_vod),
+        lambda idx: float(np.median(np.concatenate([by_vod[i] for i in idx]))),
+        seed=seed,
+        n_resamples=n_resamples,
+    )
+    median = float(np.median(shifts))
+    q25, q75 = (float(v) for v in np.percentile(shifts, [25, 75]))
+    return {
+        "n_clips": int(shifts.size),
+        "n_vods": len(by_vod),
+        "median_s": median,
+        "low_s": ci[0] if ci else None,
+        "high_s": ci[1] if ci else None,
+        "p10_s": float(np.percentile(shifts, 10)),
+        "p25_s": q25,
+        "p75_s": q75,
+        "p90_s": float(np.percentile(shifts, 90)),
+        "iqr_s": q75 - q25,
+        "share_within_2s_of_median": float((np.abs(shifts - median) <= 2).mean()),
+        "consistent": (q75 - q25) <= consistent_iqr_s,
+    }
+
+
+def summarize_matches(
+    matches: pl.DataFrame,
+    *,
+    min_corr: float,
+    min_margin: float,
+    consistent_iqr_s: float,
+    seed: int,
+    n_resamples: int,
+) -> dict[str, Any]:
+    """Shift statistics over strong matches: overall, per channel, per clip class.
+
+    A match is strong when its correlation is at least `min_corr`, its margin over the runner-up
+    at least `min_margin` and it isn't at the search edge. Weak matches are counted, not used.
+
+    Args:
+        matches: One row per checked clip: ``video_id``, ``login``, ``clip_class``,
+            ``duration_s``, ``created_s``, ``shift_s``, ``true_start_s``, ``corr``, ``margin``,
+            ``at_search_edge`` (None in the match columns when no match was possible).
+        min_corr: Lowest correlation of a strong match.
+        min_margin: Lowest margin of a strong match.
+        consistent_iqr_s: A group's shift is consistent when its interquartile range is at most
+            this.
+        seed: Resampling seed.
+        n_resamples: Resamples for the median's interval (VODs resampled).
+    """
+    strong_expr = (
+        pl.col("corr").is_not_null()
+        & (pl.col("corr") >= min_corr)
+        & (pl.col("margin") >= min_margin)
+        & ~pl.col("at_search_edge").fill_null(True)
+    )
+    flagged = matches.with_columns(strong=strong_expr.fill_null(False))
+    strong = flagged.filter(pl.col("strong"))
+
+    def stats(frame: pl.DataFrame) -> dict[str, Any] | None:
+        return _shift_stats(
+            frame, seed=seed, n_resamples=n_resamples, consistent_iqr_s=consistent_iqr_s
+        )
+
+    live = strong.filter(pl.col("clip_class") == "live")
+    end_vs_created = (live["true_start_s"] + live["duration_s"] - live["created_s"]).to_numpy()
+    return {
+        "n_checked": matches.height,
+        "n_strong": strong.height,
+        "n_weak": matches.height - strong.height,
+        "weak_by_reason": {
+            "no_match": int(flagged["corr"].is_null().sum()),
+            "low_corr": int(flagged.filter(pl.col("corr") < min_corr).height),
+            "low_margin": int(
+                flagged.filter(
+                    (pl.col("corr") >= min_corr) & (pl.col("margin") < min_margin)
+                ).height
+            ),
+            "at_search_edge": int(flagged["at_search_edge"].fill_null(False).sum()),
+        },
+        "corr_of_strong_p10": float(np.percentile(strong["corr"].to_numpy(), 10))
+        if strong.height
+        else None,
+        "shift": {
+            "all": stats(strong),
+            **{c: stats(strong.filter(pl.col("clip_class") == c)) for c in CLIP_CLASSES},
+        },
+        "shift_by_channel": {
+            login: stats(strong.filter(pl.col("login") == login))
+            for login in dict.fromkeys(matches["login"].to_list())
+        },
+        # Live clips: where the content really ends against the clip's creation time.
+        "live_true_end_minus_created_s": (
+            {f"p{q}": float(np.percentile(end_vs_created, q)) for q in (10, 25, 50, 75, 90)}
+            if end_vs_created.size
+            else None
+        ),
+    }
