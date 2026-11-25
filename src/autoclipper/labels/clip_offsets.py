@@ -23,7 +23,7 @@ All times are seconds of VOD time.
 
 import math
 import wave
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final
@@ -228,40 +228,7 @@ def select_clips(
     of its VOD's `muted` segments, or whose VOD audio is more than `max_silent_fraction` silent
     over its reported span, is skipped and counted.
     """
-    rows: list[dict[str, Any]] = []
-    for vod in vods:
-        if vod.clips.height == 0:
-            continue
-        ranked = top_clips(vod, vod.clips.height).with_columns(
-            created_s=_created_s(vod),
-            clip_class=pl.when(pl.col("created_at") > pl.col("ended_at"))
-            .then(pl.lit("post_stream"))
-            .otherwise(pl.lit("live")),
-        )
-        for row in ranked.iter_rows(named=True):
-            rows.append(
-                {
-                    "video_id": vod.video_id,
-                    "login": vod.login,
-                    "clip_id": row["clip_id"],
-                    "clip_class": row["clip_class"],
-                    "reported_s": float(row["vod_offset_s"]),
-                    "duration_s": float(row["duration_s"]),
-                    "view_count": int(row["view_count"]),
-                    "created_s": float(row["created_s"]),
-                }
-            )
-    schema = {
-        "video_id": pl.String,
-        "login": pl.String,
-        "clip_id": pl.String,
-        "clip_class": pl.String,
-        "reported_s": pl.Float64,
-        "duration_s": pl.Float64,
-        "view_count": pl.Int64,
-        "created_s": pl.Float64,
-    }
-    candidates = pl.DataFrame(rows, schema=schema)
+    candidates = clip_candidates(vods)
     picked: list[dict[str, Any]] = []
     n_muted = n_silent = 0
     for login in dict.fromkeys(v.login for v in vods):
@@ -290,6 +257,118 @@ def select_clips(
                 taken.append(row)
                 per_vod[row["video_id"]] = per_vod.get(row["video_id"], 0) + 1
         picked.extend(taken)
+    return Selection(pl.DataFrame(picked, schema=CANDIDATE_SCHEMA), n_muted, n_silent)
+
+
+CANDIDATE_SCHEMA: Final = pl.Schema(
+    {
+        "video_id": pl.String,
+        "login": pl.String,
+        "clip_id": pl.String,
+        "clip_class": pl.String,
+        "reported_s": pl.Float64,
+        "duration_s": pl.Float64,
+        "view_count": pl.Int64,
+        "created_s": pl.Float64,
+    }
+)
+"""Columns of `clip_candidates` and of a `Selection`'s clips."""
+
+
+def clip_candidates(vods: Sequence[VodData]) -> pl.DataFrame:
+    """Every placed clip of `vods` with its class and creation time, in `CANDIDATE_SCHEMA`."""
+    rows: list[dict[str, Any]] = []
+    for vod in vods:
+        if vod.clips.height == 0:
+            continue
+        ranked = top_clips(vod, vod.clips.height).with_columns(
+            created_s=_created_s(vod),
+            clip_class=pl.when(pl.col("created_at") > pl.col("ended_at"))
+            .then(pl.lit("post_stream"))
+            .otherwise(pl.lit("live")),
+        )
+        for row in ranked.iter_rows(named=True):
+            rows.append(
+                {
+                    "video_id": vod.video_id,
+                    "login": vod.login,
+                    "clip_id": row["clip_id"],
+                    "clip_class": row["clip_class"],
+                    "reported_s": float(row["vod_offset_s"]),
+                    "duration_s": float(row["duration_s"]),
+                    "view_count": int(row["view_count"]),
+                    "created_s": float(row["created_s"]),
+                }
+            )
+    return pl.DataFrame(rows, schema=CANDIDATE_SCHEMA)
+
+
+CELLS: Final = (("top", "live"), ("top", "post_stream"), ("low", "live"), ("low", "post_stream"))
+"""The selection cells of `select_stratified_clips`, in the order their counts are given."""
+
+
+def select_stratified_clips(
+    vods: Sequence[VodData],
+    *,
+    wav_paths: Mapping[str, Path],
+    muted: Mapping[str, Sequence[tuple[float, float]]],
+    exclude: Collection[str],
+    cell_counts: Sequence[Sequence[int]],
+    max_per_vod: int,
+    max_silent_fraction: float,
+    seed: int,
+) -> Selection:
+    """Per channel, top and low-view clips, live and post-stream, in the given cell counts.
+
+    Channels are taken in the order of `vods`; channel ``i`` uses
+    ``cell_counts[i % len(cell_counts)]``, counts for the `CELLS` (top-live, top-post,
+    low-live, low-post). *Top* clips are the most-viewed (ties to the smaller clip ID);
+    *low-view* clips have ``view_count`` at or below the channel's median and are drawn in an
+    order shuffled with `seed` (per channel). Clips in `exclude` are never used, at most
+    `max_per_vod` come from one VOD, and a clip is skipped (and counted) when it overlaps a
+    `muted` segment or its VOD audio is more than `max_silent_fraction` silent over either
+    reading of its position: ``[vod_offset, vod_offset + duration]`` or
+    ``[vod_offset - duration, vod_offset]``.
+
+    Returns:
+        The clips with an added ``stratum`` column (``top`` or ``low``).
+    """
+    candidates = clip_candidates(vods).filter(~pl.col("clip_id").is_in(sorted(exclude)))
+    picked: list[dict[str, Any]] = []
+    n_muted = n_silent = 0
+    for index, login in enumerate(dict.fromkeys(v.login for v in vods)):
+        counts = dict(zip(CELLS, cell_counts[index % len(cell_counts)], strict=True))
+        pool = candidates.filter(pl.col("login") == login)
+        views = pool["view_count"].to_numpy()
+        median_views = float(np.median(views)) if views.size else 0.0
+        top = pool.sort(["view_count", "clip_id"], descending=[True, False])
+        low = pool.filter(pl.col("view_count") <= median_views).sort("clip_id")
+        order = np.random.default_rng([seed, index]).permutation(low.height)
+        low = low[order.tolist()] if low.height else low
+        used: set[str] = set()
+        per_vod: dict[str, int] = {}
+        for (stratum, clip_class), wanted in counts.items():
+            source = top if stratum == "top" else low
+            got = 0
+            for row in source.filter(pl.col("clip_class") == clip_class).iter_rows(named=True):
+                if got >= wanted:
+                    break
+                if row["clip_id"] in used or per_vod.get(row["video_id"], 0) >= max_per_vod:
+                    continue
+                offset, length = row["reported_s"], row["duration_s"]
+                spans = ((offset, offset + length), (max(offset - length, 0.0), offset))
+                if any(_overlaps(a, b, muted.get(row["video_id"], ())) for a, b in spans):
+                    n_muted += 1
+                    continue
+                wav = wav_paths[row["video_id"]]
+                if any(silent_fraction(wav, a, b) > max_silent_fraction for a, b in spans):
+                    n_silent += 1
+                    continue
+                picked.append({**row, "stratum": stratum})
+                used.add(row["clip_id"])
+                per_vod[row["video_id"]] = per_vod.get(row["video_id"], 0) + 1
+                got += 1
+    schema = pl.Schema({**CANDIDATE_SCHEMA, "stratum": pl.String})
     return Selection(pl.DataFrame(picked, schema=schema), n_muted, n_silent)
 
 
@@ -354,6 +433,28 @@ def _shift_stats(
     }
 
 
+def strong_matches(
+    matches: pl.DataFrame, *, min_corr: float, min_margin: float
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """`matches` with a ``strong`` flag, and the strong rows with ``end_residual_s``.
+
+    A match is strong when its correlation is at least `min_corr`, its margin over the runner-up
+    at least `min_margin` and it isn't at the search edge. ``end_residual_s`` is the true end
+    (true start plus ``duration_s``) minus the reported position.
+    """
+    strong_expr = (
+        pl.col("corr").is_not_null()
+        & (pl.col("corr") >= min_corr)
+        & (pl.col("margin") >= min_margin)
+        & ~pl.col("at_search_edge").fill_null(True)
+    )
+    flagged = matches.with_columns(strong=strong_expr.fill_null(False))
+    strong = flagged.filter(pl.col("strong")).with_columns(
+        end_residual_s=pl.col("shift_s") + pl.col("duration_s")
+    )
+    return flagged, strong
+
+
 def _fit(strong: pl.DataFrame) -> dict[str, float | None] | None:
     """Least-squares line shift = intercept + slope * clip length, over strong matches."""
     if strong.height < 3 or strong["duration_s"].n_unique() < 2:
@@ -397,16 +498,7 @@ def summarize_matches(
         seed: Resampling seed.
         n_resamples: Resamples for the median's interval (VODs resampled).
     """
-    strong_expr = (
-        pl.col("corr").is_not_null()
-        & (pl.col("corr") >= min_corr)
-        & (pl.col("margin") >= min_margin)
-        & ~pl.col("at_search_edge").fill_null(True)
-    )
-    flagged = matches.with_columns(strong=strong_expr.fill_null(False))
-    strong = flagged.filter(pl.col("strong")).with_columns(
-        end_residual_s=pl.col("shift_s") + pl.col("duration_s")
-    )
+    flagged, strong = strong_matches(matches, min_corr=min_corr, min_margin=min_margin)
 
     def stats(frame: pl.DataFrame, column: str = "shift_s") -> dict[str, Any] | None:
         return _shift_stats(
@@ -460,4 +552,100 @@ def summarize_matches(
             if end_vs_created.size
             else None
         ),
+    }
+
+
+def _end_error_stats(
+    frame: pl.DataFrame, *, tolerance_s: float, seed: int, n_resamples: int
+) -> dict[str, Any] | None:
+    """Signed and absolute end error over `frame`'s strong matches, intervals by VOD resampling."""
+    if frame.height == 0:
+        return None
+    signed = frame["end_residual_s"].to_numpy()
+    error = np.abs(signed)
+    groups = [
+        np.abs(g["end_residual_s"].to_numpy())
+        for _, g in frame.group_by("video_id", maintain_order=True)
+    ]
+
+    def interval(statistic: Callable[[FloatArray], float]) -> tuple[float, float] | None:
+        return al.bootstrap_statistic(
+            len(groups),
+            lambda idx: statistic(np.concatenate([groups[i] for i in idx])),
+            seed=seed,
+            n_resamples=n_resamples,
+        )
+
+    median_ci = interval(lambda e: float(np.median(e)))
+    share_ci = interval(lambda e: float((e <= tolerance_s).mean()))
+    return {
+        "n_clips": int(error.size),
+        "n_vods": len(groups),
+        "median_signed_s": float(np.median(signed)),
+        "median_abs_error_s": float(np.median(error)),
+        "median_abs_error_low_s": median_ci[0] if median_ci else None,
+        "median_abs_error_high_s": median_ci[1] if median_ci else None,
+        "share_within_tolerance": float((error <= tolerance_s).mean()),
+        "share_within_tolerance_low": share_ci[0] if share_ci else None,
+        "share_within_tolerance_high": share_ci[1] if share_ci else None,
+        "p90_abs_error_s": float(np.percentile(error, 90)),
+    }
+
+
+def evaluate_end_rule(
+    matches: pl.DataFrame,
+    *,
+    tolerance_s: float,
+    max_median_abs_error_s: float,
+    min_share_within_tolerance: float,
+    min_corr: float,
+    min_margin: float,
+    seed: int,
+    n_resamples: int,
+) -> dict[str, Any]:
+    """Test "true clip end = reported position" against pass criteria fixed in advance.
+
+    The error is ``|true end - vod_offset|`` over strong matches (`strong_matches`). PASS when
+    its median is at most `max_median_abs_error_s` and at least `min_share_within_tolerance`
+    of clips are within `tolerance_s`; otherwise FAIL. Breakdowns by ``stratum`` (when
+    present), clip class and channel are descriptive and carry no criterion.
+    """
+    flagged, strong = strong_matches(matches, min_corr=min_corr, min_margin=min_margin)
+
+    def stats(frame: pl.DataFrame) -> dict[str, Any] | None:
+        return _end_error_stats(frame, tolerance_s=tolerance_s, seed=seed, n_resamples=n_resamples)
+
+    overall = stats(strong)
+    passed = (
+        overall is not None
+        and overall["median_abs_error_s"] <= max_median_abs_error_s
+        and overall["share_within_tolerance"] >= min_share_within_tolerance
+    )
+    breakdown: dict[str, Any] = {
+        "clip_class": {c: stats(strong.filter(pl.col("clip_class") == c)) for c in CLIP_CLASSES},
+        "channel": {
+            login: stats(strong.filter(pl.col("login") == login))
+            for login in dict.fromkeys(matches["login"].to_list())
+        },
+    }
+    if "stratum" in strong.columns:
+        breakdown["stratum"] = {
+            s: stats(strong.filter(pl.col("stratum") == s)) for s in ("top", "low")
+        }
+        breakdown["cell"] = {
+            f"{s}_{c}": stats(strong.filter((pl.col("stratum") == s) & (pl.col("clip_class") == c)))
+            for s, c in CELLS
+        }
+    return {
+        "result": "PASS" if passed else "FAIL",
+        "criteria": {
+            "tolerance_s": tolerance_s,
+            "max_median_abs_error_s": max_median_abs_error_s,
+            "min_share_within_tolerance": min_share_within_tolerance,
+        },
+        "n_checked": matches.height,
+        "n_strong": strong.height,
+        "n_weak": int((~flagged["strong"]).sum()),
+        "overall": overall,
+        "breakdown": breakdown,
     }
