@@ -59,9 +59,9 @@ def configs(tmp_path: Path, pilot: Path) -> Path:
     return config
 
 
-@pytest.fixture
-def fake_fetch(pilot: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Cut each clip's audio from its VOD, starting `PLANTED_SHIFT_S` from the reported start."""
+def plant(pilot: Path, monkeypatch: pytest.MonkeyPatch, *, end_anchored: bool) -> None:
+    """Cut each clip's audio from its VOD: `PLANTED_SHIFT_S` from the reported start, or (when
+    `end_anchored`) ending at the reported position, as if Twitch reported clips' ends."""
     clips = pl.read_parquet(next((pilot / "processed" / "clips").glob("*.parquet")))
     where = {
         r["clip_id"]: (r["video_id"], r["vod_offset_s"], r["duration_s"])
@@ -70,7 +70,7 @@ def fake_fetch(pilot: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     def fetch(clip_id: str, cache_dir: Path, _config: coc.CheckConfig) -> Path:
         video_id, reported, duration = where[clip_id]
-        start = max(reported + PLANTED_SHIFT_S, 0.0)
+        start = max(reported - duration if end_anchored else reported + PLANTED_SHIFT_S, 0.0)
         samples, _ = co.read_wav(
             pilot / "interim" / "audio" / f"{video_id}.wav", start, start + duration
         )
@@ -84,6 +84,11 @@ def fake_fetch(pilot: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         return out
 
     monkeypatch.setattr(coc, "fetch_clip_audio", fetch)
+
+
+@pytest.fixture
+def fake_fetch(pilot: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    plant(pilot, monkeypatch, end_anchored=False)
 
 
 def run(config: Path, pilot: Path, tmp_path: Path) -> Result:
@@ -113,14 +118,31 @@ def test_the_check_recovers_the_planted_shift_and_reruns(pilot: Path, tmp_path: 
     assert matching["n_strong"] >= 5
     assert matching["shift"]["all"]["median_s"] == pytest.approx(PLANTED_SHIFT_S, abs=0.05)
     assert matching["shift"]["all"]["consistent"]
-    assert summary["rerun"]["shift_s_applied"]["live"] == pytest.approx(PLANTED_SHIFT_S, abs=0.05)
-    assert set(summary["rerun"]) == {"shift_s_applied", "reported_positions", "corrected_positions"}
+    rule = summary["rerun"]["rule"]
+    assert rule["rule"] == "constant"
+    assert rule["shift_s"]["live"] == pytest.approx(PLANTED_SHIFT_S, abs=0.05)
+    assert set(summary["rerun"]) == {"rule", "reported_positions", "corrected_positions"}
     assert "top_with_neither" in summary["rerun"]["corrected_positions"]["alignment"]
     # Clip IDs stay in the git-ignored per-clip table, never in the summary.
     matches = pl.read_parquet(tmp_path / "out" / "matches.parquet")
     text = (tmp_path / "summary.json").read_text(encoding="utf-8")
     assert matches.height == summary["selection"]["n_selected"]
     assert not [c for c in matches["clip_id"].to_list() if c in text]
+
+
+def test_clips_reported_at_their_end_select_the_end_anchored_rule(
+    pilot: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plant(pilot, monkeypatch, end_anchored=True)
+    result = run(configs(tmp_path, pilot), pilot, tmp_path)
+    assert result.exit_code == ExitCode.SUCCESS, result.output
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    residual = summary["matching"]["end_residual"]["all"]
+    assert residual["median_s"] == pytest.approx(0.0, abs=0.05)
+    assert residual["iqr_s"] < summary["matching"]["shift"]["all"]["iqr_s"]
+    assert summary["matching"]["shift_vs_duration"]["slope"] == pytest.approx(-1.0, abs=0.05)
+    rule = summary["rerun"]["rule"]
+    assert (rule["rule"], rule["per_duration"]) == ("end_anchored", -1.0)
 
 
 def test_a_failed_download_is_counted_not_fatal(
@@ -135,7 +157,7 @@ def test_a_failed_download_is_counted_not_fatal(
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
     assert summary["selection"]["n_fetch_failed"] == summary["selection"]["n_selected"]
     assert summary["matching"]["n_strong"] == 0
-    assert summary["rerun"] == {"shift_s_applied": None}
+    assert summary["rerun"] == {"rule": None}
 
 
 def test_a_bad_config_is_a_user_error(pilot: Path, tmp_path: Path) -> None:
@@ -150,15 +172,33 @@ def test_rerun_shifts_prefers_a_consistent_class_median() -> None:
     def stats(median: float, n: int, consistent: bool) -> dict[str, object]:
         return {"median_s": median, "n_clips": n, "consistent": consistent}
 
-    summary = {
-        "shift": {
-            "all": stats(-20.0, 40, True),
-            "live": stats(-22.0, 25, True),
-            "post_stream": stats(-1.0, 3, True),
-        }
+    groups = {
+        "all": stats(-20.0, 40, True),
+        "live": stats(-22.0, 25, True),
+        "post_stream": stats(-1.0, 3, True),
     }
-    assert coc.rerun_shifts(summary) == {"live": -22.0, "post_stream": -20.0}
-    summary["shift"]["all"] = stats(-20.0, 40, False)
-    assert coc.rerun_shifts(summary) == {"live": -22.0}
-    summary["shift"]["live"] = stats(-22.0, 25, False)
-    assert coc.rerun_shifts(summary) is None
+    assert coc.rerun_shifts(groups) == {"live": -22.0, "post_stream": -20.0}
+    groups["all"] = stats(-20.0, 40, False)
+    assert coc.rerun_shifts(groups) == {"live": -22.0}
+    groups["live"] = stats(-22.0, 25, False)
+    assert coc.rerun_shifts(groups) is None
+
+
+def test_rerun_rule_picks_the_consistent_rule_with_the_smaller_spread() -> None:
+    def group(median: float, iqr: float) -> dict[str, object]:
+        entry = {"median_s": median, "n_clips": 25, "consistent": iqr <= 10, "iqr_s": iqr}
+        return {"all": entry, "live": entry, "post_stream": entry}
+
+    tight_end = {"shift": group(-29.0, 8.0), "end_residual": group(0.5, 1.0)}
+    rule = coc.rerun_rule(tight_end)
+    assert rule is not None
+    assert (rule["rule"], rule["per_duration"], rule["shift_s"]["live"]) == (
+        "end_anchored",
+        -1.0,
+        0.5,
+    )
+    tight_shift = {"shift": group(-21.0, 0.5), "end_residual": group(5.0, 6.0)}
+    rule = coc.rerun_rule(tight_shift)
+    assert rule is not None
+    assert rule["rule"] == "constant"
+    assert coc.rerun_rule({"shift": group(-29.0, 28.0), "end_residual": group(0.0, 12.0)}) is None

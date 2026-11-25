@@ -3,8 +3,9 @@
 For about 50 of the most-viewed pilot clips (`autoclipper.labels.clip_offsets.select_clips`),
 download the clip with TwitchDownloaderCLI ``clipdownload``, extract 16 kHz mono audio with
 FFmpeg and find it in the VOD's WAV near the reported ``vod_offset`` (`match_clip`). Reports the
-shift (true minus reported start) over strong matches, and, when the shift is consistent,
-reruns exp-001's measures with every clip moved by it.
+shift (true minus reported start) and the end residual (true end minus reported position) over
+strong matches. When either is consistent (`rerun_rule` takes the tighter one), reruns exp-001's
+measures with every clip moved accordingly: by a constant, or back by its own length.
 
 Writes:
 
@@ -22,6 +23,7 @@ Usage, with ``CONFIG`` = ``experiments/exp-002-clip-offset-check/config.yaml``::
 import hashlib
 import json
 import logging
+import math
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields
@@ -221,22 +223,44 @@ def check_clips(
     return pl.DataFrame(rows, infer_schema_length=None, schema_overrides={"error": pl.String})
 
 
-def rerun_shifts(summary: Mapping[str, Any]) -> dict[str, float] | None:
-    """The shift per clip class to move clips by, or None when no shift is consistent.
+def rerun_shifts(groups: Mapping[str, Any]) -> dict[str, float] | None:
+    """The value per clip class to move clips by, or None when no group is consistent.
 
-    A class uses its own median when it has at least 5 strong matches and is consistent; else
-    the overall median when that is consistent; else the class isn't moved.
+    `groups` is ``summary["shift"]`` or ``summary["end_residual"]``. A class uses its own median
+    when it has at least 5 strong matches and is consistent; else the overall median when that
+    is consistent; else the class isn't moved.
     """
-    shift = summary["shift"]
-    overall = shift["all"]
+    overall = groups["all"]
     out: dict[str, float] = {}
     for clip_class in co.CLIP_CLASSES:
-        own = shift[clip_class]
+        own = groups[clip_class]
         if own and own["n_clips"] >= 5 and own["consistent"]:
             out[clip_class] = own["median_s"]
         elif overall and overall["consistent"]:
             out[clip_class] = overall["median_s"]
     return out or None
+
+
+def rerun_rule(summary: Mapping[str, Any]) -> dict[str, Any] | None:
+    """How to move clips for the rerun: the consistent rule with the smaller spread.
+
+    ``constant``: every clip moves by its class's median shift. ``end_anchored``: the reported
+    position is read as the clip's end, so a clip moves back by its own length plus its class's
+    median end residual. None when neither rule is consistent.
+    """
+    options = []
+    for rule, key, per_duration in (
+        ("constant", "shift", 0.0),
+        ("end_anchored", "end_residual", -1.0),
+    ):
+        shifts = rerun_shifts(summary[key])
+        if shifts is not None:
+            spread = summary[key]["all"]["iqr_s"] if summary[key]["all"] else math.inf
+            options.append((spread, rule, shifts, per_duration))
+    if not options:
+        return None
+    spread, rule, shifts, per_duration = min(options, key=lambda o: o[0])
+    return {"rule": rule, "shift_s": shifts, "per_duration": per_duration, "iqr_s": spread}
 
 
 def _alignment(result: StudyResult) -> dict[str, Any]:
@@ -337,10 +361,12 @@ def main(
         seed=config.seed,
         n_resamples=config.bootstrap_resamples,
     )
-    shifts = rerun_shifts(result)
-    rerun: dict[str, Any] = {"shift_s_applied": shifts}
-    if shifts is not None:
-        moved: list[VodData] = [co.shift_vod(v, shifts) for v in vods]
+    rule = rerun_rule(result)
+    rerun: dict[str, Any] = {"rule": rule}
+    if rule is not None:
+        moved: list[VodData] = [
+            co.shift_vod(v, rule["shift_s"], per_duration=rule["per_duration"]) for v in vods
+        ]
         rerun["reported_positions"] = _alignment(run_study(vods, study))
         rerun["corrected_positions"] = _alignment(run_study(moved, study))
     selected = selection.clips

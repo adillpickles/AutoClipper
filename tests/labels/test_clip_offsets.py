@@ -258,3 +258,49 @@ def test_summarize_matches_uses_strong_matches_only() -> None:
     assert summary["shift"]["post_stream"]["median_s"] == -1.0
     assert summary["shift_by_channel"]["a"]["n_clips"] == 3
     assert summary["live_true_end_minus_created_s"]["p50"] == pytest.approx(-92.0)
+
+
+def test_summarize_matches_reads_positions_as_clip_ends() -> None:
+    """Shifts of minus each clip's length: the reported position is the clip's end."""
+    rows = []
+    for i, length in enumerate([10.0, 20.0, 30.0, 45.0, 60.0, 30.0]):
+        rows.append(
+            {
+                "video_id": f"v{i % 3}",
+                "login": "a",
+                "clip_class": "live",
+                "duration_s": length,
+                "created_s": 1000.0,
+                "true_start_s": 900.0 - length,
+                "shift_s": -length + 0.5,
+                "corr": 0.99,
+                "margin": 0.5,
+                "at_search_edge": False,
+            }
+        )
+    summary = co.summarize_matches(
+        pl.DataFrame(rows), min_corr=0.6, min_margin=0.1, consistent_iqr_s=10, seed=1,
+        n_resamples=30,
+    )  # fmt: skip
+    assert not summary["shift"]["all"]["consistent"]
+    residual = summary["end_residual"]["all"]
+    assert residual["median_s"] == pytest.approx(0.5)
+    assert residual["iqr_s"] == pytest.approx(0.0)
+    assert residual["consistent"]
+    fit = summary["shift_vs_duration"]
+    assert fit["slope"] == pytest.approx(-1.0)
+    assert fit["intercept_s"] == pytest.approx(0.5)
+    assert summary["end_residual_by_channel"]["a"]["n_clips"] == 6
+
+
+def test_shift_vod_can_read_positions_as_clip_ends(
+    pilot: tuple[Path, list[study.VodData]],
+) -> None:
+    _, vods = pilot
+    vod = vods[0]
+    moved = co.shift_vod(vod, {"live": 1.0}, per_duration=-1.0)
+    before = {r["clip_id"]: r for r in vod.clips.iter_rows(named=True)}
+    for clip in moved.clips.iter_rows(named=True):
+        old = before[clip["clip_id"]]
+        expected = old["vod_offset_s"] - old["duration_s"] + 1.0
+        assert clip["vod_offset_s"] == pytest.approx(max(expected, 0.0))

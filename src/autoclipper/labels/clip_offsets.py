@@ -12,9 +12,11 @@ their content. This module checks that directly: a clip's own audio is matched a
   best correlation more than `EXCLUSION_S` away (a distinct match has a clear margin).
 - `select_clips`: the most-viewed clips per channel, live and post-stream, spread over VODs,
   skipping clips that overlap a muted VOD segment or whose VOD audio is mostly silent there.
-- `shift_vod`: a VOD's clips moved by a shift, re-placed and re-merged into moments, to rerun
-  exp-001's measures on corrected positions.
-- `summarize_matches`: shift = true minus reported start, over strong matches only.
+- `shift_vod`: a VOD's clips moved by a shift (optionally minus each clip's own length),
+  re-placed and re-merged into moments, to rerun exp-001's measures on corrected positions.
+- `summarize_matches`: over strong matches only, the shift (true minus reported start) and the
+  *end residual* (true end minus reported position), which is the one to read if the reported
+  position marks the clip's end; plus a line fit of shift against clip length.
 
 All times are seconds of VOD time.
 """
@@ -291,15 +293,18 @@ def select_clips(
     return Selection(pl.DataFrame(picked, schema=schema), n_muted, n_silent)
 
 
-def shift_vod(vod: VodData, shift_s: Mapping[str, float]) -> VodData:
-    """`vod` with each clip moved by its class's shift (``live``/``post_stream``), re-merged.
+def shift_vod(vod: VodData, shift_s: Mapping[str, float], *, per_duration: float = 0.0) -> VodData:
+    """`vod` with each clip moved, re-placed and re-merged into moments.
 
-    The moved clips are placed again: clips starting at or after the VOD's end are dropped,
-    clips running past it or before its start are cut at the edge, and moments are rebuilt.
+    A clip moves by its class's shift (``live``/``post_stream``) plus `per_duration` times its
+    own length: ``per_duration=-1`` reads the reported position as the clip's end. The moved
+    clips are placed again: clips starting at or after the VOD's end are dropped, clips running
+    past it or before its start are cut at the edge, and moments are rebuilt.
     """
     post = pl.col("created_at") > pl.col("ended_at")
     moved = vod.clips.with_columns(
         vod_offset_s=pl.col("vod_offset_s")
+        + per_duration * pl.col("duration_s")
         + pl.when(post).then(shift_s.get("post_stream", 0.0)).otherwise(shift_s.get("live", 0.0))
     )
     before = pl.col("vod_offset_s") < 0
@@ -314,12 +319,17 @@ def shift_vod(vod: VodData, shift_s: Mapping[str, float]) -> VodData:
 
 
 def _shift_stats(
-    frame: pl.DataFrame, *, seed: int, n_resamples: int, consistent_iqr_s: float
+    frame: pl.DataFrame,
+    *,
+    seed: int,
+    n_resamples: int,
+    consistent_iqr_s: float,
+    column: str = "shift_s",
 ) -> dict[str, Any] | None:
     if frame.height == 0:
         return None
-    shifts = frame["shift_s"].to_numpy()
-    by_vod = [g["shift_s"].to_numpy() for _, g in frame.group_by("video_id", maintain_order=True)]
+    shifts = frame[column].to_numpy()
+    by_vod = [g[column].to_numpy() for _, g in frame.group_by("video_id", maintain_order=True)]
     ci = al.bootstrap_statistic(
         len(by_vod),
         lambda idx: float(np.median(np.concatenate([by_vod[i] for i in idx]))),
@@ -341,6 +351,24 @@ def _shift_stats(
         "iqr_s": q75 - q25,
         "share_within_2s_of_median": float((np.abs(shifts - median) <= 2).mean()),
         "consistent": (q75 - q25) <= consistent_iqr_s,
+    }
+
+
+def _fit(strong: pl.DataFrame) -> dict[str, float | None] | None:
+    """Least-squares line shift = intercept + slope * clip length, over strong matches."""
+    if strong.height < 3 or strong["duration_s"].n_unique() < 2:
+        return None
+    x = strong["duration_s"].to_numpy()
+    y = strong["shift_s"].to_numpy()
+    slope, intercept = (float(v) for v in np.polyfit(x, y, 1))
+    residual = y - (intercept + slope * x)
+    # A constant shift (zero spread) has no correlation with length to report.
+    r = float(np.corrcoef(x, y)[0, 1]) if float(y.std()) > 1e-9 else None
+    return {
+        "slope": slope,
+        "intercept_s": intercept,
+        "r": r,
+        "residual_iqr_s": float(np.subtract(*np.percentile(residual, [75, 25]))),
     }
 
 
@@ -376,12 +404,24 @@ def summarize_matches(
         & ~pl.col("at_search_edge").fill_null(True)
     )
     flagged = matches.with_columns(strong=strong_expr.fill_null(False))
-    strong = flagged.filter(pl.col("strong"))
+    strong = flagged.filter(pl.col("strong")).with_columns(
+        end_residual_s=pl.col("shift_s") + pl.col("duration_s")
+    )
 
-    def stats(frame: pl.DataFrame) -> dict[str, Any] | None:
+    def stats(frame: pl.DataFrame, column: str = "shift_s") -> dict[str, Any] | None:
         return _shift_stats(
-            frame, seed=seed, n_resamples=n_resamples, consistent_iqr_s=consistent_iqr_s
+            frame,
+            seed=seed,
+            n_resamples=n_resamples,
+            consistent_iqr_s=consistent_iqr_s,
+            column=column,
         )
+
+    def by_class(column: str) -> dict[str, Any]:
+        return {
+            "all": stats(strong, column),
+            **{c: stats(strong.filter(pl.col("clip_class") == c), column) for c in CLIP_CLASSES},
+        }
 
     live = strong.filter(pl.col("clip_class") == "live")
     end_vs_created = (live["true_start_s"] + live["duration_s"] - live["created_s"]).to_numpy()
@@ -402,14 +442,18 @@ def summarize_matches(
         "corr_of_strong_p10": float(np.percentile(strong["corr"].to_numpy(), 10))
         if strong.height
         else None,
-        "shift": {
-            "all": stats(strong),
-            **{c: stats(strong.filter(pl.col("clip_class") == c)) for c in CLIP_CLASSES},
-        },
+        "shift": by_class("shift_s"),
         "shift_by_channel": {
             login: stats(strong.filter(pl.col("login") == login))
             for login in dict.fromkeys(matches["login"].to_list())
         },
+        # The reported position read as the clip's END: true end minus reported offset.
+        "end_residual": by_class("end_residual_s"),
+        "end_residual_by_channel": {
+            login: stats(strong.filter(pl.col("login") == login), "end_residual_s")
+            for login in dict.fromkeys(matches["login"].to_list())
+        },
+        "shift_vs_duration": _fit(strong),
         # Live clips: where the content really ends against the clip's creation time.
         "live_true_end_minus_created_s": (
             {f"p{q}": float(np.percentile(end_vs_created, q)) for q in (10, 25, 50, 75, 90)}
