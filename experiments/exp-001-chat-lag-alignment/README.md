@@ -3,8 +3,10 @@
 - **Issue:** #36
 - **Question:** How late does chat react to what happens on stream, and how often do chat and audio spikes line up with viewer clips? What does that mean for the window size, how far ahead to look at chat, and clip padding?
 - **Primary metric + success criterion (set in advance):** none. This is an exploratory spike: every number is an estimate with a 95 % interval from resampling VODs, and nothing passes or fails.
+- **Deviation from #36:** the issue asks for the chat delay *from chat peaks vs. clip starts*. The delay is measured around the streamer's loud moments instead, which needs no clips: clip positions turned out to be unreliable as event times (this run's clip timing, then exp-002: they are clip ends). Chat around clip starts is reported too, under "Where clips sit".
 - **Data:** the 25 active pilot VODs in `configs/pilot_vods.txt` (5 channels × 5, 103.44 VOD-hours, SHA-256 in `summary.json`), one clip snapshot per VOD, pseudonymized chat, 16 kHz audio. The historical zero-clip VOD is excluded by the config. No dataset version yet (#40).
-- **Git SHA:** `44ad906` (in `summary.json`, with the config, list and lexicon hashes)
+- **Git SHA:** `f440efd` (in `summary.json`, with the config, list and lexicon hashes)
+- **Revision:** first run at `44ad906`; rerun at `f440efd` during review of #127 to record every number this README cites in `summary.json` (the sensitivity table and the per-VOD peak-correlation range were only in `artifacts/` before). No existing value changed.
 - **Seeds:** 42 (resampling and random anchors)
 - **Command:** `uv run python scripts/pilot_alignment.py --config experiments/exp-001-chat-lag-alignment/config.yaml`, with `AUTOCLIPPER_DATA_DIR` pointing at the pilot data. A rerun gives a byte-identical `summary.json`. Plots: [`notebooks/2026-11-25-hm-chat-lag-alignment.ipynb`](../../notebooks/2026-11-25-hm-chat-lag-alignment.ipynb).
 
@@ -49,7 +51,8 @@ Post-stream clips (182 moments, 24 top clips) are too few for a clear profile; t
 
 | | Value |
 |---|---|
-| Live clips | 7,647 (5,121 made after the stream) |
+| Live clips (created before the VOD ended) | 7,647 |
+| Post-stream clips (left out of this table) | 5,121 |
 | Created after the reported **start**, median | 16 s (p25 2 s, p75 52 s) |
 | Created after the reported **end**, median | −18 s (p25 −35 s, p75 20 s) |
 | 30 s clips (4,197): created after start / after end, medians | 6 s / −24 s |
@@ -61,18 +64,20 @@ A clip made during a stream can only hold what had already happened, so its cont
 
 ### Spike alignment (10 s windows, z ≥ 3)
 
-| Metric | Mean over VODs (95 % CI) |
-|---|---|
-| Chat spikes / audio spikes per VOD-hour | 1.7 (0.9 to 2.4) / 1.2 (0.6 to 1.8) |
-| Windows within 15 s of a moment (chance) | 0.67 (0.56 to 0.76) |
-| Chat-spike lift, shifted by 12 s / unshifted | 1.33 (1.00 to 1.75) / **1.67** (1.14 to 2.31) |
-| Audio-spike lift | 0.89 (0.64 to 1.11) |
-| Chat spikes within 15 s of an audio spike, lift | 4.2 (0.9 to 7.7) |
-| Top moments with a chat spike / audio spike / both / **neither** | 0.18 / 0.08 / 0.04 / **0.77** |
+| Metric | Mean over VODs (95 % CI) | VODs averaged |
+|---|---|---|
+| Chat spikes / audio spikes per VOD-hour | 1.7 (0.9 to 2.4) / 1.2 (0.6 to 1.8) | 25 |
+| Windows within 15 s of a moment (chance) | 0.67 (0.56 to 0.76) | 25 |
+| Chat-spike lift, shifted by 12 s / unshifted | 1.33 (1.00 to 1.75) / **1.67** (1.14 to 2.31) | 13 (with a chat spike) |
+| Audio-spike lift | 0.89 (0.64 to 1.11) | 15 (with an audio spike) |
+| Chat spikes within 15 s of an audio spike, lift | 4.2 (0.93 to 7.7): **inconclusive** | 7 (with both) |
+| Top moments with a chat spike / audio spike / both / **neither** | 0.18 / 0.08 / 0.04 / **0.77** | 25 |
+
+A lift is defined only for a VOD with at least one spike of the kind, so the lifts average fewer VODs than the shares. The chat-near-audio lift rests on 7 VODs and its interval includes 1: chat and audio spikes may coincide more than chance, but this run can't show it.
 
 CaseOh has no chat window at z ≥ 3 (busy, steady chat); Tyler1, where moments cover only 20 % of windows, has the clearest chat lift (1.85 shifted, 2.70 unshifted).
 
-Sensitivity (all VODs; full table in `<artifacts>/reports/exp-001-chat-lag-alignment/sensitivity.parquet`):
+Sensitivity (all VODs; every setting is under `sensitivity` in `summary.json`):
 
 | Window | z | Chat lift (unshifted) | Audio lift | Top moments with neither |
 |---|---|---|---|---|
@@ -91,11 +96,11 @@ Sensitivity (all VODs; full table in `<artifacts>/reports/exp-001-chat-lag-align
 
 ## Conclusion
 
-The documented expectation for chat lag (labeling § 5: several seconds up to roughly 15 s) is supported, with one surprise. Chat follows the streamer's loudest moments by about 12 s (95 % CI 3–16 s) and stays up for about 25 s, which the current `lead{1..3}` chat features (30 s) cover. The surprise: chat and loudness peak at or before the clips' **reported** start, and two thirds of live clips were created before their reported end. Helix's `vod_offset` therefore looks 10–25 s later than the clip's content, or the VOD's `created_at` is later than its first second. Either way, viewer-clip intervals used as labels sit after the event they mark. Spikes at z ≥ 3 are rare and line up with clips only weakly: three quarters of top moments have neither spike, and audio spikes are no likelier near a moment than any window.
+The documented expectation for chat lag (labeling § 5: several seconds up to roughly 15 s) is supported, with one surprise. Chat follows the streamer's loudest moments by about 12 s (95 % CI 3–16 s) and stays up for about 25 s, which the current `lead{1..3}` chat features (30 s) cover. The surprise: chat and loudness peak at or before the clips' **reported** start, and two thirds of live clips were created before their reported end. Helix's `vod_offset` therefore looks 10–25 s later than the clip's content, or the VOD's `created_at` is later than its first second (superseded by exp-002: it is the clip's end, one clip length late). Either way, viewer-clip intervals used as labels sit after the event they mark. Spikes at z ≥ 3 are rare and line up with clips only weakly: three quarters of top moments have neither spike, and audio spikes are no likelier near a moment than any window.
 
 ## Notes and caveats
 
-- **Follow-up: [exp-002](../exp-002-clip-offset-check/README.md)** matched 50 clips' own audio against their VODs: `vod_offset` is the clip's *end* (+0.7 s), not its start. With corrected positions the clip-position results above reverse (the loud moment falls inside the clip) and chat-spike lift doubles; the share of top moments without a spike doesn't change.
+- **Follow-up: [exp-002](../exp-002-clip-offset-check/README.md)** matched 50 clips' own audio against their VODs: `vod_offset` is the clip's *end* (+0.7 s), not its start. With corrected positions the clip-position results above reverse (the loud moment falls inside the clip) and the shifted chat-spike lift rises ×1.5 (1.33 to 2.00, 13 VODs); the share of top moments without a spike doesn't change.
 - **Not verified on video.** The pilot downloaded audio only. Watching a sample of top clips next to the VOD at `vod_offset` (the #40 spot check) is the way to tell an offset in Twitch's positions from clips that start after the event.
 - The clip-timing check takes the VOD's `created_at` as its first second; if Twitch records it late, the shift belongs to the VOD timeline, not the clips.
 - Loud events stand in for "something happened"; they miss quiet highlights and include loud non-events (music, shouting at nothing).
