@@ -5,6 +5,7 @@
 - **Rule and pass criteria (set in advance):** rule: true clip end = `vod_offset_s`. **PASS** when, over strong matches, the median |true end − `vod_offset_s`| is ≤ 2 s **and** at least 70 % of clips are within 2 s; otherwise FAIL. Strong match as in exp-002. The config holding them was committed (`dce2c70`) before any exp-003 clip was selected or downloaded; the code came after (`372b48c`) and the config is unchanged.
 - **Data:** 50 clips of the 25 active pilot VODs, none used in exp-002 (its 50 clips were excluded by ID; overlap checked: 0). 10 per channel in four cells: top clips (the most-viewed remaining; median 477 views) and ordinary low-view clips (at or below the channel's median views, drawn at random; median 1 view, at most 2), each live and post-stream, 25 of each kind overall. 7 candidates were skipped for silent VOD audio at either reading of their position; Helix reports no muted segments. Matching code and settings from exp-002. Clip media and the per-clip table stay in the git-ignored `artifacts/`; `summary.json` holds aggregates only.
 - **Git SHA:** `372b48c` (in `summary.json`)
+- **Pre-registration evidence:** after the rebase, the config commit is ce9b881 and the code commit is 0a92253 (previously dce2c70 and 372b48c). Main gets one squashed commit, so the ordering is preserved in PR #127's commit list (refs/pull/127/head).
 - **Seeds:** 42 (low-view draw, resampling)
 - **Command:** `uv run python scripts/clip_end_confirmation.py --config experiments/exp-003-clip-end-confirmation/config.yaml`
 
