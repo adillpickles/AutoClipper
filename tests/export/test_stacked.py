@@ -31,7 +31,9 @@ from autoclipper.export.reframe import (
 from autoclipper.ffmpeg import AudioStream, VideoStream, ffmpeg_command, probe, run_command
 
 CHANNELS_PATH = Path(__file__).resolve().parents[2] / "configs" / "channels.yaml"
-PILOT_CHANNELS = ("caseoh_", "ishowspeed", "kaicenat", "jynxzi", "flightreacts")
+# Pilot channels with a facecam preset; loltyler1 (#35) has none yet.
+PILOT_CHANNELS = ("caseoh_", "ishowspeed", "kaicenat", "jynxzi")
+PILOT_CHANNELS_WITHOUT_PRESET = ("loltyler1",)
 
 
 def test_stacked_layout_validation() -> None:
@@ -99,6 +101,9 @@ def test_all_pilot_channels_have_valid_stacked_layouts_in_channels_yaml() -> Non
             plan = plan_reframe(layout, width, height)
             assert isinstance(plan, StackedReframePlan)
             assert plan.top.scaled_height + plan.bottom.scaled_height == OUTPUT_HEIGHT
+    for channel in PILOT_CHANNELS_WITHOUT_PRESET:
+        assert channel not in presets
+        assert stacked_layout_for_channel(channel, channels_path=CHANNELS_PATH) is None
 
 
 def test_available_layouts_and_layout_named_for_stacked() -> None:

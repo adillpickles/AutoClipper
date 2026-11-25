@@ -3,9 +3,10 @@
 # Evaluation hides or subsamples a held-out VOD's clips to measure how much the scorer
 # depends on clips. That doesn't test a small channel's quieter chat (docs/ml/evaluation.md).
 #
-# Each channel also carries a `stacked_layout` preset (#68) for vertical 9:16 exports that
+# A channel can carry a `stacked_layout` preset (#68) for vertical 9:16 exports that
 # stack the streamer's facecam over the gameplay: normalized [x, y, width, height] regions
 # from the top-left corner and the top pane's share of the 1920 px frame (`facecam_fraction`).
+# A channel without one gets `stacked` only through AUTOCLIPPER_EXPORT_FACECAM_REGION.
 channels:
   - login: caseoh_
     reason: Just Chatting / variety, very large audience
@@ -31,9 +32,10 @@ channels:
       facecam: [0.02, 0.04, 0.22, 0.28]
       gameplay: [0.0, 0.0, 1.0, 1.0]
       facecam_fraction: 0.35
-  - login: flightreacts
-    reason: Sports and gaming reactions, large audience
-    stacked_layout:
-      facecam: [0.02, 0.62, 0.28, 0.34]
-      gameplay: [0.0, 0.0, 1.0, 1.0]
-      facecam_fraction: 0.38
+  # loltyler1 (broadcaster_id 51496027, Partner; Helix 2026-11-06) replaces FlightReacts
+  # (flight23white, 51270104): Twitch listed no clips of flight23white at all from 2026-10-07 to
+  # 2026-11-06, so its VODs give no viewer-clip labels. Every selected loltyler1 VOD has viewer
+  # clips with VOD offsets. The one ingested flight23white VOD is kept as a zero-clip case.
+  # No stacked_layout preset yet: the pilot collected audio only, so no frame was measured.
+  - login: loltyler1
+    reason: Competitive gaming (League of Legends, Teamfight Tactics), very large audience

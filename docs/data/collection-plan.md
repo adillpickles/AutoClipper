@@ -17,11 +17,11 @@ Everything is collected in one `autoclipper ingest` run per VOD (#34). Run it on
 |---|---|---|---|
 | VOD metadata | Get Videos | At ingest | KB |
 | Viewer-clip snapshot | Get Clips | At ingest, once; the VOD must be at least 7 days old ([labeling § 7](labeling.md#7-view-count-maturity)); record the capture time | KB–MB |
-| Chat replay | TwitchDownloader | At ingest | ~10–200 MB JSON, depending on chat volume (deleted after parsing) |
-| Audio | yt-dlp or TwitchDownloader (audio only) | At ingest | ~100–400 MB |
-| Video | yt-dlp or TwitchDownloader | On demand for preview/export; retain the demo and evaluation set in the chosen storage | Measure in pilot |
+| Chat replay | TwitchDownloader | At ingest | JSON of at least 90 MB for busy pilot chats (deleted after parsing); the pseudonymized table is ~0.5 MB per hour |
+| Audio | yt-dlp or TwitchDownloader (audio only) | At ingest | ~0.6 GB compressed (~100 MB per hour; some VODs ~170) plus a ~0.7 GB WAV (115 MB per hour) |
+| Video | yt-dlp or TwitchDownloader | On demand for preview/export; retain the demo and evaluation set in the chosen storage | Not measured (the pilot collected audio only) |
 
-These are rough planning estimates; measure them in the pilot. Each clip snapshot is immutable and records capture times, query ranges, coverage and dataset lineage ([data model](../architecture/data-model.md#clips)). Later-created clips and pagination limits affect which clips a snapshot contains. A VOD younger than 7 days at capture is flagged and left out of view-weighted labels and metrics.
+Sizes and times measured on the 25 pilot VODs are in the [pilot report](pilot-report.md). Each clip snapshot is immutable and records capture times, query ranges, coverage and dataset lineage ([data model](../architecture/data-model.md#clips)). Later-created clips and pagination limits affect which clips a snapshot contains. A VOD younger than 7 days at capture is flagged and left out of view-weighted labels and metrics.
 
 ## Channels and VODs
 
@@ -32,6 +32,10 @@ The pilot channels are listed in [`configs/channels.yaml`](../../configs/channel
 3. **Mix content types:** "Just Chatting"/IRL, FPS, variety. The model shouldn't learn one game's quirks only.
 4. **Are large:** dense viewer clips give dense labels. Evaluation hides or subsamples a held-out VOD's clips to measure how much the scorer depends on clips ([evaluation § 6](../ml/evaluation.md#small-streamer-simulation)). That covers the "few or no clips" half of the small-streamer case, not a small channel's quieter chat; small channels can be added after the pilot if time allows.
 5. **Have public VOD history** with retention long enough to collect. Subscriber-only VODs are skipped ([data sources](data-sources.md#subscriber-only-vods)).
+
+Check clip activity before adopting a channel: one date-filtered Get Clips request over a recent VOD should return clips of that VOD with VOD offsets. The first pilot channel for sports reactions, `flight23white` (FlightReacts), had no clips at all in the pilot month and was replaced by `loltyler1` (#35).
+
+**The active pilot is `configs/pilot_vods.txt`, not everything in the data directory.** The catalog and `processed/vods.parquet` also hold diagnostic VODs, such as the ingested zero-clip `flight23white` VOD `2894413562`. Dataset building, labels and evaluation select their VODs from the active list (and its channels), and leave diagnostic VODs out of clip-supervised labels: a VOD without clips has no positives, and labeling every window of it negative would be wrong.
 
 ## Targets
 

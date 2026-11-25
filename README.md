@@ -171,7 +171,7 @@ Viewer clips double as **noisy training labels**: roughly, a stretch of the VOD 
 | See the plan, milestones and dates | [Roadmap](docs/product/roadmap.md) |
 | Find something to work on | [GitHub issues](https://github.com/adillpickles/AutoClipper/issues), ordered by week in the [roadmap](docs/product/roadmap.md) |
 | Understand the system design | [Architecture](docs/architecture/overview.md) · [Data model](docs/architecture/data-model.md) |
-| Work with the data | [Sources](docs/data/data-sources.md) · [Collection](docs/data/collection-plan.md) · [Labeling](docs/data/labeling.md) |
+| Work with the data | [Sources](docs/data/data-sources.md) · [Collection](docs/data/collection-plan.md) · [Pilot report](docs/data/pilot-report.md) · [Labeling](docs/data/labeling.md) |
 | Work on the models | [Modeling plan](docs/ml/modeling-plan.md) · [Evaluation](docs/ml/evaluation.md) |
 | Set up a dev environment | [Setup](docs/development/setup.md) |
 | Contribute a change | [CONTRIBUTING](CONTRIBUTING.md) |
