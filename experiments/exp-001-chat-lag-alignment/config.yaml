@@ -1,0 +1,42 @@
+# exp-001: chat delay and clip alignment on the pilot collection (#36).
+# Run: uv run python scripts/pilot_alignment.py --config experiments/exp-001-chat-lag-alignment/config.yaml
+experiment: exp-001-chat-lag-alignment
+# The 25 active pilot VODs. Paths are relative to the repository root.
+vod_list: configs/pilot_vods.txt
+# The historical zero-clip VOD (flight23white) is in the data directory but not in the active
+# pilot (pilot report § 11). The run fails if the list ever names it.
+exclude_video_ids: ["2894413562"]
+lexicon: configs/lexicon.yaml
+seed: 42
+bootstrap_resamples: 1000
+# Random-anchor draws per VOD for the chance level of a profile's peak.
+null_draws: 200
+# Width (s) of the moving average removed from the chat and loudness signals.
+detrend_s: 300
+# Width (s, odd) of the moving average applied to a profile before its peak is read.
+smooth_s: 5
+# Loud events: the loudest seconds of each VOD's detrended loudness (at or above this quantile,
+# per VOD), at least suppress_s apart. They anchor the chat delay without using clips.
+loud_event:
+  quantile: 0.995
+  suppress_s: 60
+# Where a profile's peak is searched, and the lags of the whole-VOD cross-correlation.
+lag_range_s: [-30, 60]
+# Offsets (s) around each anchor, and the part that sets a profile's baseline.
+profile_range_s: [-60, 90]
+baseline_range_s: [-60, -30]
+spike:
+  # The default label window (labeling § 3) and a VOD z-score threshold.
+  window_s: 10
+  z: 3.0
+  # Same suppression as candidate generation (modeling plan § 3).
+  suppress_s: 60
+  # Same tolerance as hit rate@10 (evaluation § 1).
+  match_tolerance_s: 15
+sensitivity:
+  window_s: [5, 10, 15, 20]
+  z: [2.0, 3.0, 4.0]
+# Most-viewed clips per VOD: top-moment recall (as top-clip recall@10) and padding.
+top_clips: 5
+# Seconds searched before a clip's start, and after its end, for the loudest second and chat peak.
+padding_search_s: [30, 60]
