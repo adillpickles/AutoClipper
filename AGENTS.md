@@ -56,16 +56,14 @@ Always read: this file → `docs/project/status.md` → the issue. Then, by task
 ├── pyproject.toml, uv.lock
 ├── configs/               ← channels.yaml and other non-secret config
 ├── src/autoclipper/       ← the Python package; cli.py is the `autoclipper` CLI
-├── scripts/               ← one-off scripts (pilot selection, runner and report for #35; alignment study for #36)
+├── scripts/               ← one-off scripts (pilot selection, runner and report for #35)
 ├── tests/                 ← pytest suite
-├── experiments/           ← experiment configs and results write-ups (docs/ml/experiments.md)
-├── notebooks/             ← exploration notebooks, outputs cleared (conventions § 8)
 ├── web/                   ← Next.js frontend
 ├── docs/                  ← product, architecture, data, ml, development, agents, decisions, project
 └── .github/               ← issue/PR templates, CI
 ```
 
-Also planned: git-ignored `data/` and `artifacts/`. Create a directory when a task needs it.
+Also planned: `experiments/`, `notebooks/`, and git-ignored `data/` and `artifacts/`. Create a directory when a task needs it.
 
 ## 5. Commands
 
@@ -89,10 +87,6 @@ uv run autoclipper ingest <vod link>  # metadata, clips, chat and audio for one 
 uv run autoclipper export <video> --start 10 --end 40   # vertical clip in artifacts/exports/
 uv run autoclipper highlights <result.json> --video <path>   # 16:9 highlights video in artifacts/highlights/
 uv run autoclipper serve             # backend API on http://127.0.0.1:8000 (real analysis jobs; --jobs mock for the built-in scenarios)
-uv run python scripts/pilot_alignment.py --config experiments/exp-001-chat-lag-alignment/config.yaml  # chat delay and clip alignment on the pilot data (#36)
-uv run python scripts/clip_offset_check.py --config experiments/exp-002-clip-offset-check/config.yaml  # find top clips' audio in their VODs (downloads clips into artifacts/)
-uv run python scripts/clip_end_confirmation.py --config experiments/exp-003-clip-end-confirmation/config.yaml  # check, with criteria fixed in its config, that vod_offset is the clip's end (downloads clips)
-uv sync --group notebooks      # matplotlib, a kernel and nbclient for notebooks/ (not installed by default)
 ```
 
 CI runs `uv sync --locked`, Ruff, Pyright and pytest on Ubuntu and Windows. Add dependencies with `uv add <pkg>` (dev tools: `uv add --dev <pkg>`) and commit `pyproject.toml` and `uv.lock` together. Use `uv run …` for everything.
