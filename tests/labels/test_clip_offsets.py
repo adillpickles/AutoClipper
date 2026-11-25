@@ -146,7 +146,7 @@ def test_select_clips_takes_top_clips_per_channel_within_limits(
     pilot: tuple[Path, list[study.VodData]],
 ) -> None:
     root, vods = pilot
-    late = vods[0].clips["created_at"].max() + timedelta(days=30)
+    late = max(vods[0].clips["created_at"].to_list()) + timedelta(days=30)
     first = vods[0]
     post = first.clips.with_columns(
         created_at=pl.when(pl.col("clip_id") == first.clips["clip_id"][0])
@@ -158,8 +158,8 @@ def test_select_clips_takes_top_clips_per_channel_within_limits(
         vods, wav_paths=wavs(root, vods), muted={}, per_channel=3, live_per_channel=2, max_per_vod=2
     )
     clips = selection.clips
-    assert clips.group_by("video_id").len()["len"].max() <= 2
-    assert clips.group_by("login").len()["len"].max() <= 3
+    assert max(clips.group_by("video_id").len()["len"].to_list()) <= 2
+    assert max(clips.group_by("login").len()["len"].to_list()) <= 3
     assert "post_stream" in clips["clip_class"].to_list()
     for login, group in clips.group_by("login"):
         views = group["view_count"].to_list()
@@ -202,8 +202,8 @@ def test_shift_vod_moves_clips_by_class_and_rebuilds_moments(
     after = dict(moved.clips.select("clip_id", "vod_offset_s").iter_rows())
     for clip_id, offset in after.items():
         assert offset == pytest.approx(max(before[clip_id] - 20.0, 0.0))
-    assert moved.moments["start_s"].min() == pytest.approx(
-        max(vod.moments["start_s"].min() - 20.0, 0.0)
+    assert min(moved.moments["start_s"].to_list()) == pytest.approx(
+        max(min(vod.moments["start_s"].to_list()) - 20.0, 0.0)
     )
     gone = co.shift_vod(vod, {"live": -10_000.0})
     assert gone.clips.height == 0
