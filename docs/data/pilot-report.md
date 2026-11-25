@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Pilot collection complete (#35). Exploration findings (#36) still to come. |
-| **Last updated** | 2026-11-24 |
+| **Status** | Pilot collection complete (#35). Exploration findings (#36) in § 16 (draft). |
+| **Last updated** | 2026-11-25 |
 | **Data** | 25 active VODs in [`configs/pilot_vods.txt`](../../configs/pilot_vods.txt), collected 2026-11-06 |
 | **How to check** | `uv run python scripts/pilot_report.py --check docs/data/pilot-report.md` |
 
@@ -290,4 +290,37 @@ The script reads only. It makes no network request and changes no file in the da
 
 ## 16. Exploration findings (#36)
 
-*Added by #36.*
+*Draft.* The numbers in this section come from [exp-001](../../experiments/exp-001-chat-lag-alignment/README.md) (`summary.json`, a reproducible run on the 25 active VODs), not from `pilot_report.py`. Plots are in [`notebooks/2026-11-25-hm-chat-lag-alignment.ipynb`](../../notebooks/2026-11-25-hm-chat-lag-alignment.ipynb). Intervals are 95 % intervals from resampling VODs. All times are VOD time.
+
+### 16.1 Chat delay
+
+Chat reacts about **12 s** (95 % CI 3–16 s) after the streamer's loudest moments: the average chat signal around each VOD's loudest 0.5 % of seconds (369 loud events, no clips needed) peaks 12 s later, at about twice the height random times reach. Chat stays above half that peak from 1 s before to 24 s after the loud moment. Per channel, only Tyler1 is clear on its own (+6 s, 2–13 s); the other channels peak between +4 and +24 s with wide intervals. The whole-VOD correlation of chat with loudness is weak (peak correlations of 0.01–0.10) and gives nonsense on talk-heavy channels (CaseOh: chat 20 s *before* loudness), so it isn't used.
+
+### 16.2 Where viewer clips sit
+
+Measured against the clips' **reported** positions (Helix `vod_offset`), chat peaks 1 s before a moment's start (95 % CI −7 to +1 s; 2,169 moments) and loudness is raised over the 25 s before it. For the 5 most-viewed clips per VOD, the loudest second falls before the clip in 47 % of cases (34 % by chance). The documented clip-start bias expected the payoff in the *later* part of the clip (labeling § 1); measured against reported positions, it's at or before the start.
+
+The clips' own metadata points the same way. A clip made during the stream can only hold what had already happened, yet **65 % of the 7,647 live clips were created before their reported end**: a 30 s clip typically 6 s after its reported start and 24 s before its reported end. Either the reported positions are about 10–25 s later than the clip content, or the VOD's `created_at` is later than its first second. Nothing here has been checked on video (the pilot downloaded audio only).
+
+### 16.3 How often chat and audio spikes line up with clips
+
+Spikes are 10 s windows at a VOD z-score of 3 or more (the same z-scores as the chat and loudness features), at least 60 s apart. They are rare: 1.7 chat and 1.2 audio spikes per VOD-hour, and none in CaseOh's chat. Moments are so dense that 67 % of all windows are within 15 s of one, so the useful number is the lift over that chance level:
+
+- **Chat spikes** are near a moment 1.67 times as often as chance (1.14–2.31). Shifting them back by the 12 s delay makes this *worse* (1.33), which fits clip positions that already sit at the chat reaction.
+- **Audio spikes** are no likelier near a moment than any window (0.89, 0.64–1.11).
+- **Chat and audio spikes** coincide about 4 times as often as chance (0.9–7.7).
+- **Of the moments holding the 5 most-viewed clips**, 18 % have a chat spike, 8 % an audio spike, 4 % both and **77 % neither**. A lower threshold (z ≥ 2) brings "neither" down to 45 %.
+
+### 16.4 Recommendations (proposals, not adopted)
+
+1. **Window size: keep 10 s.** Chat's reaction lasts about 25 s, so a 10 s window holds a good part of it, and the lead features hold the rest. Lift rises a little with 15 s windows (1.50 against 1.33) but with fewer spikes; worth a modeling experiment, not a rule change.
+2. **How far ahead to look at chat: keep `lead{1..3}` (30 s).** It covers the 12 s delay and the reaction's +24 s tail. Against the clip positions as reported, chat needs no look-ahead at all; if the positions are corrected (3), the lead features matter more.
+3. **Check the clip positions before dataset v1 (#40).** Watch a sample of top clips next to the VOD at their reported start. If they're late, compare a label rule that moves each clip earlier (or extends moments backward) by about 10–25 s against `v0` as a new `label_rules_version`, and re-check the ±15 s evaluation match.
+4. **Clip padding: more before than after.** For exports cut from viewer-clip positions, pad about 20–30 s before the reported start (the loudest second is a median 20 s before it when outside the clip) and about 15 s after the end. Model candidates are on the analysis timeline and need no such shift.
+5. **Spike thresholds:** a VOD-wide z of 3 rarely fires on busy, steady chat. Baselines that rank by z are unaffected, but any thresholded rule should use the rolling z (`_rz`) or a per-VOD quantile.
+
+### 16.5 Caveats
+
+- No video was watched; loud moments stand in for "something happened" and miss quiet highlights.
+- Per-channel estimates rest on 5 VODs each; post-stream clips (182 moments, 24 top clips) are too few for a clear profile.
+- The clip-timing check assumes the VOD's `created_at` is its first second.
