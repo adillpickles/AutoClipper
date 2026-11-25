@@ -1,0 +1,43 @@
+# exp-003: confirm on new clips that Helix vod_offset is the clip's END (#36).
+# Pre-registered: this file was committed before any exp-003 clip was selected or downloaded.
+# Run: uv run python scripts/clip_end_confirmation.py --config experiments/exp-003-clip-end-confirmation/config.yaml
+experiment: exp-003-clip-end-confirmation
+
+# --- Hypothesis and pass criteria (fixed before the run) ----------------------------------------
+# Rule under test (found post hoc in exp-002): true clip end ≈ vod_offset_s, where the true end is
+# the matched true start plus the clip's duration_s.
+rule: true clip end = vod_offset_s
+# PASS when both hold over the strong matches; FAIL otherwise. Reported exactly as written.
+#   median |true end - vod_offset_s| <= max_median_abs_error_s
+#   share of clips with |true end - vod_offset_s| <= tolerance_s  >= min_share_within_tolerance
+tolerance_s: 2.0
+max_median_abs_error_s: 2.0
+min_share_within_tolerance: 0.70
+# Strong match, as in exp-002 (envelope correlation, margin over the runner-up more than 1 s away,
+# not at the search edge). Weak matches are reported and left out of the criteria.
+min_corr: 0.6
+min_margin: 0.1
+
+# --- Clips ---------------------------------------------------------------------------------------
+# The 25 active pilot VODs (from exp-001's config). No clip checked in exp-002 is used: its
+# per-clip table (<artifacts>/reports/<exclude_experiment>/matches.parquet) must exist.
+exp001_config: experiments/exp-001-chat-lag-alignment/config.yaml
+exclude_experiment: exp-002-clip-offset-check
+# 10 clips per channel, 50 in all: half top clips, half ordinary low-view clips; half live, half
+# post-stream. Per channel, cells (top-live, top-post, low-live, low-post) are 3/2/2/3 for the
+# 1st, 3rd and 5th channel in list order and 2/3/3/2 for the others: 25 of each kind overall.
+# Top: the most-viewed remaining clips. Low-view: clips with view_count at or below their
+# channel's median (in its snapshots), drawn at random with the seed below.
+per_channel: 10
+max_per_vod: 3
+# Skipped like exp-002: overlapping a Helix muted segment, or VOD audio more than this share
+# silent over the clip's span (checked at both readings of the position, so neither is favored).
+max_silent_fraction: 0.5
+seed: 42
+
+# --- Matching (exp-002's code and settings) ------------------------------------------------------
+search_s: 120
+hop_s: 0.01
+quality: 360p
+download_timeout_s: 300
+bootstrap_resamples: 1000
