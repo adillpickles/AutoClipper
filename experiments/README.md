@@ -5,3 +5,4 @@ Reproducible runs behind every reported number ([running and recording experimen
 | ID | Issue | Question | Result |
 |---|---|---|---|
 | [exp-001](exp-001-chat-lag-alignment/README.md) | #36 | How late does chat react, and do chat and audio spikes line up with viewer clips? | Chat peaks 12 s (3–16 s) after loud moments; viewer clips' reported positions sit after the event; spikes line up with clips only weakly |
+| [exp-002](exp-002-clip-offset-check/README.md) | #36 | Are viewer clips where Twitch reports them? (audio match of 50 clips) | No: `vod_offset` is the clip's end (+0.7 s). Corrected, chat-spike lift doubles; 76 % of top moments still have no spike |

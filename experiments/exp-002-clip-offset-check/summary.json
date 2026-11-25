@@ -1,0 +1,497 @@
+{
+  "config": {
+    "bootstrap_resamples": 1000,
+    "consistent_iqr_s": 10.0,
+    "download_timeout_s": 300.0,
+    "exp001_config": "experiments/exp-001-chat-lag-alignment/config.yaml",
+    "experiment": "exp-002-clip-offset-check",
+    "hop_s": 0.01,
+    "live_per_channel": 5,
+    "max_per_vod": 3,
+    "max_silent_fraction": 0.5,
+    "min_corr": 0.6,
+    "min_margin": 0.1,
+    "per_channel": 10,
+    "quality": "360p",
+    "search_s": 120.0,
+    "seed": 42
+  },
+  "experiment": "exp-002-clip-offset-check",
+  "matching": {
+    "corr_of_strong_p10": 0.9801,
+    "end_residual": {
+      "all": {
+        "consistent": true,
+        "high_s": 0.93,
+        "iqr_s": 1.0775,
+        "low_s": 0.355,
+        "median_s": 0.655,
+        "n_clips": 50,
+        "n_vods": 25,
+        "p10_s": -0.182,
+        "p25_s": 0.1275,
+        "p75_s": 1.205,
+        "p90_s": 5.363,
+        "share_within_2s_of_median": 0.78
+      },
+      "live": {
+        "consistent": true,
+        "high_s": 0.63,
+        "iqr_s": 0.66,
+        "low_s": 0.12,
+        "median_s": 0.42,
+        "n_clips": 25,
+        "n_vods": 18,
+        "p10_s": -1.772,
+        "p25_s": 0.02,
+        "p75_s": 0.68,
+        "p90_s": 1.078,
+        "share_within_2s_of_median": 0.88
+      },
+      "post_stream": {
+        "consistent": true,
+        "high_s": 1.8,
+        "iqr_s": 1.52,
+        "low_s": 0.59,
+        "median_s": 0.94,
+        "n_clips": 25,
+        "n_vods": 17,
+        "p10_s": 0.042,
+        "p25_s": 0.5,
+        "p75_s": 2.02,
+        "p90_s": 7.264,
+        "share_within_2s_of_median": 0.72
+      }
+    },
+    "end_residual_by_channel": {
+      "caseoh_": {
+        "consistent": true,
+        "high_s": 0.98,
+        "iqr_s": 0.3625,
+        "low_s": 0.48,
+        "median_s": 0.855,
+        "n_clips": 10,
+        "n_vods": 5,
+        "p10_s": 0.227,
+        "p25_s": 0.57,
+        "p75_s": 0.9325,
+        "p90_s": 1.029,
+        "share_within_2s_of_median": 0.9
+      },
+      "ishowspeed": {
+        "consistent": true,
+        "high_s": 7.9839,
+        "iqr_s": 5.99,
+        "low_s": 0.02,
+        "median_s": 0.515,
+        "n_clips": 10,
+        "n_vods": 5,
+        "p10_s": -4.869,
+        "p25_s": 0.12,
+        "p75_s": 6.11,
+        "p90_s": 13.533,
+        "share_within_2s_of_median": 0.5
+      },
+      "jynxzi": {
+        "consistent": true,
+        "high_s": 1.35,
+        "iqr_s": 0.875,
+        "low_s": 0.1841,
+        "median_s": 0.475,
+        "n_clips": 10,
+        "n_vods": 5,
+        "p10_s": 0.147,
+        "p25_s": 0.2425,
+        "p75_s": 1.1175,
+        "p90_s": 1.744,
+        "share_within_2s_of_median": 0.9
+      },
+      "kaicenat": {
+        "consistent": true,
+        "high_s": 6.02,
+        "iqr_s": 0.825,
+        "low_s": 0.03,
+        "median_s": 0.14,
+        "n_clips": 10,
+        "n_vods": 5,
+        "p10_s": -0.182,
+        "p25_s": 0.0225,
+        "p75_s": 0.8475,
+        "p90_s": 6.046,
+        "share_within_2s_of_median": 0.8
+      },
+      "loltyler1": {
+        "consistent": true,
+        "high_s": 1.68,
+        "iqr_s": 1.385,
+        "low_s": 0.04,
+        "median_s": 1.065,
+        "n_clips": 10,
+        "n_vods": 5,
+        "p10_s": -0.18,
+        "p25_s": 0.2,
+        "p75_s": 1.585,
+        "p90_s": 1.822,
+        "share_within_2s_of_median": 0.9
+      }
+    },
+    "live_true_end_minus_created_s": {
+      "p10": -131.156,
+      "p25": -77.32,
+      "p50": -54.98,
+      "p75": -33.58,
+      "p90": -10.068
+    },
+    "n_checked": 50,
+    "n_strong": 50,
+    "n_weak": 0,
+    "shift": {
+      "all": {
+        "consistent": false,
+        "high_s": -25.59,
+        "iqr_s": 28.2,
+        "low_s": -31.98,
+        "median_s": -29.36,
+        "n_clips": 50,
+        "n_vods": 25,
+        "p10_s": -59.03,
+        "p25_s": -46.4975,
+        "p75_s": -18.2975,
+        "p90_s": -13.474,
+        "share_within_2s_of_median": 0.2
+      },
+      "live": {
+        "consistent": false,
+        "high_s": -26.3214,
+        "iqr_s": 11.98,
+        "low_s": -29.98,
+        "median_s": -29.5,
+        "n_clips": 25,
+        "n_vods": 18,
+        "p10_s": -52.784,
+        "p25_s": -33.98,
+        "p75_s": -22.0,
+        "p90_s": -12.522,
+        "share_within_2s_of_median": 0.28
+      },
+      "post_stream": {
+        "consistent": false,
+        "high_s": -17.5074,
+        "iqr_s": 35.06,
+        "low_s": -52.06,
+        "median_s": -27.98,
+        "n_clips": 25,
+        "n_vods": 17,
+        "p10_s": -57.004,
+        "p25_s": -52.06,
+        "p75_s": -17.0,
+        "p90_s": -14.23,
+        "share_within_2s_of_median": 0.2
+      }
+    },
+    "shift_by_channel": {
+      "caseoh_": {
+        "consistent": false,
+        "high_s": -22.36,
+        "iqr_s": 31.095,
+        "low_s": -59.11,
+        "median_s": -40.79,
+        "n_clips": 10,
+        "n_vods": 5,
+        "p10_s": -59.485,
+        "p25_s": -57.6625,
+        "p75_s": -26.5675,
+        "p90_s": -18.299,
+        "share_within_2s_of_median": 0.0
+      },
+      "ishowspeed": {
+        "consistent": false,
+        "high_s": -11.925,
+        "iqr_s": 15.7675,
+        "low_s": -39.775,
+        "median_s": -29.535,
+        "n_clips": 10,
+        "n_vods": 5,
+        "p10_s": -50.914,
+        "p25_s": -32.98,
+        "p75_s": -17.2125,
+        "p90_s": -11.681,
+        "share_within_2s_of_median": 0.3
+      },
+      "jynxzi": {
+        "consistent": false,
+        "high_s": -14.77,
+        "iqr_s": 14.265,
+        "low_s": -29.78,
+        "median_s": -18.25,
+        "n_clips": 10,
+        "n_vods": 5,
+        "p10_s": -53.373,
+        "p25_s": -29.64,
+        "p75_s": -15.375,
+        "p90_s": -14.643,
+        "share_within_2s_of_median": 0.2
+      },
+      "kaicenat": {
+        "consistent": false,
+        "high_s": -13.24,
+        "iqr_s": 19.7875,
+        "low_s": -42.98,
+        "median_s": -32.46,
+        "n_clips": 10,
+        "n_vods": 5,
+        "p10_s": -48.301,
+        "p25_s": -42.2025,
+        "p75_s": -22.415,
+        "p90_s": -13.062,
+        "share_within_2s_of_median": 0.0
+      },
+      "loltyler1": {
+        "consistent": true,
+        "high_s": -22.0,
+        "iqr_s": 8.0425,
+        "low_s": -44.233,
+        "median_s": -27.52,
+        "n_clips": 10,
+        "n_vods": 5,
+        "p10_s": -51.794,
+        "p25_s": -31.235,
+        "p75_s": -23.1925,
+        "p90_s": -17.918,
+        "share_within_2s_of_median": 0.4
+      }
+    },
+    "shift_vs_duration": {
+      "intercept_s": -1.2469,
+      "r": -0.9704,
+      "residual_iqr_s": 2.6367,
+      "slope": -0.9256
+    },
+    "weak_by_reason": {
+      "at_search_edge": 0,
+      "low_corr": 0,
+      "low_margin": 0,
+      "no_match": 0
+    }
+  },
+  "provenance": {
+    "config_sha256": "f4b67e7b46ee08b3cd560131820e268cadc4bff612d0172eb64a8b35377a9f81",
+    "exp001_config_sha256": "b7d9f1c47beb20334fa8ab3bbd9822603feb0b446fc6104b18ec0bff35ab57f3",
+    "git_commit": "e645b564de40586c2e1c07f7eeee61ef95177a1d",
+    "vod_list_sha256": "ba5476a03f45cf5bcbbce6afb9f6a7c6cac9d92a71667d54a317e6fed39776b0"
+  },
+  "rerun": {
+    "corrected_positions": {
+      "alignment": {
+        "audio_lift": {
+          "high": 1.1522,
+          "low": 0.6634,
+          "mean": 0.9236,
+          "n_vods": 15
+        },
+        "chance_near_moment": {
+          "high": 0.7513,
+          "low": 0.5517,
+          "mean": 0.6629,
+          "n_vods": 25
+        },
+        "chat_lift": {
+          "high": 2.827,
+          "low": 1.3086,
+          "mean": 1.9972,
+          "n_vods": 13
+        },
+        "chat_lift_unshifted": {
+          "high": 2.8837,
+          "low": 1.3087,
+          "mean": 2.0036,
+          "n_vods": 13
+        },
+        "top_with_audio": {
+          "high": 0.142,
+          "low": 0.0293,
+          "mean": 0.0833,
+          "n_vods": 25
+        },
+        "top_with_both": {
+          "high": 0.0881,
+          "low": 0.0,
+          "mean": 0.036,
+          "n_vods": 25
+        },
+        "top_with_chat": {
+          "high": 0.304,
+          "low": 0.09,
+          "mean": 0.1907,
+          "n_vods": 25
+        },
+        "top_with_neither": {
+          "high": 0.858,
+          "low": 0.6593,
+          "mean": 0.762,
+          "n_vods": 25
+        }
+      },
+      "chat_moment_start": {
+        "half_height_from_s": 16,
+        "half_height_to_s": 55,
+        "peak_high_s": 34.0,
+        "peak_low_s": 22.0,
+        "peak_offset_s": 26
+      },
+      "loudness_moment_start": {
+        "half_height_from_s": 10,
+        "half_height_to_s": 46,
+        "peak_high_s": 46.0,
+        "peak_low_s": 14.0,
+        "peak_offset_s": 16
+      },
+      "loudness_top_clip_start": {
+        "half_height_from_s": 6,
+        "half_height_to_s": 19,
+        "peak_high_s": 22.0,
+        "peak_low_s": 7.0,
+        "peak_offset_s": 10
+      },
+      "n_moments": 2268,
+      "padding_loud": {
+        "after_end_s_p50": 6.58,
+        "after_end_s_p90": 24.32,
+        "before_start_s_p50": 19.68,
+        "before_start_s_p90": 29.42,
+        "chance_share_after_end": 0.3361,
+        "chance_share_before_start": 0.3437,
+        "chance_share_inside": 0.3202,
+        "inside_position_p50": 0.4492,
+        "share_after_end": 0.288,
+        "share_before_start": 0.288,
+        "share_inside": 0.424
+      }
+    },
+    "reported_positions": {
+      "alignment": {
+        "audio_lift": {
+          "high": 1.1138,
+          "low": 0.6386,
+          "mean": 0.8943,
+          "n_vods": 15
+        },
+        "chance_near_moment": {
+          "high": 0.76,
+          "low": 0.5609,
+          "mean": 0.6708,
+          "n_vods": 25
+        },
+        "chat_lift": {
+          "high": 1.7461,
+          "low": 0.9969,
+          "mean": 1.3289,
+          "n_vods": 13
+        },
+        "chat_lift_unshifted": {
+          "high": 2.3068,
+          "low": 1.135,
+          "mean": 1.6667,
+          "n_vods": 13
+        },
+        "top_with_audio": {
+          "high": 0.142,
+          "low": 0.0293,
+          "mean": 0.0833,
+          "n_vods": 25
+        },
+        "top_with_both": {
+          "high": 0.0881,
+          "low": 0.0,
+          "mean": 0.036,
+          "n_vods": 25
+        },
+        "top_with_chat": {
+          "high": 0.2994,
+          "low": 0.0807,
+          "mean": 0.1847,
+          "n_vods": 25
+        },
+        "top_with_neither": {
+          "high": 0.8694,
+          "low": 0.662,
+          "mean": 0.768,
+          "n_vods": 25
+        }
+      },
+      "chat_moment_start": {
+        "half_height_from_s": -16,
+        "half_height_to_s": 15,
+        "peak_high_s": 1.0,
+        "peak_low_s": -7.0,
+        "peak_offset_s": -1
+      },
+      "loudness_moment_start": {
+        "half_height_from_s": -25,
+        "half_height_to_s": 2,
+        "peak_high_s": -2.0,
+        "peak_low_s": -23.0,
+        "peak_offset_s": -3
+      },
+      "loudness_top_clip_start": {
+        "half_height_from_s": -13,
+        "half_height_to_s": -4,
+        "peak_high_s": 48.0,
+        "peak_low_s": -23.0,
+        "peak_offset_s": -9
+      },
+      "n_moments": 2169,
+      "padding_loud": {
+        "after_end_s_p50": 15.1,
+        "after_end_s_p90": 25.34,
+        "before_start_s_p50": 20.0,
+        "before_start_s_p90": 29.0,
+        "chance_share_after_end": 0.335,
+        "chance_share_before_start": 0.3415,
+        "chance_share_inside": 0.3234,
+        "inside_position_p50": 0.3667,
+        "share_after_end": 0.216,
+        "share_before_start": 0.472,
+        "share_inside": 0.312
+      }
+    },
+    "rule": {
+      "iqr_s": 1.0775,
+      "per_duration": -1.0,
+      "rule": "end_anchored",
+      "shift_s": {
+        "live": 0.42,
+        "post_stream": 0.94
+      }
+    }
+  },
+  "selection": {
+    "by_channel": {
+      "caseoh_": {
+        "live": 5,
+        "post_stream": 5
+      },
+      "ishowspeed": {
+        "live": 5,
+        "post_stream": 5
+      },
+      "jynxzi": {
+        "live": 5,
+        "post_stream": 5
+      },
+      "kaicenat": {
+        "live": 5,
+        "post_stream": 5
+      },
+      "loltyler1": {
+        "live": 5,
+        "post_stream": 5
+      }
+    },
+    "n_fetch_failed": 0,
+    "n_selected": 50,
+    "n_skipped_muted": 0,
+    "n_skipped_silent": 2,
+    "n_vods": 25
+  }
+}

@@ -90,6 +90,7 @@ uv run autoclipper export <video> --start 10 --end 40   # vertical clip in artif
 uv run autoclipper highlights <result.json> --video <path>   # 16:9 highlights video in artifacts/highlights/
 uv run autoclipper serve             # backend API on http://127.0.0.1:8000 (real analysis jobs; --jobs mock for the built-in scenarios)
 uv run python scripts/pilot_alignment.py --config experiments/exp-001-chat-lag-alignment/config.yaml  # chat delay and clip alignment on the pilot data (#36)
+uv run python scripts/clip_offset_check.py --config experiments/exp-002-clip-offset-check/config.yaml  # find top clips' audio in their VODs (downloads clips into artifacts/)
 uv sync --group notebooks      # matplotlib, a kernel and nbclient for notebooks/ (not installed by default)
 ```
 

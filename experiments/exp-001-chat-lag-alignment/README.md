@@ -95,6 +95,7 @@ The documented expectation for chat lag (labeling § 5: several seconds up to ro
 
 ## Notes and caveats
 
+- **Follow-up: [exp-002](../exp-002-clip-offset-check/README.md)** matched 50 clips' own audio against their VODs: `vod_offset` is the clip's *end* (+0.7 s), not its start. With corrected positions the clip-position results above reverse (the loud moment falls inside the clip) and chat-spike lift doubles; the share of top moments without a spike doesn't change.
 - **Not verified on video.** The pilot downloaded audio only. Watching a sample of top clips next to the VOD at `vod_offset` (the #40 spot check) is the way to tell an offset in Twitch's positions from clips that start after the event.
 - The clip-timing check takes the VOD's `created_at` as its first second; if Twitch records it late, the shift belongs to the VOD timeline, not the clips.
 - Loud events stand in for "something happened"; they miss quiet highlights and include loud non-events (music, shouting at nothing).
