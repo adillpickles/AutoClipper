@@ -80,7 +80,7 @@ Source: Helix **Get Clips**. Immutable snapshot files: one row per `clip_id` **w
 | `game_id` | str | Category at clip time |
 | `language` | str | |
 | `created_at` | timestamp | When the clip was made |
-| `vod_offset_s` | float, *nullable* | Helix `vod_offset`, stored unchanged and used as the clip start. ⚠️ Measured to be the clip's *end* ([exp-002](../../experiments/exp-002-clip-offset-check/README.md)); see [data sources](../data/data-sources.md). **Null** happens (VOD deleted, processing delay). Such rows are excluded from labeling. |
+| `vod_offset_s` | float, *nullable* | Helix `vod_offset`, stored unchanged and used as the clip start. ⚠️ Measured to be the clip's *end* ([exp-002](../../experiments/exp-002-clip-offset-check/README.md), confirmed in [exp-003](../../experiments/exp-003-clip-end-confirmation/README.md)); see [data sources](../data/data-sources.md). **Null** happens (VOD deleted, processing delay). Such rows are excluded from labeling. |
 | `duration_s` | float | Source interval length; parse the API value, do not assume a universal 60 s maximum |
 | `view_count` | int | At `fetched_at`. Grows over time, so always store when it was observed. |
 | `is_featured` | bool, *nullable* | |

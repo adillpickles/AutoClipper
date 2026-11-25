@@ -323,6 +323,6 @@ Spikes are 10 s windows at a VOD z-score of 3 or more (the same z-scores as the 
 
 ### 16.5 Caveats
 
-- The end-anchored reading of `vod_offset` was found after looking at exp-002's per-clip shifts; the rule set in advance (a consistent constant shift) failed. It then passed the same consistency rule in every group. It rests on 50 top clips; less-viewed clips weren't checked.
+- The end-anchored reading of `vod_offset` was found after looking at exp-002's per-clip shifts (the rule set in advance there, a consistent constant shift, failed). It was then **confirmed as pre-registered** in [exp-003](../../experiments/exp-003-clip-end-confirmation/README.md) on 50 new clips, half of them ordinary low-view clips: PASS, median \|true end − `vod_offset_s`\| 0.69 s (≤ 2 s required), 80 % within 2 s (≥ 70 % required), alike for top and low-view, live and post-stream clips. One clip in five is more than 2 s off (up to 34 s, often short clips), so rules built on it should tolerate a few seconds.
 - No video was watched; the audio match shows where a clip's sound is, and loud moments stand in for "something happened" and miss quiet highlights.
 - Per-channel estimates rest on 5 VODs each; post-stream clips (182 moments, 24 top clips) are too few for a clear profile in exp-001.
