@@ -102,6 +102,7 @@ These rules prevent the most common silent bugs in this project:
 - Name them `notebooks/YYYY-MM-DD-<author-initials>-<topic>.ipynb`.
 - **Clear outputs before committing** (outputs can contain chat text or large images). The `nbstripout` pre-commit hook strips them.
 - When logic in a notebook proves useful, move it into `src/autoclipper/` with tests.
+- Notebook-only packages (matplotlib, ipykernel, nbclient) are in the `notebooks` dependency group: `uv sync --group notebooks`. The package and tests never import them, and CI doesn't install them.
 
 ## 9. Dependencies
 

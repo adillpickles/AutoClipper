@@ -13,7 +13,7 @@ Experiments are how this project produces claims. They have to be reproducible b
 2. **Branch** `exp/<issue#>-<slug>` for a tracked experiment, or use the current task's branch for supporting exploration.
 3. **Write a config** (`experiments/<id>/config.yaml`): dataset version, split, feature families, model + hyperparameters, seed(s).
 4. **Run** through the CLI, e.g. `uv run autoclipper train --config experiments/<id>/config.yaml`. Notebooks are for exploration, not for producing reported numbers.
-5. **Record** results: copy the summary `metrics.json` from `artifacts/reports/<run_id>/` into `experiments/<id>/` and write `experiments/<id>/README.md` (template below).
+5. **Record** results: copy the summary `metrics.json` from `artifacts/reports/<run_id>/` into `experiments/<id>/` and write `experiments/<id>/README.md` (template below). A study that isn't a model evaluation writes its own aggregate `summary.json` there instead (exp-001 to exp-003); every number its README or the docs cite must be in that file. Per-item tables (clip IDs, per-VOD rows) stay in `artifacts/`.
 6. **Publish when requested** with config, code and README ([CONTRIBUTING § 6](../../CONTRIBUTING.md#6-open-a-pull-request)). Large artifacts stay out of git.
 7. **Record the conclusion:** supported, refuted or inconclusive. Link the experiment from its issue when one exists.
 
@@ -28,7 +28,7 @@ experiments/
 ├── README.md                 # index table: id, question, result, link
 └── exp-001-chat-only-baseline/
     ├── config.yaml
-    ├── metrics.json          # summary metrics from the evaluation run
+    ├── metrics.json          # summary metrics from the evaluation run (summary.json for a study)
     └── README.md             # results write-up and notes (template below)
 ```
 
@@ -63,7 +63,7 @@ Anything surprising, threats to validity, follow-ups.
 
 ## Tracking
 
-Plain files: config, `metrics.json` and the README in `experiments/<id>/`. It's agent-friendly and needs no service. Add MLflow (local file store) only if comparing many runs stops being manageable this way.
+Plain files: config, `metrics.json` (or a study's `summary.json`) and the README in `experiments/<id>/`. It's agent-friendly and needs no service. Add MLflow (local file store) only if comparing many runs stops being manageable this way.
 
 ## Rules
 
