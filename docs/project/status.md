@@ -2,7 +2,7 @@
 
 > **The living "what exists right now" document.** Every agent session reads it first. Update it **in the same PR** that changes the state. Don't mark anything done unless it's merged to `main` and tested.
 
-**Last updated:** 2026-11-24
+**Last updated:** 2026-11-25
 **Current phase:** Building (week of Nov 2 in the [roadmap](../product/roadmap.md))
 **Next milestone:** M1 Data: pilot VODs downloaded and parsed
 **Key dates:** Demo of Demos Fri Dec 4, 2026 · Final presentations and demo night Fri Dec 11, 2026
@@ -31,6 +31,7 @@ Scope, architecture and the plan are documented, with concrete defaults for buil
 | Synthetic dataset | ✅ In place (#15) | `autoclipper synth --seed <n>` writes 3 fake VODs (Parquet tables in the data-model schemas, chat, 16 kHz WAVs, test-pattern videos and a SHA-256 manifest) to `data/synthetic/seed-<n>/`; same seed, same bytes. Details: [testing § Synthetic dataset](../development/testing.md#synthetic-dataset) |
 | Twitch developer app | ✅ Registered (#4) | One shared team app; credentials supplied through untracked `.env` files or worker/deployment environment variables |
 | Data collection | ✅ Pilot collected (#35) | 25 VODs (5 per channel in `configs/channels.yaml`, 103.44 VOD-hours) ingested with chat, audio and a viewer-clip snapshot, every one on its first attempt. The active list is `configs/pilot_vods.txt`; the numbers are in the [pilot report](../data/pilot-report.md), whose generated tables `scripts/pilot_report.py --check` recomputes from the data directory. `loltyler1` replaced `flight23white` (FlightReacts), which had no viewer clips in the pilot month. Pilot tooling in `scripts/`: `select_pilot_vods.py` (choose VODs from Helix metadata), `run_pilot.py` (run `autoclipper ingest` per VOD with guards) and `pilot_report.py`. The collected data isn't in the repository |
+| Pilot exploration | ✅ Measured (#36, [exp-001](../../experiments/exp-001-chat-lag-alignment/README.md)) | `autoclipper.labels.alignment` and `alignment_study`, run by `scripts/pilot_alignment.py` on the 25 active pilot VODs; plots in `notebooks/2026-11-25-hm-chat-lag-alignment.ipynb`. Chat peaks 12 s (95 % CI 3–16 s) after the streamer's loudest moments and stays up about 25 s. Chat and loudness peak at or before viewer clips' reported start, and 65 % of live clips were created before their reported end, so Helix `vod_offset` looks 10–25 s later than the clip's content (not yet checked on video). Spikes at z ≥ 3 line up with clips only weakly. Findings and proposals (not adopted) in [pilot report § 16](../data/pilot-report.md#16-exploration-findings-36) |
 | Windows and moments | ✅ In place (#22), tested on synthetic data only | `autoclipper.labels.windows` cuts each VOD into 10 s windows (final window under 5 s dropped, muted windows flagged) and `autoclipper.labels.moments` merges a snapshot's clips into moments (overlap or ≤ 5 s gap, clips without a VOD position skipped and counted). Polars frames in the data-model schemas; not saved to disk yet (dataset build, #38) |
 | Labeled dataset build | ✅ In place (#38) | `autoclipper build-dataset` saves windows, moments, chat/audio features and annotations with training eligibility/view weights; freezes five seeded 3/1/1 streamer folds, fold 0 primary; pins source/output hashes and capture coverage/maturity; prints QC and pending manual-review samples. `synth --pilot` supplies five fake streamers. Synthetic verification only; real dataset assembly/review remains #40. Usage: [labeling § 11](../data/labeling.md#11-building-a-dataset) |
 | Chat features | ✅ In place (#23), tested on synthetic data only | `autoclipper.features.chat.compute_chat_features`: the Phase 1 chat features per window (rates, unique chatters, emotes, caps, repeats, laugh/hype/shock/keyword rates from `configs/lexicon.yaml`, events, VOD and rolling z-scores, lead/lag), clip-link messages removed first, empty windows 0. Not saved to disk yet (dataset build, #38) |
@@ -54,11 +55,11 @@ Everything needed for the MVP has a documented default: data sources, pilot chan
 
 ## Suggested next tasks
 
-Follow the [roadmap](../product/roadmap.md): the pilot exploration (#36) and the real dataset (#40) from the pilot collection (#35). (The clip editor #31 and backend integration #33 are done.)
+Follow the [roadmap](../product/roadmap.md): the real dataset (#40) from the pilot collection (#35), with the clip-position check and label-rule proposals of the pilot exploration (#36, [pilot report § 16](../data/pilot-report.md#16-exploration-findings-36)). (The clip editor #31 and backend integration #33 are done.)
 
 ## Known issues / caveats
 
 - The Python setup was tested locally on Windows only; Linux runs in CI (Ubuntu). Nobody has tried macOS yet.
 - Chat replay and VOD download rely on unofficial tools ([data sources](../data/data-sources.md)).
-- Chat lag and clip alignment still need to be measured on the pilot data (#36). Clip coverage was measured in the pilot: no clip without a VOD offset and no clip-search range at the limit ([pilot report § 3](../data/pilot-report.md#3-issue-35-metrics)).
+- Viewer clips' reported positions (`vod_offset`) look 10–25 s later than their content ([exp-001](../../experiments/exp-001-chat-lag-alignment/README.md)). Labels, the ±15 s evaluation match and viewer-clip exports use them as they are; check on video before relying on them (#40). Clip coverage was measured in the pilot: no clip without a VOD offset and no clip-search range at the limit ([pilot report § 3](../data/pilot-report.md#3-issue-35-metrics)).
 - The original design-doc schedule slipped; the [roadmap](../product/roadmap.md) was replanned on 2026-10-31.

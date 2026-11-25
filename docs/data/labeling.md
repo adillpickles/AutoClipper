@@ -20,7 +20,7 @@ Viewer clips are **noisy, incomplete positive labels**: a clip says viewers care
 
 Known biases to design around:
 
-- **Clip-start bias.** Clips are created *after* something happens, from a buffer of recent stream. By default the clip covers the seconds leading up to the click, so the payoff is often in the **later** part of the clip. ⚠️ Verify this empirically: plot chat-rate peaks relative to clip start and end across many clips.
+- **Clip-start bias.** Clips are created *after* something happens, from a buffer of recent stream. By default the clip covers the seconds leading up to the click, so the payoff is often in the **later** part of the clip. ⚠️ Verify this empirically: plot chat-rate peaks relative to clip start and end across many clips. *Pilot result (#36): measured against the reported positions, chat and loudness peak at or before the clip start, not in its later part; see § 5.*
 - **Duplicate clips.** Big moments get clipped many times with slightly different boundaries. That's a strength signal, but it's also duplication that must be merged.
 - **Popularity bias.** Bigger channels produce more clips and views. Normalize per broadcaster.
 - **Positive-unlabeled (PU) data.** Absence of a clip ≠ negative, especially in small streams.
@@ -93,6 +93,14 @@ Chat reacts **after** the event: viewers see the stream with a delay, then type.
 - **Features handle lag, labels don't.** Labels stay in true VOD time (where the clip is). Chat features for window *t* include **lead** features from windows *t+1…t+k* (see [features](../ml/features.md)). For offline VOD analysis it's legitimate to look slightly ahead in chat.
 - **Live mode** (future work, not this semester) can't look ahead, so it must use only past chat. Keep lead features in a separate, clearly named group so they can be dropped.
 - **Source-time output:** viewer-clip boundaries and model predictions against these labels are already in VOD time. A heuristic locating a peak in chat time converts it once before creating candidates. **Export applies no chat-lag shift**; context padding and manual trimming are separate operations ([architecture § export](../architecture/overview.md#46-export)).
+
+> **Pilot measurement (#36, [exp-001](../../experiments/exp-001-chat-lag-alignment/README.md)).** On the 25 pilot VODs, chat peaks **12 s (95 % CI 3–16 s)** after the streamer's loudest moments and stays above half its peak from −1 to +24 s. Chat and loudness peak at or *before* viewer clips' reported start, and 65 % of live clips were created before their reported end: the clip positions (`vod_offset`) look 10–25 s later than the clip content. Not yet checked on video.
+>
+> **Proposed, not adopted** (the rules above stay `v0` until a PR changes them; details in [pilot report § 16](pilot-report.md#16-exploration-findings-36)):
+>
+> 1. Keep `WINDOW_S = 10` and the chat lead features `lead{1..3}` (30 s), which cover the measured delay and spread.
+> 2. Check viewer-clip positions on video in the #40 spot check. If they're late, compare a label rule that moves each clip interval earlier (or extends moments backward) against `v0`, as a new `label_rules_version`.
+> 3. Pad viewer-clip exports more before the reported start than after it.
 
 ## 6. Normalization across channels
 
