@@ -1682,8 +1682,16 @@ class FakeHelix:
     else (e.g. `highlight`), which the pipeline rejects as `vod_unsupported`.
     """
 
-    def __init__(self, vod_type: str = "archive") -> None:
+    def __init__(
+        self,
+        vod_type: str = "archive",
+        *,
+        user_login: str = "streamer_000",
+        user_display_name: str = "Streamer_000",
+    ) -> None:
         self.vod_type = vod_type
+        self.user_login = user_login
+        self.user_display_name = user_display_name
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == "id.twitch.tv":
@@ -1698,8 +1706,8 @@ class FakeHelix:
                     "data": [
                         {
                             "id": "9000000000",
-                            "login": "streamer_000",
-                            "display_name": "Streamer_000",
+                            "login": self.user_login,
+                            "display_name": self.user_display_name,
                             "broadcaster_type": "partner",
                         }
                     ]
@@ -3475,3 +3483,95 @@ def test_late_retryable_failure_does_not_overwrite_recorded_source_unavailable(
     # Second request still sees source_unavailable (was not evicted as fetch_failed).
     again = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
     assert again["preview"]["reason"] == "source_unavailable"
+
+
+@pytest.mark.ffmpeg
+def test_stacked_layout_resolves_on_fresh_data_dir_when_display_name_differs_from_login(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """On a fresh data_dir with no pre-existing broadcasters.parquet, pipeline analysis saves
+    the canonical Twitch login so a login-keyed stacked preset still resolves when display_name
+    differs beyond case (e.g. login `caseoh_`, display name `CaseOh`)."""
+    import sys
+
+    from autoclipper.export.reframe import stacked_layout_from_region
+
+    audio_source = make_test_media("source.m4a", duration_s=3.0, video_size=None)
+    segment_video = make_test_media("segment.mp4", duration_s=90.0)
+    binary_name = "TwitchDownloaderCLI.exe" if sys.platform == "win32" else "TwitchDownloaderCLI"
+    chat_binary = tmp_path / "bin" / binary_name
+    chat_binary.parent.mkdir(parents=True)
+    chat_binary.write_bytes(b"")
+    chat_binary.chmod(0o755)
+    chat_fixture = Path(__file__).parents[1] / "ingest" / "fixtures" / "chat_replay.json"
+    chat_payload = chat_fixture.read_bytes()
+    credentials = TwitchCredentials(SecretStr("fake-client-id"), SecretStr("fake-client-secret"))
+    clock = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
+
+    def fake_chat(args: Sequence[str], *, timeout_s: float | None = None) -> CommandResult:
+        del timeout_s
+        Path(args[list(args).index("--output") + 1]).write_bytes(chat_payload)
+        return CommandResult(0, BANNER, "")
+
+    def fake_download(request: DownloadRequest, /) -> DownloadedMedia:
+        path = request.output_dir / f"{request.stem}.m4a"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(audio_source, path)
+        return DownloadedMedia(path, 3.0)
+
+    def tools_for() -> IngestTools:
+        http = httpx.Client(
+            transport=httpx.MockTransport(
+                FakeHelix(user_login="caseoh_", user_display_name="CaseOh")
+            )
+        )
+        return IngestTools(
+            helix=HelixClient(credentials, http_client=http, clock=lambda: clock),
+            salt=SecretStr("fake-salt-5b1e"),
+            chat_runner=fake_chat,
+            chat_binary=chat_binary,
+            downloader=fake_download,
+            clock=lambda: clock,
+        )
+
+    data_dir = tmp_path / "fresh-data"
+    preset = stacked_layout_from_region((0.76, 0.04, 0.22, 0.28))
+    renderer = FakeRenderer()
+    fetcher = FakeSegmentFetcher(segment_video, output_dir=tmp_path / "raw" / "video")
+    client, _ = make_client(
+        job_runner="pipeline",
+        data_dir=data_dir,
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=tools_for,
+        render=renderer,
+        segment_fetcher=fetcher,
+        channel_layouts={"caseoh_": preset},
+    )
+
+    assert not (data_dir / "processed" / "broadcasters.parquet").exists()
+    job = done_job(client, PIPELINE_VIDEO_ID)
+    assert job["state"] == "done", job["error"]
+    result = client.get(f"{API}/jobs/{job['job_id']}/result").json()
+    assert result["vod"]["broadcaster_display_name"] == "CaseOh"
+    candidate = result["candidates"][0]
+
+    media = wait_until_media(client, job["job_id"], candidate["candidate_id"])
+    assert "stacked" in media["export"]["layouts"]
+
+    made = client.post(
+        f"{API}/exports",
+        json={
+            "job_id": job["job_id"],
+            "candidate_id": candidate["candidate_id"],
+            "start_s": candidate["start_s"],
+            "end_s": min(candidate["end_s"], candidate["start_s"] + 10.0),
+            "layout": "stacked",
+            "captions": False,
+        },
+    )
+    assert made.status_code == 201, made.text
+    assert client.get(f"{API}/exports/{made.json()['export_id']}").json()["state"] == "done"
+    assert renderer.specs[0].stacked_layout == preset

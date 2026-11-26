@@ -27,6 +27,8 @@ import dataclasses
 import hashlib
 import json
 import logging
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -53,6 +55,7 @@ from autoclipper.ingest.media import (
     validate_video_id,
 )
 from autoclipper.ingest.twitch_api import (
+    Broadcaster,
     HelixClient,
     MutedSegment,
     TwitchNotFoundError,
@@ -135,6 +138,11 @@ class IngestTools:
 def vods_path(data_dir: Path) -> Path:
     """``<data_dir>/processed/vods.parquet``."""
     return data_dir / "processed" / "vods.parquet"
+
+
+def broadcasters_path(data_dir: Path) -> Path:
+    """``<data_dir>/processed/broadcasters.parquet``."""
+    return data_dir / "processed" / "broadcasters.parquet"
 
 
 def clips_dir(data_dir: Path) -> Path:
@@ -586,6 +594,62 @@ def read_vod(data_dir: Path, video_id: str) -> Vod | None:
             segments = tuple(MutedSegment(**s) for s in row["muted_segments"])
             game_ids = None if row["game_ids"] is None else tuple(row["game_ids"])
             return Vod(**{**row, "muted_segments": segments, "game_ids": game_ids})
+    return None
+
+
+_BROADCASTER_TABLE_LOCK: Final = threading.RLock()
+
+
+def write_broadcaster(data_dir: Path, broadcaster: Broadcaster) -> None:
+    """Upsert `broadcaster` into ``processed/broadcasters.parquet`` by ``broadcaster_id``."""
+    path = broadcasters_path(data_dir)
+    with _BROADCASTER_TABLE_LOCK:
+        rows = (
+            []
+            if not path.is_file()
+            else pq.read_table(path, schema=tables.BROADCASTERS, memory_map=False).to_pylist()
+        )
+        rows = [row for row in rows if row["broadcaster_id"] != broadcaster.broadcaster_id] + [
+            dataclasses.asdict(broadcaster)
+        ]
+        rows.sort(key=lambda row: str(row["broadcaster_id"]))
+        table = pa.Table.from_pylist(rows, schema=tables.BROADCASTERS)
+        for attempt in range(5):
+            try:
+                _write_table(table, path)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.01 * (attempt + 1))
+
+
+def read_broadcaster(data_dir: Path, broadcaster_id: str) -> Broadcaster | None:
+    """The broadcaster's row from ``processed/broadcasters.parquet``, or None when absent."""
+    path = broadcasters_path(data_dir)
+    with _BROADCASTER_TABLE_LOCK:
+        if not path.is_file():
+            return None
+        for row in pq.read_table(path, schema=tables.BROADCASTERS, memory_map=False).to_pylist():
+            if row["broadcaster_id"] == broadcaster_id:
+                return Broadcaster(**row)
+    return None
+
+
+def read_broadcaster_login(data_dir: Path, broadcaster_id: str) -> str | None:
+    """The canonical lowercased login for `broadcaster_id` from ``broadcasters.parquet``, if any."""
+    path = broadcasters_path(data_dir)
+    with _BROADCASTER_TABLE_LOCK:
+        if not path.is_file():
+            return None
+        table = pq.read_table(path, columns=["broadcaster_id", "login"], memory_map=False)
+        for row in table.to_pylist():
+            if row["broadcaster_id"] == broadcaster_id:
+                raw = row["login"]
+                if isinstance(raw, str):
+                    login = raw.strip().lower()
+                    return login or None
+                return None
     return None
 
 

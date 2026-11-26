@@ -71,7 +71,9 @@ from autoclipper.ingest.vod import (
     chat_path,
     clips_dir,
     ingest_vod,
+    read_broadcaster,
     read_vod,
+    write_broadcaster,
 )
 from autoclipper.labels.moments import merge_clips_into_moments
 from autoclipper.labels.windows import make_windows
@@ -446,7 +448,7 @@ def analyze_vod(
             video_id=video_id,
             title=vod.title,
             broadcaster_id=vod.broadcaster_id,
-            broadcaster_display_name=_broadcaster_display_name(vod.broadcaster_id, tools),
+            broadcaster_display_name=_broadcaster_display_name(vod.broadcaster_id, data_dir, tools),
             duration_s=vod.duration_s,
             created_at=vod.created_at,
         ),
@@ -737,21 +739,45 @@ def _nothing_to_rank(
     )
 
 
-def _broadcaster_display_name(broadcaster_id: str, tools: IngestTools) -> str:
-    """The channel's display name (Get Users by ID), or its ID when that can't be fetched."""
-    if tools.helix is None:
-        return broadcaster_id
+def _broadcaster_display_name(broadcaster_id: str, data_dir: Path, tools: IngestTools) -> str:
+    """The channel's display name (Get Users by ID), persisting its canonical login on disk.
+
+    Upserts the fetched `Broadcaster` row into ``processed/broadcasters.parquet`` on a best-effort
+    basis so downstream preset lookup resolves the canonical login even on a fresh data directory.
+    Falls back to a cached row in ``broadcasters.parquet`` or to `broadcaster_id`.
+    """
+    if tools.helix is not None:
+        try:
+            (user,) = tools.helix.get_users_by_id([broadcaster_id])
+        except Exception as exc:  # a header nicety; the analysis doesn't depend on it
+            log.warning(
+                "broadcaster display name unavailable broadcaster_id=%s error=%s: %r",
+                broadcaster_id,
+                type(exc).__name__,
+                str(exc),
+            )
+        else:
+            try:
+                write_broadcaster(data_dir, user)
+            except Exception as exc:
+                log.warning(
+                    "broadcaster cache write failed broadcaster_id=%s error=%s: %r",
+                    broadcaster_id,
+                    type(exc).__name__,
+                    str(exc),
+                )
+            return user.display_name
     try:
-        (user,) = tools.helix.get_users_by_id([broadcaster_id])
-    except Exception as exc:  # a header nicety; the analysis doesn't depend on it
+        cached = read_broadcaster(data_dir, broadcaster_id)
+    except Exception as exc:
         log.warning(
-            "broadcaster display name unavailable broadcaster_id=%s error=%s: %s",
+            "broadcaster cache read failed broadcaster_id=%s error=%s: %r",
             broadcaster_id,
             type(exc).__name__,
-            exc,
+            str(exc),
         )
         return broadcaster_id
-    return user.display_name
+    return cached.display_name if cached is not None else broadcaster_id
 
 
 def result_path(artifacts_dir: Path, video_id: str, out_path: Path | None = None) -> Path:
