@@ -1,8 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useId, useState, type FormEvent } from "react";
 
+import { parseChannel } from "@/lib/api/channel";
 import { ApiRequestError, getApiClient, isMockMode } from "@/lib/api/client";
 import {
   isVodFormatExample,
@@ -36,6 +38,7 @@ export function StartForm() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const parsedId = parseVod(vod);
+  const parsedChannelLogin = parsedId === null ? parseChannel(vod) : null;
   const exampleOnly =
     filledFromExample && isVodFormatExample(vod) && !isMockMode();
 
@@ -85,17 +88,26 @@ export function StartForm() {
       aria-labelledby="analyze-heading"
       className="flex flex-col gap-6 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-panel sm:p-7"
     >
-      <div className="flex flex-col gap-1">
-        <h2
-          id="analyze-heading"
-          className="font-display text-lg font-semibold text-ink-primary"
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-col gap-1">
+          <h2
+            id="analyze-heading"
+            className="font-display text-lg font-semibold text-ink-primary"
+          >
+            Analyze a VOD
+          </h2>
+          <p className="text-sm text-ink-secondary">
+            Paste the broadcast link. Add a local file only if you already
+            downloaded the video.
+          </p>
+        </div>
+        <Link
+          href="/channels"
+          className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-pill border border-accent-border bg-accent-soft px-3.5 py-1.5 text-xs font-semibold text-accent-soft-ink transition-colors hover:bg-accent hover:text-accent-ink focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"
         >
-          Analyze a VOD
-        </h2>
-        <p className="text-sm text-ink-secondary">
-          Paste the broadcast link. Add a local file only if you already
-          downloaded the video.
-        </p>
+          Browse a channel&apos;s VODs
+          <span aria-hidden="true">&rarr;</span>
+        </Link>
       </div>
 
       <div className="flex flex-col gap-2">
@@ -126,13 +138,26 @@ export function StartForm() {
           className="rounded-control border border-border-strong bg-surface-elevated px-4 py-3 text-base text-ink-primary transition-colors placeholder:text-ink-tertiary focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none aria-invalid:border-danger"
         />
         {vodError ? (
-          <p
-            id={`${vodId}-error`}
-            role="alert"
-            className="text-sm font-medium text-danger"
-          >
-            {vodError}
-          </p>
+          <div className="flex flex-col gap-1.5">
+            <p
+              id={`${vodId}-error`}
+              role="alert"
+              className="text-sm font-medium text-danger"
+            >
+              {vodError}
+            </p>
+            {parsedChannelLogin && (
+              <p className="text-sm text-ink-secondary">
+                Want to pick from this channel&apos;s recent broadcasts?{" "}
+                <Link
+                  href={`/channels?channel=${encodeURIComponent(parsedChannelLogin)}`}
+                  className="font-semibold text-accent underline underline-offset-2 hover:text-accent-hover focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"
+                >
+                  Open {parsedChannelLogin} in Channels
+                </Link>
+              </p>
+            )}
+          </div>
         ) : (
           <p id={`${vodId}-hint`} className="text-sm text-ink-secondary">
             {exampleOnly

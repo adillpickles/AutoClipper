@@ -15,6 +15,8 @@ import type {
   AnalysisWarning,
   ApiError,
   CandidateMedia,
+  ChannelVod,
+  ChannelVodsResponse,
   CreateExportRequest,
   CreateHighlightsRequest,
   CreateJobRequest,
@@ -24,6 +26,7 @@ import type {
   Job,
   Progress,
 } from "@/lib/api/types";
+import { INVALID_CHANNEL_MESSAGE, parseChannel } from "@/lib/api/channel";
 import { EXPORT_STAGES, HIGHLIGHTS_STAGES, JOB_STAGES } from "@/lib/api/stages";
 import { INVALID_VOD_MESSAGE, looksAbsolute, parseVod } from "@/lib/api/vod";
 import { MIN_TRIM_DURATION_S } from "@/lib/trim";
@@ -627,6 +630,38 @@ function highlightsNow(
   );
 }
 
+const MOCK_PREANALYZED_VIDEO_IDS = new Set(["9000000002"]);
+
+const MOCK_CHANNEL_VODS: ReadonlyArray<{
+  video_id: string;
+  view_count: number;
+}> = [
+  { video_id: "9000000003", view_count: 2890 },
+  { video_id: "9000000001", view_count: 4820 },
+  { video_id: "9000000002", view_count: 3410 },
+  { video_id: "9000000006", view_count: 640 },
+  { video_id: "9000000007", view_count: 1210 },
+];
+
+function doneJobsByVideo(store: Store, at: number): Map<string, string> {
+  const latest = new Map<string, { finishedAt: string; jobId: string }>();
+  const starts = schedule(store.jobs);
+  for (const stored of Object.values(store.jobs)) {
+    const job = jobAt(stored, at, starts.get(stored.job_id));
+    if (job.state !== "done") continue;
+    const finishedAt = job.finished_at ?? job.updated_at;
+    const prev = latest.get(job.video_id);
+    if (!prev || finishedAt >= prev.finishedAt) {
+      latest.set(job.video_id, { finishedAt, jobId: job.job_id });
+    }
+  }
+  const map = new Map<string, string>();
+  for (const [videoId, entry] of latest.entries()) {
+    map.set(videoId, entry.jobId);
+  }
+  return map;
+}
+
 export function createMockClient(now: () => number = Date.now): ApiClient {
   return {
     async getHealth() {
@@ -668,6 +703,98 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
           finished_at: ts,
         },
         started: false,
+      };
+    },
+
+    async getChannelVods(
+      channel: string,
+      limit = 20,
+    ): Promise<ChannelVodsResponse> {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        throw new ApiRequestError(422, {
+          code: "invalid_request",
+          message:
+            "The request is invalid: query.limit must be between 1 and 100.",
+          details: { fields: ["query.limit"] },
+        });
+      }
+      const login = parseChannel(channel);
+      if (login === null) {
+        const message =
+          parseVod(channel) !== null
+            ? "That's a VOD link or ID, not a channel. Paste a channel link like twitch.tv/<name> or the channel name."
+            : INVALID_CHANNEL_MESSAGE;
+        throw new ApiRequestError(422, {
+          code: "invalid_channel",
+          message,
+          details: null,
+        });
+      }
+      if (login === "unknown_channel") {
+        throw new ApiRequestError(404, {
+          code: "channel_not_found",
+          message:
+            "No Twitch channel with that name was found. Check the spelling and try again.",
+          details: null,
+        });
+      }
+      if (login === "no_credentials") {
+        throw new ApiRequestError(503, {
+          code: "twitch_credentials_missing",
+          message:
+            "Twitch API credentials aren't configured on this server. Set TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET in .env to browse channel VODs.",
+          details: { missing: ["TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET"] },
+        });
+      }
+      if (login === "twitch_error") {
+        throw new ApiRequestError(502, {
+          code: "upstream_unavailable",
+          message: "Twitch isn't responding right now. Try again in a moment.",
+          details: null,
+        });
+      }
+      if (login === "empty_channel") {
+        return {
+          channel: {
+            broadcaster_id: "9100000099",
+            login: "empty_channel",
+            display_name: "Empty_Channel",
+            profile_image_url: null,
+          },
+          vods: [],
+          truncated: false,
+        };
+      }
+      const finished = doneJobsByVideo(load(), now());
+      const vods: ChannelVod[] = MOCK_CHANNEL_VODS.slice(0, limit).map(
+        (entry) => {
+          const vod = (scenarioFor(entry.video_id).result as AnalysisResult)
+            .vod;
+          const lastJobId = finished.get(entry.video_id) ?? null;
+          return {
+            video_id: entry.video_id,
+            title: vod.title,
+            created_at: vod.created_at,
+            duration_s: vod.duration_s,
+            thumbnail_url: null,
+            url: `https://www.twitch.tv/videos/${entry.video_id}`,
+            view_count: entry.view_count,
+            analyzed:
+              lastJobId !== null ||
+              MOCK_PREANALYZED_VIDEO_IDS.has(entry.video_id),
+            last_job_id: lastJobId,
+          };
+        },
+      );
+      return {
+        channel: {
+          broadcaster_id: "9100000001",
+          login,
+          display_name: login === "user_001" ? "User_001" : login,
+          profile_image_url: null,
+        },
+        vods,
+        truncated: MOCK_CHANNEL_VODS.length > limit,
       };
     },
 

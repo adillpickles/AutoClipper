@@ -251,4 +251,69 @@ describe("HTTP API client", () => {
     const alreadyRunning = await client.startToolSetup();
     expect(alreadyRunning.started).toBe(false);
   });
+
+  it("calls GET /channels/vods with encoded channel and optional limit", async () => {
+    const payload = {
+      channel: {
+        broadcaster_id: "9100000001",
+        login: "user_001",
+        display_name: "User_001",
+        profile_image_url: null,
+      },
+      vods: [
+        {
+          video_id: "9000000001",
+          title: "Synthetic stream 1",
+          created_at: "2026-10-12T18:00:00Z",
+          duration_s: 360,
+          thumbnail_url: "https://example.invalid/thumb-320x180.jpg",
+          url: "https://www.twitch.tv/videos/9000000001",
+          view_count: 100,
+          analyzed: false,
+          last_job_id: null,
+        },
+      ],
+      truncated: false,
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse(payload));
+    const client = createHttpClient("http://127.0.0.1:8000", fetchMock);
+
+    const response = await client.getChannelVods(
+      "https://www.twitch.tv/user_001",
+      15,
+    );
+
+    expect(response).toEqual(payload);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(
+      "http://127.0.0.1:8000/api/v1/channels/vods?channel=https%3A%2F%2Fwww.twitch.tv%2Fuser_001&limit=15",
+    );
+    expect(init?.cache).toBe("no-store");
+  });
+
+  it("maps channel error envelopes (missing credentials, unknown channel)", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse(
+        {
+          error: {
+            code: "twitch_credentials_missing",
+            message: "Twitch credentials missing.",
+            details: { missing: ["TWITCH_CLIENT_ID"] },
+          },
+        },
+        503,
+      ),
+    );
+    const client = createHttpClient("http://127.0.0.1:8000", fetchMock);
+
+    await expect(client.getChannelVods("user_001")).rejects.toMatchObject({
+      status: 503,
+      error: {
+        code: "twitch_credentials_missing",
+        details: { missing: ["TWITCH_CLIENT_ID"] },
+      },
+    });
+  });
 });

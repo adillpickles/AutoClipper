@@ -7,6 +7,7 @@ import { ApiRequestError } from "@/lib/api/errors";
 import type {
   AnalysisResult,
   CandidateMedia,
+  ChannelVodsResponse,
   CreateExportRequest,
   CreateHighlightsRequest,
   CreateJobRequest,
@@ -120,6 +121,19 @@ export function createHttpClient(
       return { setup: data, started: status === 202 };
     },
 
+    async getChannelVods(
+      channel: string,
+      limit?: number,
+    ): Promise<ChannelVodsResponse> {
+      const params = new URLSearchParams({ channel });
+      if (limit !== undefined) {
+        params.set("limit", String(limit));
+      }
+      const { data } = await request<ChannelVodsResponse>(
+        `/channels/vods?${params.toString()}`,
+      );
+      return data;
+    },
     async createJob(
       body: CreateJobRequest,
     ): Promise<{ job: Job; created: boolean }> {
