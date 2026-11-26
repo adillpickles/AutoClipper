@@ -89,10 +89,9 @@ def find_pauses_in_samples(
         rms = np.sqrt(np.maximum(0.0, (cumsum[starts + frame_len] - cumsum[starts]) / frame_len))
 
     # Measure local speech level from the 80th percentile so quiet stretches stay below threshold
-    # even with mild background noise, while completely silent stretches return one full pause.
+    # even with mild background noise. Classify every frame individually so a short loud burst
+    # inside a mostly silent span is never swallowed into one full-span pause.
     loud_rms = float(np.percentile(rms, 80))
-    if loud_rms <= params.abs_floor_rms:
-        return [(offset_s, offset_s + samples.size / sample_rate_hz)]
     threshold = max(params.abs_floor_rms, params.quiet_ratio * loud_rms)
     quiet = rms <= threshold
 
@@ -102,16 +101,26 @@ def find_pauses_in_samples(
         if is_quiet and run_start is None:
             run_start = idx
         elif not is_quiet and run_start is not None:
-            p_start = offset_s + run_start * hop_len / sample_rate_hz
-            p_end = offset_s + ((idx - 1) * hop_len + frame_len) / sample_rate_hz
-            if p_end - p_start >= params.min_pause_s:
-                pauses.append((p_start, p_end))
+            start_sample = run_start * hop_len
+            end_sample = (idx - 1) * hop_len + frame_len
+            if (end_sample - start_sample) / sample_rate_hz >= params.min_pause_s:
+                pauses.append(
+                    (
+                        offset_s + start_sample / sample_rate_hz,
+                        offset_s + end_sample / sample_rate_hz,
+                    )
+                )
             run_start = None
     if run_start is not None:
-        p_start = offset_s + run_start * hop_len / sample_rate_hz
-        p_end = offset_s + samples.size / sample_rate_hz
-        if p_end - p_start >= params.min_pause_s:
-            pauses.append((p_start, p_end))
+        start_sample = run_start * hop_len
+        end_sample = samples.size
+        if (end_sample - start_sample) / sample_rate_hz >= params.min_pause_s:
+            pauses.append(
+                (
+                    offset_s + start_sample / sample_rate_hz,
+                    offset_s + end_sample / sample_rate_hz,
+                )
+            )
     return pauses
 
 

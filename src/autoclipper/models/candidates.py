@@ -176,10 +176,36 @@ def generate_candidates(
         )
         discovered.append(_Draft(float(raw[index]), start, end, peak, "discovered", set()))
 
+    # The shortlist orders discovered peaks by score, then start. Snap discovered bounds before
+    # attributing viewer-clip moments so `source` (`both` vs `discovered` / `viewer_clips`) and
+    # `n_viewer_clips` always reflect the final snapped intervals.
+    discovered.sort(key=lambda d: (-d.score, d.start))
+    snap_wav = audio_path if audio_path is not None and audio_path.is_file() else None
+    snap_params = (pause_snap or PauseSnapParams()) if snap_wav is not None else None
+    valid_moments = [m for m in moments if m.clip_ids]
+
+    if snap_wav is not None and snap_params is not None:
+        # Beyond `shortlist_k`, only drafts that could reach a viewer moment within `max_shift_s`
+        # can enter the final list; skip unnecessary WAV reads for unreachable tail peaks.
+        reach = snap_params.max_shift_s + 1e-2
+        for idx, draft in enumerate(discovered):
+            if idx < params.shortlist_k or any(
+                draft.start - reach < m.end_s and m.start_s < draft.end + reach
+                for m in valid_moments
+            ):
+                draft.start, draft.end = snap_interval_to_wav(
+                    snap_wav,
+                    draft.start,
+                    draft.end,
+                    peak=draft.peak,
+                    duration_s=duration_s,
+                    min_len_s=params.min_len_s,
+                    max_len_s=params.max_len_s,
+                    params=snap_params,
+                )
+
     clipped: list[_Draft] = []
-    for moment in moments:
-        if not moment.clip_ids:
-            continue
+    for moment in valid_moments:
         # Moments merge into discovered candidates only, never into each other.
         overlapping = [d for d in discovered if d.start < moment.end_s and moment.start_s < d.end]
         if overlapping:
@@ -199,29 +225,26 @@ def generate_candidates(
         peak = (float(starts[best]), float(ends[best]))
         start = max(moment.start_s, peak[0] - params.pre_s)
         start, end = _bounds(start, moment.end_s, peak, duration_s, params)
+        if snap_wav is not None and snap_params is not None:
+            start, end = snap_interval_to_wav(
+                snap_wav,
+                start,
+                end,
+                peak=peak,
+                duration_s=duration_s,
+                min_len_s=params.min_len_s,
+                max_len_s=params.max_len_s,
+                params=snap_params,
+            )
         clipped.append(
             _Draft(float(raw[best]), start, end, peak, "viewer_clips", set(moment.clip_ids))
         )
 
     # The shortlist: the best `shortlist_k` discovered peaks (merged or not), then every
     # clip-backed candidate beyond it, so viewer clips are never dropped by the cut.
-    discovered.sort(key=lambda d: (-d.score, d.start))
     drafts = discovered[: params.shortlist_k]
     drafts += [d for d in discovered[params.shortlist_k :] if d.source == "both"]
     drafts += clipped
-    if audio_path is not None and audio_path.is_file():
-        snap_params = pause_snap or PauseSnapParams()
-        for draft in drafts:
-            draft.start, draft.end = snap_interval_to_wav(
-                audio_path,
-                draft.start,
-                draft.end,
-                peak=draft.peak,
-                duration_s=duration_s,
-                min_len_s=params.min_len_s,
-                max_len_s=params.max_len_s,
-                params=snap_params,
-            )
     drafts.sort(key=lambda d: (-d.score, d.start))
     drafts = drafts[:MAX_CANDIDATES]
     candidates: list[Candidate] = []

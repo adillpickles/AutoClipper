@@ -7,7 +7,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from autoclipper.models.candidates import CandidateParams, generate_candidates
+from autoclipper.models.candidates import CandidateParams, MomentInput, generate_candidates
 from autoclipper.models.pauses import (
     PauseSnapParams,
     find_pauses_in_samples,
@@ -207,3 +207,104 @@ def test_find_pauses_in_samples_handles_silent_and_empty_inputs() -> None:
     assert find_pauses_in_samples(np.array([], dtype=np.float32), SR) == []
     silent = np.zeros(SR * 2, dtype=np.float32)
     assert find_pauses_in_samples(silent, SR, offset_s=5.0) == [(5.0, 7.0)]
+    # Silent audio shorter than min_pause_s must not be returned as a pause.
+    short_silent = np.zeros(round(SR * 0.1), dtype=np.float32)
+    assert find_pauses_in_samples(short_silent, SR, offset_s=5.0) == []
+    # Exact min_pause_s silent span must be kept even when offset_s + 0.2 - offset_s rounds low.
+    exact_min = np.zeros(round(SR * 0.2), dtype=np.float32)
+    assert find_pauses_in_samples(exact_min, SR, offset_s=10.0) == [(10.0, 10.2)]
+
+
+def test_find_pauses_in_samples_does_not_mark_loud_burst_in_silence_as_silent() -> None:
+    """A loud 100 ms burst inside a 2 s silent slice must split the silence into two pauses."""
+    samples = np.zeros(SR * 2, dtype=np.float32)
+    burst_lo = round(0.95 * SR)
+    burst_hi = round(1.05 * SR)
+    t = np.arange(burst_hi - burst_lo, dtype=np.float64) / SR
+    samples[burst_lo:burst_hi] = (0.5 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+
+    found = find_pauses_in_samples(samples, SR, offset_s=10.0)
+
+    assert len(found) == 2
+    assert found[0][0] == pytest.approx(10.0)
+    assert found[0][1] <= 10.95
+    assert found[1][0] >= 11.05
+    assert found[1][1] == pytest.approx(12.0)
+
+
+def test_snap_shrinking_off_viewer_moment_recomputes_attribution(tmp_path: Path) -> None:
+    """A discovered span that snaps away from a viewer moment stays `discovered`, and the
+    viewer moment becomes its own `viewer_clips` candidate instead of mislabeling `both`."""
+    # Peak at window 11 ([110, 120)): with pre_s=10, post_s=10, unsnapped span is [100, 130).
+    scores = pl.DataFrame(
+        {
+            "window_id": [f"w{i}" for i in range(20)],
+            "start_s": [float(i * 10) for i in range(20)],
+            "end_s": [float((i + 1) * 10) for i in range(20)],
+            "score": [5.0 if i == 11 else 0.0 for i in range(20)],
+        }
+    )
+    moment = MomentInput("m0", 129.0, 149.0, ("clip1", "clip2"))
+    # Pause at [127.2, 128.0] pulls the discovered end to ~127.35, strictly before 129.0.
+    wav = _speech_with_pauses_wav(
+        tmp_path / "vod.wav",
+        duration_s=200.0,
+        pauses=[(127.2, 128.0)],
+    )
+    params = CandidateParams(smooth_windows=1, pre_s=10.0, post_s=10.0)
+
+    unsnapped = generate_candidates(scores, duration_s=200.0, moments=[moment], params=params)
+    assert len(unsnapped) == 1
+    assert unsnapped[0].source == "both"
+    assert unsnapped[0].n_viewer_clips == 2
+
+    snapped = generate_candidates(
+        scores, duration_s=200.0, moments=[moment], params=params, audio_path=wav
+    )
+    assert len(snapped) == 2
+    by_source = {c.source: c for c in snapped}
+    assert set(by_source) == {"discovered", "viewer_clips"}
+    disc = by_source["discovered"]
+    assert 127.2 <= disc.end_s <= 128.0
+    assert disc.n_viewer_clips == 0
+    clipped = by_source["viewer_clips"]
+    assert clipped.n_viewer_clips == 2
+    assert clipped.start_s < moment.end_s
+    assert moment.start_s < clipped.end_s
+
+
+def test_snap_expanding_into_viewer_moment_marks_both_even_past_shortlist(tmp_path: Path) -> None:
+    """A discovered peak past `shortlist_k` that expands onto a viewer moment during snapping
+    is promoted to `both` with the moment's clips instead of emitting a duplicate."""
+    # Window 3 ([30, 40)) is the sole shortlisted peak; window 11 ([110, 120)) is beyond
+    # shortlist_k=1 with unsnapped span [100, 128) (pre_s=10, post_s=8).
+    scores = pl.DataFrame(
+        {
+            "window_id": [f"w{i}" for i in range(20)],
+            "start_s": [float(i * 10) for i in range(20)],
+            "end_s": [float((i + 1) * 10) for i in range(20)],
+            "score": [9.0 if i == 3 else (5.0 if i == 11 else 0.0) for i in range(20)],
+        }
+    )
+    moment = MomentInput("m0", 129.0, 149.0, ("clip1",))
+    # Pause at [129.6, 130.4] pulls window 11's end from 128.0 to ~129.75, overlapping m0.
+    wav = _speech_with_pauses_wav(
+        tmp_path / "vod.wav",
+        duration_s=200.0,
+        pauses=[(129.6, 130.4)],
+    )
+    params = CandidateParams(smooth_windows=1, pre_s=10.0, post_s=8.0, shortlist_k=1)
+
+    unsnapped = generate_candidates(scores, duration_s=200.0, moments=[moment], params=params)
+    assert {c.source for c in unsnapped} == {"discovered", "viewer_clips"}
+
+    snapped = generate_candidates(
+        scores, duration_s=200.0, moments=[moment], params=params, audio_path=wav
+    )
+    assert len(snapped) == 2
+    by_source = {c.source: c for c in snapped}
+    assert set(by_source) == {"discovered", "both"}
+    merged = by_source["both"]
+    assert merged.score == 5.0
+    assert merged.end_s > 129.0
+    assert merged.n_viewer_clips == 1
