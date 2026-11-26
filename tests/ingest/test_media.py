@@ -36,7 +36,9 @@ from autoclipper.ffmpeg import (
     CommandResult,
     FFmpegCommand,
     FFmpegExitError,
+    FFmpegNotFoundError,
     FFmpegOutputError,
+    FFmpegTimeoutError,
     ffmpeg_command,
     ffprobe_command,
     probe,
@@ -54,6 +56,7 @@ from autoclipper.ingest.media import (
     DownloadRequest,
     DownloadToolError,
     InvalidVideoIdError,
+    MissingDownloadToolError,
     NoAudioOnlyFormatError,
     VodAccessRestrictedError,
     VodUnavailableError,
@@ -1921,3 +1924,139 @@ def test_a_segment_far_shorter_than_requested_is_rejected(
         )
 
     assert not any(directory.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "expected"),
+    [
+        pytest.param(
+            b"[ERROR] - Invalid VOD, deleted/expired VOD possibly?\n",
+            b"",
+            VodUnavailableError,
+            id="deleted-expired-stdout",
+        ),
+        pytest.param(
+            b"",
+            b"System.Net.Http.HttpRequestException: Response status code does not indicate "
+            b"success: 404 (Not Found).\n",
+            VodUnavailableError,
+            id="http-404-stderr",
+        ),
+        pytest.param(
+            b"",
+            b"HTTP Error 410 (Gone): this video is no longer available\n",
+            VodUnavailableError,
+            id="http-410-stderr",
+        ),
+        pytest.param(
+            b"[ERROR] - Unable to get video playlist. You may need an OAuth token if this is a "
+            b"sub-only VOD.\n",
+            b"",
+            VodAccessRestrictedError,
+            id="sub-only-stdout",
+        ),
+        pytest.param(
+            b"",
+            b"System.Net.Http.HttpRequestException: Response status code does not indicate "
+            b"success: 403 (Forbidden).\n",
+            VodAccessRestrictedError,
+            id="http-403-stderr",
+        ),
+        pytest.param(
+            b"",
+            b"Error: vod_manifest_restricted (subscriber-only)\n",
+            VodAccessRestrictedError,
+            id="manifest-restricted-stderr",
+        ),
+        pytest.param(
+            b"",
+            b"Unable to find FFmpeg on PATH; install FFmpeg to finalize downloads\n",
+            MissingDownloadToolError,
+            id="missing-ffmpeg-stderr",
+        ),
+        pytest.param(
+            b"",
+            b"System.Net.Http.HttpRequestException: Connection reset by peer\n",
+            DownloadNetworkError,
+            id="connection-reset-stderr",
+        ),
+    ],
+)
+def test_video_segment_classifies_permanent_refusals_missing_tools_and_network_errors(
+    data_dir: Path,
+    video_tool_binary: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: bytes,
+    stderr: bytes,
+    expected: type[AudioDownloadError],
+) -> None:
+    """TwitchDownloaderCLI exit output on stdout or stderr is classified into permanent VOD
+    refusals, actionable missing-tool errors, or retryable network errors."""
+
+    def failing_runner(command: FFmpegCommand, /, *, timeout_s: float) -> CommandResult:
+        del command, timeout_s
+        return CommandResult(1, stdout=stdout, stderr=stderr)
+
+    directory = raw_video_dir(data_dir) / VIDEO_ID
+    monkeypatch.setenv("PATH", str(video_tool_binary.parent) + os.pathsep + os.environ["PATH"])
+
+    with pytest.raises(expected) as caught:
+        download_video_segment(
+            VIDEO_ID, begin_s=50.0, end_s=60.0, output_dir=directory, runner=failing_runner
+        )
+    if expected is MissingDownloadToolError:
+        assert isinstance(caught.value, MissingDownloadToolError)
+        assert caught.value.tool == "ffmpeg"
+        assert "yt-dlp" not in str(caught.value)
+    assert not any(directory.iterdir())
+
+
+def test_missing_video_tool_raises_actionable_missing_tool_error_not_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missing TwitchDownloaderCLI or FFmpegNotFoundError keeps install guidance and never
+    masquerades as a deleted VOD or a yt-dlp error."""
+    empty_path = tmp_path / "empty"
+    empty_path.mkdir()
+    monkeypatch.setenv("PATH", str(empty_path))
+
+    with pytest.raises(MissingDownloadToolError) as caught:
+        download_video_segment(
+            VIDEO_ID,
+            begin_s=0.0,
+            end_s=10.0,
+            output_dir=tmp_path / "out",
+            runner=FakeVideoTool(tmp_path / "vod.mp4"),
+        )
+    assert isinstance(caught.value, DownloadToolError)
+    assert not isinstance(caught.value, VodUnavailableError)
+    assert caught.value.tool == "TwitchDownloaderCLI"
+    assert "TwitchDownloaderCLI" in str(caught.value)
+    assert "docs/development/setup.md" in str(caught.value)
+    assert "yt-dlp" not in str(caught.value)
+
+
+def test_video_segment_runner_not_found_and_timeout_are_classified_distinctly(
+    data_dir: Path, video_tool_binary: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FFmpegNotFoundError from the runner stays a missing-tool error (never VodUnavailableError),
+    and FFmpegTimeoutError becomes a retryable DownloadNetworkError."""
+    directory = raw_video_dir(data_dir) / VIDEO_ID
+    monkeypatch.setenv("PATH", str(video_tool_binary.parent) + os.pathsep + os.environ["PATH"])
+
+    missing_tool = FakeVideoTool(data_dir / "vod.mp4", error=FFmpegNotFoundError("ffmpeg"))
+    with pytest.raises(MissingDownloadToolError) as missing_exc:
+        download_video_segment(
+            VIDEO_ID, begin_s=50.0, end_s=60.0, output_dir=directory, runner=missing_tool
+        )
+    assert missing_exc.value.tool == "ffmpeg"
+    assert "docs/development/setup.md" in str(missing_exc.value)
+
+    timed_out = FakeVideoTool(
+        data_dir / "vod.mp4",
+        error=FFmpegTimeoutError(FFmpegCommand(("TwitchDownloaderCLI",)), 120.0, b""),
+    )
+    with pytest.raises(DownloadNetworkError, match="timed out"):
+        download_video_segment(
+            VIDEO_ID, begin_s=50.0, end_s=60.0, output_dir=directory, runner=timed_out
+        )

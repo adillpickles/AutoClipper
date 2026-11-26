@@ -55,15 +55,24 @@ from autoclipper.ffmpeg import (
     FFmpegCommand,
     FFmpegError,
     FFmpegExitError,
+    FFmpegNotFoundError,
     FFmpegOutputError,
+    FFmpegTimeoutError,
     MediaInfo,
     Runner,
     ffmpeg_command,
     ffprobe_command,
     probe,
     run_command,
+    run_subprocess,
 )
-from autoclipper.ingest.chat import ChatDownloadError, find_twitchdownloader
+from autoclipper.ingest.chat import (
+    TOOL_NAME as TWITCHDOWNLOADER_TOOL_NAME,
+)
+from autoclipper.ingest.chat import (
+    ChatDownloadError,
+    find_twitchdownloader,
+)
 
 log = logging.getLogger(__name__)
 
@@ -261,12 +270,28 @@ class DownloadIntegrityError(AudioDownloadError):
 
 
 class DownloadToolError(AudioDownloadError):
-    """yt-dlp failed for another reason, e.g. a Twitch change it doesn't handle yet."""
+    """The download tool failed for another reason, e.g. a Twitch change it doesn't handle yet."""
 
     headline = (
         "yt-dlp could not download VOD {video_id}; if this persists, update it "
         "(uv lock --upgrade-package yt-dlp)"
     )
+
+
+class MissingDownloadToolError(DownloadToolError):
+    """A required external download tool (TwitchDownloaderCLI or FFmpeg) is not installed.
+
+    Attributes:
+        tool: Name of the missing executable when known (e.g. ``"TwitchDownloaderCLI"`` or
+            ``"ffmpeg"``).
+    """
+
+    headline = "a required download tool for VOD {video_id} is not installed"
+    tool: str | None
+
+    def __init__(self, video_id: str, detail: str, *, tool: str | None = None) -> None:
+        self.tool = tool
+        super().__init__(video_id, detail)
 
 
 # Message patterns, checked in this order on the messages of the whole exception chain. The
@@ -294,6 +319,92 @@ _NETWORK: Final = re.compile(
     re.IGNORECASE,
 )
 _GONE_HTTP_STATUSES: Final = frozenset({404, 410})
+
+# Patterns for TwitchDownloaderCLI 1.56.5 `videodownload` failures (stdout or stderr).
+# Missing-tool checks run before refusal checks so "not found on PATH" or missing FFmpeg
+# never gets misclassified as a deleted VOD.
+_MISSING_TWITCHDOWNLOADER: Final = re.compile(
+    r"twitchdownloadercli(?:\.exe)?\s+(?:was\s+)?not\s+found",
+    re.IGNORECASE,
+)
+_MISSING_FFMPEG: Final = re.compile(
+    r"unable to find ffmpeg|ffmpeg(?:\.exe)?\s+(?:was\s+)?not\s+found"
+    r"|cannot find ffmpeg|could not find ffmpeg|ffmpeg is not (?:installed|available)",
+    re.IGNORECASE,
+)
+_VIDEO_RESTRICTED: Final = re.compile(
+    _RESTRICTED.pattern
+    + r"|sub[- ]?only|subscribers?[- ]?only"
+    + r"|requires?\s+(?:a\s+)?subscription|subscription\s+required"
+    + r"|need\s+(?:an?\s+)?oauth(?:\s+token)?|oauth\s+token\s+(?:is\s+)?required"
+    + r"|only\s+available\s+to\s+subscribers"
+    + r"|response status code does not indicate success:\s*403\b"
+    + r"|\b(?:http\s+error\s+|status(?:\s+code)?[:\s]+)403\b"
+    + r"|\b403\s*\(\s*forbidden\s*\)"
+    + r"|\bvideo\s+is\s+private\b|\bprivate\s+video\b",
+    re.IGNORECASE,
+)
+_VIDEO_UNAVAILABLE: Final = re.compile(
+    _UNAVAILABLE.pattern
+    + r"|invalid\s+vod|deleted/expired\s+vod|expired\s+vod"
+    + r"|\b(?:vod|video)\s+(?:is\s+)?(?:not\s+found|deleted|expired|unavailable)"
+    + r"|unable\s+to\s+(?:get|find)\s+(?:video|vod)\s+info"
+    + r"|response status code does not indicate success:\s*(?:404|410)\b"
+    + r"|\b(?:http\s+error\s+|status(?:\s+code)?[:\s]+)(?:404|410)\b"
+    + r"|\b404\s*\(\s*not\s+found\s*\)|\b410\s*\(\s*gone\s*\)",
+    re.IGNORECASE,
+)
+_VIDEO_NETWORK: Final = re.compile(
+    _NETWORK.pattern
+    + r"|response status code does not indicate success:\s*(?:429|50[234])\b"
+    + r"|\b(?:429\s*\(\s*too\s+many\s+requests\s*\)|50[234]\s*\()"
+    + r"|unable\s+to\s+connect|no\s+such\s+host\s+is\s+known|temporary\s+failure\s+in\s+name",
+    re.IGNORECASE,
+)
+
+
+def classify_video_download_error(
+    exc: BaseException, video_id: str, *, stdout: str = ""
+) -> AudioDownloadError:
+    """Turn a ``TwitchDownloaderCLI videodownload`` failure into a typed `AudioDownloadError`.
+
+    Checked in order so missing tools are never misclassified as deleted VODs:
+
+    1. `MissingDownloadToolError`: ``FFmpegNotFoundError`` or tool output stating that
+       ``TwitchDownloaderCLI`` or ``ffmpeg`` is not installed.
+    2. `DownloadNetworkError`: ``FFmpegTimeoutError`` (timed out and killed).
+    3. `VodAccessRestrictedError`: subscriber-only, OAuth-required, private, or HTTP 403 refusal.
+    4. `VodUnavailableError`: deleted, expired, invalid/nonexistent VOD, or HTTP 404/410 refusal.
+    5. `DownloadNetworkError`: transient network/connectivity or HTTP 429/502/503/504 failure.
+    6. `DownloadToolError`: any other tool failure.
+    """
+    if isinstance(exc, MissingDownloadToolError):
+        return exc
+    if isinstance(exc, FFmpegNotFoundError):
+        return MissingDownloadToolError(video_id, str(exc), tool=exc.program)
+
+    exc_text = str(exc) or type(exc).__name__
+    stdout_clean = stdout.strip()
+    combined = f"{exc_text}\n{stdout_clean}" if stdout_clean else exc_text
+    if isinstance(exc, FFmpegExitError) and not exc.stderr_tail and stdout_clean:
+        tail = stdout_clean[-_MESSAGE_CHARS:]
+        detail = f"{exc.command.program} exited with code {exc.returncode}: {tail}"
+    else:
+        detail = exc_text
+
+    if _MISSING_TWITCHDOWNLOADER.search(combined):
+        return MissingDownloadToolError(video_id, detail, tool=TWITCHDOWNLOADER_TOOL_NAME)
+    if _MISSING_FFMPEG.search(combined):
+        return MissingDownloadToolError(video_id, detail, tool="ffmpeg")
+    if isinstance(exc, FFmpegTimeoutError):
+        return DownloadNetworkError(video_id, f"the video download timed out: {detail}")
+    if _VIDEO_RESTRICTED.search(combined):
+        return VodAccessRestrictedError(video_id, detail)
+    if _VIDEO_UNAVAILABLE.search(combined):
+        return VodUnavailableError(video_id, detail)
+    if _VIDEO_NETWORK.search(combined):
+        return DownloadNetworkError(video_id, detail)
+    return DownloadToolError(video_id, f"the video download failed: {detail}")
 
 
 def classify_download_error(exc: BaseException, video_id: str) -> AudioDownloadError:
@@ -823,11 +934,14 @@ def download_video_segment(
         InvalidVideoIdError: `video_id` is not a Twitch video ID. Checked before anything else.
         ValueError: `begin_s` or `end_s` is not a finite ``0 <= begin < end`` range, or one
             that rounds to empty whole seconds.
-        DownloadToolError: TwitchDownloaderCLI is missing or failed (a deleted or restricted
-            VOD already failed the job's analysis, so a segment failure is a tool problem).
+        VodUnavailableError, VodAccessRestrictedError: Twitch refused the VOD permanently
+            (deleted, expired, nonexistent, subscriber-only or otherwise restricted).
+        MissingDownloadToolError: TwitchDownloaderCLI or FFmpeg is not installed on ``PATH``.
+        DownloadNetworkError: The video download timed out or failed transiently on the network.
+        DownloadToolError: TwitchDownloaderCLI failed for another reason.
         DownloadIntegrityError: The finished segment was damaged or the wrong length; it has
             been deleted.
-        FFmpegError: FFprobe or FFmpeg could not run (not installed, timed out).
+        FFmpegError: FFprobe or FFmpeg could not run while verifying the segment.
     """
     validate_video_id(video_id)
     if not (math.isfinite(begin_s) and math.isfinite(end_s) and 0.0 <= begin_s < end_s):
@@ -859,7 +973,7 @@ def download_video_segment(
     try:
         binary = find_twitchdownloader()
     except ChatDownloadError as exc:
-        raise DownloadToolError(video_id, str(exc)) from exc
+        raise MissingDownloadToolError(video_id, str(exc), tool=TWITCHDOWNLOADER_TOOL_NAME) from exc
     try:
         resolved_ffmpeg = resolve_tool("ffmpeg")
     except ConfiguredToolError as exc:
@@ -885,11 +999,19 @@ def download_video_segment(
         end,
         binary,
     )
+    execute = run_subprocess if runner is None else runner
     try:
-        run_command(command, timeout_s=timeout_s, runner=runner)
+        result = execute(command, timeout_s=timeout_s)
     except FFmpegError as exc:
         staging.unlink(missing_ok=True)
-        raise DownloadToolError(video_id, f"the video download failed: {exc}") from exc
+        raise classify_video_download_error(exc, video_id) from exc
+    if result.returncode != 0:
+        staging.unlink(missing_ok=True)
+        exit_error = FFmpegExitError(command, result.returncode, result.stderr)
+        stdout_text = result.stdout.decode("utf-8", errors="replace").strip()
+        raise classify_video_download_error(
+            exit_error, video_id, stdout=stdout_text
+        ) from exit_error
 
     try:
         info = probe(staging, runner=runner)
