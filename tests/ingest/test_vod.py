@@ -33,6 +33,7 @@ from autoclipper.ingest.twitch_api import HelixClient
 from autoclipper.ingest.vod import (
     IngestReport,
     IngestTools,
+    audio_source_path,
     chat_path,
     clips_dir,
     ingest_vod,
@@ -598,11 +599,218 @@ def test_unreadable_cached_local_audio_is_recorded_not_fatal(
         VIDEO_ID,
         data_dir=data,
         tools=tools(chat_binary, twitch=FakeTwitch(video=video_record(duration="0h0m2s"))),
+        media_file=two_seconds,
     )
 
     assert outcomes(second)["audio"] == "failed"
     assert read_catalog(data)[("audio", VIDEO_ID)].status == "failed"
     assert not normalized_audio_path(data, VIDEO_ID).exists()
+    assert not audio_source_path(data, VIDEO_ID).exists()
+
+
+@pytest.mark.ffmpeg
+def test_switching_audio_sources_or_local_files_invalidates_the_cached_wav(
+    tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path]
+) -> None:
+    """Switching between downloaded audio and a same-length local file, or changing the local
+    file (path or contents), replaces the cached WAV instead of reusing stale audio."""
+    data = tmp_path / "data"
+    three_seconds = FakeTwitch(video=video_record(duration="0h0m3s"))
+    downloaded_src = make_test_media("downloaded.m4a", duration_s=3.0, video_size=None, tone_hz=220)
+    local_a = make_test_media("local-a.mp4", duration_s=3.0, tone_hz=440)
+    local_b = make_test_media("local-b.mp4", duration_s=3.0, tone_hz=880)
+    wav = normalized_audio_path(data, VIDEO_ID)
+    source_meta = audio_source_path(data, VIDEO_ID)
+
+    # 1. Downloaded audio from Twitch.
+    downloader = FakeDownloader(downloaded_src)
+    first = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=three_seconds, downloader=downloader),
+    )
+    assert outcomes(first)["audio"] == "ok"
+    wav_downloaded = wav.read_bytes()
+    assert not source_meta.exists()
+
+    # 2. Switch to a same-length local file with different audio: must re-normalize.
+    no_download = FakeDownloader(None, AssertionError("must not download"))
+    second = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=three_seconds, downloader=no_download),
+        media_file=local_a,
+    )
+    assert outcomes(second)["audio"] == "ok"
+    wav_local_a = wav.read_bytes()
+    assert wav_local_a != wav_downloaded
+    assert read_catalog(data)[("audio", VIDEO_ID)].tool == "local-file"
+    assert source_meta.is_file()
+
+    # 3. Re-run with the same unmodified local file: cache hit (skipped).
+    third = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=three_seconds, downloader=no_download),
+        media_file=local_a,
+    )
+    assert outcomes(third)["audio"] == "skipped"
+    assert wav.read_bytes() == wav_local_a
+
+    # 4. Switch to a different same-length local file: must re-normalize.
+    fourth = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=three_seconds, downloader=no_download),
+        media_file=local_b,
+    )
+    assert outcomes(fourth)["audio"] == "ok"
+    wav_local_b = wav.read_bytes()
+    assert wav_local_b != wav_local_a
+
+    # 5. Modify local_b in place with local_a's content (same path & duration): must re-normalize.
+    shutil.copyfile(local_a, local_b)
+    fifth = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=three_seconds, downloader=no_download),
+        media_file=local_b,
+    )
+    assert outcomes(fifth)["audio"] == "ok"
+    assert wav.read_bytes() == wav_local_a
+
+    # 6. Switch back from local file to downloaded audio: must invalidate local WAV and download.
+    redownload = FakeDownloader(downloaded_src)
+    sixth = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=three_seconds, downloader=redownload),
+    )
+    assert outcomes(sixth)["audio"] == "ok"
+    assert wav.read_bytes() == wav_downloaded
+    assert read_catalog(data)[("audio", VIDEO_ID)].tool.startswith("yt-dlp@")
+    assert not source_meta.exists()
+
+
+@pytest.mark.ffmpeg
+def test_interrupted_audio_source_switch_invalidates_cache_before_replacing_wav(
+    tmp_path: Path,
+    chat_binary: Path,
+    make_test_media: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupt after replacing the WAV but before writing its new sidecar leaves the audio
+    step failed so a retry with the earlier source rebuilds instead of skipping."""
+    data = tmp_path / "data"
+    three_seconds = FakeTwitch(video=video_record(duration="0h0m3s"))
+    local_a = make_test_media("local-a.mp4", duration_s=3.0, tone_hz=440)
+    local_b = make_test_media("local-b.mp4", duration_s=3.0, tone_hz=880)
+    no_download = FakeDownloader(None, AssertionError("must not download"))
+    wav = normalized_audio_path(data, VIDEO_ID)
+
+    ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=three_seconds, downloader=no_download),
+        media_file=local_a,
+    )
+    wav_a = wav.read_bytes()
+
+    def interrupt_sidecar(*_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("autoclipper.ingest.vod._write_audio_source", interrupt_sidecar)
+    with pytest.raises(KeyboardInterrupt):
+        ingest_vod(
+            VIDEO_ID,
+            data_dir=data,
+            tools=tools(chat_binary, twitch=three_seconds, downloader=no_download),
+            media_file=local_b,
+        )
+    assert read_catalog(data)[("audio", VIDEO_ID)].status == "failed"
+
+    monkeypatch.undo()
+    retry = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=three_seconds, downloader=no_download),
+        media_file=local_a,
+    )
+    assert outcomes(retry)["audio"] == "ok"
+    assert wav.read_bytes() == wav_a
+
+
+@pytest.mark.ffmpeg
+def test_audio_failure_is_recorded_even_if_sidecar_cleanup_fails(
+    tmp_path: Path,
+    chat_binary: Path,
+    make_test_media: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An OS error while removing the sidecar during failure cleanup never hides the audio
+    failure or aborts ingest."""
+    data = tmp_path / "data"
+    three_seconds = FakeTwitch(video=video_record(duration="0h0m3s"))
+    local_a = make_test_media("local-a.mp4", duration_s=3.0, tone_hz=440)
+    no_download = FakeDownloader(None, AssertionError("must not download"))
+
+    def locked_write(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("sidecar locked")
+
+    real_unlink = Path.unlink
+
+    def locked_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name.endswith(".source.json"):
+            raise PermissionError("sidecar locked")
+        real_unlink(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("autoclipper.ingest.vod._write_audio_source", locked_write)
+    monkeypatch.setattr(Path, "unlink", locked_unlink)
+
+    report = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=three_seconds, downloader=no_download),
+        media_file=local_a,
+    )
+
+    assert outcomes(report)["audio"] == "failed"
+    assert "PermissionError" in (read_catalog(data)[("audio", VIDEO_ID)].error or "")
+
+
+@pytest.mark.ffmpeg
+def test_local_media_aliasing_the_cached_wav_is_reused_without_rewriting(
+    tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path]
+) -> None:
+    """Passing the existing normalized WAV itself as --media records its identity cleanly and
+    skips re-normalization on the next run."""
+    data = tmp_path / "data"
+    three_seconds = FakeTwitch(video=video_record(duration="0h0m3s"))
+    downloaded_src = make_test_media("downloaded.m4a", duration_s=3.0, video_size=None, tone_hz=220)
+    ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=three_seconds, downloader=FakeDownloader(downloaded_src)),
+    )
+    wav = normalized_audio_path(data, VIDEO_ID)
+    no_download = FakeDownloader(None, AssertionError("must not download"))
+
+    first = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=three_seconds, downloader=no_download),
+        media_file=wav,
+    )
+    second = ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=three_seconds, downloader=no_download),
+        media_file=wav,
+    )
+
+    assert outcomes(first)["audio"] == "ok"
+    assert outcomes(second)["audio"] == "skipped"
+    assert wav.is_file()
 
 
 @pytest.mark.ffmpeg
