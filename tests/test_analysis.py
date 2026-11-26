@@ -11,6 +11,7 @@ from autoclipper.analysis import (
     Candidate,
     ScorerInfo,
     SignalDetail,
+    SpeechFeatures,
     VodSummary,
 )
 
@@ -203,3 +204,23 @@ def test_zero_candidates_are_valid_and_more_than_200_are_not() -> None:
     many = [candidate(i, 1000.0 - i, start=0.0) for i in range(1, 202)]
     with pytest.raises(ValidationError, match="200"):
         result(*many)
+
+
+def test_speech_features_are_omitted_when_none_and_roundtrip_when_set() -> None:
+    plain = result(candidate(1, 1.0))
+    assert "speech_features" not in plain.model_dump(mode="json")["candidates"][0]
+
+    sf = SpeechFeatures(
+        speech_word_rate=3.0,
+        speech_exclaim_density=0.25,
+        speech_question_density=0.1,
+        speech_keyword_rate=0.08,
+        speech_frac=0.72,
+        speech_peak_loudness_align=0.95,
+    )
+    enriched = result(candidate(1, 1.0, speech_features=sf))
+    dumped = enriched.model_dump_json()
+    assert AnalysisResult.model_validate_json(dumped) == enriched
+    assert (
+        enriched.model_dump(mode="json")["candidates"][0]["speech_features"]["speech_frac"] == 0.72
+    )

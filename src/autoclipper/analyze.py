@@ -56,11 +56,19 @@ from autoclipper.analysis import (
     ScorerInfo,
     VodSummary,
 )
+from autoclipper.export.captions import DEFAULT_MODEL as DEFAULT_WHISPER_MODEL
+from autoclipper.export.captions import Transcriber
 from autoclipper.export.timeline import corrected_duration_s
 from autoclipper.features.audio import FEATURE_COLUMNS as AUDIO_FEATURE_COLUMNS
 from autoclipper.features.audio import compute_audio_features
 from autoclipper.features.chat import FEATURE_COLUMNS as CHAT_FEATURE_COLUMNS
 from autoclipper.features.chat import Lexicon, compute_chat_features
+from autoclipper.features.speech import (
+    DEFAULT_SPEECH_PAD_S,
+    DEFAULT_SPEECH_TOP_N,
+    SpeechKeywords,
+    extract_speech_features,
+)
 from autoclipper.ffmpeg import FFmpegError, MediaInfo, Runner, probe
 from autoclipper.ingest.catalog import CatalogEntry, read_catalog
 from autoclipper.ingest.media import normalized_audio_path, validate_video_id
@@ -147,6 +155,12 @@ def analyze_vod(
     clock: Callable[[], datetime] = lambda: datetime.now(tz=UTC),
     on_stage: Callable[[str], None] | None = None,
     on_warnings: Callable[[Sequence[AnalysisWarning]], None] | None = None,
+    include_speech_features: bool = False,
+    speech_top_n: int = DEFAULT_SPEECH_TOP_N,
+    speech_pad_s: float = DEFAULT_SPEECH_PAD_S,
+    speech_model: str = DEFAULT_WHISPER_MODEL,
+    speech_keywords: SpeechKeywords | None = None,
+    speech_transcriber: Transcriber | None = None,
 ) -> AnalysisResult:
     """Run the whole pipeline for one VOD and write its ranked candidates.
 
@@ -170,6 +184,16 @@ def analyze_vod(
             known: an input step that failed or was refused (while the next download still
             runs), then the full set once the inputs are classified. The API worker uses it
             so a running job's ``warnings`` field means "degradations found so far".
+        include_speech_features: Opt-in Phase 2 Whisper speech features on the top
+            `speech_top_n` shortlisted candidates (#64). Off by default so default analysis is
+            unaffected. When enabled without the ``captions`` extra, adds a
+            ``speech_unavailable`` warning and skips speech features without failing.
+        speech_top_n: Maximum shortlisted candidates to transcribe when
+            `include_speech_features` is True (default 50).
+        speech_pad_s: Padding seconds around each candidate span when transcribing (default 2 s).
+        speech_model: faster-whisper model name used for speech features (default ``base``).
+        speech_keywords: Compiled spoken reaction keywords (defaults to built-in v1 list).
+        speech_transcriber: Optional `Transcriber` override (tests pass a fake).
 
     Returns:
         The written `AnalysisResult`, ranked candidates first.
@@ -445,6 +469,40 @@ def analyze_vod(
                 audio_path=audio_wav,
             ),
         )
+    if include_speech_features and candidates:
+        if not audio_ok:
+            add_warning(
+                "speech_unavailable",
+                "speech features skipped because normalized VOD audio is unavailable",
+            )
+        else:
+            speech_wav = normalized_audio_path(data_dir, video_id)
+            extraction = _timed(
+                "speech_features",
+                lambda: extract_speech_features(
+                    candidates,
+                    speech_wav,
+                    video_id=video_id,
+                    vod_duration_s=vod.duration_s,
+                    top_n=speech_top_n,
+                    pad_s=speech_pad_s,
+                    model_name=speech_model,
+                    keywords=speech_keywords,
+                    transcriber=speech_transcriber,
+                    data_dir=data_dir,
+                ),
+            )
+            if extraction.by_candidate_id:
+                candidates = [
+                    c.model_copy(
+                        update={"speech_features": extraction.by_candidate_id[c.candidate_id]}
+                    )
+                    if c.candidate_id in extraction.by_candidate_id
+                    else c
+                    for c in candidates
+                ]
+            if extraction.warning is not None:
+                add_warning("speech_unavailable", extraction.warning)
     candidates = _timed(
         "explain",
         lambda: explain_candidates(

@@ -372,6 +372,7 @@ HTTP errors for jobs use the envelope from § 8:
 | `title` | str \| null | Short human title (2–5 words) summarizing the moment from aggregate signals, e.g. `"Loud audio & laughing chat"`. Never contains raw chat text or usernames. `null` only on older `"1.0"` results or raw pre-explanation candidates. |
 | `reason` | str \| null | Deterministic plain-English one-line "why this moment" explanation from aggregate signals (chat rate/reaction categories, audio loudness lookback, viewer clip counts, optional audio events, pause-snapped edges), e.g. `"Chat jumped to 6× its usual rate with lots of laugh reactions; loudest moment in the last 20 minutes; 3 viewer clips"`. Never alters rank or score; never contains raw chat text or usernames. `null` only on older `"1.0"` results or raw pre-explanation candidates. |
 | `signal_details` | list<`SignalDetail`> | Structured contributing signals behind `reason`, for UI "why" tooltips/expanders. Always present; `[]` when no explanation details are attached. |
+| `speech_features` | `SpeechFeatures` \| omitted | Optional Phase 2 shortlist Whisper features (`speech_word_rate`, `speech_exclaim_density`, `speech_question_density`, `speech_keyword_rate`, `speech_frac`, `speech_peak_loudness_align`; [features § Phase 2](../ml/features.md#phase-2-features-after-the-mvp-works), #64). Omitted from JSON when opt-in speech features were not computed for this candidate. |
 
 `SignalDetail`:
 

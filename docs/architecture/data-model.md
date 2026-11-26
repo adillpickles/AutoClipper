@@ -189,6 +189,7 @@ One table per signal family (`features_chat`, `features_audio`, optional `featur
 | `title` | str \| null | Short human title built deterministically from aggregate signals (no raw chat text or usernames); `null` only on older `1.0` results |
 | `reason` | str \| null | Plain-English one-line "why this moment" explanation from aggregate signals without changing order or score; `null` only on older `1.0` results |
 | `signal_details` | list<`SignalDetail`> | Structured contributing signals (`kind`, `label`, `detail`) behind `reason` for UI tooltips/expanders; `[]` if none |
+| `speech_features` | `SpeechFeatures` \| omitted | Optional Phase 2 shortlist Whisper features (#64; [features § Phase 2](../ml/features.md#phase-2-features-after-the-mvp-works)); omitted when not computed |
 
 Candidate generation rules (peaks, 20–45 s default length, a shortlist of the top 50 per VOD of which the top 10 are rendered as clips, deduplication with viewer clips) are in [modeling plan § 3](../ml/modeling-plan.md#3-candidate-generation) (#27). Jobs can also take an optional `video_path` (a local VOD file, [API contract § 3.1](api-contract.md#31-create-a-job)). The highlights video (`HighlightsVideo`), built from the top candidates and written to `artifacts/highlights/<highlights_id>.mp4`, is specified in [API contract § 7](api-contract.md#7-highlights-video).
 

@@ -1,0 +1,29 @@
+# Spoken reaction keyword list for shortlist speech features (docs/ml/features.md § Phase 2, #64).
+#
+# Bump `version` whenever entries change: it is part of the speech features' `feature_version`,
+# so features computed with different keyword lists are never mixed.
+#
+# `words` match case-insensitively on word boundaries (single words or multi-word phrases).
+version: 1
+
+words:
+  - no way
+  - what the
+  - oh my god
+  - omg
+  - let's go
+  - lets go
+  - clip it
+  - clip that
+  - wait what
+  - holy
+  - insane
+  - clutch
+  - bro
+  - bruh
+  - dude
+  - crazy
+  - unreal
+  - sick
+  - cooked
+  - cracked
