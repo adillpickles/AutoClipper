@@ -59,21 +59,23 @@ def default_tools_dir(
     """
     plat = sys.platform if platform is None else platform
     environ = os.environ if env is None else env
-    user_home = Path.home() if home is None else home
+
+    def _resolve_home() -> Path:
+        return Path.home() if home is None else home
 
     if plat == "win32":
         local_app_data = environ.get("LOCALAPPDATA", "").strip()
         if local_app_data:
             return Path(local_app_data).expanduser().absolute() / "AutoClipper" / "tools"
-        return user_home / "AppData" / "Local" / "AutoClipper" / "tools"
+        return _resolve_home() / "AppData" / "Local" / "AutoClipper" / "tools"
 
     if plat == "darwin":
-        return user_home / "Library" / "Application Support" / "AutoClipper" / "tools"
+        return _resolve_home() / "Library" / "Application Support" / "AutoClipper" / "tools"
 
     xdg_data_home = environ.get("XDG_DATA_HOME", "").strip()
     if xdg_data_home and xdg_data_home.startswith("/"):
         return Path(xdg_data_home) / "autoclipper" / "tools"
-    return user_home / ".local" / "share" / "autoclipper" / "tools"
+    return _resolve_home() / ".local" / "share" / "autoclipper" / "tools"
 
 
 class ConfigError(Exception):

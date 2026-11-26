@@ -9,6 +9,7 @@ Every managed tool is resolved in the same precedence order:
 3. ``PATH`` (via `shutil.which`).
 """
 
+import logging
 import os
 import shutil
 import sys
@@ -16,10 +17,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
-from autoclipper.config import Settings, default_tools_dir, get_settings
+from autoclipper.config import ConfigError, Settings, default_tools_dir, get_settings
+
+log = logging.getLogger(__name__)
 
 type ToolName = Literal["ffmpeg", "ffprobe", "twitch_downloader"]
 type ToolSource = Literal["config", "managed", "path"]
+
+_WINDOWS_EXECUTABLE_SUFFIXES: Final = frozenset({".exe", ".cmd", ".bat", ".com"})
 
 TOOL_COMMANDS: Final[dict[ToolName, str]] = {
     "ffmpeg": "ffmpeg",
@@ -129,19 +134,25 @@ def _settings_explicit_path(settings: Settings, tool: ToolName) -> Path | None:
 def _check_executable(path: Path, *, platform: str) -> tuple[Path | None, str]:
     """Check whether ``path`` is a usable executable; return ``(resolved, failure_reason)``."""
     candidate = path
-    if platform == "win32" and not candidate.exists() and candidate.suffix == "":
-        with_exe = candidate.with_suffix(".exe")
-        if with_exe.exists():
-            candidate = with_exe
+    try:
+        if platform == "win32" and not candidate.exists() and candidate.suffix == "":
+            with_exe = candidate.with_suffix(".exe")
+            if with_exe.exists():
+                candidate = with_exe
 
-    if not candidate.exists():
-        return None, "does not exist"
-    if candidate.is_dir():
-        return None, "is a directory, not an executable file"
-    if not candidate.is_file():
-        return None, "is not a regular file"
-    if platform != "win32" and not os.access(candidate, os.X_OK):
-        return None, "is not executable"
+        if not candidate.exists():
+            return None, "does not exist"
+        if candidate.is_dir():
+            return None, "is a directory, not an executable file"
+        if not candidate.is_file():
+            return None, "is not a regular file"
+        if platform == "win32":
+            if candidate.suffix.lower() not in _WINDOWS_EXECUTABLE_SUFFIXES:
+                return None, "is not a Windows executable (.exe, .cmd, .bat, or .com)"
+        elif not os.access(candidate, os.X_OK):
+            return None, "is not executable"
+    except OSError:
+        return None, "cannot be accessed"
     return candidate, ""
 
 
@@ -176,7 +187,10 @@ def resolve_tool(
     config_var = TOOL_CONFIG_VARS[tool]
 
     if settings is None and tools_dir is None and explicit_path is None:
-        settings = get_settings()
+        try:
+            settings = get_settings()
+        except ConfigError as exc:
+            log.debug("ignoring invalid settings during fallback tool lookup: %s", exc)
 
     configured = (
         explicit_path
@@ -189,11 +203,20 @@ def resolve_tool(
             raise ConfiguredToolError(tool, config_var, configured, reason=reason)
         return ResolvedTool(name=tool, path=resolved, source="config", config_var=config_var)
 
-    active_tools_dir = tools_dir if tools_dir is not None else effective_tools_dir(settings)
-    managed = managed_binary_path(tool, active_tools_dir, platform=plat)
-    managed_resolved, _ = _check_executable(managed, platform=plat)
-    if managed_resolved is not None:
-        return ResolvedTool(name=tool, path=managed_resolved, source="managed")
+    active_tools_dir: Path | None
+    if tools_dir is not None:
+        active_tools_dir = tools_dir
+    else:
+        try:
+            active_tools_dir = effective_tools_dir(settings)
+        except RuntimeError:
+            active_tools_dir = None
+
+    if active_tools_dir is not None:
+        managed = managed_binary_path(tool, active_tools_dir, platform=plat)
+        managed_resolved, _ = _check_executable(managed, platform=plat)
+        if managed_resolved is not None:
+            return ResolvedTool(name=tool, path=managed_resolved, source="managed")
 
     on_path = shutil.which(TOOL_COMMANDS[tool])
     if on_path is not None:

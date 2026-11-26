@@ -243,7 +243,7 @@ def find_twitchdownloader(binary: str | Path | None = None) -> Path:
     Raises:
         ChatDownloadError: No such executable was found. The message says how to install it.
     """
-    if binary is None:
+    if binary is None or binary == TOOL_NAME:
         from autoclipper.tools.discovery import ConfiguredToolError, resolve_tool
 
         try:

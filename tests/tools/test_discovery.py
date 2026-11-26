@@ -175,3 +175,107 @@ def test_resolve_all_tools_captures_mixed_outcomes(
     assert resolved["ffmpeg"].path == managed_ffmpeg
     assert isinstance(resolved["ffprobe"], ConfiguredToolError)
     assert resolved["twitch_downloader"] is None
+
+
+def test_windows_rejects_non_executable_file_extension(tmp_path: Path) -> None:
+    readme = tmp_path / "README.md"
+    readme.write_text("not an exe", encoding="utf-8")
+
+    with pytest.raises(ConfiguredToolError, match="not a Windows executable"):
+        resolve_tool("ffmpeg", explicit_path=readme, platform="win32")
+
+
+def test_find_twitchdownloader_bare_name_uses_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools_dir = tmp_path / "tools"
+    managed_td = _make_fake_binary(managed_binary_path("twitch_downloader", tools_dir))
+    monkeypatch.setenv("AUTOCLIPPER_TOOLS_DIR", str(tools_dir))
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    get_settings.cache_clear()
+
+    assert find_twitchdownloader(TOOL_NAME) == managed_td
+
+
+def test_permission_error_is_handled_for_config_and_managed_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    blocked = tmp_path / "blocked" / "ffmpeg.exe"
+    real_exists = Path.exists
+
+    def fake_exists(self: Path) -> bool:
+        if self == blocked:
+            raise PermissionError("access denied")
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    with pytest.raises(ConfiguredToolError) as excinfo:
+        resolve_tool("ffmpeg", explicit_path=blocked, platform="win32")
+    assert excinfo.value.safe_message == "AUTOCLIPPER_FFMPEG_PATH cannot be accessed."
+
+    tools_dir = tmp_path / "managed-blocked"
+    managed = managed_binary_path("ffmpeg", tools_dir)
+
+    def fake_managed_exists(self: Path) -> bool:
+        if self == managed:
+            raise PermissionError("access denied")
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", fake_managed_exists)
+    monkeypatch.setattr(shutil, "which", lambda name: "/path/ffmpeg" if name == FFMPEG else None)
+    resolved = resolve_tool("ffmpeg", tools_dir=tools_dir)
+    assert resolved is not None
+    assert resolved.source == "path"
+
+
+def test_default_tools_dir_avoids_path_home_when_env_supplies_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autoclipper.config import default_tools_dir
+
+    def fail_home() -> Path:
+        raise RuntimeError("no home")
+
+    monkeypatch.setattr(Path, "home", fail_home)
+    assert (
+        default_tools_dir(platform="win32", env={"LOCALAPPDATA": str(tmp_path)})
+        == tmp_path / "AutoClipper" / "tools"
+    )
+    assert (
+        default_tools_dir(platform="linux", env={"XDG_DATA_HOME": "/var/data"})
+        == Path("/var/data") / "autoclipper" / "tools"
+    )
+
+
+def test_resolve_tool_falls_back_to_path_when_home_unavailable_or_env_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autoclipper.tools import discovery as tool_discovery
+
+    monkeypatch.setattr(
+        tool_discovery,
+        "_default_tools_dir",
+        lambda: (_ for _ in ()).throw(RuntimeError("no home")),
+    )
+    (tmp_path / ".env").write_text("UNRELATED_APP_VAR=1\n", encoding="utf-8")
+    get_settings.cache_clear()
+    monkeypatch.setattr(shutil, "which", lambda name: "/path/ffmpeg" if name == FFMPEG else None)
+
+    resolved = resolve_tool("ffmpeg")
+    assert resolved is not None
+    assert resolved.source == "path"
+    assert resolved.path == Path("/path/ffmpeg")
+
+
+def test_videodownload_command_includes_ffmpeg_path_when_provided(tmp_path: Path) -> None:
+    from autoclipper.ingest.media import build_videodownload_command
+
+    binary = tmp_path / "TwitchDownloaderCLI.exe"
+    ffmpeg_bin = tmp_path / "tools" / "bin" / "ffmpeg.exe"
+    output = tmp_path / "segment.mp4"
+
+    command = build_videodownload_command(
+        binary, "123456", output, begin_s=5, end_s=20, ffmpeg_path=ffmpeg_bin
+    )
+    assert "--ffmpeg-path" in command.args
+    assert command.args[command.args.index("--ffmpeg-path") + 1] == str(ffmpeg_bin)

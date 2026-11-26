@@ -330,9 +330,12 @@ def format_preflight_summary(report: PreflightReport) -> str:
 
 def format_tool_locations(settings: Settings) -> str:
     """Format local tool paths for CLI ``doctor`` output (never sent over HTTP)."""
-    tools_dir = effective_tools_dir(settings)
+    try:
+        tools_dir_label = str(effective_tools_dir(settings))
+    except RuntimeError:
+        tools_dir_label = "<unavailable>"
     resolved = resolve_all_tools(settings)
-    lines = [f"Tool locations (managed folder: {tools_dir}):"]
+    lines = [f"Tool locations (managed folder: {tools_dir_label}):"]
     for tool_name in ("ffmpeg", "ffprobe", "twitch_downloader"):
         label = TOOL_COMMANDS[tool_name]
         entry = resolved[tool_name]
