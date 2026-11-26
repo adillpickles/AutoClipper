@@ -10,10 +10,7 @@ import io
 import json
 import sys
 import tarfile
-import threading
 import zipfile
-from functools import partial
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
@@ -94,23 +91,7 @@ def _spec_for(
     )
 
 
-class _QuietHandler(SimpleHTTPRequestHandler):
-    def log_message(self, format: str, *args: object) -> None:
-        del format, args
-
-
-def _serve_directory(directory: Path) -> tuple[ThreadingHTTPServer, str]:
-    handler = partial(_QuietHandler, directory=str(directory))
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    host, port = server.server_address[:2]
-    return server, f"http://{host}:{port}"
-
-
-def test_install_zip_from_local_http_server_is_verified_and_idempotent(tmp_path: Path) -> None:
-    served_dir = tmp_path / "served"
-    served_dir.mkdir()
+def test_install_zip_streams_verifies_and_is_idempotent(tmp_path: Path) -> None:
     archive_bytes = _make_zip_bytes(
         {
             "ffmpeg-9.0.2-essentials_build/bin/ffmpeg.exe": b"fake-ffmpeg-binary",
@@ -119,51 +100,61 @@ def test_install_zip_from_local_http_server_is_verified_and_idempotent(tmp_path:
         }
     )
     archive_name = "ffmpeg-9.0.2-essentials_build.zip"
-    (served_dir / archive_name).write_bytes(archive_bytes)
-
-    server, base_url = _serve_directory(served_dir)
-    try:
-        spec = _spec_for(
-            platform=PlatformKey("windows", "x86_64"),
-            artifacts=(
-                ToolArtifact(
-                    filename=archive_name,
-                    url=f"{base_url}/{archive_name}",
-                    sha256=_sha256(archive_bytes),
-                    archive_format="zip",
-                    size_bytes=len(archive_bytes),
-                    members=(
-                        ArchiveMember("ffmpeg.exe", "bin/ffmpeg.exe"),
-                        ArchiveMember("ffprobe.exe", "bin/ffprobe.exe"),
-                    ),
+    spec = _spec_for(
+        platform=PlatformKey("windows", "x86_64"),
+        artifacts=(
+            ToolArtifact(
+                filename=archive_name,
+                url=f"https://example.invalid/{archive_name}",
+                sha256=_sha256(archive_bytes),
+                archive_format="zip",
+                size_bytes=len(archive_bytes),
+                members=(
+                    ArchiveMember("ffmpeg.exe", "bin/ffmpeg.exe"),
+                    ArchiveMember("ffprobe.exe", "bin/ffprobe.exe"),
                 ),
             ),
+        ),
+    )
+
+    requests_seen = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests_seen
+        requests_seen += 1
+        assert request.url.path == f"/{archive_name}"
+        return httpx.Response(
+            200,
+            headers={"Content-Length": str(len(archive_bytes))},
+            content=archive_bytes,
         )
-        tools_dir = tmp_path / "tools"
-        events: list[InstallProgress] = []
 
-        first = install_tool(spec, tools_dir=tools_dir, on_progress=events.append)
+    def fail_if_called(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("idempotent rerun must not make any network request")
 
-        assert first.status == "installed"
-        assert (tools_dir / "bin" / "ffmpeg.exe").read_bytes() == b"fake-ffmpeg-binary"
-        assert (tools_dir / "bin" / "ffprobe.exe").read_bytes() == b"fake-ffprobe-binary"
-        assert not (tools_dir / "bin" / "README.txt").exists()
-        assert manifest_path(tools_dir).is_file()
-        stages = [e.stage for e in events]
-        assert stages[0] == "checking"
-        assert "downloading" in stages
-        assert "verifying" in stages
-        assert "extracting" in stages
-        assert stages[-1] == "done"
+    tools_dir = tmp_path / "tools"
+    events: list[InstallProgress] = []
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        first = install_tool(spec, tools_dir=tools_dir, client=client, on_progress=events.append)
 
-        # Shut down server: second run must skip download completely (idempotent).
-        server.shutdown()
-        second = install_tool(spec, tools_dir=tools_dir)
-        assert second.status == "already_installed"
-        assert second.binaries == first.binaries
-    finally:
-        server.shutdown()
-        server.server_close()
+    assert requests_seen == 1
+    assert first.status == "installed"
+    assert (tools_dir / "bin" / "ffmpeg.exe").read_bytes() == b"fake-ffmpeg-binary"
+    assert (tools_dir / "bin" / "ffprobe.exe").read_bytes() == b"fake-ffprobe-binary"
+    assert not (tools_dir / "bin" / "README.txt").exists()
+    assert manifest_path(tools_dir).is_file()
+    stages = [e.stage for e in events]
+    assert stages[0] == "checking"
+    assert "downloading" in stages
+    assert "verifying" in stages
+    assert "extracting" in stages
+    assert stages[-1] == "done"
+
+    # Second run must skip download completely (idempotent, zero network requests).
+    with httpx.Client(transport=httpx.MockTransport(fail_if_called)) as no_net_client:
+        second = install_tool(spec, tools_dir=tools_dir, client=no_net_client)
+    assert second.status == "already_installed"
+    assert second.binaries == first.binaries
 
 
 def test_install_tar_xz_and_posix_executable_bits(tmp_path: Path) -> None:
@@ -203,6 +194,14 @@ def test_install_tar_xz_and_posix_executable_bits(tmp_path: Path) -> None:
     if sys.platform != "win32":
         assert ffmpeg_bin.stat().st_mode & 0o111
         assert ffprobe_bin.stat().st_mode & 0o111
+
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _req: (_ for _ in ()).throw(AssertionError("rerun must skip download"))
+        )
+    ) as no_net:
+        rerun = install_tool(spec, tools_dir=tools_dir, client=no_net)
+    assert rerun.status == "already_installed"
 
 
 def test_multi_artifact_install_is_atomic_when_second_artifact_fails(tmp_path: Path) -> None:

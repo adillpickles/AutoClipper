@@ -234,7 +234,11 @@ def _is_already_installed(
         binary_path = bin_dir / name
         if not binary_path.is_file():
             return None
-        if sys.platform != "win32" and not os.access(binary_path, os.X_OK):
+        if (
+            spec.platform.os != "windows"
+            and sys.platform != "win32"
+            and not os.access(binary_path, os.X_OK)
+        ):
             return None
         try:
             if _sha256_file(binary_path) != expected_hash:
