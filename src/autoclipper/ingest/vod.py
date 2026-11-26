@@ -178,8 +178,9 @@ def ingest_vod(
         after_vod_meta: Called right after the metadata step, with the resolved VOD (or None
             when it couldn't be resolved), before anything is downloaded. An exception it
             raises propagates and the remaining steps are skipped without catalog rows, so a
-            later run picks them up. `analyze_vod` uses it to reject a non-archive video or a
-            mismatched ``--video`` file before fetching anything (api-contract.md § 3.5).
+            later run picks them up. `analyze_vod` uses it to reject unresolved metadata, a
+            non-archive video or a mismatched ``--video`` file before fetching anything
+            (api-contract.md § 3.5).
         on_step: Called with each step's result as the step completes, in step order (a
             skipped step completes too); the metadata step's result is reported only after
             ``after_vod_meta`` passes, so a VOD rejected there never reads as completed. The
@@ -193,6 +194,9 @@ def ingest_vod(
     validate_video_id(video_id)
     if media_file is not None and not media_file.is_file():
         raise FileNotFoundError(f"media file not found: {media_file}")
+    # A raw replay left by an interrupted run holds usernames: remove it before any early exit.
+    raw_chat = raw_chat_path(data_dir, video_id)
+    raw_chat.unlink(missing_ok=True)
     catalog = read_catalog(data_dir)
     results: list[StepResult] = []
 
@@ -253,7 +257,8 @@ def ingest_vod(
 
     if after_vod_meta is not None:
         # The one point where the resolved VOD is known before anything is downloaded.
-        after_vod_meta(vod)
+        meta_ok = catalog[("vod_meta", video_id)].status == "ok"
+        after_vod_meta(vod if meta_ok else None)
     if on_step is not None:
         on_step(results[-1])  # the metadata step's result, reported once its checks passed
 
@@ -289,9 +294,6 @@ def ingest_vod(
 
     # 3. Chat.
     chat_file = chat_path(data_dir, video_id)
-    raw_chat = raw_chat_path(data_dir, video_id)
-    # A raw replay left by an interrupted run holds usernames: remove it whatever happens next.
-    raw_chat.unlink(missing_ok=True)
     chat_entry = done_before("chat", chat_file.is_file())
     tool = f"{chat_module.TOOL_NAME}@{chat_module.PINNED_TOOL_VERSION}"
     if chat_entry is not None:
