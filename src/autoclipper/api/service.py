@@ -24,6 +24,7 @@ import contextlib
 import logging
 import queue
 import secrets
+import sqlite3
 import threading
 import time
 from collections import Counter
@@ -38,6 +39,7 @@ from autoclipper.analyze import DEFAULT_SCORER, AnalyzeError, analyze_vod
 from autoclipper.api import mock
 from autoclipper.api.store import (
     DEFAULT_DB_NAME,
+    DEFAULT_MOCK_DB_NAME,
     JobStore,
     StoredJobRecord,
     StoredRenderRecord,
@@ -342,6 +344,7 @@ class _JobRecord:
     video_path: str | None
     times: _Timestamps
     seq: int = 0
+    runner: Literal["mock", "pipeline"] = "mock"
     state: State = "queued"
     progress: Progress | None = None
     warnings: tuple[AnalysisWarning, ...] = ()
@@ -374,6 +377,7 @@ class _JobRecord:
         return StoredJobRecord(
             job_id=self.job_id,
             seq=self.seq,
+            runner=self.runner,
             video_id=self.video_id,
             video_path=self.video_path,
             state=self.state,
@@ -623,6 +627,7 @@ class MockService:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _store: JobStore = field(init=False)
     _next_seq: int = field(default=0, init=False)
+    _deleting: set[str] = field(default_factory=set, init=False)
     _jobs: dict[str, _JobRecord] = field(default_factory=dict, init=False)
     _renders: dict[str, _RenderRecord] = field(default_factory=dict, init=False)
     _media: dict[str, Path] = field(default_factory=dict, init=False)
@@ -657,8 +662,12 @@ class MockService:
             ]
             if missing:
                 raise ValueError(f"pipeline jobs need {', '.join(missing)}")
+        self.output_dir = self.output_dir.resolve()
+        default_name = DEFAULT_DB_NAME if self.job_runner == "pipeline" else DEFAULT_MOCK_DB_NAME
         db_path = (
-            self.store_path if self.store_path is not None else self.output_dir / DEFAULT_DB_NAME
+            self.store_path.resolve()
+            if self.store_path is not None
+            else self.output_dir / default_name
         )
         self._store = JobStore(db_path)
         self._load_persisted()
@@ -695,6 +704,7 @@ class MockService:
                 video_path=stored.video_path,
                 times=times,
                 seq=stored.seq,
+                runner=stored.runner,
                 state=stored.state,
                 progress=stored.progress,
                 warnings=stored.warnings,
@@ -817,16 +827,18 @@ class MockService:
                 ):
                     return record.model(), False
             now = self.clock()
-            self._next_seq += 1
+            next_seq = self._next_seq + 1
             record = _JobRecord(
                 new_id("job"),
                 video_id,
                 request.video_path,
                 _Timestamps(now, now),
-                seq=self._next_seq,
+                seq=next_seq,
+                runner=self.job_runner,
             )
-            self._jobs[record.job_id] = record
             self._persist_job(record)
+            self._next_seq = next_seq
+            self._jobs[record.job_id] = record
             model = record.model()
         self._enqueue(self._analysis_queue, record.job_id, self._run_job_safely)
         return model, True
@@ -897,8 +909,10 @@ class MockService:
         with self._lock:
             record = self._job(job_id)
             child_renders = [r for r in self._renders.values() if r.job_id == job_id]
-            if record.state in ("queued", "running") or any(
-                r.state in ("queued", "running") for r in child_renders
+            if (
+                job_id in self._deleting
+                or record.state in ("queued", "running")
+                or any(r.state in ("queued", "running") for r in child_renders)
             ):
                 raise ApiException(
                     409,
@@ -906,36 +920,55 @@ class MockService:
                     "This analysis or one of its renders is still running. Wait for it to finish "
                     "before deleting it.",
                 )
+            self._deleting.add(job_id)
             result_path = record.result_path
             render_files = [r.file for r in child_renders if r.file is not None]
-            del self._jobs[job_id]
-            for render in child_renders:
-                self._renders.pop(render.render_id, None)
-            self._file_media.pop(job_id, None)
-            for seg_key in [key for key in self._segments if key[0] == job_id]:
-                self._segments.pop(seg_key, None)
-            self._store.delete_job(job_id)
-
-        analysis_root = self.output_dir / "analysis"
-        if result_path is not None and _is_within(result_path, analysis_root):
-            try:
-                result_path.unlink(missing_ok=True)
-            except OSError as exc:
-                log.warning("couldn't remove analysis result path=%s: %s", result_path, exc)
 
         deleted_files = 0
-        if delete_exports:
-            for file_path in render_files:
-                if not _is_within(file_path, self.output_dir):
-                    continue
-                if not file_path.is_file():
-                    continue
+        failed_paths: list[Path] = []
+        try:
+            if delete_exports:
+                for file_path in render_files:
+                    if not _is_within(file_path, self.output_dir):
+                        continue
+                    try:
+                        file_path.unlink()
+                    except FileNotFoundError:
+                        continue
+                    except OSError as exc:
+                        log.warning("couldn't remove render file path=%s: %s", file_path, exc)
+                        failed_paths.append(file_path)
+                    else:
+                        deleted_files += 1
+
+            analysis_root = self.output_dir / "analysis"
+            if (
+                not failed_paths
+                and result_path is not None
+                and _is_within(result_path, analysis_root)
+            ):
                 try:
-                    file_path.unlink()
+                    result_path.unlink()
+                except FileNotFoundError:
+                    pass
                 except OSError as exc:
-                    log.warning("couldn't remove render file path=%s: %s", file_path, exc)
-                else:
-                    deleted_files += 1
+                    log.warning("couldn't remove analysis result path=%s: %s", result_path, exc)
+                    failed_paths.append(result_path)
+
+            if failed_paths:
+                raise ApiException(500, "delete_failed", _DELETE_FAILED)
+
+            with self._lock:
+                self._store.delete_job(job_id)
+                self._jobs.pop(job_id, None)
+                for render in child_renders:
+                    self._renders.pop(render.render_id, None)
+                self._file_media.pop(job_id, None)
+                for seg_key in [key for key in self._segments if key[0] == job_id]:
+                    self._segments.pop(seg_key, None)
+        finally:
+            with self._lock:
+                self._deleting.discard(job_id)
 
         return DeleteJobResponse(job_id=job_id, deleted=True, deleted_files=deleted_files)
 
@@ -1041,7 +1074,7 @@ class MockService:
                 if Path(record.video_path).is_file() and job_id not in self._file_media:
                     self._file_media[job_id] = _FileMediaState("preparing")
                     work = ("file", job_id)
-            elif self._needs_segment(record):
+            elif self._needs_segment(record) and self.segment_fetcher is not None:
                 seg_key = (job_id, candidate_id)
                 existing = self._segments.get(seg_key)
                 if existing is None:
@@ -1059,7 +1092,7 @@ class MockService:
         if work is not None:  # enqueued outside the lock, like every worker item
             self._enqueue(self._fetch_queue, work, self._run_fetch_item_safely)
         with self._lock:
-            record = self._jobs[job_id]
+            record = self._done_job(job_id)
             candidate = self._candidate(record, candidate_id)
             media = self._media_for(record, candidate)
             seg_key = (job_id, candidate_id)
@@ -1114,7 +1147,7 @@ class MockService:
 
     def _needs_segment(self, job: _JobRecord) -> bool:
         """Whether this job's media comes from a downloaded segment (#46)."""
-        return self.job_runner == "pipeline" and job.video_path is None
+        return job.runner == "pipeline" and job.video_path is None
 
     def _segment_span(
         self, job: _JobRecord, begin_needed_s: float, end_needed_s: float
@@ -1145,6 +1178,12 @@ class MockService:
         """Create an export, or return an identical queued/running one (`created` False)."""
         with self._lock:
             job = self._done_job(request.job_id)
+            if job.job_id in self._deleting:
+                raise ApiException(
+                    409,
+                    "job_in_progress",
+                    "This analysis is being deleted. Try again once it finishes.",
+                )
             candidate = self._candidate(job, request.candidate_id)
             export = self._media_for(job, candidate).export
             self._require_available(export)
@@ -1194,8 +1233,8 @@ class MockService:
                 _Timestamps(now, now),
                 request=request,
             )
-            self._renders[record.render_id] = record
             self._persist_render(record)
+            self._renders[record.render_id] = record
             model = record.export_model()
         self._enqueue(self._render_queue, record.render_id, self._run_render_safely)
         return model, True
@@ -1222,6 +1261,12 @@ class MockService:
         """Create a highlights video, or return an identical queued/running one."""
         with self._lock:
             job = self._done_job(request.job_id)
+            if job.job_id in self._deleting:
+                raise ApiException(
+                    409,
+                    "job_in_progress",
+                    "This analysis is being deleted. Try again once it finishes.",
+                )
             result = self._job_result(job)
             candidates = {c.candidate_id: c for c in result.candidates}
             if request.segments is None:
@@ -1291,8 +1336,8 @@ class MockService:
                 order=request.order,
                 duration_s=total,
             )
-            self._renders[record.render_id] = record
             self._persist_render(record)
+            self._renders[record.render_id] = record
             model = record.highlights_model()
         self._enqueue(self._render_queue, record.render_id, self._run_render_safely)
         return model, True
@@ -1541,6 +1586,30 @@ class MockService:
         `preparing` while an export is already available (§ 5): a render fetches its own
         media in its first stage.
         """
+        if self.segment_fetcher is None:
+            return CandidateMedia(
+                job_id=job.job_id,
+                candidate_id=candidate.candidate_id,
+                video_id=job.video_id,
+                preview=PreviewMedia(
+                    status="unavailable",
+                    kind=None,
+                    url=None,
+                    media_start_s=None,
+                    media_end_s=None,
+                    reason="fetch_failed",
+                    message=_PIPELINE_MEDIA_IN_MOCK,
+                ),
+                export=ExportAvailability(
+                    status="unavailable",
+                    reason="fetch_failed",
+                    message=_PIPELINE_MEDIA_IN_MOCK,
+                    min_start_s=None,
+                    max_end_s=None,
+                    max_duration_s=None,
+                    layouts=(),
+                ),
+            )
         state = self._segments.get((job.job_id, candidate.candidate_id))
         if state is None:
             span = self._segment_span(job, candidate.start_s, candidate.end_s)
@@ -1853,7 +1922,10 @@ class MockService:
             record.state = "failed"
             record.error = error
             record.times.updated_at = record.times.finished_at = now
-            self._persist_job(record)
+            try:
+                self._persist_job(record)
+            except (sqlite3.Error, OSError):
+                log.exception("couldn't persist failed job state job_id=%s", job_id)
 
     def _run_renders(self) -> None:
         while (render_id := self._render_queue.get()) is not None:
@@ -2341,7 +2413,10 @@ class MockService:
                 record.state = "failed"
                 record.error = ApiError(code="internal_error", message=_INTERNAL)
                 record.times.updated_at = record.times.finished_at = self.clock()
-                self._persist_render(record)
+                try:
+                    self._persist_render(record)
+                except (sqlite3.Error, OSError):
+                    log.exception("couldn't persist failed render state id=%s", render_id)
 
     def _run_render(self, render_id: str) -> None:
         with self._lock:
@@ -2661,7 +2736,13 @@ class MockService:
                 if duration_s is not None:
                     record.duration_s = duration_s
             record.times.updated_at = record.times.finished_at = now
-            self._persist_render(record)
+            try:
+                self._persist_render(record)
+            except (sqlite3.Error, OSError):
+                if error is not None:
+                    log.exception("couldn't persist failed render state id=%s", record.render_id)
+                else:
+                    raise
 
     def _run_export(self, record: _RenderRecord) -> None:
         """Render one export for real (§ 6.3): obtain the media, transcribe, render."""
@@ -2738,6 +2819,14 @@ class MockService:
 
 _INTERNAL: Final = "Something went wrong on the server. Try again."
 _RESULT_FILE_MISSING: Final = "This analysis result is no longer on disk. Analyze the VOD again."
+_DELETE_FAILED: Final = (
+    "Some files for this job couldn't be removed from disk. Close any program using them and "
+    "try deleting again."
+)
+_PIPELINE_MEDIA_IN_MOCK: Final = (
+    "This VOD was analyzed with the real pipeline. Restart the server in pipeline mode to "
+    "preview or export it."
+)
 _JOB_INTERRUPTED: Final = ApiError(
     code="interrupted",
     message="The server stopped while this analysis was running. Analyze the VOD again.",

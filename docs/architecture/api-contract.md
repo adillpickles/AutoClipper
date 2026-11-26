@@ -394,7 +394,7 @@ Query parameters (unknown or out-of-range values return `422 invalid_request`):
 `DELETE /api/v1/jobs/{job_id}` removes a finished (`done` or `failed`) job and its render records from the persistent index, and removes its saved per-job analysis result JSON. By default (`delete_exports=false`), finished export and highlights MP4 files are left on disk; pass `?delete_exports=true` to also delete them. Never deletes a user-supplied `video_path`.
 
 - Success: `200 OK` with `Cache-Control: no-store` and `DeleteJobResponse`: `{ "job_id": "...", "deleted": true, "deleted_files": <int> }`, where `deleted_files` counts rendered MP4 files removed from disk.
-- Errors: `404 job_not_found`, `409 job_in_progress` (the job or one of its renders is still `queued` or `running`), `422 invalid_request`.
+- Errors: `404 job_not_found`, `409 job_in_progress` (the job or one of its renders is still `queued` or `running`), `422 invalid_request`, `500 delete_failed` (one or more files couldn't be removed from disk; the job record is kept intact so retrying `DELETE` can complete cleanup).
 
 ## 4. Results and candidates
 
@@ -1101,6 +1101,7 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 | 422 | `invalid_video_path` | `POST /jobs` | `null` |
 | 422 | `invalid_export_bounds` | `POST /exports` | `{ "min_start_s": …, "max_end_s": …, "max_duration_s": … }` |
 | 422 | `invalid_highlights_bounds` | `POST /highlights` | `{ "segment_index": <int or null>, "max_duration_s": …, "max_total_duration_s": … }` |
+| 500 | `delete_failed` | `DELETE /jobs/{job_id}` (one or more files couldn't be removed from disk; record kept for retry) | `null` |
 | 500 | `internal_error` | Any | `null` |
 | 502 | `twitch_auth_failed` | `GET /channels/vods` | `null` |
 | 502 | `upstream_unavailable` | `GET /channels/vods` (Twitch server, network or response error) | `null` |
@@ -1157,7 +1158,7 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 
 - Long work runs in an in-process background worker, never in the request handler ([overview § 4.7](overview.md#47-interfaces)). One analysis job and one render run at a time; exports and highlights videos share the render queue. Others wait in `queued`, first in, first out.
 - There is no cancel endpoint in v1; a later cancel endpoint that fails a job with a new `cancelled` code would be a minor change (§ 10). Finished jobs can be listed via `GET /api/v1/jobs` (§ 3.7) and removed via `DELETE /api/v1/jobs/{job_id}` (§ 3.8).
-- Job, export and highlights records are persisted in a SQLite index (`<artifacts_dir>/library.db`, WAL mode) and each finished job's `AnalysisResult` is written atomically to `<artifacts_dir>/analysis/<job_id>.json`. On restart, past `done` and `failed` jobs, results, exports, highlights and downloads keep working.
+- Job, export and highlights records are persisted in a SQLite index (`<artifacts_dir>/library.db` for `pipeline` jobs and `<artifacts_dir>/library-mock.db` for `mock` jobs, WAL mode) and each finished job's `AnalysisResult` is written atomically to `<artifacts_dir>/analysis/<job_id>.json`. On restart, past `done` and `failed` jobs, results, exports, highlights and downloads keep working without mixing mock and pipeline media sources.
 - Any job, export or highlights render that was `queued` or `running` when the server stopped is marked `failed` with `code: "interrupted"` and a retryable message on the next startup; it is never left `running`.
 - Temporary preview media IDs (`med_*`) remain session-scoped in memory: after a restart, calling `GET /api/v1/jobs/{job_id}/candidates/{candidate_id}/media` issues a fresh preview URL.
 - If the database file is corrupt or truncated, startup quarantines it aside and starts fresh without crashing. If a saved result JSON or rendered MP4 was removed from disk, the job still loads and lists cleanly (`result_available: false` or `file_available: false`), and fetching the missing file returns `404 result_file_missing`, `export_file_missing` or `highlights_file_missing`.

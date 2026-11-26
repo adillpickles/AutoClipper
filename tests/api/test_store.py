@@ -13,6 +13,7 @@ from autoclipper.api.app import create_app
 from autoclipper.api.service import MockService, SampleMedia
 from autoclipper.api.store import (
     DEFAULT_DB_NAME,
+    DEFAULT_MOCK_DB_NAME,
     JobStore,
     StoredJobRecord,
     StoredRenderRecord,
@@ -246,7 +247,7 @@ def test_store_recovers_from_corrupt_and_partial_database_files(
 
     quarantined = list(db_path.parent.glob(f"{DEFAULT_DB_NAME}.corrupt-*"))
     assert len(quarantined) == 1
-    assert any("corrupt or unreadable" in rec.message for rec in caplog.records)
+    assert any("job store is corrupt" in rec.message for rec in caplog.records)
 
     # Also recover when schema is partial (e.g. missing renders table)
     partial_path = tmp_path / "partial" / DEFAULT_DB_NAME
@@ -428,7 +429,7 @@ def test_restart_restores_done_jobs_results_exports_and_highlights(tmp_path: Pat
 
 
 def test_restart_marks_queued_and_running_jobs_and_renders_as_interrupted(tmp_path: Path) -> None:
-    db_path = tmp_path / "artifacts" / DEFAULT_DB_NAME
+    db_path = tmp_path / "artifacts" / DEFAULT_MOCK_DB_NAME
     store = JobStore(db_path)
     done_result_path = tmp_path / "artifacts" / "analysis" / "job_done.json"
     done_result = AnalysisResult(
@@ -806,3 +807,248 @@ def test_delete_rejects_in_progress_job_and_cors_allows_delete(tmp_path: Path) -
             threading.Event().wait(0.02)
 
         assert client.delete(f"{API}/jobs/{job_id}").status_code == 200
+
+
+def test_runner_stores_stay_isolated_and_shared_store_never_swaps_media(tmp_path: Path) -> None:
+    def fake_analyze(
+        video_id: str,
+        *,
+        data_dir: Path,
+        artifacts_dir: Path,
+        tools: IngestTools,
+        lexicon: Lexicon,
+        video_file: Path | None,
+        baseline: str,
+        clock: object,
+        on_stage: object,
+        on_warnings: object,
+    ) -> AnalysisResult:
+        del data_dir, artifacts_dir, tools, lexicon, video_file, baseline, clock, on_stage
+        del on_warnings
+        return AnalysisResult(
+            generated_at=datetime(2026, 11, 1, 12, 0, 0, tzinfo=UTC),
+            vod=VodSummary(
+                video_id=video_id,
+                title="Real pipeline VOD",
+                broadcaster_id="9100000001",
+                broadcaster_display_name="real_streamer",
+                duration_s=180.0,
+                created_at=datetime(2026, 11, 1, 10, 0, 0, tzinfo=UTC),
+            ),
+            scorer=ScorerInfo(kind="heuristic", name="chat_loudness", run_id=None),
+            n_viewer_clips_total=0,
+            candidates=(
+                Candidate(
+                    candidate_id="c001",
+                    rank=1,
+                    score=2.5,
+                    start_s=10.0,
+                    end_s=35.0,
+                    source="discovered",
+                    n_viewer_clips=0,
+                    top_signals=("chat_msg_rate_z",),
+                ),
+            ),
+        )
+
+    pipeline_service = _make_service(
+        tmp_path,
+        job_runner="pipeline",
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(Path(__file__).resolve().parents[2] / "configs" / "lexicon.yaml"),
+        tools_for=lambda: IngestTools(),
+        segment_fetcher=lambda _vid, _b, _e: (_ for _ in ()).throw(AssertionError("unused")),
+        analyze=fake_analyze,
+    )
+    with TestClient(create_app(pipeline_service)) as pipe_client:
+        pipe_job_id = pipe_client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+
+    # Default mock runner uses its own store (`library-mock.db`) and does not see pipeline jobs.
+    mock_service = _make_service(tmp_path, job_runner="mock")
+    with TestClient(create_app(mock_service)) as mock_client:
+        assert mock_client.get(f"{API}/jobs").json()["total"] == 0
+
+    # Even if pointed explicitly at the pipeline store, mock mode refuses to serve sample media
+    # for a pipeline job.
+    shared_mock = _make_service(
+        tmp_path,
+        job_runner="mock",
+        store_path=tmp_path / "artifacts" / DEFAULT_DB_NAME,
+    )
+    with TestClient(create_app(shared_mock)) as shared_client:
+        media = shared_client.get(f"{API}/jobs/{pipe_job_id}/candidates/c001/media").json()
+        assert media["preview"]["status"] == "unavailable"
+        assert media["export"]["status"] == "unavailable"
+
+
+def test_relative_output_dir_restores_results_and_exports_across_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    rel_out = Path("relative-artifacts")
+    service1 = _make_service(tmp_path, output_dir=rel_out)
+    with TestClient(create_app(service1)) as client1:
+        job_id = client1.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+        export_id = client1.post(
+            f"{API}/exports",
+            json={
+                "job_id": job_id,
+                "candidate_id": "c001",
+                "start_s": 118.0,
+                "end_s": 148.0,
+                "layout": "center_crop",
+                "captions": False,
+            },
+        ).json()["export_id"]
+
+    service2 = _make_service(tmp_path, output_dir=rel_out)
+    with TestClient(create_app(service2)) as client2:
+        assert client2.get(f"{API}/jobs/{job_id}/result").status_code == 200
+        assert client2.get(f"{API}/exports/{export_id}/file").status_code == 200
+
+
+def test_non_finite_metadata_row_is_skipped_on_load_instead_of_500(tmp_path: Path) -> None:
+    service1 = _make_service(tmp_path)
+    with TestClient(create_app(service1)) as client1:
+        bad_id = client1.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+        good_id = client1.post(f"{API}/jobs", json={"vod": "9000000002"}).json()["job_id"]
+
+    conn = sqlite3.connect(tmp_path / "artifacts" / DEFAULT_MOCK_DB_NAME)
+    with conn:
+        conn.execute("UPDATE jobs SET duration_s = ? WHERE job_id = ?", (float("inf"), bad_id))
+    conn.close()
+
+    service2 = _make_service(tmp_path)
+    with TestClient(create_app(service2)) as client2:
+        listed = client2.get(f"{API}/jobs")
+        assert listed.status_code == 200
+        assert [item["job_id"] for item in listed.json()["items"]] == [good_id]
+
+
+def test_transient_operational_error_does_not_quarantine_healthy_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "artifacts" / DEFAULT_DB_NAME
+    store = JobStore(db_path)
+    store.upsert_job(_sample_job("job_healthy"))
+    store.close()
+
+    original_open = JobStore._open_and_verify
+
+    def fail_locked(self: JobStore) -> sqlite3.Connection:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(JobStore, "_open_and_verify", fail_locked)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        JobStore(db_path)
+
+    # Original file is still intact and unquarantined.
+    assert db_path.is_file()
+    assert list(db_path.parent.glob(f"{DEFAULT_DB_NAME}.corrupt-*")) == []
+
+    monkeypatch.setattr(JobStore, "_open_and_verify", original_open)
+    reopened = JobStore(db_path)
+    try:
+        assert [j.job_id for j in reopened.load_all()[0]] == ["job_healthy"]
+    finally:
+        reopened.close()
+
+
+def test_store_write_failure_does_not_leave_orphan_job_or_kill_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 1) Create-time persistence failure rolls back before entering `_jobs`.
+    service1 = _make_service(tmp_path)
+    with TestClient(create_app(service1), raise_server_exceptions=False) as client1:
+        original_upsert = service1._store.upsert_job
+        monkeypatch.setattr(
+            service1._store,
+            "upsert_job",
+            lambda _rec: (_ for _ in ()).throw(sqlite3.OperationalError("disk full")),
+        )
+        failed = client1.post(f"{API}/jobs", json={"vod": "9000000001"})
+        assert failed.status_code == 500
+
+        monkeypatch.setattr(service1._store, "upsert_job", original_upsert)
+        retried = client1.post(f"{API}/jobs", json={"vod": "9000000001"})
+        assert retried.status_code == 201
+        assert client1.get(f"{API}/jobs/{retried.json()['job_id']}").json()["state"] == "done"
+
+    # 2) Worker stays alive if failure-state persistence also raises.
+    started = threading.Event()
+    release = threading.Event()
+
+    def pause_sleep(_self: MockService) -> None:
+        started.set()
+        release.wait(timeout=5)
+
+    service2 = _make_service(tmp_path / "worker", synchronous=False, step_s=0.01)
+    monkeypatch.setattr(MockService, "_sleep", pause_sleep)
+    with TestClient(create_app(service2)) as client2:
+        j1 = client2.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+        assert started.wait(timeout=5)
+        original_upsert2 = service2._store.upsert_job
+        monkeypatch.setattr(
+            service2._store,
+            "upsert_job",
+            lambda _rec: (_ for _ in ()).throw(sqlite3.OperationalError("write failed")),
+        )
+        release.set()
+        for _ in range(100):
+            if client2.get(f"{API}/jobs/{j1}").json()["state"] == "failed":
+                break
+            threading.Event().wait(0.02)
+        assert client2.get(f"{API}/jobs/{j1}").json()["state"] == "failed"
+        assert service2._threads[0].is_alive()
+
+        # After storage recovers, the same worker processes subsequent jobs.
+        monkeypatch.setattr(service2._store, "upsert_job", original_upsert2)
+        j2 = client2.post(f"{API}/jobs", json={"vod": "9000000002"}).json()["job_id"]
+        for _ in range(100):
+            if client2.get(f"{API}/jobs/{j2}").json()["state"] == "done":
+                break
+            threading.Event().wait(0.02)
+        assert client2.get(f"{API}/jobs/{j2}").json()["state"] == "done"
+
+
+def test_delete_job_stays_retryable_when_file_unlink_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _make_service(tmp_path)
+    with TestClient(create_app(service), raise_server_exceptions=False) as client:
+        job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+        export_id = client.post(
+            f"{API}/exports",
+            json={
+                "job_id": job_id,
+                "candidate_id": "c001",
+                "start_s": 118.0,
+                "end_s": 148.0,
+                "layout": "center_crop",
+                "captions": False,
+            },
+        ).json()["export_id"]
+        export_path = (tmp_path / "artifacts" / "exports" / f"{export_id}.mp4").resolve()
+        assert export_path.is_file()
+
+        real_unlink = Path.unlink
+
+        def blocked_unlink(self: Path, missing_ok: bool = False) -> None:
+            if self.resolve() == export_path:
+                raise PermissionError("file in use")
+            real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", blocked_unlink)
+        first = client.delete(f"{API}/jobs/{job_id}", params={"delete_exports": "true"})
+        assert first.status_code == 500
+        assert first.json()["error"]["code"] == "delete_failed"
+        # Job record is still present so the user can retry after closing the file.
+        assert client.get(f"{API}/jobs/{job_id}").status_code == 200
+
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+        second = client.delete(f"{API}/jobs/{job_id}", params={"delete_exports": "true"})
+        assert second.status_code == 200
+        assert second.json()["deleted_files"] == 1
+        assert not export_path.exists()
+        assert client.get(f"{API}/jobs/{job_id}").status_code == 404

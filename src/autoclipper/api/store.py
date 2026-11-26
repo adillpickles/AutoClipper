@@ -3,13 +3,14 @@
 SQLite (stdlib `sqlite3`, WAL mode) was chosen over a JSON-lines log because multiple worker
 threads (analysis, render, fetch) and HTTP request threads update jobs and renders concurrently,
 and transactional upserts avoid rewriting the whole store or truncating partial lines on a crash.
-Corrupt or truncated database files are quarantined aside and recreated on startup; individual
-corrupt rows are logged and skipped rather than crashing the server.
+Databases confirmed to be corrupt or structurally incomplete are quarantined aside and recreated on
+startup; individual corrupt rows are logged and skipped rather than crashing the server.
 """
 
 import contextlib
 import json
 import logging
+import math
 import secrets
 import sqlite3
 import threading
@@ -34,14 +35,21 @@ log = logging.getLogger(__name__)
 
 SCHEMA_VERSION: Final = 1
 DEFAULT_DB_NAME: Final = "library.db"
+DEFAULT_MOCK_DB_NAME: Final = "library-mock.db"
 _VALID_STATES: Final = frozenset({"queued", "running", "done", "failed"})
+_VALID_RUNNERS: Final = frozenset({"mock", "pipeline"})
 _VALID_RENDER_KINDS: Final = frozenset({"export", "highlights"})
 _VALID_ORDERS: Final = frozenset({"chronological", "rank"})
+
+# SQLite extended/primary error codes that confirm file corruption or non-database content.
+_SQLITE_CORRUPT: Final = 11
+_SQLITE_NOTADB: Final = 26
 
 _JOBS_COLUMNS: Final = frozenset(
     {
         "job_id",
         "seq",
+        "runner",
         "video_id",
         "video_path",
         "state",
@@ -88,6 +96,7 @@ _DDL: Final = """
 CREATE TABLE IF NOT EXISTS jobs (
     job_id TEXT PRIMARY KEY,
     seq INTEGER NOT NULL,
+    runner TEXT NOT NULL,
     video_id TEXT NOT NULL,
     video_path TEXT,
     state TEXT NOT NULL,
@@ -132,6 +141,22 @@ CREATE INDEX IF NOT EXISTS idx_renders_job ON renders (job_id, created_at DESC, 
 """
 
 
+class _CorruptStoreError(Exception):
+    """The SQLite database file is confirmed corrupt or has an incomplete/unsupported schema."""
+
+
+def _is_corrupt_sqlite_error(exc: sqlite3.DatabaseError) -> bool:
+    """Return True only when `exc` confirms corruption rather than a transient I/O error."""
+    if isinstance(exc, sqlite3.OperationalError):
+        msg = str(exc).lower()
+        return "not a database" in msg or "malformed" in msg
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is not None and (code & 0xFF) in (_SQLITE_CORRUPT, _SQLITE_NOTADB):
+        return True
+    msg = str(exc).lower()
+    return "not a database" in msg or "malformed" in msg or "corrupt" in msg
+
+
 @dataclass(frozen=True, slots=True)
 class StoredJobRecord:
     """One persisted analysis job row."""
@@ -155,6 +180,7 @@ class StoredJobRecord:
     started_at: datetime | None
     updated_at: datetime
     finished_at: datetime | None
+    runner: Literal["mock", "pipeline"] = "mock"
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,13 +225,53 @@ def _parse_opt_dt(raw: object) -> datetime | None:
     return None if raw is None else _parse_dt(raw)
 
 
+def _parse_opt_str(raw: object, name: str) -> str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError(f"{name} must be a string or null")
+    return raw
+
+
+def _parse_opt_finite_float(raw: object, name: str, *, allow_zero: bool) -> float | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        raise ValueError(f"{name} must be a number or null")
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite")
+    if allow_zero:
+        if value < 0:
+            raise ValueError(f"{name} must be non-negative")
+    elif value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
+def _parse_opt_non_negative_int(raw: object, name: str) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(f"{name} must be an integer or null")
+    if raw < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return raw
+
+
+def _encode_path(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    return str(path.resolve())
+
+
 def _parse_opt_path(raw: object, base_dir: Path) -> Path | None:
     if raw is None:
         return None
     if not isinstance(raw, str) or not raw:
         raise ValueError("path must be a non-empty string or null")
     path = Path(raw)
-    return path if path.is_absolute() else base_dir / path
+    return path if path.is_absolute() else (base_dir / path).resolve()
 
 
 def write_result_json(path: Path, result: AnalysisResult) -> None:
@@ -239,7 +305,7 @@ class JobStore:
     """Thread-safe SQLite store for jobs and renders under the artifacts directory."""
 
     def __init__(self, path: Path) -> None:
-        self.path = path
+        self.path = path.resolve()
         self._lock = threading.Lock()
         self._conn = self._open_or_recover()
 
@@ -247,9 +313,20 @@ class JobStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             return self._open_and_verify()
-        except (sqlite3.DatabaseError, ValueError) as exc:
+        except _CorruptStoreError as exc:
             log.warning(
-                "job store is corrupt or unreadable path=%s error=%s; starting fresh",
+                "job store is corrupt or incomplete path=%s error=%s; quarantining and starting "
+                "fresh",
+                self.path,
+                exc,
+            )
+            self._quarantine_corrupt_files()
+            return self._open_and_verify()
+        except sqlite3.DatabaseError as exc:
+            if not _is_corrupt_sqlite_error(exc):
+                raise
+            log.warning(
+                "job store is corrupt path=%s error=%s; quarantining and starting fresh",
                 self.path,
                 exc,
             )
@@ -262,7 +339,7 @@ class JobStore:
         try:
             check_row = conn.execute("PRAGMA quick_check").fetchone()
             if check_row is None or check_row[0] != "ok":
-                raise sqlite3.DatabaseError(
+                raise _CorruptStoreError(
                     f"integrity check failed: {None if check_row is None else check_row[0]}"
                 )
             conn.execute("PRAGMA journal_mode=WAL")
@@ -276,7 +353,7 @@ class JobStore:
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 conn.commit()
             elif user_version != SCHEMA_VERSION:
-                raise ValueError(f"unsupported job store schema version {user_version}")
+                raise _CorruptStoreError(f"unsupported job store schema version {user_version}")
             self._verify_tables(conn)
             return conn
         except Exception:
@@ -290,24 +367,21 @@ class JobStore:
             cols = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
             if not expected.issubset(cols):
                 missing = sorted(expected - cols)
-                raise ValueError(f"table {table} is missing columns: {', '.join(missing)}")
+                raise _CorruptStoreError(f"table {table} is missing columns: {', '.join(missing)}")
 
     def _quarantine_corrupt_files(self) -> None:
         stamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
         suffix = f"corrupt-{stamp}-{secrets.token_hex(4)}"
-        for candidate in (
-            self.path,
-            Path(f"{self.path}-wal"),
-            Path(f"{self.path}-shm"),
-        ):
-            if not candidate.exists():
+        if self.path.exists():
+            # Never unlink the primary DB if quarantine fails: surface the error instead.
+            target = self.path.with_name(f"{self.path.name}.{suffix}")
+            self.path.replace(target)
+        for sidecar in (Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
+            if not sidecar.exists():
                 continue
-            target = candidate.with_name(f"{candidate.name}.{suffix}")
-            try:
-                candidate.replace(target)
-            except OSError:
-                with contextlib.suppress(OSError):
-                    candidate.unlink(missing_ok=True)
+            target = sidecar.with_name(f"{sidecar.name}.{suffix}")
+            with contextlib.suppress(OSError):
+                sidecar.replace(target)
 
     def close(self) -> None:
         """Close the SQLite connection and release file handles."""
@@ -364,6 +438,7 @@ class JobStore:
         params = (
             record.job_id,
             record.seq,
+            record.runner,
             record.video_id,
             record.video_path,
             record.state,
@@ -373,7 +448,7 @@ class JobStore:
             record.duration_s,
             record.thumbnail_url,
             record.candidate_count,
-            str(record.result_path) if record.result_path is not None else None,
+            _encode_path(record.result_path),
             progress_json,
             warnings_json,
             error_json,
@@ -386,13 +461,14 @@ class JobStore:
             self._conn.execute(
                 """
                 INSERT INTO jobs (
-                    job_id, seq, video_id, video_path, state, title, broadcaster_id,
+                    job_id, seq, runner, video_id, video_path, state, title, broadcaster_id,
                     broadcaster_display_name, duration_s, thumbnail_url, candidate_count,
                     result_path, progress_json, warnings_json, error_json,
                     created_at, started_at, updated_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     seq = excluded.seq,
+                    runner = excluded.runner,
                     video_id = excluded.video_id,
                     video_path = excluded.video_path,
                     state = excluded.state,
@@ -432,7 +508,7 @@ class JobStore:
             record.state,
             progress_json,
             error_json,
-            str(record.file) if record.file is not None else None,
+            _encode_path(record.file),
             record.duration_s,
             _iso(record.created_at),
             _iso(record.started_at),
@@ -477,10 +553,16 @@ class JobStore:
 
 def _row_to_job(row: sqlite3.Row, base_dir: Path) -> StoredJobRecord:
     job_id = row["job_id"]
+    seq = row["seq"]
+    runner = row["runner"]
     video_id = row["video_id"]
     state = row["state"]
     if not isinstance(job_id, str) or not job_id:
         raise ValueError("invalid job_id")
+    if isinstance(seq, bool) or not isinstance(seq, int):
+        raise ValueError("invalid seq")
+    if runner not in _VALID_RUNNERS:
+        raise ValueError(f"invalid runner {runner!r}")
     if not isinstance(video_id, str) or not video_id:
         raise ValueError("invalid video_id")
     if state not in _VALID_STATES:
@@ -499,18 +581,19 @@ def _row_to_job(row: sqlite3.Row, base_dir: Path) -> StoredJobRecord:
     )
     return StoredJobRecord(
         job_id=job_id,
-        seq=int(row["seq"]),
+        seq=seq,
+        runner=cast(Literal["mock", "pipeline"], runner),
         video_id=video_id,
-        video_path=row["video_path"],
+        video_path=_parse_opt_str(row["video_path"], "video_path"),
         state=cast(State, state),
-        title=row["title"],
-        broadcaster_id=row["broadcaster_id"],
-        broadcaster_display_name=row["broadcaster_display_name"],
-        duration_s=float(row["duration_s"]) if row["duration_s"] is not None else None,
-        thumbnail_url=row["thumbnail_url"],
-        candidate_count=(
-            int(row["candidate_count"]) if row["candidate_count"] is not None else None
+        title=_parse_opt_str(row["title"], "title"),
+        broadcaster_id=_parse_opt_str(row["broadcaster_id"], "broadcaster_id"),
+        broadcaster_display_name=_parse_opt_str(
+            row["broadcaster_display_name"], "broadcaster_display_name"
         ),
+        duration_s=_parse_opt_finite_float(row["duration_s"], "duration_s", allow_zero=False),
+        thumbnail_url=_parse_opt_str(row["thumbnail_url"], "thumbnail_url"),
+        candidate_count=_parse_opt_non_negative_int(row["candidate_count"], "candidate_count"),
         result_path=_parse_opt_path(row["result_path"], base_dir),
         progress=progress,
         warnings=warnings,
@@ -573,7 +656,7 @@ def _row_to_render(row: sqlite3.Row, base_dir: Path) -> StoredRenderRecord:
         progress=progress,
         error=error,
         file=_parse_opt_path(row["file_path"], base_dir),
-        duration_s=float(row["duration_s"]) if row["duration_s"] is not None else None,
+        duration_s=_parse_opt_finite_float(row["duration_s"], "duration_s", allow_zero=True),
         created_at=_parse_dt(row["created_at"]),
         started_at=_parse_opt_dt(row["started_at"]),
         updated_at=_parse_dt(row["updated_at"]),
