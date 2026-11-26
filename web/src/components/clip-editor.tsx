@@ -24,6 +24,7 @@ import { formatTime } from "@/lib/format";
 import { reasonFor } from "@/lib/reason";
 import {
   clampTrim,
+  MIN_TRIM_DURATION_S,
   nudgeEnd,
   nudgeStart,
   trimError,
@@ -329,8 +330,8 @@ export function ClipEditor() {
   }
 
   const isModified =
-    Math.abs(trim.startS - candidate.start_s) > 0.05 ||
-    Math.abs(trim.endS - candidate.end_s) > 0.05;
+    Math.abs(trim.startS - candidate.start_s) > 1e-6 ||
+    Math.abs(trim.endS - candidate.end_s) > 1e-6;
 
   function seekToVodTime(vodTimeS: number) {
     const element = videoRef.current;
@@ -757,7 +758,7 @@ export function ClipEditor() {
                 <input
                   id="trim-start"
                   type="number"
-                  step="0.5"
+                  step="any"
                   min={bounds.minStartS}
                   max={bounds.maxEndS}
                   value={startInput}
@@ -819,7 +820,7 @@ export function ClipEditor() {
                 <input
                   id="trim-end"
                   type="number"
-                  step="0.5"
+                  step="any"
                   min={bounds.minStartS}
                   max={bounds.maxEndS}
                   value={endInput}
@@ -854,7 +855,7 @@ export function ClipEditor() {
 
             <p className="text-xs text-zinc-500 tabular-nums dark:text-zinc-400">
               Allowed range: {formatTime(bounds.minStartS)}–
-              {formatTime(bounds.maxEndS)}
+              {formatTime(bounds.maxEndS)} · min {MIN_TRIM_DURATION_S}s
               {bounds.maxDurationS !== null
                 ? ` · max ${bounds.maxDurationS}s`
                 : ""}

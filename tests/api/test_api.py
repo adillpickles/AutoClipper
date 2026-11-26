@@ -665,8 +665,24 @@ def test_an_integer_bound_is_accepted_and_strict_types_are_enforced(client: Test
 
 @pytest.mark.parametrize(
     ("start_s", "end_s"),
-    [(100.0, 200.0), (-1.0, 30.0), (340.0, 361.0), (50.0, 50.0), (60.0, 40.0)],
-    ids=["over_90_s", "before_start", "past_end", "empty", "reversed"],
+    [
+        (100.0, 200.0),
+        (-1.0, 30.0),
+        (340.0, 361.0),
+        (50.0, 50.0),
+        (60.0, 40.0),
+        (120.0, 120.1),
+        (120.0, 120.49),
+    ],
+    ids=[
+        "over_90_s",
+        "before_start",
+        "past_end",
+        "empty",
+        "reversed",
+        "under_min_0_1_s",
+        "under_min_0_49_s",
+    ],
 )
 def test_out_of_bounds_exports_are_rejected(
     client: TestClient, start_s: float, end_s: float
@@ -684,6 +700,40 @@ def test_out_of_bounds_exports_are_rejected(
         "max_end_s": 360.0,
         "max_duration_s": 90.0,
     }
+
+
+def test_short_export_rejected_before_queueing_while_highlights_keeps_separate_minimum(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    """POST /exports rejects sub-0.5 s clips with 422 before queueing, accepts the 0.5 s
+    boundary (with float epsilon), and POST /highlights keeps its own separate minimum."""
+    clip_renderer = FakeRenderer()
+    highlights_renderer = FakeHighlightsRenderer()
+    client, _ = make_client(render=clip_renderer, highlights_render=highlights_renderer)
+    job = done_job(client)
+
+    too_short = client.post(
+        f"{API}/exports", json=export_body(job["job_id"], start_s=120.0, end_s=120.1)
+    )
+    assert (too_short.status_code, error_code(too_short)) == (422, "invalid_export_bounds")
+    assert "at least 0.5 seconds" in too_short.json()["error"]["message"]
+    assert clip_renderer.specs == []  # never queued
+
+    # 4.1 - 3.6 is 0.49999999999999956 in IEEE-754; epsilon slack accepts it like plan_cut.
+    at_minimum = client.post(
+        f"{API}/exports", json=export_body(job["job_id"], start_s=3.6, end_s=4.1)
+    )
+    assert at_minimum.status_code == 201
+
+    # Highlights keep their separate minimum behavior (`min_duration_s=0.0`).
+    short_highlights = client.post(
+        f"{API}/highlights",
+        json={
+            "job_id": job["job_id"],
+            "segments": [{"candidate_id": "c001", "start_s": 120.0, "end_s": 120.1}],
+        },
+    )
+    assert short_highlights.status_code == 201
 
 
 def test_the_90_second_message_matches_the_contract(client: TestClient) -> None:

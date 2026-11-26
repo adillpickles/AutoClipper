@@ -11,8 +11,11 @@ export interface TrimInterval {
   endS: number;
 }
 
-/** Smallest selection length the nudge controls allow (seconds). */
+/** Smallest selection length a vertical clip export allows (seconds; matches `autoclipper.export.cut.MIN_CLIP_DURATION_S`). */
 export const MIN_TRIM_DURATION_S = 0.5;
+
+/** Float-comparison slack matching `autoclipper.export.cut.DURATION_EPSILON_S` (e.g. `4.1 - 3.6`). */
+const DURATION_EPSILON_S = 1e-6;
 
 function roundTenths(value: number): number {
   return Math.round(value * 10) / 10;
@@ -30,6 +33,32 @@ function clamp(value: number, low: number, high: number): number {
   return Math.min(high, Math.max(low, value));
 }
 
+/**
+ * Round interior values to tenths while preserving exact `[low, high]` limits whenever a value
+ * reaches or exceeds either bound (so e.g. `159.96` never rounds past the bound to `160.0`).
+ */
+function roundWithin(value: number, low: number, high: number): number {
+  if (low >= high) return low;
+  if (value <= low) return low;
+  if (value >= high) return high;
+  return clamp(roundTenths(value), low, high);
+}
+
+/** Remove IEEE-754 subtraction noise (e.g. `159.96 - 0.5`) while staying strictly inside `[low, high]`. */
+function cleanWithin(value: number, low: number, high: number): number {
+  if (low >= high) return low;
+  if (value <= low) return low;
+  if (value >= high) return high;
+  return clamp(Math.round(value * 1e6) / 1e6, low, high);
+}
+
+function formatBoundS(value: number): string {
+  if (Math.abs(value * 10 - Math.round(value * 10)) < DURATION_EPSILON_S) {
+    return value.toFixed(1);
+  }
+  return String(value);
+}
+
 function fitMaxDurationStart(
   startS: number,
   endS: number,
@@ -43,7 +72,7 @@ function fitMaxDurationStart(
   while (endS - next > bounds.maxDurationS && roundTenths(next + 0.1) < endS) {
     next = roundTenths(next + 0.1);
   }
-  return next;
+  return clamp(next, bounds.minStartS, bounds.maxEndS);
 }
 
 function fitMaxDurationEnd(
@@ -65,13 +94,13 @@ function fitMaxDurationEnd(
   ) {
     next = roundTenths(next - 0.1);
   }
-  return next;
+  return clamp(next, bounds.minStartS, bounds.maxEndS);
 }
 
 /**
- * Clamp a trim interval to `[minStartS, maxEndS]` and `maxDurationS` while keeping
- * `startS < endS`. When `anchor` is `"end"`, `endS` is kept fixed and `startS` is pulled
- * forward to satisfy `maxDurationS`; otherwise `endS` is pulled back.
+ * Clamp a trim interval to `[minStartS, maxEndS]`, `MIN_TRIM_DURATION_S`, and `maxDurationS`
+ * while preserving exact media limits. When `anchor` is `"end"`, `endS` is kept fixed and
+ * `startS` is adjusted first; otherwise `endS` is adjusted first.
  */
 export function clampTrim(
   startS: number,
@@ -80,19 +109,48 @@ export function clampTrim(
   anchor: "start" | "end" = "start",
 ): TrimInterval {
   const span = Math.max(0, bounds.maxEndS - bounds.minStartS);
-  const minGap = Math.min(MIN_TRIM_DURATION_S, span / 2);
+  const minGap = Math.min(MIN_TRIM_DURATION_S, span);
   const safeStart = Number.isFinite(startS) ? startS : bounds.minStartS;
   const safeEnd = Number.isFinite(endS) ? endS : bounds.maxEndS;
-  let nextStart = roundTenths(
-    clamp(safeStart, bounds.minStartS, bounds.maxEndS - minGap),
+  const maxStartLimit = cleanWithin(
+    bounds.maxEndS - minGap,
+    bounds.minStartS,
+    bounds.maxEndS,
   );
-  let nextEnd = roundTenths(
-    clamp(safeEnd, bounds.minStartS + minGap, bounds.maxEndS),
+  const minEndLimit = cleanWithin(
+    bounds.minStartS + minGap,
+    bounds.minStartS,
+    bounds.maxEndS,
   );
-  if (nextEnd <= nextStart) {
-    nextEnd = roundTenths(Math.min(bounds.maxEndS, nextStart + minGap));
-    if (nextEnd <= nextStart) {
-      nextStart = roundTenths(Math.max(bounds.minStartS, nextEnd - minGap));
+  let nextStart = roundWithin(safeStart, bounds.minStartS, maxStartLimit);
+  let nextEnd = roundWithin(safeEnd, minEndLimit, bounds.maxEndS);
+  if (nextEnd - nextStart < minGap - DURATION_EPSILON_S) {
+    if (anchor === "end") {
+      nextStart = cleanWithin(
+        nextEnd - minGap,
+        bounds.minStartS,
+        bounds.maxEndS,
+      );
+      if (nextEnd - nextStart < minGap - DURATION_EPSILON_S) {
+        nextEnd = cleanWithin(
+          nextStart + minGap,
+          bounds.minStartS,
+          bounds.maxEndS,
+        );
+      }
+    } else {
+      nextEnd = cleanWithin(
+        nextStart + minGap,
+        bounds.minStartS,
+        bounds.maxEndS,
+      );
+      if (nextEnd - nextStart < minGap - DURATION_EPSILON_S) {
+        nextStart = cleanWithin(
+          nextEnd - minGap,
+          bounds.minStartS,
+          bounds.maxEndS,
+        );
+      }
     }
   }
   if (anchor === "end") {
@@ -110,9 +168,13 @@ export function nudgeStart(
   bounds: TrimBounds,
 ): TrimInterval {
   const minStart = fitMaxDurationStart(bounds.minStartS, current.endS, bounds);
-  const maxStart = Math.max(minStart, current.endS - MIN_TRIM_DURATION_S);
+  const maxStart = cleanWithin(
+    current.endS - MIN_TRIM_DURATION_S,
+    minStart,
+    bounds.maxEndS,
+  );
   const nextStart = fitMaxDurationStart(
-    roundTenths(clamp(current.startS + deltaS, minStart, maxStart)),
+    roundWithin(current.startS + deltaS, minStart, maxStart),
     current.endS,
     bounds,
   );
@@ -126,10 +188,14 @@ export function nudgeEnd(
   bounds: TrimBounds,
 ): TrimInterval {
   const maxEnd = fitMaxDurationEnd(current.startS, bounds.maxEndS, bounds);
-  const minEnd = Math.min(maxEnd, current.startS + MIN_TRIM_DURATION_S);
+  const minEnd = cleanWithin(
+    current.startS + MIN_TRIM_DURATION_S,
+    bounds.minStartS,
+    maxEnd,
+  );
   const nextEnd = fitMaxDurationEnd(
     current.startS,
-    roundTenths(clamp(current.endS + deltaS, minEnd, maxEnd)),
+    roundWithin(current.endS + deltaS, minEnd, maxEnd),
     bounds,
   );
   return { startS: current.startS, endS: nextEnd };
@@ -144,11 +210,14 @@ export function trimError(
     return "Enter valid start and end times.";
   }
   if (interval.startS < bounds.minStartS || interval.endS > bounds.maxEndS) {
-    return `Keep the clip between ${bounds.minStartS.toFixed(1)}s and ${bounds.maxEndS.toFixed(1)}s.`;
+    return `Keep the clip between ${formatBoundS(bounds.minStartS)}s and ${formatBoundS(bounds.maxEndS)}s.`;
   }
   const duration = interval.endS - interval.startS;
   if (duration <= 0) {
     return "End time must be after start time.";
+  }
+  if (duration < MIN_TRIM_DURATION_S - DURATION_EPSILON_S) {
+    return `Clips must be at least ${MIN_TRIM_DURATION_S} seconds long. Widen the selection to export it.`;
   }
   if (bounds.maxDurationS !== null && duration > bounds.maxDurationS) {
     return `Clips can be at most ${bounds.maxDurationS} seconds long. Shorten the selection to export it.`;

@@ -26,6 +26,7 @@ import type {
 } from "@/lib/api/types";
 import { EXPORT_STAGES, HIGHLIGHTS_STAGES, JOB_STAGES } from "@/lib/api/stages";
 import { INVALID_VOD_MESSAGE, looksAbsolute, parseVod } from "@/lib/api/vod";
+import { MIN_TRIM_DURATION_S } from "@/lib/trim";
 
 /** Length of one mock step (queued, then each stage). */
 export const MOCK_STEP_MS = 2000;
@@ -725,16 +726,33 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       const min = media.min_start_s ?? 0;
       const max = media.max_end_s ?? 0;
       const longest = media.max_duration_s ?? 0;
+      const duration = request.end_s - request.start_s;
+      const tooShort =
+        request.start_s < request.end_s &&
+        duration < MIN_TRIM_DURATION_S - 1e-6;
       if (!(
         min <= request.start_s &&
         request.start_s < request.end_s &&
         request.end_s <= max &&
-        request.end_s - request.start_s <= longest
+        duration <= longest &&
+        !tooShort
       )) {
+        let message =
+          "The selection goes past the start or end of the video. Adjust it and try again.";
+        if (request.end_s <= request.start_s) {
+          message =
+            "The end must come after the start. Adjust the selection and try again.";
+        } else if (duration > longest) {
+          message = `Clips can be at most ${longest} seconds long. Shorten the selection and try again.`;
+        } else if (request.start_s < min || request.end_s > max) {
+          message =
+            "The selection goes past the start or end of the video. Adjust it and try again.";
+        } else if (tooShort) {
+          message = `Clips must be at least ${MIN_TRIM_DURATION_S} seconds long. Widen the selection and try again.`;
+        }
         throw new ApiRequestError(422, {
           code: "invalid_export_bounds",
-          message:
-            "Clips can be at most 90 seconds long. Shorten the selection and try again.",
+          message,
           details: {
             min_start_s: min,
             max_end_s: max,

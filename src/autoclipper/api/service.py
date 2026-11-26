@@ -45,7 +45,12 @@ from autoclipper.export.clip import (
     available_layouts,
     render_clip,
 )
-from autoclipper.export.cut import Interval, IntervalTooShortError
+from autoclipper.export.cut import (
+    DURATION_EPSILON_S,
+    MIN_CLIP_DURATION_S,
+    Interval,
+    IntervalTooShortError,
+)
 from autoclipper.export.encode import EncodeSettings, encode_timeout_s
 from autoclipper.export.errors import ExportError
 from autoclipper.export.highlights import (
@@ -780,11 +785,22 @@ class MockService:
                     f"The request is invalid: layout {request.layout} isn't available.",
                     {"fields": ["layout"]},
                 )
-            if not _within(export, request.start_s, request.end_s):
+            if not _within(
+                export,
+                request.start_s,
+                request.end_s,
+                min_duration_s=MIN_CLIP_DURATION_S,
+            ):
                 raise ApiException(
                     422,
                     "invalid_export_bounds",
-                    _bounds_message(export, request.start_s, request.end_s, "Clips"),
+                    _bounds_message(
+                        export,
+                        request.start_s,
+                        request.end_s,
+                        "Clips",
+                        min_duration_s=MIN_CLIP_DURATION_S,
+                    ),
                     {
                         "min_start_s": export.min_start_s,
                         "max_end_s": export.max_end_s,
@@ -2318,14 +2334,22 @@ _OUTSIDE_MEDIA: Final = ApiError(
 )
 
 
-def _within(export: ExportAvailability, start_s: float, end_s: float) -> bool:
+def _within(
+    export: ExportAvailability,
+    start_s: float,
+    end_s: float,
+    *,
+    min_duration_s: float = 0.0,
+) -> bool:
     assert export.min_start_s is not None
     assert export.max_end_s is not None
     assert export.max_duration_s is not None
-    return (
-        export.min_start_s <= start_s < end_s <= export.max_end_s
-        and end_s - start_s <= export.max_duration_s
-    )
+    if not (export.min_start_s <= start_s < end_s <= export.max_end_s):
+        return False
+    duration_s = end_s - start_s
+    if duration_s > export.max_duration_s:
+        return False
+    return not (min_duration_s > 0.0 and duration_s < min_duration_s - DURATION_EPSILON_S)
 
 
 # How long a render waits for a fetch of the same range that is already running (#46):
@@ -2386,8 +2410,17 @@ def _playable_copy(source: Path, target: Path) -> Path:
     return target
 
 
-def _bounds_message(export: ExportAvailability, start_s: float, end_s: float, what: str) -> str:
-    if end_s - start_s > (export.max_duration_s or 0) and start_s < end_s:
+def _bounds_message(
+    export: ExportAvailability,
+    start_s: float,
+    end_s: float,
+    what: str,
+    *,
+    min_duration_s: float = 0.0,
+) -> str:
+    if end_s <= start_s:
+        return "The end must come after the start. Adjust the selection and try again."
+    if end_s - start_s > (export.max_duration_s or 0):
         seconds = f"{export.max_duration_s:g}"
         tail = (
             "Shorten the selection and try again."
@@ -2395,8 +2428,17 @@ def _bounds_message(export: ExportAvailability, start_s: float, end_s: float, wh
             else "Shorten it and try again."
         )
         return f"{what} can be at most {seconds} seconds long. {tail}"
-    if end_s <= start_s:
-        return "The end must come after the start. Adjust the selection and try again."
+    if (
+        export.min_start_s is not None
+        and export.max_end_s is not None
+        and (start_s < export.min_start_s or end_s > export.max_end_s)
+    ):
+        return "The selection goes past the start or end of the video. Adjust it and try again."
+    if min_duration_s > 0.0 and end_s - start_s < min_duration_s - DURATION_EPSILON_S:
+        return (
+            f"{what} must be at least {min_duration_s:g} seconds long. "
+            "Widen the selection and try again."
+        )
     return "The selection goes past the start or end of the video. Adjust it and try again."
 
 

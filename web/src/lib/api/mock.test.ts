@@ -609,4 +609,46 @@ describe("createMockClient highlights", () => {
     expect(error).toBeInstanceOf(ApiRequestError);
     expect((error as ApiRequestError).error.code).toBe("highlights_not_found");
   });
+
+  it("enforces the 0.5 s minimum on vertical clip exports while allowing sub-0.5 s highlights", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const { job } = await client.createJob({ vod: "9000000001" });
+    now += 12 * MOCK_STEP_MS;
+
+    await expect(
+      client.createExport({
+        job_id: job.job_id,
+        candidate_id: "c001",
+        start_s: 120,
+        end_s: 120.1,
+        layout: "center_crop",
+        captions: false,
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      error: {
+        code: "invalid_export_bounds",
+        message: expect.stringContaining("at least 0.5 seconds"),
+      },
+    });
+
+    // Exact 0.5 s boundary (including float subtraction 4.1 - 3.6) succeeds for exports.
+    const atMin = await client.createExport({
+      job_id: job.job_id,
+      candidate_id: "c001",
+      start_s: 3.6,
+      end_s: 4.1,
+      layout: "center_crop",
+      captions: false,
+    });
+    expect(atMin.created).toBe(true);
+
+    // Highlights keep their separate minimum behavior and still accept a 0.1 s segment.
+    const shortHl = await client.createHighlights({
+      job_id: job.job_id,
+      segments: [{ candidate_id: "c001", start_s: 120, end_s: 120.1 }],
+    });
+    expect(shortHl.created).toBe(true);
+  });
 });
