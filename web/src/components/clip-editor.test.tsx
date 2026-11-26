@@ -711,4 +711,60 @@ describe("ClipEditor", () => {
     expect(reopenedStart.value).toBe("118");
     expect(rememberedTrim("job_1", "c001")).toBeNull();
   });
+
+  it("renders the candidate title, reason, and expandable Why signals in the header", async () => {
+    const richResult: AnalysisResult = {
+      ...RESULT,
+      schema_version: "1.1",
+      candidates: [
+        {
+          ...RESULT.candidates[0],
+          title: "Loud audio & laughing chat",
+          reason:
+            "Chat jumped to 6× its usual rate with lots of laugh reactions; loudest moment of the stream; 3 viewer clips",
+          signal_details: [
+            {
+              kind: "chat_rate",
+              label: "Chat rate",
+              detail: "6× usual stream rate (z=3.4)",
+            },
+            {
+              kind: "pause_snap",
+              label: "Speech boundaries",
+              detail: "Start and end aligned to speech pauses",
+            },
+          ],
+        },
+      ],
+    };
+    api.getResult.mockResolvedValue(richResult);
+    api.getCandidateMedia.mockResolvedValue(AVAILABLE_MEDIA);
+
+    render(<ClipEditor />);
+
+    expect(
+      await screen.findByRole("heading", {
+        level: 1,
+        name: "Loud audio & laughing chat",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Chat jumped to 6× its usual rate with lots of laugh reactions; loudest moment of the stream; 3 viewer clips",
+      ),
+    ).toBeTruthy();
+
+    const whyButton = screen.getByRole("button", { name: /Why this moment/i });
+    expect(whyButton.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("6× usual stream rate (z=3.4)")).toBeNull();
+
+    fireEvent.click(whyButton);
+    expect(whyButton.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Chat rate")).toBeTruthy();
+    expect(screen.getByText("6× usual stream rate (z=3.4)")).toBeTruthy();
+    expect(screen.getByText("Speech boundaries")).toBeTruthy();
+    expect(
+      screen.getByText("Start and end aligned to speech pauses"),
+    ).toBeTruthy();
+  });
 });

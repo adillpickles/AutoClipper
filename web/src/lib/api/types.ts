@@ -63,6 +63,12 @@ export interface ScorerInfo {
 
 export type CandidateSource = "viewer_clips" | "discovered" | "both";
 
+export interface SignalDetail {
+  kind: string; // open enum
+  label: string;
+  detail: string;
+}
+
 export interface Candidate {
   candidate_id: string;
   rank: number;
@@ -72,6 +78,9 @@ export interface Candidate {
   source: CandidateSource;
   n_viewer_clips: number;
   top_signals: string[];
+  title?: string | null;
+  reason?: string | null;
+  signal_details?: SignalDetail[];
 }
 
 export interface AnalysisResult {

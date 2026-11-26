@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Button, buttonClasses, ButtonLink } from "@/components/ui/button";
 import type { Candidate, Export } from "@/lib/api/types";
 import { formatTime } from "@/lib/format";
-import { reasonFor } from "@/lib/reason";
+import { reasonFor, signalDetailsFor, titleFor } from "@/lib/reason";
 
 export type ClipExport =
   | { kind: "pending" }
@@ -43,7 +43,12 @@ export function ClipCard({
   onRetry: () => void;
 }) {
   const [videoFailed, setVideoFailed] = useState(false);
+  const [whyOpen, setWhyOpen] = useState(false);
   const span = `${formatTime(candidate.start_s)}–${formatTime(candidate.end_s)}`;
+  const title = titleFor(candidate);
+  const reason = reasonFor(candidate);
+  const details = signalDetailsFor(candidate);
+  const whyPanelId = `why-signals-${candidate.candidate_id}`;
   const ready =
     clip.kind === "export" && clip.export.state === "done" && clip.url !== null;
   const filename = `autoclipper_${videoId}_${candidate.start_s}-${candidate.end_s}.mp4`;
@@ -88,9 +93,51 @@ export function ClipCard({
             {span}
           </span>
         </div>
-        <p className="text-sm leading-snug font-medium text-pretty break-words text-ink-primary">
-          {reasonFor(candidate)}
-        </p>
+        <div className="flex flex-col gap-1">
+          <h3 className="text-base leading-snug font-semibold text-pretty break-words text-ink-primary">
+            {title}
+          </h3>
+          <p className="text-xs leading-relaxed text-pretty break-words text-ink-secondary">
+            {reason}
+          </p>
+        </div>
+        {details.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => setWhyOpen((open) => !open)}
+              aria-expanded={whyOpen}
+              aria-controls={whyPanelId}
+              className="inline-flex min-h-8 items-center gap-1.5 self-start rounded-pill border border-border-subtle bg-surface-subtle/70 px-2.5 py-1 text-xs font-medium text-ink-secondary transition-colors hover:border-border-strong hover:text-ink-primary focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+            >
+              <span>Why</span>
+              <span aria-hidden="true" className="text-[10px] leading-none">
+                {whyOpen ? "▴" : "▾"}
+              </span>
+            </button>
+            {whyOpen && (
+              <dl
+                id={whyPanelId}
+                aria-label={`Contributing signals for clip ${candidate.rank}`}
+                className="flex flex-col gap-1.5 rounded-control border border-border-subtle bg-surface-subtle/50 p-2.5 text-xs"
+              >
+                {details.map((item, idx) => (
+                  <div
+                    key={`${item.kind}-${idx}`}
+                    className="flex flex-col gap-0.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-2"
+                  >
+                    <dt className="shrink-0 font-medium text-ink-primary">
+                      {item.label}
+                    </dt>
+                    <dd className="text-pretty break-words text-ink-secondary sm:text-right">
+                      {item.detail}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </div>
+        )}
         <div className="flex items-center gap-2.5">
           <span className="text-xs font-medium text-ink-tertiary">Score</span>
           <div
