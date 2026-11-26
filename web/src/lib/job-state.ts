@@ -6,6 +6,12 @@ export interface SavedTrim {
   end_s: number;
 }
 
+interface ResetMarker {
+  reset: true;
+}
+
+type StoredTrimEntry = SavedTrim | ResetMarker;
+
 const exportsKey = (jobId: string) => `autoclipper.exports.${jobId}`;
 const trimsKey = (jobId: string) => `autoclipper.trims.${jobId}`;
 
@@ -20,6 +26,34 @@ function isValidTrim(value: unknown): value is SavedTrim {
     candidate.start_s >= 0 &&
     candidate.start_s < candidate.end_s
   );
+}
+
+function isResetMarker(value: unknown): value is ResetMarker {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>).reset === true
+  );
+}
+
+function readRawTrimEntries(jobId: string): Record<string, StoredTrimEntry> {
+  try {
+    const raw = JSON.parse(
+      window.localStorage.getItem(trimsKey(jobId)) ?? "{}",
+    ) as Record<string, unknown>;
+    if (typeof raw !== "object" || raw === null) return {};
+    const valid: Record<string, StoredTrimEntry> = {};
+    for (const [candidateId, value] of Object.entries(raw)) {
+      if (isValidTrim(value)) {
+        valid[candidateId] = { start_s: value.start_s, end_s: value.end_s };
+      } else if (isResetMarker(value)) {
+        valid[candidateId] = { reset: true };
+      }
+    }
+    return valid;
+  } catch {
+    return {};
+  }
 }
 
 export function rememberedExport(
@@ -56,21 +90,14 @@ export function rememberExport(
 }
 
 export function rememberedTrims(jobId: string): Record<string, SavedTrim> {
-  try {
-    const raw = JSON.parse(
-      window.localStorage.getItem(trimsKey(jobId)) ?? "{}",
-    ) as Record<string, unknown>;
-    if (typeof raw !== "object" || raw === null) return {};
-    const valid: Record<string, SavedTrim> = {};
-    for (const [candidateId, value] of Object.entries(raw)) {
-      if (isValidTrim(value)) {
-        valid[candidateId] = { start_s: value.start_s, end_s: value.end_s };
-      }
+  const entries = readRawTrimEntries(jobId);
+  const trims: Record<string, SavedTrim> = {};
+  for (const [candidateId, entry] of Object.entries(entries)) {
+    if (isValidTrim(entry)) {
+      trims[candidateId] = entry;
     }
-    return valid;
-  } catch {
-    return {};
   }
+  return trims;
 }
 
 export function rememberedTrim(
@@ -80,6 +107,12 @@ export function rememberedTrim(
   return rememberedTrims(jobId)[candidateId] ?? null;
 }
 
+/** Whether the user explicitly reset this candidate's trim back to its original bounds. */
+export function isTrimReset(jobId: string, candidateId: string): boolean {
+  const entry = readRawTrimEntries(jobId)[candidateId];
+  return entry !== undefined && isResetMarker(entry);
+}
+
 export function rememberTrim(
   jobId: string,
   candidateId: string,
@@ -87,7 +120,7 @@ export function rememberTrim(
 ): void {
   if (!isValidTrim(trim)) return;
   try {
-    const saved = rememberedTrims(jobId);
+    const saved = readRawTrimEntries(jobId);
     window.localStorage.setItem(
       trimsKey(jobId),
       JSON.stringify({
@@ -100,9 +133,24 @@ export function rememberTrim(
   }
 }
 
-export function clearRememberedTrim(jobId: string, candidateId: string): void {
+/**
+ * Clear a saved trim. Pass `recordReset: true` when the user explicitly clicked Reset so
+ * callers (like the highlights dialog) do not fall back to an earlier remembered export's trim.
+ */
+export function clearRememberedTrim(
+  jobId: string,
+  candidateId: string,
+  options?: { recordReset?: boolean },
+): void {
   try {
-    const saved = rememberedTrims(jobId);
+    const saved = readRawTrimEntries(jobId);
+    if (options?.recordReset) {
+      window.localStorage.setItem(
+        trimsKey(jobId),
+        JSON.stringify({ ...saved, [candidateId]: { reset: true } }),
+      );
+      return;
+    }
     if (!(candidateId in saved)) return;
     delete saved[candidateId];
     if (Object.keys(saved).length === 0) {

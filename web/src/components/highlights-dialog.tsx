@@ -12,12 +12,18 @@ import {
   POLL_INTERVAL_MS,
 } from "@/lib/api/client";
 import { HIGHLIGHTS_STAGES } from "@/lib/api/stages";
-import type { Candidate, HighlightsVideo } from "@/lib/api/types";
+import type {
+  Candidate,
+  ExportAvailability,
+  HighlightsVideo,
+} from "@/lib/api/types";
 import { formatTime } from "@/lib/format";
 import { rememberedTrims, type SavedTrim } from "@/lib/job-state";
 
 /** The whole video's bound (§ 7.1). */
 const MAX_TOTAL_S = 900;
+/** Default per-segment maximum when export bounds haven't loaded yet (§ 5, § 7.1). */
+const DEFAULT_MAX_SEGMENT_S = 90;
 
 interface Trim {
   checked: boolean;
@@ -31,19 +37,38 @@ type Stage =
   | { kind: "done"; download: string; duration_s: number }
   | { kind: "failed"; message: string };
 
+function segmentBoundsFor(
+  availability: ExportAvailability | undefined,
+  vodDurationS: number,
+): { minStartS: number; maxEndS: number; maxDurationS: number } {
+  return {
+    minStartS: availability?.min_start_s ?? 0,
+    maxEndS: availability?.max_end_s ?? vodDurationS,
+    maxDurationS: availability?.max_duration_s ?? DEFAULT_MAX_SEGMENT_S,
+  };
+}
+
+function isWithinSegmentBounds(
+  startS: number,
+  endS: number,
+  bounds: { minStartS: number; maxEndS: number; maxDurationS: number },
+): boolean {
+  return (
+    Number.isFinite(startS) &&
+    Number.isFinite(endS) &&
+    startS >= bounds.minStartS &&
+    endS <= bounds.maxEndS &&
+    startS < endS &&
+    endS - startS <= bounds.maxDurationS
+  );
+}
+
 function initialTrimFor(
   candidate: Candidate,
   saved: SavedTrim | undefined,
-  vodDurationS: number,
+  bounds: { minStartS: number; maxEndS: number; maxDurationS: number },
 ): Trim {
-  if (
-    saved &&
-    Number.isFinite(saved.start_s) &&
-    Number.isFinite(saved.end_s) &&
-    saved.start_s >= 0 &&
-    saved.start_s < saved.end_s &&
-    saved.end_s <= vodDurationS
-  ) {
+  if (saved && isWithinSegmentBounds(saved.start_s, saved.end_s, bounds)) {
     return { checked: true, start_s: saved.start_s, end_s: saved.end_s };
   }
   return { checked: true, start_s: candidate.start_s, end_s: candidate.end_s };
@@ -55,6 +80,7 @@ export function HighlightsDialog({
   vodDurationS,
   candidates,
   initialTrims,
+  exportBounds,
   captionsStatus = "available",
   onClose,
 }: {
@@ -63,20 +89,31 @@ export function HighlightsDialog({
   vodDurationS: number;
   candidates: Candidate[];
   initialTrims?: Record<string, SavedTrim>;
+  exportBounds?: Record<string, ExportAvailability>;
   captionsStatus?: "checking" | "available" | "unavailable" | "unknown";
   onClose: () => void;
 }) {
   const captionsAllowed =
     captionsStatus === "available" || captionsStatus === "unknown";
-  const [trims, setTrims] = useState<Record<string, Trim>>(() => {
-    const saved = initialTrims ?? rememberedTrims(jobId);
-    return Object.fromEntries(
-      candidates.map((candidate) => [
-        candidate.candidate_id,
-        initialTrimFor(candidate, saved[candidate.candidate_id], vodDurationS),
-      ]),
-    );
-  });
+  // Store only in-dialog edits so trims arriving asynchronously from remembered exports
+  // apply automatically until the user edits that row in the picker.
+  const [overrides, setOverrides] = useState<Record<string, Partial<Trim>>>({});
+  const effectiveInitialTrims = initialTrims ?? rememberedTrims(jobId);
+  const trims: Record<string, Trim> = Object.fromEntries(
+    candidates.map((candidate) => {
+      const bounds = segmentBoundsFor(
+        exportBounds?.[candidate.candidate_id],
+        vodDurationS,
+      );
+      const base = initialTrimFor(
+        candidate,
+        effectiveInitialTrims[candidate.candidate_id],
+        bounds,
+      );
+      const override = overrides[candidate.candidate_id];
+      return [candidate.candidate_id, { ...base, ...override }];
+    }),
+  );
   const [order, setOrder] = useState<"chronological" | "rank">("chronological");
   const [captions, setCaptions] = useState(false);
   const [stage, setStage] = useState<Stage>({ kind: "picking" });
@@ -109,6 +146,13 @@ export function HighlightsDialog({
       start_s: trims[candidate.candidate_id].start_s,
       end_s: trims[candidate.candidate_id].end_s,
     }));
+  const invalidSegment = segments.find((segment) => {
+    const bounds = segmentBoundsFor(
+      exportBounds?.[segment.candidate_id],
+      vodDurationS,
+    );
+    return !isWithinSegmentBounds(segment.start_s, segment.end_s, bounds);
+  });
   const totalS = segments.reduce(
     (sum, segment) => sum + (segment.end_s - segment.start_s),
     0,
@@ -185,7 +229,7 @@ export function HighlightsDialog({
                 ? `Done. ${formatTime(stage.duration_s)} of highlights.`
                 : stage.kind === "making" &&
                     stage.highlights?.state === "queued"
-                  ? "Queued behind active renders. It will start automatically."
+                  ? "Queued to render. It will start automatically."
                   : stage.kind === "making" &&
                       stage.highlights?.state === "running"
                     ? (stage.highlights.progress?.message ??
@@ -212,6 +256,10 @@ export function HighlightsDialog({
               <ul role="list" className="flex flex-col gap-2">
                 {candidates.map((candidate) => {
                   const trim = trims[candidate.candidate_id];
+                  const segBounds = segmentBoundsFor(
+                    exportBounds?.[candidate.candidate_id],
+                    vodDurationS,
+                  );
                   const isTrimmed =
                     Math.abs(trim.start_s - candidate.start_s) > 1e-6 ||
                     Math.abs(trim.end_s - candidate.end_s) > 1e-6;
@@ -224,10 +272,10 @@ export function HighlightsDialog({
                         type="checkbox"
                         checked={trim.checked}
                         onChange={(event) =>
-                          setTrims((current) => ({
+                          setOverrides((current) => ({
                             ...current,
                             [candidate.candidate_id]: {
-                              ...trim,
+                              ...current[candidate.candidate_id],
                               checked: event.target.checked,
                             },
                           }))
@@ -247,15 +295,15 @@ export function HighlightsDialog({
                         id={`start-${candidate.candidate_id}`}
                         type="number"
                         step="any"
-                        min={0}
-                        max={vodDurationS}
+                        min={segBounds.minStartS}
+                        max={segBounds.maxEndS}
                         value={trim.start_s}
                         disabled={!trim.checked}
                         onChange={(event) =>
-                          setTrims((current) => ({
+                          setOverrides((current) => ({
                             ...current,
                             [candidate.candidate_id]: {
-                              ...trim,
+                              ...current[candidate.candidate_id],
                               start_s: Number(event.target.value),
                             },
                           }))
@@ -275,15 +323,15 @@ export function HighlightsDialog({
                         id={`end-${candidate.candidate_id}`}
                         type="number"
                         step="any"
-                        min={0}
-                        max={vodDurationS}
+                        min={segBounds.minStartS}
+                        max={segBounds.maxEndS}
                         value={trim.end_s}
                         disabled={!trim.checked}
                         onChange={(event) =>
-                          setTrims((current) => ({
+                          setOverrides((current) => ({
                             ...current,
                             [candidate.candidate_id]: {
-                              ...trim,
+                              ...current[candidate.candidate_id],
                               end_s: Number(event.target.value),
                             },
                           }))
@@ -356,15 +404,23 @@ export function HighlightsDialog({
               >
                 {segments.length === 0
                   ? "Tick at least one moment."
-                  : `${segments.length} ${
-                      segments.length === 1 ? "moment" : "moments"
-                    } · ${formatTime(totalS)} together`}
-                {totalS > MAX_TOTAL_S && " · over 15 minutes, untick some"}
+                  : invalidSegment
+                    ? "Check that each ticked moment stays within its allowed range and max length."
+                    : `${segments.length} ${
+                        segments.length === 1 ? "moment" : "moments"
+                      } · ${formatTime(totalS)} together`}
+                {!invalidSegment &&
+                  totalS > MAX_TOTAL_S &&
+                  " · over 15 minutes, untick some"}
               </p>
               <button
                 type="button"
                 onClick={make}
-                disabled={segments.length === 0 || totalS > MAX_TOTAL_S}
+                disabled={
+                  segments.length === 0 ||
+                  totalS > MAX_TOTAL_S ||
+                  invalidSegment !== undefined
+                }
                 className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
               >
                 Make highlights video
@@ -490,8 +546,8 @@ function HighlightsProgressPanel({
             </p>
           </div>
           {isQueued && (
-            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-              Another clip or highlights render is ahead in the queue.
+            <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+              Waiting for the render worker to start this job.
             </p>
           )}
         </div>
@@ -525,12 +581,12 @@ function HighlightsProgressPanel({
               key={stage.stage}
               className={
                 skipped
-                  ? "text-zinc-400 line-through dark:text-zinc-600"
+                  ? "text-zinc-600 dark:text-zinc-400"
                   : done
                     ? "text-emerald-700 dark:text-emerald-300"
                     : active
                       ? "font-semibold text-zinc-900 dark:text-zinc-100"
-                      : "text-zinc-500 dark:text-zinc-400"
+                      : "text-zinc-600 dark:text-zinc-400"
               }
             >
               {skipped ? "–" : done ? "✓" : active ? "•" : "○"} {stage.message}

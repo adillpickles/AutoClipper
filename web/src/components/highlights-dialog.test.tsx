@@ -242,4 +242,56 @@ describe("HighlightsDialog", () => {
     const bar = screen.getByRole("progressbar");
     expect(bar.getAttribute("aria-valuenow")).toBe("65");
   });
+
+  it("ignores saved trims outside current export bounds and picks up late-arriving initialTrims", () => {
+    const { rerender } = render(
+      <HighlightsDialog
+        jobId="job_1"
+        videoId="9000000001"
+        vodDurationS={360}
+        candidates={candidates}
+        initialTrims={{ c001: { start_s: 50, end_s: 148 } }}
+        exportBounds={{
+          c001: {
+            status: "available",
+            reason: null,
+            message: null,
+            min_start_s: 88,
+            max_end_s: 178,
+            max_duration_s: 90,
+            layouts: ["center_crop"],
+          },
+        }}
+        onClose={() => undefined}
+      />,
+    );
+
+    // Out-of-bounds saved trim (start 50 < min_start_s 88) falls back to candidate bounds (118..148).
+    const start1 = document.getElementById("start-c001") as HTMLInputElement;
+    expect(start1.value).toBe("118");
+
+    // When a remembered export trim arrives after the dialog opened, untouched rows update.
+    rerender(
+      <HighlightsDialog
+        jobId="job_1"
+        videoId="9000000001"
+        vodDurationS={360}
+        candidates={candidates}
+        initialTrims={{ c001: { start_s: 112, end_s: 148 } }}
+        exportBounds={{
+          c001: {
+            status: "available",
+            reason: null,
+            message: null,
+            min_start_s: 88,
+            max_end_s: 178,
+            max_duration_s: 90,
+            layouts: ["center_crop"],
+          },
+        }}
+        onClose={() => undefined}
+      />,
+    );
+    expect(start1.value).toBe("112");
+  });
 });

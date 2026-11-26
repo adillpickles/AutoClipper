@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   clearRememberedTrim,
+  isTrimReset,
   rememberExport,
   rememberTrim,
   rememberedExport,
@@ -75,5 +76,22 @@ describe("shared job state helpers", () => {
 
     window.localStorage.setItem("autoclipper.trims.job_1", "{not-json");
     expect(rememberedTrims("job_1")).toEqual({});
+  });
+
+  it("records explicit reset markers without exposing them as saved trims", () => {
+    rememberTrim("job_1", "c001", { start_s: 113, end_s: 148 });
+    expect(isTrimReset("job_1", "c001")).toBe(false);
+
+    clearRememberedTrim("job_1", "c001", { recordReset: true });
+    expect(rememberedTrim("job_1", "c001")).toBeNull();
+    expect(isTrimReset("job_1", "c001")).toBe(true);
+
+    // Re-trimming clears the reset marker.
+    rememberTrim("job_1", "c001", { start_s: 115, end_s: 148 });
+    expect(isTrimReset("job_1", "c001")).toBe(false);
+    expect(rememberedTrim("job_1", "c001")).toEqual({
+      start_s: 115,
+      end_s: 148,
+    });
   });
 });

@@ -10,7 +10,7 @@ import type {
   CreateExportRequest,
   Export,
 } from "@/lib/api/types";
-import { rememberTrim } from "@/lib/job-state";
+import { clearRememberedTrim, rememberTrim } from "@/lib/job-state";
 
 const params = vi.hoisted(() => ({ jobId: "job_1" }));
 
@@ -349,5 +349,45 @@ describe("ResultsScreen captions capability and fallback", () => {
         segments: [{ candidate_id: "c001", start_s: 113, end_s: 148 }],
       }),
     );
+  });
+
+  it("does not revive an earlier remembered export trim in highlights after the user resets in the editor", async () => {
+    window.localStorage.setItem(
+      "autoclipper.exports.job_1",
+      JSON.stringify({ c001: "exp_old_trim" }),
+    );
+    clearRememberedTrim("job_1", "c001", { recordReset: true });
+    api.getHealth.mockResolvedValue({
+      status: "ok",
+      schema_version: "1.1",
+      job_runner: "pipeline",
+      captions_available: true,
+    });
+    api.getResult.mockResolvedValue(RESULT);
+    api.getExport.mockResolvedValue(
+      makeExport(
+        {
+          job_id: "job_1",
+          candidate_id: "c001",
+          start_s: 110,
+          end_s: 148,
+          layout: "center_crop",
+          captions: true,
+        },
+        { export_id: "exp_old_trim" },
+      ),
+    );
+
+    render(<ResultsScreen />);
+
+    expect(await screen.findByText(/1 of 1 clips ready/)).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Make highlights video" }),
+    );
+    const startInput = document.getElementById(
+      "start-c001",
+    ) as HTMLInputElement;
+    // Must stay at the original candidate start (118), not revive the old export's 110.
+    expect(startInput.value).toBe("118");
   });
 });

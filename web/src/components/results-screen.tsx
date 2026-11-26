@@ -16,10 +16,12 @@ import type {
   AnalysisResult,
   Candidate,
   Export,
+  ExportAvailability,
   Layout,
 } from "@/lib/api/types";
 import { formatTime } from "@/lib/format";
 import {
+  isTrimReset,
   rememberExport,
   rememberedExport,
   rememberedTrim,
@@ -57,6 +59,9 @@ export function ResultsScreen() {
   const { jobId } = useParams<{ jobId: string }>();
   const [view, setView] = useState<View>({ kind: "loading" });
   const [clips, setClips] = useState<Record<string, ClipExport>>({});
+  const [exportBoundsByCandidate, setExportBoundsByCandidate] = useState<
+    Record<string, ExportAvailability>
+  >({});
   const [viewMode, setViewMode] = useState<"cards" | "timeline">("cards");
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(
     null,
@@ -206,6 +211,10 @@ export function ResultsScreen() {
       );
       if (cancelled) return null;
       const availability = media.export;
+      setExportBoundsByCandidate((current) => ({
+        ...current,
+        [candidate.candidate_id]: availability,
+      }));
       if (availability.status !== "available") {
         set(candidate.candidate_id, {
           kind: "unavailable",
@@ -607,6 +616,9 @@ export function ResultsScreen() {
                 merged[candidate.candidate_id] = saved;
                 continue;
               }
+              if (isTrimReset(jobId, candidate.candidate_id)) {
+                continue;
+              }
               const clip = clips[candidate.candidate_id];
               if (clip?.kind === "export") {
                 merged[candidate.candidate_id] = {
@@ -617,6 +629,7 @@ export function ResultsScreen() {
             }
             return merged;
           })()}
+          exportBounds={exportBoundsByCandidate}
           captionsStatus={captionsStatus}
           onClose={() => setHighlightsOpen(false)}
         />

@@ -368,7 +368,7 @@ export function ClipEditor() {
       Math.abs(next.startS - candidate.start_s) <= 1e-6 &&
       Math.abs(next.endS - candidate.end_s) <= 1e-6
     ) {
-      clearRememberedTrim(jobId, candidate.candidate_id);
+      clearRememberedTrim(jobId, candidate.candidate_id, { recordReset: true });
     } else {
       rememberTrim(jobId, candidate.candidate_id, {
         start_s: next.startS,
