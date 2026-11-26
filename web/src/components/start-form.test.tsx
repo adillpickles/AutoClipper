@@ -55,7 +55,18 @@ describe("StartForm", () => {
     );
 
     expect(screen.getByRole("alert").textContent).toMatch(/channel page/);
+    expect(
+      screen
+        .getByRole("link", { name: /Open somechannel in Channels/ })
+        .getAttribute("href"),
+    ).toBe("/channels?channel=somechannel");
     expect(state.createJob).not.toHaveBeenCalled();
+  });
+
+  it("links to the channel browser from the form header", () => {
+    render(<StartForm />);
+    const link = screen.getByRole("link", { name: /Browse a channel's VODs/ });
+    expect(link.getAttribute("href")).toBe("/channels");
   });
 
   it("rejects a relative file path and accepts an absolute example", () => {

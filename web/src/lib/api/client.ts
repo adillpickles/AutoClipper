@@ -8,6 +8,7 @@ import { createMockClient } from "@/lib/api/mock";
 import type {
   AnalysisResult,
   CandidateMedia,
+  ChannelVodsResponse,
   CreateExportRequest,
   CreateHighlightsRequest,
   CreateJobRequest,
@@ -31,6 +32,8 @@ export interface ApiClient {
   startToolSetup(
     request?: ToolSetupRequest,
   ): Promise<{ setup: ToolSetupStatus; started: boolean }>;
+  /** `GET /channels/vods`: resolve a channel URL or login and list recent archive VODs (§ 9.7). */
+  getChannelVods(channel: string, limit?: number): Promise<ChannelVodsResponse>;
   /** `POST /jobs`: `created` is false when a queued or running job for the same input came back. */
   createJob(request: CreateJobRequest): Promise<{ job: Job; created: boolean }>;
   /** `GET /jobs/{job_id}`. */

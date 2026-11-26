@@ -652,3 +652,68 @@ describe("createMockClient highlights", () => {
     expect(shortHl.created).toBe(true);
   });
 });
+
+describe("createMockClient channels", () => {
+  beforeEach(() => resetMockStore());
+
+  it("lists channel VODs, tracks finished session jobs, and slices to limit", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+
+    const initial = await client.getChannelVods("https://twitch.tv/User_001");
+    expect(initial.channel.login).toBe("user_001");
+    expect(initial.channel.display_name).toBe("User_001");
+    expect(initial.truncated).toBe(false);
+    expect(initial.vods).toHaveLength(5);
+
+    const byId = new Map(initial.vods.map((v) => [v.video_id, v]));
+    expect(byId.get("9000000001")?.analyzed).toBe(false);
+    expect(byId.get("9000000002")?.analyzed).toBe(true);
+
+    const { job } = await client.createJob({ vod: "9000000001" });
+    now += 12 * MOCK_STEP_MS;
+    const after = await client.getChannelVods("user_001");
+    const updated = after.vods.find((v) => v.video_id === "9000000001");
+    expect(updated?.analyzed).toBe(true);
+    expect(updated?.last_job_id).toBe(job.job_id);
+
+    const limited = await client.getChannelVods("user_001", 2);
+    expect(limited.vods).toHaveLength(2);
+    expect(limited.truncated).toBe(true);
+  });
+
+  it("serves empty, unknown, missing-credentials, error and invalid channel scenarios", async () => {
+    const client = createMockClient(() => T0);
+
+    const empty = await client.getChannelVods("empty_channel");
+    expect(empty.vods).toEqual([]);
+    expect(empty.truncated).toBe(false);
+
+    await expect(
+      client.getChannelVods("unknown_channel"),
+    ).rejects.toMatchObject({
+      status: 404,
+      error: { code: "channel_not_found" },
+    });
+    await expect(client.getChannelVods("no_credentials")).rejects.toMatchObject(
+      {
+        status: 503,
+        error: { code: "twitch_credentials_missing" },
+      },
+    );
+    await expect(client.getChannelVods("twitch_error")).rejects.toMatchObject({
+      status: 502,
+      error: { code: "upstream_unavailable" },
+    });
+    await expect(
+      client.getChannelVods("https://www.twitch.tv/videos/9000000001"),
+    ).rejects.toMatchObject({
+      status: 422,
+      error: { code: "invalid_channel" },
+    });
+    await expect(client.getChannelVods("user_001", 0)).rejects.toMatchObject({
+      status: 422,
+      error: { code: "invalid_request" },
+    });
+  });
+});

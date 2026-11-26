@@ -7,7 +7,12 @@ import { SiteHeader } from "@/components/site-header";
 
 const state = vi.hoisted(() => ({
   mockMode: true,
+  pathname: "/",
   getHealth: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => state.pathname,
 }));
 
 vi.mock("@/lib/api/client", () => ({
@@ -18,6 +23,7 @@ vi.mock("@/lib/api/client", () => ({
 describe("SiteHeader", () => {
   afterEach(() => {
     cleanup();
+    state.pathname = "/";
     vi.clearAllMocks();
   });
 
@@ -55,5 +61,15 @@ describe("SiteHeader", () => {
     await vi.waitFor(() => expect(state.getHealth).toHaveBeenCalledTimes(1));
 
     expect(screen.queryByText("Mock data")).toBeNull();
+  });
+
+  it("links to Single VOD and Channels and marks the active route", () => {
+    state.pathname = "/channels";
+    render(<SiteHeader />);
+
+    const channelLinks = screen.getAllByRole("link", { name: "Channels" });
+    expect(channelLinks.length).toBeGreaterThan(0);
+    expect(channelLinks[0].getAttribute("href")).toBe("/channels");
+    expect(channelLinks[0].getAttribute("aria-current")).toBe("page");
   });
 });

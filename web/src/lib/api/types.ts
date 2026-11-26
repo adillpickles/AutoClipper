@@ -224,3 +224,28 @@ export interface ToolSetupStatus {
   updated_at: string;
   finished_at: string | null;
 }
+
+export interface ChannelInfo {
+  broadcaster_id: string;
+  login: string;
+  display_name: string;
+  profile_image_url: string | null;
+}
+
+export interface ChannelVod {
+  video_id: string;
+  title: string;
+  created_at: string;
+  duration_s: number;
+  thumbnail_url: string | null;
+  url: string;
+  view_count: number;
+  analyzed: boolean;
+  last_job_id: string | null;
+}
+
+export interface ChannelVodsResponse {
+  channel: ChannelInfo;
+  vods: ChannelVod[];
+  truncated: boolean;
+}
