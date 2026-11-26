@@ -75,6 +75,77 @@ describe("trim helpers", () => {
     expect(trimError(nudgedStart, wide)).toBeNull();
   });
 
+  it("preserves exact fractional media limits instead of rounding past them", () => {
+    const probed = { minStartS: 10.04, maxEndS: 159.96, maxDurationS: 90 };
+
+    // Nudging end to a probed limit of 159.96 must keep 159.96 (never round to 160.0).
+    const nudgedEnd = nudgeEnd({ startS: 120, endS: 158 }, 5, probed);
+    expect(nudgedEnd).toEqual({ startS: 120, endS: 159.96 });
+    expect(trimError(nudgedEnd, probed)).toBeNull();
+
+    // Nudging start to a fractional minStartS of 10.04 must keep 10.04 (never round to 10.0).
+    const nudgedStart = nudgeStart({ startS: 12, endS: 40 }, -5, probed);
+    expect(nudgedStart).toEqual({ startS: 10.04, endS: 40 });
+    expect(trimError(nudgedStart, probed)).toBeNull();
+
+    // Clamping values past or near fractional media limits keeps exact limits valid.
+    expect(clampTrim(120, 170, probed, "start")).toEqual({
+      startS: 120,
+      endS: 159.96,
+    });
+    expect(clampTrim(120, 159.95, probed, "start")).toEqual({
+      startS: 120,
+      endS: 159.96,
+    });
+    expect(clampTrim(5, 40, probed, "end")).toEqual({
+      startS: 10.04,
+      endS: 40,
+    });
+    expect(clampTrim(159.8, 159.96, probed, "end")).toEqual({
+      startS: 159.46,
+      endS: 159.96,
+    });
+    expect(
+      trimError(clampTrim(159.8, 159.96, probed, "end"), probed),
+    ).toBeNull();
+  });
+
+  it("enforces the 0.5 s vertical clip minimum in both clampTrim and trimError", () => {
+    // Clamping a manually entered 0.1 s selection widens it to 0.5 s respecting anchor.
+    expect(clampTrim(120, 120.1, BOUNDS, "start")).toEqual({
+      startS: 120,
+      endS: 120.5,
+    });
+    expect(clampTrim(120.4, 120.5, BOUNDS, "end")).toEqual({
+      startS: 120,
+      endS: 120.5,
+    });
+
+    // Direct validation rejects clips shorter than 0.5 s and accepts the 0.5 s boundary
+    // including float subtraction like 4.1 - 3.6 = 0.49999999999999956.
+    expect(trimError({ startS: 120, endS: 120.1 }, BOUNDS)).toContain(
+      "at least 0.5 seconds",
+    );
+    expect(trimError({ startS: 120, endS: 120.49 }, BOUNDS)).toContain(
+      "at least 0.5 seconds",
+    );
+    expect(trimError({ startS: 120, endS: 120.5 }, BOUNDS)).toBeNull();
+    expect(
+      trimError(
+        { startS: 3.6, endS: 4.1 },
+        { minStartS: 0, maxEndS: 10, maxDurationS: 90 },
+      ),
+    ).toBeNull();
+
+    // Fractional bounds are formatted accurately in error messages (never 160.0s for 159.96).
+    expect(
+      trimError(
+        { startS: 120, endS: 160 },
+        { minStartS: 80, maxEndS: 159.96, maxDurationS: 90 },
+      ),
+    ).toContain("159.96s");
+  });
+
   it("reports validation errors for out-of-range, reversed, and too-long trims", () => {
     expect(trimError({ startS: 118, endS: 148 }, BOUNDS)).toBeNull();
     expect(trimError({ startS: 75, endS: 120 }, BOUNDS)).toContain("80.0s");

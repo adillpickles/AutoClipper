@@ -577,4 +577,77 @@ describe("ClipEditor", () => {
     expect(await screen.findByLabelText("Preview of clip 1")).toBeTruthy();
     expect(api.getCandidateMedia).toHaveBeenCalledTimes(3);
   });
+
+  it("preserves exact fractional probed bounds when nudging and keeps export enabled", async () => {
+    const probedMedia: CandidateMedia = {
+      ...AVAILABLE_MEDIA,
+      preview: {
+        ...AVAILABLE_MEDIA.preview,
+        media_start_s: 80,
+        media_end_s: 159.96,
+      },
+      export: {
+        ...AVAILABLE_MEDIA.export,
+        min_start_s: 80,
+        max_end_s: 159.96,
+      },
+    };
+    const nearEndResult: AnalysisResult = {
+      ...RESULT,
+      candidates: [{ ...RESULT.candidates[0], start_s: 120, end_s: 158 }],
+    };
+    api.getResult.mockResolvedValue(nearEndResult);
+    api.getCandidateMedia.mockResolvedValue(probedMedia);
+    api.createExport.mockResolvedValue({
+      export: makeExport("done", { start_s: 120, end_s: 159.96 }),
+      created: true,
+    });
+
+    render(<ClipEditor />);
+
+    const endInput = (await screen.findByLabelText(
+      "End (seconds)",
+    )) as HTMLInputElement;
+    await screen.findByLabelText("Center crop (9:16)");
+
+    fireEvent.click(screen.getByLabelText("Move end 5 seconds later"));
+    expect(endInput.value).toBe("159.96");
+
+    const rerenderButton = screen.getByRole("button", {
+      name: "Re-render clip",
+    }) as HTMLButtonElement;
+    expect(rerenderButton.disabled).toBe(false);
+
+    fireEvent.click(rerenderButton);
+    await vi.waitFor(() =>
+      expect(api.createExport).toHaveBeenCalledWith(
+        expect.objectContaining({ start_s: 120, end_s: 159.96 }),
+      ),
+    );
+  });
+
+  it("enforces the 0.5 s minimum for manual entries and short initial candidates", async () => {
+    const shortResult: AnalysisResult = {
+      ...RESULT,
+      candidates: [{ ...RESULT.candidates[0], start_s: 120, end_s: 120.1 }],
+    };
+    api.getResult.mockResolvedValue(shortResult);
+    api.getCandidateMedia.mockResolvedValue(AVAILABLE_MEDIA);
+
+    render(<ClipEditor />);
+
+    expect(await screen.findByText(/at least 0\.5 seconds/)).toBeTruthy();
+    const rerenderButton = screen.getByRole("button", {
+      name: "Re-render clip",
+    }) as HTMLButtonElement;
+    expect(rerenderButton.disabled).toBe(true);
+
+    // Manually entering a 0.1 s selection clamps to 0.5 s on blur and enables export.
+    const endInput = screen.getByLabelText("End (seconds)") as HTMLInputElement;
+    fireEvent.change(endInput, { target: { value: "120.2" } });
+    fireEvent.blur(endInput);
+    expect(endInput.value).toBe("120.5");
+    expect(screen.queryByText(/at least 0\.5 seconds/)).toBeNull();
+    expect(rerenderButton.disabled).toBe(false);
+  });
 });
