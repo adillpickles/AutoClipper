@@ -21,6 +21,12 @@ import type {
   Layout,
 } from "@/lib/api/types";
 import { formatTime } from "@/lib/format";
+import {
+  clearRememberedTrim,
+  rememberExport,
+  rememberTrim,
+  rememberedTrim,
+} from "@/lib/job-state";
 import { reasonFor } from "@/lib/reason";
 import {
   clampTrim,
@@ -49,26 +55,6 @@ const LAYOUT_LABEL: Record<Layout, string> = {
   configured_region: "Configured region (9:16)",
   stacked: "Stacked (facecam + gameplay)",
 };
-
-const exportsKey = (jobId: string) => `autoclipper.exports.${jobId}`;
-
-function rememberExport(
-  jobId: string,
-  candidateId: string,
-  exportId: string,
-): void {
-  try {
-    const saved = JSON.parse(
-      window.localStorage.getItem(exportsKey(jobId)) ?? "{}",
-    ) as Record<string, string>;
-    window.localStorage.setItem(
-      exportsKey(jobId),
-      JSON.stringify({ ...saved, [candidateId]: exportId }),
-    );
-  } catch {
-    // Storage is optional; nothing breaks without it.
-  }
-}
 
 type LoadState =
   | { kind: "loading" }
@@ -168,9 +154,18 @@ export function ClipEditor() {
           });
           return;
         }
-        setTrim({ startS: candidate.start_s, endS: candidate.end_s });
-        setStartInput(String(candidate.start_s));
-        setEndInput(String(candidate.end_s));
+        const saved = rememberedTrim(jobId, candidate.candidate_id);
+        const initialStart =
+          saved && saved.end_s <= result.vod.duration_s
+            ? saved.start_s
+            : candidate.start_s;
+        const initialEnd =
+          saved && saved.end_s <= result.vod.duration_s
+            ? saved.end_s
+            : candidate.end_s;
+        setTrim({ startS: initialStart, endS: initialEnd });
+        setStartInput(String(initialStart));
+        setEndInput(String(initialEnd));
         setLoaded({ kind: "ready", result, candidate });
       })
       .catch((error: unknown) => {
@@ -368,12 +363,27 @@ export function ClipEditor() {
     );
   }
 
+  function persistTrim(next: TrimInterval) {
+    if (
+      Math.abs(next.startS - candidate.start_s) <= 1e-6 &&
+      Math.abs(next.endS - candidate.end_s) <= 1e-6
+    ) {
+      clearRememberedTrim(jobId, candidate.candidate_id);
+    } else {
+      rememberTrim(jobId, candidate.candidate_id, {
+        start_s: next.startS,
+        end_s: next.endS,
+      });
+    }
+  }
+
   function applyTrim(next: TrimInterval, seekToStart = false) {
     const changed = next.startS !== trim.startS || next.endS !== trim.endS;
     setStartInput(String(next.startS));
     setEndInput(String(next.endS));
     if (!changed) return;
     setTrim(next);
+    persistTrim(next);
     clearStaleRender();
     if (seekToStart) seekToVodTime(next.startS);
   }
@@ -442,6 +452,7 @@ export function ClipEditor() {
       setTrim(effective);
       setStartInput(String(effective.startS));
       setEndInput(String(effective.endS));
+      persistTrim(effective);
     }
     if (
       exportInfo?.status !== "available" ||
@@ -451,6 +462,7 @@ export function ClipEditor() {
     ) {
       return;
     }
+    persistTrim(effective);
     const runId = ++pollRunRef.current;
     captionsTouchedRef.current = true;
     const wait = (ms: number) =>

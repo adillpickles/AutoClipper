@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ResultsScreen } from "@/components/results-screen";
@@ -10,6 +10,7 @@ import type {
   CreateExportRequest,
   Export,
 } from "@/lib/api/types";
+import { rememberTrim } from "@/lib/job-state";
 
 const params = vi.hoisted(() => ({ jobId: "job_1" }));
 
@@ -19,6 +20,8 @@ const api = vi.hoisted(() => ({
   getCandidateMedia: vi.fn(),
   createExport: vi.fn(),
   getExport: vi.fn(),
+  createHighlights: vi.fn(),
+  getHighlights: vi.fn(),
   resolveUrl: vi.fn((url: string) => url),
 }));
 
@@ -287,5 +290,64 @@ describe("ResultsScreen captions capability and fallback", () => {
       layout: "center_crop",
       captions: true,
     });
+  });
+
+  it("initializes the highlights dialog from trims saved in the clip editor", async () => {
+    rememberTrim("job_1", "c001", { start_s: 113, end_s: 148 });
+    api.getHealth.mockResolvedValue({
+      status: "ok",
+      schema_version: "1.1",
+      job_runner: "pipeline",
+      captions_available: true,
+    });
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia.mockResolvedValue(MEDIA);
+    api.createExport.mockImplementation(async (req: CreateExportRequest) => ({
+      export: makeExport(req),
+      created: true,
+    }));
+    api.createHighlights.mockResolvedValue({
+      highlights: {
+        highlights_id: "hl_1",
+        job_id: "job_1",
+        video_id: "9000000001",
+        segments: [{ candidate_id: "c001", start_s: 113, end_s: 148 }],
+        order: "chronological",
+        captions: false,
+        state: "done",
+        progress: null,
+        error: null,
+        download_url: "/mock-media/highlights.mp4",
+        duration_s: 35,
+        created_at: "2026-11-20T12:02:00Z",
+        started_at: "2026-11-20T12:02:01Z",
+        updated_at: "2026-11-20T12:02:03Z",
+        finished_at: "2026-11-20T12:02:03Z",
+      },
+      created: true,
+    });
+
+    render(<ResultsScreen />);
+
+    expect(await screen.findByText(/1 of 1 clips ready/)).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Make highlights video" }),
+    );
+    const startInput = document.getElementById(
+      "start-c001",
+    ) as HTMLInputElement;
+    expect(startInput.value).toBe("113");
+
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(
+      dialog.querySelector('button:not([aria-label="Close"])') as HTMLElement,
+    );
+    await screen.findByText(/The highlights video is ready/);
+    expect(api.createHighlights).toHaveBeenCalledWith(
+      expect.objectContaining({
+        job_id: "job_1",
+        segments: [{ candidate_id: "c001", start_s: 113, end_s: 148 }],
+      }),
+    );
   });
 });
