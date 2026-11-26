@@ -8,13 +8,13 @@ marks status responses ``Cache-Control: no-store`` (§ 9.1).
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-from typing import Final
+from typing import Annotated, Final
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from autoclipper.analysis import AnalysisResult
@@ -29,12 +29,15 @@ from autoclipper.schemas import (
     CreateExportRequest,
     CreateHighlightsRequest,
     CreateJobRequest,
+    DeleteJobResponse,
     ErrorResponse,
     Export,
     Health,
     HighlightsVideo,
     Job,
+    JobListResponse,
     PreflightReport,
+    State,
 )
 
 log = logging.getLogger(__name__)
@@ -44,6 +47,23 @@ DEFAULT_CORS_ORIGINS: Final = ("http://localhost:3000", "http://127.0.0.1:3000")
 _NO_STORE: Final = {"Cache-Control": "no-store"}
 _INTERNAL: Final = "Something went wrong on the server. Try again."
 _JSON_TYPE: Final = "application/json; charset=utf-8"
+DEFAULT_JOBS_LIMIT: Final = 20
+MAX_JOBS_LIMIT: Final = 100
+
+
+class _ListJobsQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    limit: int = Field(default=DEFAULT_JOBS_LIMIT, ge=1, le=MAX_JOBS_LIMIT)
+    offset: int = Field(default=0, ge=0)
+    q: str | None = None
+    state: State | None = None
+
+
+class _DeleteJobQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    delete_exports: bool = False
 
 
 def _error(status: int, error: ApiError, headers: dict[str, str] | None = None) -> JSONResponse:
@@ -136,7 +156,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Content-Type"],
         allow_credentials=False,
         expose_headers=["Location", "Content-Disposition"],
@@ -190,6 +210,18 @@ def create_app(
         create_tools_router(active_tool_setup, prefix=API_PREFIX, allowed_origins=cors_origins)
     )
 
+    @app.get(f"{API_PREFIX}/jobs", response_model=JobListResponse)
+    def list_jobs(query: Annotated[_ListJobsQuery, Query()]) -> Response:
+        return _json(
+            service.list_jobs(
+                limit=query.limit,
+                offset=query.offset,
+                q=query.q,
+                state=query.state,
+            ),
+            headers=_NO_STORE,
+        )
+
     @app.post(f"{API_PREFIX}/jobs", response_model=Job, status_code=201)
     def create_job(request: CreateJobRequest) -> Response:
         job, created = service.create_job(request)
@@ -200,6 +232,13 @@ def create_app(
     @app.get(f"{API_PREFIX}/jobs/{{job_id}}", response_model=Job)
     def get_job(job_id: str) -> Response:
         return _json(service.get_job(job_id), headers=_NO_STORE)
+
+    @app.delete(f"{API_PREFIX}/jobs/{{job_id}}", response_model=DeleteJobResponse)
+    def delete_job(job_id: str, query: Annotated[_DeleteJobQuery, Query()]) -> Response:
+        return _json(
+            service.delete_job(job_id, delete_exports=query.delete_exports),
+            headers=_NO_STORE,
+        )
 
     @app.get(f"{API_PREFIX}/jobs/{{job_id}}/result", response_model=AnalysisResult)
     def get_result(job_id: str) -> Response:

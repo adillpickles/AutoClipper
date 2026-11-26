@@ -33,6 +33,7 @@ __all__ = [
     "CreateExportRequest",
     "CreateHighlightsRequest",
     "CreateJobRequest",
+    "DeleteJobResponse",
     "ErrorResponse",
     "Export",
     "ExportAvailability",
@@ -40,6 +41,9 @@ __all__ = [
     "HighlightsSegment",
     "HighlightsVideo",
     "Job",
+    "JobListResponse",
+    "JobRenderSummary",
+    "JobSummary",
     "PreflightCheck",
     "PreflightReport",
     "PreflightStatus",
@@ -193,6 +197,66 @@ class Job(_Response):
     started_at: UtcDatetime | None
     updated_at: UtcDatetime
     finished_at: UtcDatetime | None
+
+
+class JobRenderSummary(_Response):
+    """Summary of one export or highlights render belonging to a job (§ 3.7)."""
+
+    render_id: str
+    kind: Literal["export", "highlights"]
+    candidate_id: str | None
+    state: State
+    file_available: bool
+    download_url: str | None
+    duration_s: FiniteFloat | None
+    created_at: UtcDatetime
+    finished_at: UtcDatetime | None
+
+
+class JobSummary(_Response):
+    """One analysis job in the persistent library index (``GET /api/v1/jobs``, § 3.7)."""
+
+    job_id: str
+    video_id: str
+    video_path: str | None
+    state: State
+    title: str | None
+    broadcaster_id: str | None
+    broadcaster_display_name: str | None
+    duration_s: FiniteFloat | None
+    thumbnail_url: str | None
+    candidate_count: int | None
+    result_available: bool
+    export_count: int = Field(ge=0)
+    missing_export_count: int = Field(ge=0)
+    highlights_count: int = Field(ge=0)
+    missing_highlights_count: int = Field(ge=0)
+    exports: tuple[JobRenderSummary, ...]
+    highlights: tuple[JobRenderSummary, ...]
+    warning_count: int = Field(ge=0)
+    error: ApiError | None
+    created_at: UtcDatetime
+    started_at: UtcDatetime | None
+    updated_at: UtcDatetime
+    finished_at: UtcDatetime | None
+
+
+class JobListResponse(_Response):
+    """Paginated job listing returned by ``GET /api/v1/jobs`` (§ 3.7)."""
+
+    items: tuple[JobSummary, ...]
+    total: int = Field(ge=0)
+    limit: int = Field(ge=1)
+    offset: int = Field(ge=0)
+    has_more: bool
+
+
+class DeleteJobResponse(_Response):
+    """Result of ``DELETE /api/v1/jobs/{job_id}`` (§ 3.8)."""
+
+    job_id: str
+    deleted: Literal[True] = True
+    deleted_files: int = Field(ge=0)
 
 
 class PreviewMedia(_Response):

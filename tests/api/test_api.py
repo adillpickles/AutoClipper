@@ -499,7 +499,7 @@ def test_scenario_9000000006_has_zero_candidates(client: TestClient) -> None:
 def test_unknown_job_and_path_and_method_use_the_error_envelope(client: TestClient) -> None:
     missing = client.get(f"{API}/jobs/job_0000000000000000")
     unknown = client.get(f"{API}/nothing")
-    method = client.delete(f"{API}/jobs/job_0000000000000000")
+    method = client.delete(f"{API}/health")
 
     assert (missing.status_code, error_code(missing)) == (404, "job_not_found")
     assert (unknown.status_code, error_code(unknown)) == (404, "not_found")

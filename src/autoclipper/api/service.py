@@ -1,9 +1,9 @@
-"""The mock backend's state and background work (docs/architecture/api-contract.md §§ 3, 5-7, 9).
+"""Backend state, persistence and background work (docs/architecture/api-contract.md §§ 3, 5-7, 9).
 
-`MockService` keeps job, export, highlights and media records in memory (a restart forgets
-them, § 9.3), validates requests in the contract's order and raises `ApiException` with the
-contract's codes. Two worker threads run the work: one for analysis jobs, one shared by exports
-and highlights videos (one render at a time), each first in, first out.
+`MockService` persists job, export and highlights records in a SQLite store under `output_dir`
+(`autoclipper.api.store`, § 9.3), validates requests in the contract's order and raises
+`ApiException` with the contract's codes. Two worker threads run the work: one for analysis jobs,
+one shared by exports and highlights videos (one render at a time), each first in, first out.
 
 Jobs run one of two runners (`job_runner`, reported by the health endpoint): ``mock`` walks
 through the six analysis stages and finishes with the § 11 scenario keyed by the VOD ID, for
@@ -24,6 +24,7 @@ import contextlib
 import logging
 import queue
 import secrets
+import sqlite3
 import threading
 import time
 from collections import Counter
@@ -36,6 +37,15 @@ from typing import Final, Literal, Protocol, TypeVar
 from autoclipper.analysis import AnalysisResult, AnalysisWarning, Candidate
 from autoclipper.analyze import DEFAULT_SCORER, AnalyzeError, analyze_vod
 from autoclipper.api import mock
+from autoclipper.api.store import (
+    DEFAULT_DB_NAME,
+    DEFAULT_MOCK_DB_NAME,
+    JobStore,
+    StoredJobRecord,
+    StoredRenderRecord,
+    read_result_json,
+    write_result_json,
+)
 from autoclipper.export.captions import CaptioningError, Stage, Transcriber, captions_available
 from autoclipper.export.clip import (
     MAX_CLIP_DURATION_S,
@@ -92,11 +102,15 @@ from autoclipper.schemas import (
     CreateExportRequest,
     CreateHighlightsRequest,
     CreateJobRequest,
+    DeleteJobResponse,
     Export,
     ExportAvailability,
     HighlightsSegment,
     HighlightsVideo,
     Job,
+    JobListResponse,
+    JobRenderSummary,
+    JobSummary,
     PreviewMedia,
     Progress,
     State,
@@ -329,11 +343,20 @@ class _JobRecord:
     video_id: str
     video_path: str | None
     times: _Timestamps
+    seq: int = 0
+    runner: Literal["mock", "pipeline"] = "mock"
     state: State = "queued"
     progress: Progress | None = None
     warnings: tuple[AnalysisWarning, ...] = ()
     error: ApiError | None = None
     result: AnalysisResult | None = None
+    title: str | None = None
+    broadcaster_id: str | None = None
+    broadcaster_display_name: str | None = None
+    duration_s: float | None = None
+    thumbnail_url: str | None = None
+    candidate_count: int | None = None
+    result_path: Path | None = None
 
     def model(self) -> Job:
         return Job(
@@ -341,6 +364,30 @@ class _JobRecord:
             video_id=self.video_id,
             video_path=self.video_path,
             state=self.state,
+            progress=self.progress,
+            warnings=self.warnings,
+            error=self.error,
+            created_at=self.times.created_at,
+            started_at=self.times.started_at,
+            updated_at=self.times.updated_at,
+            finished_at=self.times.finished_at,
+        )
+
+    def to_stored(self) -> StoredJobRecord:
+        return StoredJobRecord(
+            job_id=self.job_id,
+            seq=self.seq,
+            runner=self.runner,
+            video_id=self.video_id,
+            video_path=self.video_path,
+            state=self.state,
+            title=self.title,
+            broadcaster_id=self.broadcaster_id,
+            broadcaster_display_name=self.broadcaster_display_name,
+            duration_s=self.duration_s,
+            thumbnail_url=self.thumbnail_url,
+            candidate_count=self.candidate_count,
+            result_path=self.result_path,
             progress=self.progress,
             warnings=self.warnings,
             error=self.error,
@@ -405,6 +452,51 @@ class _RenderRecord:
             error=self.error,
             download_url=f"/api/v1/highlights/{self.render_id}/file" if done else None,
             duration_s=self.duration_s if done else None,
+            created_at=self.times.created_at,
+            started_at=self.times.started_at,
+            updated_at=self.times.updated_at,
+            finished_at=self.times.finished_at,
+        )
+
+    def summary_model(self) -> JobRenderSummary:
+        file_available = self.state == "done" and self.file is not None and self.file.is_file()
+        if self.kind == "export":
+            url = f"/api/v1/exports/{self.render_id}/file" if file_available else None
+            candidate_id = self.request.candidate_id if self.request is not None else None
+            duration_s = (
+                self.request.end_s - self.request.start_s if self.request is not None else None
+            )
+        else:
+            url = f"/api/v1/highlights/{self.render_id}/file" if file_available else None
+            candidate_id = None
+            duration_s = self.duration_s if self.state == "done" else None
+        return JobRenderSummary(
+            render_id=self.render_id,
+            kind=self.kind,
+            candidate_id=candidate_id,
+            state=self.state,
+            file_available=file_available,
+            download_url=url,
+            duration_s=duration_s,
+            created_at=self.times.created_at,
+            finished_at=self.times.finished_at,
+        )
+
+    def to_stored(self) -> StoredRenderRecord:
+        return StoredRenderRecord(
+            render_id=self.render_id,
+            job_id=self.job_id,
+            kind=self.kind,
+            video_id=self.video_id,
+            captions=self.captions,
+            request=self.request,
+            segments=self.segments,
+            order=self.order,
+            state=self.state,
+            progress=self.progress,
+            error=self.error,
+            file=self.file,
+            duration_s=self.duration_s,
             created_at=self.times.created_at,
             started_at=self.times.started_at,
             updated_at=self.times.updated_at,
@@ -531,7 +623,11 @@ class MockService:
     analyze: AnalyzeRunner = field(default=analyze_vod, kw_only=True)
     baseline: str = DEFAULT_SCORER
     segment_fetcher: SegmentFetcher | None = field(default=None, kw_only=True)
+    store_path: Path | None = field(default=None, kw_only=True)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _store: JobStore = field(init=False)
+    _next_seq: int = field(default=0, init=False)
+    _deleting: set[str] = field(default_factory=set, init=False)
     _jobs: dict[str, _JobRecord] = field(default_factory=dict, init=False)
     _renders: dict[str, _RenderRecord] = field(default_factory=dict, init=False)
     _media: dict[str, Path] = field(default_factory=dict, init=False)
@@ -566,6 +662,15 @@ class MockService:
             ]
             if missing:
                 raise ValueError(f"pipeline jobs need {', '.join(missing)}")
+        self.output_dir = self.output_dir.resolve()
+        default_name = DEFAULT_DB_NAME if self.job_runner == "pipeline" else DEFAULT_MOCK_DB_NAME
+        db_path = (
+            self.store_path.resolve()
+            if self.store_path is not None
+            else self.output_dir / default_name
+        )
+        self._store = JobStore(db_path)
+        self._load_persisted()
         self._preview_media_id = new_id("med")
         self._media[self._preview_media_id] = self.samples.preview
         if self.synchronous:
@@ -580,6 +685,93 @@ class MockService:
             thread.start()
             self._threads.append(thread)
 
+    def _load_persisted(self) -> None:
+        """Restore saved jobs and renders on startup, marking in-flight work as interrupted."""
+        jobs, renders = self._store.load_all()
+        now = self.clock()
+        max_seq = 0
+        for stored in jobs:
+            max_seq = max(max_seq, stored.seq)
+            times = _Timestamps(
+                created_at=stored.created_at,
+                updated_at=stored.updated_at,
+                started_at=stored.started_at,
+                finished_at=stored.finished_at,
+            )
+            record = _JobRecord(
+                job_id=stored.job_id,
+                video_id=stored.video_id,
+                video_path=stored.video_path,
+                times=times,
+                seq=stored.seq,
+                runner=stored.runner,
+                state=stored.state,
+                progress=stored.progress,
+                warnings=stored.warnings,
+                error=stored.error,
+                title=stored.title,
+                broadcaster_id=stored.broadcaster_id,
+                broadcaster_display_name=stored.broadcaster_display_name,
+                duration_s=stored.duration_s,
+                thumbnail_url=stored.thumbnail_url,
+                candidate_count=stored.candidate_count,
+                result_path=stored.result_path,
+            )
+            if record.state in ("queued", "running"):
+                record.state = "failed"
+                record.error = _JOB_INTERRUPTED
+                record.times.updated_at = record.times.finished_at = now
+                self._store.upsert_job(record.to_stored())
+            elif record.state == "done" and record.result_path is not None:
+                loaded = read_result_json(record.result_path)
+                if loaded is not None:
+                    record.result = loaded
+            self._jobs[record.job_id] = record
+
+        for stored_render in renders:
+            if stored_render.job_id not in self._jobs:
+                continue
+            times = _Timestamps(
+                created_at=stored_render.created_at,
+                updated_at=stored_render.updated_at,
+                started_at=stored_render.started_at,
+                finished_at=stored_render.finished_at,
+            )
+            render = _RenderRecord(
+                kind=stored_render.kind,
+                render_id=stored_render.render_id,
+                job_id=stored_render.job_id,
+                video_id=stored_render.video_id,
+                captions=stored_render.captions,
+                times=times,
+                request=stored_render.request,
+                segments=stored_render.segments,
+                order=stored_render.order,
+                state=stored_render.state,
+                progress=stored_render.progress,
+                error=stored_render.error,
+                file=stored_render.file,
+                duration_s=stored_render.duration_s,
+            )
+            if render.state in ("queued", "running"):
+                render.state = "failed"
+                render.error = (
+                    _EXPORT_INTERRUPTED if render.kind == "export" else _HIGHLIGHTS_INTERRUPTED
+                )
+                render.times.updated_at = render.times.finished_at = now
+                self._store.upsert_render(render.to_stored())
+            self._renders[render.render_id] = render
+
+        self._next_seq = max_seq
+
+    def _persist_job(self, record: _JobRecord) -> None:
+        """Persist `record` to the SQLite index (call with `self._lock` held)."""
+        self._store.upsert_job(record.to_stored())
+
+    def _persist_render(self, record: _RenderRecord) -> None:
+        """Persist `record` to the SQLite index (call with `self._lock` held)."""
+        self._store.upsert_render(record.to_stored())
+
     @property
     def captions_available(self) -> bool:
         """Whether this server can transcribe speech for burned-in captions (§ 9.5)."""
@@ -591,7 +783,7 @@ class MockService:
         """Stop the workers: queued work is dropped, the work in hand finishes."""
         if not self.synchronous:
             for work in (self._analysis_queue, self._render_queue, self._fetch_queue):
-                while True:  # queued work is dropped, like everything else on restart (§ 9.3)
+                while True:  # queued work is dropped; on next startup it becomes interrupted
                     try:
                         work.get_nowait()
                     except queue.Empty:
@@ -605,6 +797,7 @@ class MockService:
         for path in detached:
             with contextlib.suppress(OSError):
                 path.unlink(missing_ok=True)
+        self._store.close()
 
     # --- Jobs ----------------------------------------------------------------------------------
 
@@ -634,7 +827,17 @@ class MockService:
                 ):
                     return record.model(), False
             now = self.clock()
-            record = _JobRecord(new_id("job"), video_id, request.video_path, _Timestamps(now, now))
+            next_seq = self._next_seq + 1
+            record = _JobRecord(
+                new_id("job"),
+                video_id,
+                request.video_path,
+                _Timestamps(now, now),
+                seq=next_seq,
+                runner=self.job_runner,
+            )
+            self._persist_job(record)
+            self._next_seq = next_seq
             self._jobs[record.job_id] = record
             model = record.model()
         self._enqueue(self._analysis_queue, record.job_id, self._run_job_safely)
@@ -646,18 +849,206 @@ class MockService:
             return self._job(job_id).model()
 
     def get_result(self, job_id: str) -> AnalysisResult:
-        """The result of a done job (`409 job_not_done` before)."""
+        """Result of a done job (`409 job_not_done` before, `404 result_file_missing` if gone)."""
         with self._lock:
             record = self._done_job(job_id)
-            assert record.result is not None
-            return record.result
+            return self._job_result(record)
+
+    def list_jobs(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        q: str | None = None,
+        state: State | None = None,
+    ) -> JobListResponse:
+        """Paginated list of jobs, newest first, with optional search and state filter."""
+        needle = q.strip().lower() if q is not None else ""
+        with self._lock:
+            matched: list[_JobRecord] = []
+            for record in self._jobs.values():
+                if state is not None and record.state != state:
+                    continue
+                if needle:
+                    haystack = " ".join(
+                        part
+                        for part in (
+                            record.title or "",
+                            record.broadcaster_display_name or "",
+                            record.video_id,
+                        )
+                        if part
+                    ).lower()
+                    if needle not in haystack:
+                        continue
+                matched.append(record)
+            matched.sort(
+                key=lambda rec: (rec.times.created_at, rec.seq, rec.job_id),
+                reverse=True,
+            )
+            total = len(matched)
+            page = matched[offset : offset + limit]
+            renders_by_job: dict[str, list[_RenderRecord]] = {}
+            page_ids = {rec.job_id for rec in page}
+            for render in self._renders.values():
+                if render.job_id in page_ids:
+                    renders_by_job.setdefault(render.job_id, []).append(render)
+            items = tuple(
+                self._job_summary(rec, renders_by_job.get(rec.job_id, ())) for rec in page
+            )
+        return JobListResponse(
+            items=items,
+            total=total,
+            limit=limit,
+            offset=offset,
+            has_more=(offset + len(items)) < total,
+        )
+
+    def delete_job(self, job_id: str, *, delete_exports: bool = False) -> DeleteJobResponse:
+        """Delete a finished job from the index and optionally remove its rendered files."""
+        with self._lock:
+            record = self._job(job_id)
+            child_renders = [r for r in self._renders.values() if r.job_id == job_id]
+            if (
+                job_id in self._deleting
+                or record.state in ("queued", "running")
+                or any(r.state in ("queued", "running") for r in child_renders)
+            ):
+                raise ApiException(
+                    409,
+                    "job_in_progress",
+                    "This analysis or one of its renders is still running. Wait for it to finish "
+                    "before deleting it.",
+                )
+            self._deleting.add(job_id)
+            result_path = record.result_path
+            render_files = [r.file for r in child_renders if r.file is not None]
+
+        deleted_files = 0
+        failed_paths: list[Path] = []
+        try:
+            if delete_exports:
+                for file_path in render_files:
+                    if not _is_within(file_path, self.output_dir):
+                        continue
+                    try:
+                        file_path.unlink()
+                    except FileNotFoundError:
+                        continue
+                    except OSError as exc:
+                        log.warning("couldn't remove render file path=%s: %s", file_path, exc)
+                        failed_paths.append(file_path)
+                    else:
+                        deleted_files += 1
+
+            analysis_root = self.output_dir / "analysis"
+            if (
+                not failed_paths
+                and result_path is not None
+                and _is_within(result_path, analysis_root)
+            ):
+                try:
+                    result_path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    log.warning("couldn't remove analysis result path=%s: %s", result_path, exc)
+                    failed_paths.append(result_path)
+
+            if failed_paths:
+                raise ApiException(500, "delete_failed", _DELETE_FAILED)
+
+            with self._lock:
+                self._store.delete_job(job_id)
+                self._jobs.pop(job_id, None)
+                for render in child_renders:
+                    self._renders.pop(render.render_id, None)
+                self._file_media.pop(job_id, None)
+                for seg_key in [key for key in self._segments if key[0] == job_id]:
+                    self._segments.pop(seg_key, None)
+        finally:
+            with self._lock:
+                self._deleting.discard(job_id)
+
+        return DeleteJobResponse(job_id=job_id, deleted=True, deleted_files=deleted_files)
+
+    def _job_summary(self, record: _JobRecord, renders: Sequence[_RenderRecord]) -> JobSummary:
+        ordered = sorted(
+            renders,
+            key=lambda r: (r.times.created_at, r.render_id),
+            reverse=True,
+        )
+        export_summaries: list[JobRenderSummary] = []
+        highlights_summaries: list[JobRenderSummary] = []
+        export_count = 0
+        missing_export_count = 0
+        highlights_count = 0
+        missing_highlights_count = 0
+        for render in ordered:
+            summary = render.summary_model()
+            if render.kind == "export":
+                export_summaries.append(summary)
+                if render.state == "done":
+                    if summary.file_available:
+                        export_count += 1
+                    else:
+                        missing_export_count += 1
+            else:
+                highlights_summaries.append(summary)
+                if render.state == "done":
+                    if summary.file_available:
+                        highlights_count += 1
+                    else:
+                        missing_highlights_count += 1
+        return JobSummary(
+            job_id=record.job_id,
+            video_id=record.video_id,
+            video_path=record.video_path,
+            state=record.state,
+            title=record.title,
+            broadcaster_id=record.broadcaster_id,
+            broadcaster_display_name=record.broadcaster_display_name,
+            duration_s=record.duration_s,
+            thumbnail_url=record.thumbnail_url,
+            candidate_count=record.candidate_count,
+            result_available=self._result_available(record),
+            export_count=export_count,
+            missing_export_count=missing_export_count,
+            highlights_count=highlights_count,
+            missing_highlights_count=missing_highlights_count,
+            exports=tuple(export_summaries),
+            highlights=tuple(highlights_summaries),
+            warning_count=len(record.warnings),
+            error=record.error,
+            created_at=record.times.created_at,
+            started_at=record.times.started_at,
+            updated_at=record.times.updated_at,
+            finished_at=record.times.finished_at,
+        )
+
+    def _result_available(self, record: _JobRecord) -> bool:
+        if record.state != "done":
+            return False
+        if record.result_path is not None:
+            if not record.result_path.is_file():
+                record.result = None
+                return False
+            if record.result is None:
+                record.result = read_result_json(record.result_path)
+            return record.result is not None
+        return record.result is not None
+
+    def _job_result(self, record: _JobRecord) -> AnalysisResult:
+        if not self._result_available(record) or record.result is None:
+            raise ApiException(404, "result_file_missing", _RESULT_FILE_MISSING)
+        return record.result
 
     def done_jobs_by_video(self) -> dict[str, str]:
-        """Map each video ID with a finished job in memory to its most recent done job ID."""
+        """Map each video ID with a finished job whose result is available to its most recent ID."""
         with self._lock:
             latest: dict[str, tuple[datetime, str]] = {}
             for record in self._jobs.values():
-                if record.state != "done":
+                if not self._result_available(record):
                     continue
                 finished = record.times.finished_at or record.times.updated_at
                 prev = latest.get(record.video_id)
@@ -683,7 +1074,7 @@ class MockService:
                 if Path(record.video_path).is_file() and job_id not in self._file_media:
                     self._file_media[job_id] = _FileMediaState("preparing")
                     work = ("file", job_id)
-            elif self._needs_segment(record):
+            elif self._needs_segment(record) and self.segment_fetcher is not None:
                 seg_key = (job_id, candidate_id)
                 existing = self._segments.get(seg_key)
                 if existing is None:
@@ -701,7 +1092,7 @@ class MockService:
         if work is not None:  # enqueued outside the lock, like every worker item
             self._enqueue(self._fetch_queue, work, self._run_fetch_item_safely)
         with self._lock:
-            record = self._jobs[job_id]
+            record = self._done_job(job_id)
             candidate = self._candidate(record, candidate_id)
             media = self._media_for(record, candidate)
             seg_key = (job_id, candidate_id)
@@ -756,14 +1147,13 @@ class MockService:
 
     def _needs_segment(self, job: _JobRecord) -> bool:
         """Whether this job's media comes from a downloaded segment (#46)."""
-        return self.job_runner == "pipeline" and job.video_path is None
+        return job.runner == "pipeline" and job.video_path is None
 
     def _segment_span(
         self, job: _JobRecord, begin_needed_s: float, end_needed_s: float
     ) -> tuple[float, float]:
         """The VOD-time span to fetch around `[begin_needed_s, end_needed_s)` (#46)."""
-        assert job.result is not None
-        duration_s = job.result.vod.duration_s
+        duration_s = self._job_result(job).vod.duration_s
         begin = max(0.0, begin_needed_s - SEGMENT_MARGIN_S)
         end = min(duration_s, end_needed_s + SEGMENT_MARGIN_S)
         if not begin < end:  # the candidate hugged the VOD's end so closely the margin ate it
@@ -788,6 +1178,12 @@ class MockService:
         """Create an export, or return an identical queued/running one (`created` False)."""
         with self._lock:
             job = self._done_job(request.job_id)
+            if job.job_id in self._deleting:
+                raise ApiException(
+                    409,
+                    "job_in_progress",
+                    "This analysis is being deleted. Try again once it finishes.",
+                )
             candidate = self._candidate(job, request.candidate_id)
             export = self._media_for(job, candidate).export
             self._require_available(export)
@@ -837,6 +1233,7 @@ class MockService:
                 _Timestamps(now, now),
                 request=request,
             )
+            self._persist_render(record)
             self._renders[record.render_id] = record
             model = record.export_model()
         self._enqueue(self._render_queue, record.render_id, self._run_render_safely)
@@ -864,10 +1261,16 @@ class MockService:
         """Create a highlights video, or return an identical queued/running one."""
         with self._lock:
             job = self._done_job(request.job_id)
-            assert job.result is not None
-            candidates = {c.candidate_id: c for c in job.result.candidates}
+            if job.job_id in self._deleting:
+                raise ApiException(
+                    409,
+                    "job_in_progress",
+                    "This analysis is being deleted. Try again once it finishes.",
+                )
+            result = self._job_result(job)
+            candidates = {c.candidate_id: c for c in result.candidates}
             if request.segments is None:
-                top = job.result.candidates[: request.count]
+                top = result.candidates[: request.count]
                 segments = [
                     HighlightsSegment(candidate_id=c.candidate_id, start_s=c.start_s, end_s=c.end_s)
                     for c in top
@@ -933,6 +1336,7 @@ class MockService:
                 order=request.order,
                 duration_s=total,
             )
+            self._persist_render(record)
             self._renders[record.render_id] = record
             model = record.highlights_model()
         self._enqueue(self._render_queue, record.render_id, self._run_render_safely)
@@ -971,8 +1375,8 @@ class MockService:
         return record
 
     def _candidate(self, job: _JobRecord, candidate_id: str) -> Candidate:
-        assert job.result is not None
-        for candidate in job.result.candidates:
+        result = self._job_result(job)
+        for candidate in result.candidates:
             if candidate.candidate_id == candidate_id:
                 return candidate
         raise ApiException(404, "candidate_not_found", "This moment isn't part of the analysis.")
@@ -1020,8 +1424,8 @@ class MockService:
         return record.file
 
     def _media_for(self, job: _JobRecord, candidate: Candidate) -> CandidateMedia:
-        assert job.result is not None
-        duration_s = job.result.vod.duration_s
+        result = self._job_result(job)
+        duration_s = result.vod.duration_s
         # The VOD's video can't be downloaded, but a local file works (§ 5 source_unavailable).
         if job.video_path is not None and not Path(job.video_path).is_file():
             preview = PreviewMedia(
@@ -1182,6 +1586,30 @@ class MockService:
         `preparing` while an export is already available (§ 5): a render fetches its own
         media in its first stage.
         """
+        if self.segment_fetcher is None:
+            return CandidateMedia(
+                job_id=job.job_id,
+                candidate_id=candidate.candidate_id,
+                video_id=job.video_id,
+                preview=PreviewMedia(
+                    status="unavailable",
+                    kind=None,
+                    url=None,
+                    media_start_s=None,
+                    media_end_s=None,
+                    reason="fetch_failed",
+                    message=_PIPELINE_MEDIA_IN_MOCK,
+                ),
+                export=ExportAvailability(
+                    status="unavailable",
+                    reason="fetch_failed",
+                    message=_PIPELINE_MEDIA_IN_MOCK,
+                    min_start_s=None,
+                    max_end_s=None,
+                    max_duration_s=None,
+                    layouts=(),
+                ),
+            )
         state = self._segments.get((job.job_id, candidate.candidate_id))
         if state is None:
             span = self._segment_span(job, candidate.start_s, candidate.end_s)
@@ -1352,31 +1780,54 @@ class MockService:
             self._run_pipeline_job(job_id)
             return
         with self._lock:
-            record = self._jobs[job_id]
+            record = self._jobs.get(job_id)
+            if record is None:
+                return
             scenario = mock.scenario_for(record.video_id)
             now = self.clock()
             record.state = "running"
             record.progress = mock.stage_progress(1)  # never running without progress (§ 3.4)
             record.times.started_at = record.times.updated_at = now
+            self._persist_job(record)
         for index in range(1, len(mock.JOB_STAGES) + 1):
             if index > 1:
                 with self._lock:
+                    record = self._jobs.get(job_id)
+                    if record is None:
+                        return
                     record.progress = mock.stage_progress(index)
                     record.times.updated_at = self.clock()
+                    self._persist_job(record)
             self._sleep()
             if scenario.error is not None and index == scenario.fail_at_stage:
                 with self._lock:
+                    record = self._jobs.get(job_id)
+                    if record is None:
+                        return
                     record.warnings = scenario.warnings
                 self._fail_job(job_id, scenario.error)
                 return
         assert scenario.result is not None
+        now = self.clock()
+        final_result = scenario.result.model_copy(update={"generated_at": now})
+        result_file = self.output_dir / "analysis" / f"{job_id}.json"
+        write_result_json(result_file, final_result)
         with self._lock:
-            now = self.clock()
-            record.result = scenario.result.model_copy(update={"generated_at": now})
+            record = self._jobs.get(job_id)
+            if record is None:
+                return
+            record.result = final_result
+            record.result_path = result_file
+            record.title = final_result.vod.title
+            record.broadcaster_id = final_result.vod.broadcaster_id
+            record.broadcaster_display_name = final_result.vod.broadcaster_display_name
+            record.duration_s = final_result.vod.duration_s
+            record.candidate_count = len(final_result.candidates)
             record.warnings = scenario.warnings
             record.state = "done"
             record.progress = None
             record.times.updated_at = record.times.finished_at = now
+            self._persist_job(record)
 
     def _run_pipeline_job(self, job_id: str) -> None:
         """Run one job through the real analysis, reporting progress as stages begin."""
@@ -1385,23 +1836,34 @@ class MockService:
         assert self.lexicon is not None
         assert self.tools_for is not None  # checked in __post_init__ for pipeline mode
         with self._lock:
-            record = self._jobs[job_id]
+            record = self._jobs.get(job_id)
+            if record is None:
+                return
             now = self.clock()
             video_id, video_path = record.video_id, record.video_path
             record.state = "running"
             record.progress = mock.stage_progress(1)  # never running without progress (§ 3.4)
             record.times.started_at = record.times.updated_at = now
+            self._persist_job(record)
 
         def stage(name: str) -> None:
             index = _STAGE_INDEX[name]
             with self._lock:
-                record.progress = mock.stage_progress(index)
-                record.times.updated_at = self.clock()
+                rec = self._jobs.get(job_id)
+                if rec is None:
+                    return
+                rec.progress = mock.stage_progress(index)
+                rec.times.updated_at = self.clock()
+                self._persist_job(rec)
 
         def warnings(found: Sequence[AnalysisWarning]) -> None:
             with self._lock:  # the job's warnings mean "degradations found so far" (§ 3.5)
-                record.warnings = tuple(found)
-                record.times.updated_at = self.clock()
+                rec = self._jobs.get(job_id)
+                if rec is None:
+                    return
+                rec.warnings = tuple(found)
+                rec.times.updated_at = self.clock()
+                self._persist_job(rec)
 
         tools = self.tools_for()
         log.info("pipeline job start job_id=%s video_id=%s", job_id, video_id)
@@ -1424,13 +1886,25 @@ class MockService:
         finally:
             if tools.helix is not None:
                 tools.helix.close()
+        result_file = self.output_dir / "analysis" / f"{job_id}.json"
+        write_result_json(result_file, result)
         with self._lock:
+            rec = self._jobs.get(job_id)
+            if rec is None:
+                return
             now = self.clock()
-            record.result = result
-            record.warnings = result.warnings
-            record.state = "done"
-            record.progress = None
-            record.times.updated_at = record.times.finished_at = now
+            rec.result = result
+            rec.result_path = result_file
+            rec.title = result.vod.title
+            rec.broadcaster_id = result.vod.broadcaster_id
+            rec.broadcaster_display_name = result.vod.broadcaster_display_name
+            rec.duration_s = result.vod.duration_s
+            rec.candidate_count = len(result.candidates)
+            rec.warnings = result.warnings
+            rec.state = "done"
+            rec.progress = None
+            rec.times.updated_at = rec.times.finished_at = now
+            self._persist_job(rec)
         log.info(
             "pipeline job done job_id=%s video_id=%s candidates=%d warnings=%d",
             job_id,
@@ -1441,11 +1915,17 @@ class MockService:
 
     def _fail_job(self, job_id: str, error: ApiError) -> None:
         with self._lock:
-            record = self._jobs[job_id]
+            record = self._jobs.get(job_id)
+            if record is None:
+                return
             now = self.clock()
             record.state = "failed"
             record.error = error
             record.times.updated_at = record.times.finished_at = now
+            try:
+                self._persist_job(record)
+            except (sqlite3.Error, OSError):
+                log.exception("couldn't persist failed job state job_id=%s", job_id)
 
     def _run_renders(self) -> None:
         while (render_id := self._render_queue.get()) is not None:
@@ -1927,14 +2407,22 @@ class MockService:
         except Exception:  # a bug: fail the render, keep the worker alive
             log.exception("mock render failed id=%s", render_id)
             with self._lock:
-                record = self._renders[render_id]
+                record = self._renders.get(render_id)
+                if record is None:
+                    return
                 record.state = "failed"
                 record.error = ApiError(code="internal_error", message=_INTERNAL)
                 record.times.updated_at = record.times.finished_at = self.clock()
+                try:
+                    self._persist_render(record)
+                except (sqlite3.Error, OSError):
+                    log.exception("couldn't persist failed render state id=%s", render_id)
 
     def _run_render(self, render_id: str) -> None:
         with self._lock:
-            record = self._renders[render_id]
+            record = self._renders.get(render_id)
+            if record is None:
+                return
         if record.kind == "export":
             self._run_export(record)
             return
@@ -2210,6 +2698,8 @@ class MockService:
         )
         message = _RENDER_MESSAGES.get(stage, final)
         with self._lock:
+            if record.render_id not in self._renders:
+                return
             now = self.clock()
             if record.state == "queued":  # running and its first progress together (§ 3.4)
                 record.state = "running"
@@ -2222,6 +2712,7 @@ class MockService:
                 message=message,
             )
             record.times.updated_at = now
+            self._persist_render(record)
 
     def _finish_render(
         self,
@@ -2232,6 +2723,8 @@ class MockService:
         duration_s: float | None = None,
     ) -> None:
         with self._lock:
+            if record.render_id not in self._renders:
+                return
             now = self.clock()
             record.state = "done" if error is None else "failed"
             record.file = file
@@ -2243,6 +2736,13 @@ class MockService:
                 if duration_s is not None:
                     record.duration_s = duration_s
             record.times.updated_at = record.times.finished_at = now
+            try:
+                self._persist_render(record)
+            except (sqlite3.Error, OSError):
+                if error is not None:
+                    log.exception("couldn't persist failed render state id=%s", record.render_id)
+                else:
+                    raise
 
     def _run_export(self, record: _RenderRecord) -> None:
         """Render one export for real (§ 6.3): obtain the media, transcribe, render."""
@@ -2318,6 +2818,37 @@ class MockService:
 
 
 _INTERNAL: Final = "Something went wrong on the server. Try again."
+_RESULT_FILE_MISSING: Final = "This analysis result is no longer on disk. Analyze the VOD again."
+_DELETE_FAILED: Final = (
+    "Some files for this job couldn't be removed from disk. Close any program using them and "
+    "try deleting again."
+)
+_PIPELINE_MEDIA_IN_MOCK: Final = (
+    "This VOD was analyzed with the real pipeline. Restart the server in pipeline mode to "
+    "preview or export it."
+)
+_JOB_INTERRUPTED: Final = ApiError(
+    code="interrupted",
+    message="The server stopped while this analysis was running. Analyze the VOD again.",
+)
+_EXPORT_INTERRUPTED: Final = ApiError(
+    code="interrupted",
+    message="The server stopped while this export was running. Export the clip again.",
+)
+_HIGHLIGHTS_INTERRUPTED: Final = ApiError(
+    code="interrupted",
+    message="The server stopped while this highlights video was rendering. Make it again.",
+)
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 _LOCAL_FILE_MISSING: Final = (
     "The video file for this analysis is missing or can't be read. Check that it's still there, "
     "or analyze the VOD again."
