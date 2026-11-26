@@ -35,7 +35,7 @@ The initial setup uses `autoclipper serve` on a development machine and the app 
 | nullable | `T \| None`, always serialized | `T \| null` |
 | enum | `Literal[...]` (always in request models, § 1) or `StrEnum` | string-literal union |
 
-Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`, `ApiError`, `ErrorResponse`, `AnalysisResult`, `VodSummary`, `ScorerInfo`, `Candidate`, `SignalDetail`, `CandidateMedia`, `PreviewMedia`, `ExportAvailability`, `CreateExportRequest`, `Export`, `CreateHighlightsRequest`, `HighlightsSegment`, `HighlightsVideo`, `Health`, `PreflightCheck`, `PreflightReport`, `ChannelInfo`, `ChannelVod`, `ChannelVodsResponse`.
+Model names used below: `CreateJobRequest`, `Job`, `JobRenderSummary`, `JobSummary`, `JobListResponse`, `DeleteJobResponse`, `Progress`, `AnalysisWarning`, `ApiError`, `ErrorResponse`, `AnalysisResult`, `VodSummary`, `ScorerInfo`, `Candidate`, `SignalDetail`, `CandidateMedia`, `PreviewMedia`, `ExportAvailability`, `CreateExportRequest`, `Export`, `CreateHighlightsRequest`, `HighlightsSegment`, `HighlightsVideo`, `Health`, `PreflightCheck`, `PreflightReport`, `ChannelInfo`, `ChannelVod`, `ChannelVodsResponse`.
 
 ## 2. Endpoints
 
@@ -46,8 +46,10 @@ Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`
 | `GET` | `/api/v1/channels/vods` | Resolve a channel URL or login and list recent archive VODs (§ 9.7) | `200` `ChannelVodsResponse` |
 | `POST` | `/api/v1/tools/setup` | Start downloading pinned managed tools (`ffmpeg`, `twitch_downloader`) in the background (§ 9.8) | `202` (or `200` if already running/up to date) `ToolSetupStatus` |
 | `GET` | `/api/v1/tools/setup` | Current progress and result of managed tool setup (§ 9.8) | `200` `ToolSetupStatus` |
+| `GET` | `/api/v1/jobs` | List analysis jobs (newest first, paginated, optional `q` and `state` filters, § 3.7) | `200` `JobListResponse` |
 | `POST` | `/api/v1/jobs` | Start analyzing a VOD | `201` new `Job`; `200` if the same VOD is already queued/running |
 | `GET` | `/api/v1/jobs/{job_id}` | Job status and progress (poll this) | `200` `Job` |
+| `DELETE` | `/api/v1/jobs/{job_id}` | Remove a finished job from the library index and optionally delete its rendered files (§ 3.8) | `200` `DeleteJobResponse` |
 | `GET` | `/api/v1/jobs/{job_id}/result` | Ranked candidates of a `done` job | `200` `AnalysisResult` |
 | `GET` | `/api/v1/jobs/{job_id}/candidates/{candidate_id}/media` | Preview and export availability for one candidate | `200` `CandidateMedia` |
 | `GET` | `/api/v1/media/{media_id}` | Preview video file, reached only through `PreviewMedia.url` (§ 5.1) | `200`/`206` `video/mp4` |
@@ -58,7 +60,7 @@ Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`
 | `GET` | `/api/v1/highlights/{highlights_id}` | Highlights video status (poll this) | `200` `HighlightsVideo` |
 | `GET` | `/api/v1/highlights/{highlights_id}/file` | Download the finished MP4 | `200` `video/mp4` |
 
-Clients never build media or file URLs; they use `PreviewMedia.url`, `Export.download_url` and `HighlightsVideo.download_url` as returned (§ 1). Errors for every endpoint are in § 8. There's no list, cancel or delete endpoint in v1 (§ 9.3).
+Clients never build media or file URLs; they use `PreviewMedia.url`, `Export.download_url` and `HighlightsVideo.download_url` as returned (§ 1). Errors for every endpoint are in § 8. There is no cancel endpoint in v1 (§ 9.3).
 
 ## 3. Jobs
 
@@ -321,6 +323,78 @@ HTTP errors for jobs use the envelope from § 8:
 ```
 
 (The `//` comments label the examples; real bodies are plain JSON.)
+
+### 3.7 List jobs (Library)
+
+`GET /api/v1/jobs` returns a paginated `JobListResponse` with `Cache-Control: no-store`, ordered newest first (`created_at` descending, then creation sequence).
+
+Query parameters (unknown or out-of-range values return `422 invalid_request`):
+
+| Parameter | Type | Default | Notes |
+|---|---|---|---|
+| `limit` | int | `20` | Page size, `1..100` |
+| `offset` | int | `0` | Non-negative number of matching jobs to skip |
+| `q` | str \| null | `null` | Case-insensitive substring filter across `title`, `broadcaster_display_name`, and `video_id` |
+| `state` | `queued` \| `running` \| `done` \| `failed` \| null | `null` | Optional job-state filter |
+
+`JobListResponse`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `items` | list<`JobSummary`> | Matching jobs on this page, newest first |
+| `total` | int | Total matching jobs across all pages |
+| `limit` | int | Echoed page size |
+| `offset` | int | Echoed offset |
+| `has_more` | bool | True when more matching items follow this page |
+
+`JobSummary`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `job_id` | str | |
+| `video_id` | str | |
+| `video_path` | str \| null | As requested |
+| `state` | `queued` \| `running` \| `done` \| `failed` | |
+| `title` | str \| null | VOD title once known; `null` before completion |
+| `broadcaster_id` | str \| null | Channel ID once known |
+| `broadcaster_display_name` | str \| null | Channel display name once known |
+| `duration_s` | float \| null | VOD duration in seconds once known |
+| `thumbnail_url` | str \| null | VOD thumbnail URL if known |
+| `candidate_count` | int \| null | Number of ranked candidates once `done` |
+| `result_available` | bool | True iff `state` is `done` and the saved result JSON is present on disk |
+| `export_count` | int | Number of `done` exports for this job whose file is still on disk |
+| `missing_export_count` | int | Number of `done` exports for this job whose file is no longer on disk |
+| `highlights_count` | int | Number of `done` highlights videos for this job whose file is still on disk |
+| `missing_highlights_count` | int | Number of `done` highlights videos for this job whose file is no longer on disk |
+| `exports` | list<`JobRenderSummary`> | Export records for this job, newest first |
+| `highlights` | list<`JobRenderSummary`> | Highlights records for this job, newest first |
+| `warning_count` | int | Number of `warnings` on the job |
+| `error` | `ApiError` \| null | Non-null iff `state` is `failed` |
+| `created_at` | timestamp | |
+| `started_at` | timestamp \| null | |
+| `updated_at` | timestamp | |
+| `finished_at` | timestamp \| null | |
+
+`JobRenderSummary`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `render_id` | str | `export_id` or `highlights_id` |
+| `kind` | `export` \| `highlights` | |
+| `candidate_id` | str \| null | Non-null for exports, `null` for highlights |
+| `state` | `queued` \| `running` \| `done` \| `failed` | |
+| `file_available` | bool | True iff `state` is `done` and the rendered MP4 still exists on disk |
+| `download_url` | str \| null | Root-relative download URL when `file_available` is true, else `null` |
+| `duration_s` | float \| null | Clip or finished highlights duration in seconds |
+| `created_at` | timestamp | |
+| `finished_at` | timestamp \| null | |
+
+### 3.8 Delete a job
+
+`DELETE /api/v1/jobs/{job_id}` removes a finished (`done` or `failed`) job and its render records from the persistent index, and removes its saved per-job analysis result JSON. By default (`delete_exports=false`), finished export and highlights MP4 files are left on disk; pass `?delete_exports=true` to also delete them. Never deletes a user-supplied `video_path`.
+
+- Success: `200 OK` with `Cache-Control: no-store` and `DeleteJobResponse`: `{ "job_id": "...", "deleted": true, "deleted_files": <int> }`, where `deleted_files` counts rendered MP4 files removed from disk.
+- Errors: `404 job_not_found`, `409 job_in_progress` (the job or one of its renders is still `queued` or `running`), `422 invalid_request`.
 
 ## 4. Results and candidates
 
@@ -1007,6 +1081,7 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 |---|---|---|---|
 | 404 | `not_found` | Unknown path | `null` |
 | 404 | `job_not_found` | `/jobs/{job_id}…`, `POST /exports`, `POST /highlights` | `null` |
+| 404 | `result_file_missing` | `/jobs/{job_id}/result`, media, `POST /exports`, `POST /highlights` (saved result JSON removed from disk) | `null` |
 | 404 | `candidate_not_found` | Media endpoint, `POST /exports`, `POST /highlights` | `null` |
 | 404 | `export_not_found` | `/exports/{export_id}…` | `null` |
 | 404 | `export_file_missing` | Export file | `null` |
@@ -1016,6 +1091,7 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 | 404 | `channel_not_found` | `GET /channels/vods` | `null` |
 | 405 | `method_not_allowed` | Known path, wrong method | `null` |
 | 409 | `job_not_done` | Result, media, `POST /exports`, `POST /highlights` | `{ "state": "<job state>" }` |
+| 409 | `job_in_progress` | `DELETE /jobs/{job_id}` (job or one of its renders is `queued` or `running`) | `null` |
 | 409 | `export_not_done` | Export file | `{ "state": "<export state>" }` |
 | 409 | `highlights_not_done` | Highlights file | `{ "state": "<highlights state>" }` |
 | 409 | `media_unavailable` | `POST /exports`, `POST /highlights` | `{ "reason": "<MediaUnavailableReason>" }` |
@@ -1052,7 +1128,7 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 // 404 from GET /api/v1/media/med_0000000000000000
 { "error": { "code": "media_not_found", "message": "This video is no longer available. Reload the moment to get a new link.", "details": null } }
 
-// 405, e.g. DELETE /api/v1/jobs/job_3f9c2b7a1d4e4c8b
+// 405, e.g. DELETE /api/v1/health
 { "error": { "code": "method_not_allowed", "message": "This action isn't supported.", "details": null } }
 
 // 422 from POST /api/v1/exports with "captions": "yes"
@@ -1080,13 +1156,15 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 ### 9.3 Worker, concurrency and restarts
 
 - Long work runs in an in-process background worker, never in the request handler ([overview § 4.7](overview.md#47-interfaces)). One analysis job and one render run at a time; exports and highlights videos share the render queue. Others wait in `queued`, first in, first out.
-- There's no cancel, list or delete in v1: mock jobs take seconds, and restarting the local server stops a mistaken real job (and forgets every record, below). A later cancel endpoint that fails the job with a new `cancelled` code would be a minor change (§ 10).
-- Job, export, highlights and media records live in memory. **A server restart forgets them**: their IDs return `404 job_not_found`, `export_not_found`, `highlights_not_found` or `media_not_found` and nothing resumes. Because IDs are never reused (§ 1), a stale ID can't reach a newer job. A client that gets a 404 for an ID it was polling says the job no longer exists (the server may have restarted) and offers to start again. On-disk pipeline caches may make the rerun faster but aren't part of the contract.
-- If a later version keeps records across restarts, the server must mark anything that was `queued` or `running` at shutdown as `failed` with `interrupted` when it starts, never leave it `running`.
+- There is no cancel endpoint in v1; a later cancel endpoint that fails a job with a new `cancelled` code would be a minor change (§ 10). Finished jobs can be listed via `GET /api/v1/jobs` (§ 3.7) and removed via `DELETE /api/v1/jobs/{job_id}` (§ 3.8).
+- Job, export and highlights records are persisted in a SQLite index (`<artifacts_dir>/library.db`, WAL mode) and each finished job's `AnalysisResult` is written atomically to `<artifacts_dir>/analysis/<job_id>.json`. On restart, past `done` and `failed` jobs, results, exports, highlights and downloads keep working.
+- Any job, export or highlights render that was `queued` or `running` when the server stopped is marked `failed` with `code: "interrupted"` and a retryable message on the next startup; it is never left `running`.
+- Temporary preview media IDs (`med_*`) remain session-scoped in memory: after a restart, calling `GET /api/v1/jobs/{job_id}/candidates/{candidate_id}/media` issues a fresh preview URL.
+- If the database file is corrupt or truncated, startup quarantines it aside and starts fresh without crashing. If a saved result JSON or rendered MP4 was removed from disk, the job still loads and lists cleanly (`result_available: false` or `file_available: false`), and fetching the missing file returns `404 result_file_missing`, `export_file_missing` or `highlights_file_missing`.
 
 ### 9.4 CORS and local setup
 
-- The API allows cross-origin requests from a configured list of origins, by default the local Next.js dev server (`http://localhost:3000` and `http://127.0.0.1:3000`): methods `GET` and `POST`, request header `Content-Type`, no credentials. It exposes the `Location` and `Content-Disposition` headers. Ports in this doc are examples; #28 and #33 set the real ones.
+- The API allows cross-origin requests from a configured list of origins, by default the local Next.js dev server (`http://localhost:3000` and `http://127.0.0.1:3000`): methods `GET`, `POST` and `DELETE`, request header `Content-Type`, no credentials. It exposes the `Location` and `Content-Disposition` headers. Ports in this doc are examples; #28 and #33 set the real ones.
 - The frontend reads the API origin (scheme, host and port, no path) from an environment variable (#33) and resolves every returned URL against it (§ 1). A Next.js rewrite of `/api/v1/*` to the API is an acceptable alternative: the API origin is then the app's own origin, and returned URLs still work because they're root-relative.
 - The initial unauthenticated server binds to `127.0.0.1` by default. Hosted deployment can add authentication, configured origins and an upload or media-reference route for remote inputs ([delivery defaults](../decisions/0011-data-sources-and-local-delivery.md)); a browser's local path is not a path on a remote server.
 
