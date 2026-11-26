@@ -28,10 +28,9 @@ Start with the task guide and current state, then read what's relevant:
 
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — manages the Python **3.12** environment pinned in [`.python-version`](.python-version) (`uv sync` downloads 3.12 if needed).
 - **[Node.js 24 LTS](https://nodejs.org/)** — pinned in [`web/.nvmrc`](web/.nvmrc) (`npm` is included).
-- **FFmpeg & FFprobe** (6+, with `libx264` and `libass` for captions) on `PATH` — required by `autoclipper serve`, audio normalization, clip export and highlights rendering.
-- **[TwitchDownloaderCLI 1.56.5](https://github.com/lay295/TwitchDownloader/releases/tag/1.56.5)** on `PATH` — pinned release used for chat replay and automatic video segment downloads (optional if you only run `--jobs mock` or provide a local VOD file without chat).
+- **FFmpeg & FFprobe** (6+, with `libx264` and `libass` for captions) and **[TwitchDownloaderCLI 1.56.5](https://github.com/lay295/TwitchDownloader/releases/tag/1.56.5)** — no need to hunt for them by hand; step 2 installs pinned, SHA-256-verified copies into your per-user AutoClipper tools folder via `uv run autoclipper setup-tools` (existing copies on `PATH` or explicit `AUTOCLIPPER_*_PATH` overrides also work).
 
-Platform-specific install commands, PowerShell equivalents, git hooks and troubleshooting live in [`docs/development/setup.md`](docs/development/setup.md).
+Platform-specific install commands, pinned tool sources/licenses, offline setup, PowerShell equivalents, git hooks and troubleshooting live in [`docs/development/setup.md`](docs/development/setup.md).
 
 ### 2. Install
 
@@ -41,11 +40,15 @@ From the repository root:
 # Python backend and CLI (includes faster-whisper for burned-in captions, used by default on web clip exports)
 uv sync --extra captions
 
+# Download pinned, SHA-256-verified FFmpeg/FFprobe and TwitchDownloaderCLI into your managed tools folder
+# (safe to re-run; skips tools that are already installed and verified)
+uv run autoclipper setup-tools
+
 # Web frontend
 cd web && npm ci && cd ..
 ```
 
-If you omit `--extra captions`, CLI exports work with captions off (the default) and web exports work when you turn captions off in the clip editor; automatic captioned exports on the results screen need `faster-whisper`.
+If you prefer system-installed tools on `PATH` or an offline install, see [`docs/development/setup.md#managed-external-tools`](docs/development/setup.md#managed-external-tools) (`--show-urls` and `--from-dir`). If you omit `--extra captions`, CLI exports work with captions off (the default) and web exports work when you turn captions off in the clip editor; automatic captioned exports on the results screen need `faster-whisper`.
 
 ### 3. Configure `.env`
 
@@ -80,9 +83,9 @@ What the preflight statuses mean:
 
 - `[OK]` — ready to use.
 - `[WARN]` — optional or degraded capability (for example, `TwitchDownloaderCLI`, `AUTOCLIPPER_CHAT_HASH_SALT`, or the `captions` extra is missing; or Twitch credentials are unset in `mock` mode). `autoclipper doctor` still exits `0` and `autoclipper serve` starts normally.
-- `[FAIL]` — required setup is missing (`ffmpeg`/`ffprobe` not on `PATH`, or `TWITCH_CLIENT_ID`/`TWITCH_CLIENT_SECRET` unset in `pipeline` mode). `autoclipper doctor` exits `1`.
+- `[FAIL]` — required setup is missing (`ffmpeg`/`ffprobe` not found in the managed tools folder or on `PATH`, or `TWITCH_CLIENT_ID`/`TWITCH_CLIENT_SECRET` unset in `pipeline` mode). `autoclipper doctor` exits `1`.
 
-`autoclipper serve` prints the same preflight summary at startup (never blocking startup on warnings) and serves it at `GET /api/v1/preflight` (no secrets or local file paths are included). When the web app talks to the backend, the start page shows a dismissible banner listing any `warn` or `fail` checks with their fix steps.
+`autoclipper doctor` also prints which copy of each tool is in use (`config`, `managed`, or `path`) and its local path (omitted from `--json` and `GET /api/v1/preflight`). `autoclipper serve` prints the same preflight summary at startup (never blocking startup on warnings) and serves it at `GET /api/v1/preflight` (no secrets or local file paths are included). When the web app talks to the backend, the start page shows a dismissible banner listing any `warn` or `fail` checks with their fix steps.
 
 ### 5. Run the backend and web app
 
