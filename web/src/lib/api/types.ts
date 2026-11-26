@@ -189,9 +189,38 @@ export interface PreflightCheck {
   status: PreflightStatus;
   message: string;
   fix: string | null;
+  source?: string | null; // open enum: "config" | "managed" | "path" | "mixed" | null
 }
 
 export interface PreflightReport {
   status: PreflightStatus;
   checks: PreflightCheck[];
+}
+
+export type ToolSetupName = "ffmpeg" | "twitch_downloader";
+export type ToolSetupState = "idle" | "running" | "done" | "failed";
+
+export interface ToolSetupRequest {
+  tools?: ToolSetupName[] | null;
+  force?: boolean;
+}
+
+export interface ToolSetupItem {
+  tool: ToolSetupName;
+  label: string;
+  stage: string; // open enum: queued, checking, downloading, verifying, extracting, done, skipped, failed
+  message: string;
+  bytes_downloaded: number | null;
+  bytes_total: number | null;
+  fraction: number | null;
+  error: ApiError | null;
+}
+
+export interface ToolSetupStatus {
+  state: ToolSetupState;
+  items: ToolSetupItem[];
+  error: ApiError | null;
+  started_at: string | null;
+  updated_at: string;
+  finished_at: string | null;
 }

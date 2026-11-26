@@ -20,6 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from autoclipper.analysis import AnalysisResult
 from autoclipper.api.channels import HelixFactory, register_channel_routes
 from autoclipper.api.service import ApiException, MockService
+from autoclipper.api.tools import ToolSetupManager, create_tools_router
 from autoclipper.config import get_settings
 from autoclipper.preflight import run_preflight
 from autoclipper.schemas import (
@@ -95,15 +96,18 @@ def create_app(
     cors_origins: Sequence[str] = DEFAULT_CORS_ORIGINS,
     preflight: Callable[[], PreflightReport] | None = None,
     helix_factory: HelixFactory | None = None,
+    tool_setup: ToolSetupManager | None = None,
 ) -> FastAPI:
     """Build the API around `service`; closing the app stops its workers."""
     close_channels: Callable[[], None] | None = None
+    active_tool_setup = ToolSetupManager() if tool_setup is None else tool_setup
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
         if close_channels is not None:
             close_channels()
+        active_tool_setup.close()
         service.close()
 
     app = FastAPI(
@@ -181,6 +185,10 @@ def create_app(
             else run_preflight(get_settings(), job_runner=service.job_runner)
         )
         return _json(report, headers=_NO_STORE)
+
+    app.include_router(
+        create_tools_router(active_tool_setup, prefix=API_PREFIX, allowed_origins=cors_origins)
+    )
 
     @app.post(f"{API_PREFIX}/jobs", response_model=Job, status_code=201)
     def create_job(request: CreateJobRequest) -> Response:

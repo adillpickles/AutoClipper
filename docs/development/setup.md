@@ -105,6 +105,8 @@ uv run autoclipper setup-tools --show-urls        # list pinned URLs, filenames,
 uv run autoclipper setup-tools --from-dir ./pkg   # offline install from pre-downloaded archives (SHA-256 verified)
 ```
 
+When running the web app against `autoclipper serve`, missing tools can also be installed directly from the preflight banner on the start page (calls `POST` / `GET /api/v1/tools/setup` and refreshes preflight automatically).
+
 ### Git hooks
 
 After `pre-commit install`, the hooks run on the files you stage each time you `git commit`. The first commit takes a minute because pre-commit downloads the hook environments (needs network). Run all hooks on every file with `uv run pre-commit run --all-files`.
