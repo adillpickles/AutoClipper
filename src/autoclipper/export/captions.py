@@ -96,6 +96,14 @@ class Transcriber(Protocol):
         ...
 
 
+class TranscriptWordCache(Protocol):
+    """Read-only lookup for cached word timings covering a clip interval (#64)."""
+
+    def get_clip_words(self, start_s: float, end_s: float) -> Sequence[Word] | None:
+        """Return clip-relative words for ``[start_s, end_s]`` if cached, else None."""
+        ...
+
+
 @dataclass
 class FasterWhisperTranscriber:
     """faster-whisper on the CPU (int8), with word timestamps and voice-activity filtering.
@@ -316,6 +324,22 @@ def extract_audio(
     return wav
 
 
+def _auto_transcript_cache(source: Path, model_size: str) -> TranscriptWordCache | None:
+    """Find a matching transcript cache under the configured data dir, if present."""
+    try:
+        data_dir = get_settings().data_dir
+    except Exception:
+        return None
+    if not (data_dir / "interim" / "transcripts").is_dir():
+        return None
+    from autoclipper.features.transcript_cache import find_cache_for_media
+
+    try:
+        return find_cache_for_media(data_dir, source, model_name=model_size)
+    except OSError:
+        return None
+
+
 def caption_lines_for(
     source: Path,
     interval: Interval,
@@ -324,17 +348,41 @@ def caption_lines_for(
     *,
     has_audio: bool = True,
     runner: Runner | None = None,
+    transcript_cache: TranscriptWordCache | None = None,
 ) -> list[CaptionLine]:
-    """Transcribe `interval` of `source` and group it into caption lines (clip time)."""
+    """Transcribe `interval` of `source` and group it into caption lines (clip time).
+
+    Reuses word timings from `transcript_cache` (or a matching cache under ``data_dir`` when
+    using `FasterWhisperTranscriber`) whenever a cached span covers `interval`, skipping a
+    second audio extraction and transcription.
+    """
     if not has_audio:
         return []
-    try:
-        wav = extract_audio(source, interval, work_dir / "clip.wav", runner=runner)
-    except FFmpegError as exc:
-        raise CaptioningError(f"could not extract the clip's audio for captions: {exc}") from exc
-    words = [
-        w for w in transcriber(wav) if w.start_s < interval.duration_s
-    ]  # nothing past the clip's end
+    cached: Sequence[Word] | None = None
+    cache = transcript_cache
+    if cache is None and isinstance(transcriber, FasterWhisperTranscriber):
+        cache = _auto_transcript_cache(source, transcriber.model_size)
+    if cache is not None:
+        cached = cache.get_clip_words(interval.start_s, interval.end_s)
+    if cached is not None:
+        log.info(
+            "captions transcript cache hit source=%s start_s=%.3f end_s=%.3f words=%d",
+            source,
+            interval.start_s,
+            interval.end_s,
+            len(cached),
+        )
+        words = [w for w in cached if w.start_s < interval.duration_s]
+    else:
+        try:
+            wav = extract_audio(source, interval, work_dir / "clip.wav", runner=runner)
+        except FFmpegError as exc:
+            raise CaptioningError(
+                f"could not extract the clip's audio for captions: {exc}"
+            ) from exc
+        words = [
+            w for w in transcriber(wav) if w.start_s < interval.duration_s
+        ]  # nothing past the clip's end
     lines = group_words(words)
     return [
         CaptionLine(line.text, line.start_s, min(line.end_s, interval.duration_s)) for line in lines
@@ -373,6 +421,7 @@ def export_clip_with_captions(
     has_audio: Callable[[Path], bool] | None = None,
     check_cut: Callable[[Interval], None] | None = None,
     on_stage: Callable[[Stage], None] | None = None,
+    transcript_cache: TranscriptWordCache | None = None,
 ) -> ExportResult:
     """Export `request` with burned-in captions of its speech.
 
@@ -387,6 +436,8 @@ def export_clip_with_captions(
         check_cut: Called with the planned (actual) interval before anything is transcribed;
             it may raise to stop the export.
         on_stage: Called with ``transcribing`` before transcription and ``rendering`` after it.
+        transcript_cache: Optional transcript cache checked before extracting audio or running
+            `transcriber` (#64).
 
     Raises:
         CaptioningError: The audio couldn't be extracted or transcribed; nothing is written
@@ -410,7 +461,13 @@ def export_clip_with_captions(
             if on_stage is not None:
                 on_stage("transcribing")
             lines = caption_lines_for(
-                request.source, actual, transcribe, work, has_audio=audio, runner=runner
+                request.source,
+                actual,
+                transcriber=transcribe,
+                work_dir=work,
+                has_audio=audio,
+                runner=runner,
+                transcript_cache=transcript_cache,
             )
             if on_stage is not None:
                 on_stage("rendering")

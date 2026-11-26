@@ -764,6 +764,27 @@ def analyze(
     lexicon: Annotated[Path, typer.Option(help="Versioned chat lexicon.")] = Path(
         "configs/lexicon.yaml"
     ),
+    speech_features: Annotated[
+        bool,
+        typer.Option(
+            "--speech-features/--no-speech-features",
+            help="Transcribe top shortlisted candidates with faster-whisper and attach speech "
+            "features (opt-in; requires the captions extra).",
+        ),
+    ] = False,
+    speech_top_n: Annotated[
+        int | None,
+        typer.Option(
+            min=1,
+            help="Maximum shortlisted candidates to transcribe when --speech-features is set "
+            "(default: AUTOCLIPPER_SPEECH_TOP_N, 50).",
+            show_default=False,
+        ),
+    ] = None,
+    speech_keywords: Annotated[
+        Path,
+        typer.Option(help="Versioned spoken reaction keyword list used with --speech-features."),
+    ] = Path("configs/speech_keywords.yaml"),
     out: Annotated[
         Path | None,
         typer.Option(help="Where to write the result JSON.", show_default=False),
@@ -773,6 +794,11 @@ def analyze(
     from autoclipper.analyze import AnalyzeError, analyze_vod, result_path
     from autoclipper.config import MissingSettingError
     from autoclipper.features.chat import LexiconError, load_lexicon
+    from autoclipper.features.speech import (
+        SpeechKeywords,
+        SpeechKeywordsError,
+        load_speech_keywords,
+    )
     from autoclipper.ingest.twitch_api import HelixClient
     from autoclipper.ingest.vod import IngestTools
     from autoclipper.models.base import ScorerError
@@ -781,6 +807,9 @@ def analyze(
     video_id = parse_vod(vod)
     if video_id is None:
         typer.echo("Error: invalid_vod_link: that isn't a Twitch VOD link or video ID", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    if speech_top_n is not None and not speech_features:
+        typer.echo("Error: --speech-top-n requires --speech-features", err=True)
         raise typer.Exit(ExitCode.USER_ERROR)
     if video is not None and not video.is_file():
         typer.echo(f"Error: invalid_video_path: video file not found: {video}", err=True)
@@ -794,6 +823,13 @@ def analyze(
     except LexiconError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
+    loaded_speech_keywords: SpeechKeywords | None = None
+    if speech_features:
+        try:
+            loaded_speech_keywords = load_speech_keywords(speech_keywords)
+        except SpeechKeywordsError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(ExitCode.USER_ERROR) from None
     options: dict[str, Any] = {}
     try:
         options["salt"] = settings.require_chat_hash_salt()
@@ -815,6 +851,10 @@ def analyze(
             baseline=scorer,
             model_dir=model,
             out_path=out,
+            include_speech_features=speech_features,
+            speech_top_n=speech_top_n if speech_top_n is not None else settings.speech_top_n,
+            speech_model=settings.whisper_model,
+            speech_keywords=loaded_speech_keywords,
         )
     except AnalyzeError as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -1312,4 +1352,199 @@ def audio_events(
     typer.echo(
         f"Wrote {target} ({extraction.scored_windows} of {extraction.features.height} windows "
         f"scored{empty_note}, feature_version={AUDIO_EVENTS_FEATURE_VERSION})"
+    )
+
+
+@app.command(name="speech-features")
+def speech_features(
+    result: Annotated[
+        Path,
+        typer.Argument(help="Saved AnalysisResult JSON (autoclipper analyze's output)."),
+    ],
+    wav: Annotated[
+        Path | None,
+        typer.Option(
+            help="Normalized 16 kHz mono 16-bit WAV for the VOD. Default: "
+            "<data dir>/interim/audio/<video_id>.wav.",
+            show_default=False,
+        ),
+    ] = None,
+    top_n: Annotated[
+        int | None,
+        typer.Option(
+            min=1,
+            help="Maximum top-ranked shortlisted candidates to transcribe "
+            "(default: AUTOCLIPPER_SPEECH_TOP_N, 50).",
+            show_default=False,
+        ),
+    ] = None,
+    pad: Annotated[
+        float,
+        typer.Option(
+            min=0.0,
+            help="Seconds of audio padding on each side of each candidate when transcribing.",
+        ),
+    ] = 2.0,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            help="faster-whisper model name (default: AUTOCLIPPER_WHISPER_MODEL, base).",
+            show_default=False,
+        ),
+    ] = None,
+    keywords: Annotated[
+        Path,
+        typer.Option(help="Versioned spoken reaction keyword list."),
+    ] = Path("configs/speech_keywords.yaml"),
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Where to write the Parquet table. Default: <artifacts dir>/features/"
+            "<video_id>_speech.parquet.",
+            show_default=False,
+        ),
+    ] = None,
+    update_result: Annotated[
+        bool,
+        typer.Option(
+            help="Also attach computed speech_features onto candidates in the AnalysisResult JSON."
+        ),
+    ] = False,
+    force: Annotated[bool, typer.Option(help="Replace an existing output Parquet file.")] = False,
+) -> None:
+    """Extract opt-in Whisper speech features for the top shortlisted candidates (#64)."""
+    import tempfile
+
+    from pydantic import ValidationError
+
+    from autoclipper.analysis import AnalysisResult
+    from autoclipper.features.audio import AudioFormatError
+    from autoclipper.features.speech import (
+        SpeechKeywordsError,
+        attach_speech_features,
+        extract_speech_features,
+        load_speech_keywords,
+    )
+    from autoclipper.ingest.media import normalized_audio_path
+
+    if not result.is_file():
+        typer.echo(f"Error: analysis result not found: {result}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+    try:
+        analysis = AnalysisResult.model_validate_json(result.read_text(encoding="utf-8"))
+    except (OSError, ValidationError) as exc:
+        typer.echo(f"Error: can't read analysis result {result}: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+
+    settings = get_settings()
+    video_id = analysis.vod.video_id
+    try:
+        wav_path = wav if wav is not None else normalized_audio_path(settings.data_dir, video_id)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    if not wav_path.is_file():
+        typer.echo(f"Error: WAV file not found: {wav_path}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+
+    try:
+        loaded_keywords = load_speech_keywords(keywords)
+    except SpeechKeywordsError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+
+    if out is not None:
+        target = out
+    else:
+        if not RUN_ID.fullmatch(video_id) or _is_reserved_name(video_id):
+            typer.echo(
+                f"Error: unsafe video_id {video_id!r} for default output filename; pass --out",
+                err=True,
+            )
+            raise typer.Exit(ExitCode.USER_ERROR)
+        target = settings.artifacts_dir / "features" / f"{video_id}_speech.parquet"
+    if target.exists() and not force:
+        typer.echo(f"Error: {target} exists; pass --force to replace it", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+
+    effective_top_n = top_n if top_n is not None else settings.speech_top_n
+    effective_model = model if model is not None else settings.whisper_model
+    total_hint = min(len(analysis.candidates), effective_top_n)
+
+    try:
+        with typer.progressbar(
+            length=max(total_hint, 1), label="Extracting speech features"
+        ) as bar:
+            last_done = 0
+
+            def _advance(done: int, total: int) -> None:
+                nonlocal last_done
+                bar.length = max(total, 1)
+                step = max(0, done - last_done)
+                if step:
+                    bar.update(step)
+                    last_done = done
+
+            extraction = extract_speech_features(
+                analysis.candidates,
+                wav_path,
+                video_id=video_id,
+                vod_duration_s=analysis.vod.duration_s,
+                top_n=effective_top_n,
+                pad_s=pad,
+                model_name=effective_model,
+                keywords=loaded_keywords,
+                data_dir=settings.data_dir,
+                on_progress=_advance,
+            )
+    except (ValueError, AudioFormatError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+
+    if extraction.warning is not None:
+        typer.echo(f"Warning: {extraction.warning}", err=True)
+    if extraction.skipped_unavailable and not extraction.by_candidate_id:
+        return
+
+    tmp_path: Path | None = None
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp", delete=False
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+        extraction.features.write_parquet(tmp_path)
+        tmp_path.replace(target)
+        tmp_path = None
+    except OSError as exc:
+        typer.echo(f"Error: can't write {target}: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+    if update_result and extraction.by_candidate_id:
+        enriched = attach_speech_features(analysis, extraction.by_candidate_id)
+        part = result.with_name(f".{result.name}.part")
+        try:
+            part.write_text(
+                enriched.model_dump_json(indent=2) + "\n", encoding="utf-8", newline="\n"
+            )
+            part.replace(result)
+        except OSError as exc:
+            part.unlink(missing_ok=True)
+            typer.echo(f"Error: can't update {result}: {exc}", err=True)
+            raise typer.Exit(ExitCode.USER_ERROR) from None
+
+    details = [
+        f"{extraction.transcribed_candidates} transcribed",
+        f"{extraction.cached_candidates} cached",
+    ]
+    if extraction.empty_audio_candidates:
+        details.append(f"{extraction.empty_audio_candidates} past audio end")
+    updated_note = f"; updated {result}" if (update_result and extraction.by_candidate_id) else ""
+    typer.echo(
+        f"Wrote {target} ({len(extraction.by_candidate_id)} of {len(analysis.candidates)} "
+        f"candidates scored: {', '.join(details)}, feature_version={extraction.feature_version})"
+        f"{updated_note}"
     )

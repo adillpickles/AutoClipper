@@ -98,6 +98,17 @@ class SignalDetail(_Model):
         return value
 
 
+class SpeechFeatures(_Model):
+    """Per-candidate Whisper speech features (docs/ml/features.md § Phase 2, #64)."""
+
+    speech_word_rate: FiniteFloat = Field(ge=0)
+    speech_exclaim_density: FiniteFloat = Field(ge=0, le=1)
+    speech_question_density: FiniteFloat = Field(ge=0, le=1)
+    speech_keyword_rate: FiniteFloat = Field(ge=0)
+    speech_frac: FiniteFloat = Field(ge=0, le=1)
+    speech_peak_loudness_align: FiniteFloat = Field(ge=0, le=1)
+
+
 class Candidate(_Model):
     """One ranked candidate moment (api-contract.md § 4.2)."""
 
@@ -112,6 +123,7 @@ class Candidate(_Model):
     title: str | None = None
     reason: str | None = None
     signal_details: tuple[SignalDetail, ...] = ()
+    speech_features: SpeechFeatures | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @field_validator("title", "reason")
     @classmethod

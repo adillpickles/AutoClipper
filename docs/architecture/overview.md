@@ -162,7 +162,8 @@ data/
 │   └── video/<video_id>/segment-<begin>-<end>.<ext>   # downloaded preview/export media (#46)
 ├── interim/                     # parsed, pseudonymized, per-VOD
 │   ├── chat/<video_id>.parquet # pseudonymized messages (hashed authors, redacted text)
-│   └── audio/<video_id>.wav     # 16 kHz mono, for feature extraction
+│   ├── audio/<video_id>.wav    # 16 kHz mono, for feature extraction
+│   └── transcripts/<video_id>/ # cached Whisper word-timed spans keyed by audio source & model (#64)
 ├── processed/                   # analysis-ready tables (see data-model.md)
 │   ├── vods.parquet
 │   ├── clips/<snapshot_id>.parquet  # immutable observation + manifest

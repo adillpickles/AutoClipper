@@ -157,6 +157,9 @@ class Settings(BaseSettings):
         audio_events_top_k: ``AUTOCLIPPER_AUDIO_EVENTS_TOP_K``: default maximum number of
             top-scoring windows evaluated when running ``autoclipper audio-events --scores``
             (defaults to 100 so a laptop CPU can handle multi-hour VODs).
+        speech_top_n: ``AUTOCLIPPER_SPEECH_TOP_N``: default maximum number of top-ranked
+            shortlisted candidates transcribed by ``autoclipper speech-features`` or
+            ``autoclipper analyze --speech-features`` (defaults to 50).
         tools_dir: ``AUTOCLIPPER_TOOLS_DIR``: optional override for AutoClipper's per-user
             managed tools folder (where ``autoclipper setup-tools`` installs FFmpeg, FFprobe
             and TwitchDownloaderCLI). None means use `default_tools_dir()`.
@@ -222,6 +225,7 @@ class Settings(BaseSettings):
     audio_events_top_k: int = Field(
         default=100, ge=1, validation_alias="AUTOCLIPPER_AUDIO_EVENTS_TOP_K"
     )
+    speech_top_n: int = Field(default=50, ge=1, validation_alias="AUTOCLIPPER_SPEECH_TOP_N")
     tools_dir: Path | None = Field(default=None, validation_alias="AUTOCLIPPER_TOOLS_DIR")
     ffmpeg_path: Path | None = Field(default=None, validation_alias="AUTOCLIPPER_FFMPEG_PATH")
     ffprobe_path: Path | None = Field(default=None, validation_alias="AUTOCLIPPER_FFPROBE_PATH")
