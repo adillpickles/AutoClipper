@@ -16,9 +16,18 @@ import type {
   AnalysisResult,
   Candidate,
   Export,
+  ExportAvailability,
   Layout,
 } from "@/lib/api/types";
 import { formatTime } from "@/lib/format";
+import {
+  isTrimReset,
+  rememberExport,
+  rememberedExport,
+  rememberedTrim,
+  rememberedTrims,
+  type SavedTrim,
+} from "@/lib/job-state";
 
 /** The top 10 are rendered as vertical clips automatically (PRD § 4). */
 export const TOP_CLIPS = 10;
@@ -41,37 +50,6 @@ function isKnownLayout(value: string): value is Layout {
   return (KNOWN_LAYOUTS as readonly string[]).includes(value);
 }
 
-const exportsKey = (jobId: string) => `autoclipper.exports.${jobId}`;
-
-function rememberedExport(jobId: string, candidateId: string): string | null {
-  try {
-    const saved = JSON.parse(
-      window.localStorage.getItem(exportsKey(jobId)) ?? "{}",
-    ) as Record<string, string>;
-    return saved[candidateId] ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function rememberExport(
-  jobId: string,
-  candidateId: string,
-  exportId: string,
-): void {
-  try {
-    const saved = JSON.parse(
-      window.localStorage.getItem(exportsKey(jobId)) ?? "{}",
-    ) as Record<string, string>;
-    window.localStorage.setItem(
-      exportsKey(jobId),
-      JSON.stringify({ ...saved, [candidateId]: exportId }),
-    );
-  } catch {
-    // Without storage the clips are rendered again on the next visit; nothing breaks.
-  }
-}
-
 type View =
   | { kind: "loading" }
   | { kind: "result"; result: AnalysisResult }
@@ -81,6 +59,9 @@ export function ResultsScreen() {
   const { jobId } = useParams<{ jobId: string }>();
   const [view, setView] = useState<View>({ kind: "loading" });
   const [clips, setClips] = useState<Record<string, ClipExport>>({});
+  const [exportBoundsByCandidate, setExportBoundsByCandidate] = useState<
+    Record<string, ExportAvailability>
+  >({});
   const [viewMode, setViewMode] = useState<"cards" | "timeline">("cards");
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(
     null,
@@ -230,6 +211,10 @@ export function ResultsScreen() {
       );
       if (cancelled) return null;
       const availability = media.export;
+      setExportBoundsByCandidate((current) => ({
+        ...current,
+        [candidate.candidate_id]: availability,
+      }));
       if (availability.status !== "available") {
         set(candidate.candidate_id, {
           kind: "unavailable",
@@ -256,8 +241,21 @@ export function ResultsScreen() {
         });
         return null;
       }
-      const startS = retrySource ? retrySource.start_s : candidate.start_s;
-      const endS = retrySource ? retrySource.end_s : candidate.end_s;
+      const savedTrim = rememberedTrim(jobId, candidate.candidate_id);
+      const usableSaved =
+        savedTrim &&
+        (availability.min_start_s === null ||
+          savedTrim.start_s >= availability.min_start_s) &&
+        (availability.max_end_s === null ||
+          savedTrim.end_s <= availability.max_end_s)
+          ? savedTrim
+          : null;
+      const startS = retrySource
+        ? retrySource.start_s
+        : (usableSaved?.start_s ?? candidate.start_s);
+      const endS = retrySource
+        ? retrySource.end_s
+        : (usableSaved?.end_s ?? candidate.end_s);
       if (
         availability.max_duration_s !== null &&
         endS - startS > availability.max_duration_s
@@ -418,7 +416,7 @@ export function ResultsScreen() {
       const clip = clips[candidate.candidate_id];
       if (!clip || clip.kind !== "export" || !clip.url) return;
       const url = clip.url;
-      const filename = `autoclipper_${vod.video_id}_${candidate.start_s}-${candidate.end_s}.mp4`;
+      const filename = `autoclipper_${vod.video_id}_${clip.export.start_s}-${clip.export.end_s}.mp4`;
       setTimeout(() => {
         const link = document.createElement("a");
         link.href = url;
@@ -609,6 +607,29 @@ export function ResultsScreen() {
           videoId={vod.video_id}
           vodDurationS={vod.duration_s}
           candidates={top}
+          initialTrims={(() => {
+            const savedTrims = rememberedTrims(jobId);
+            const merged: Record<string, SavedTrim> = {};
+            for (const candidate of top) {
+              const saved = savedTrims[candidate.candidate_id];
+              if (saved) {
+                merged[candidate.candidate_id] = saved;
+                continue;
+              }
+              if (isTrimReset(jobId, candidate.candidate_id)) {
+                continue;
+              }
+              const clip = clips[candidate.candidate_id];
+              if (clip?.kind === "export") {
+                merged[candidate.candidate_id] = {
+                  start_s: clip.export.start_s,
+                  end_s: clip.export.end_s,
+                };
+              }
+            }
+            return merged;
+          })()}
+          exportBounds={exportBoundsByCandidate}
           captionsStatus={captionsStatus}
           onClose={() => setHighlightsOpen(false)}
         />

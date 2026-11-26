@@ -123,6 +123,7 @@ const HEALTH_WITH_CAPTIONS = {
 
 describe("ClipEditor", () => {
   beforeEach(() => {
+    window.localStorage.clear();
     api.getHealth.mockResolvedValue(HEALTH_WITH_CAPTIONS);
   });
 
@@ -633,6 +634,7 @@ describe("ClipEditor", () => {
 
     // Even a sub-0.05 s nudge to a fractional media limit enables Reset.
     cleanup();
+    window.localStorage.clear();
     const nearLimitResult: AnalysisResult = {
       ...RESULT,
       candidates: [{ ...RESULT.candidates[0], start_s: 120, end_s: 159.94 }],
@@ -676,5 +678,37 @@ describe("ClipEditor", () => {
     expect(endInput.value).toBe("120.5");
     expect(screen.queryByText(/at least 0\.5 seconds/)).toBeNull();
     expect(rerenderButton.disabled).toBe(false);
+  });
+
+  it("persists edited trims in shared job state, restores them on reopen, and clears on reset", async () => {
+    const { rememberedTrim } = await import("@/lib/job-state");
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia.mockResolvedValue(AVAILABLE_MEDIA);
+
+    const { unmount } = render(<ClipEditor />);
+    const startInput = (await screen.findByLabelText(
+      "Start (seconds)",
+    )) as HTMLInputElement;
+    await screen.findByLabelText("Center crop (9:16)");
+
+    fireEvent.click(screen.getByLabelText("Move start 5 seconds earlier"));
+    expect(startInput.value).toBe("113");
+    expect(rememberedTrim("job_1", "c001")).toEqual({
+      start_s: 113,
+      end_s: 148,
+    });
+
+    // Reopening the clip editor restores the saved trim.
+    unmount();
+    render(<ClipEditor />);
+    const reopenedStart = (await screen.findByLabelText(
+      "Start (seconds)",
+    )) as HTMLInputElement;
+    expect(reopenedStart.value).toBe("113");
+
+    // Resetting restores original candidate bounds and clears the saved trim.
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    expect(reopenedStart.value).toBe("118");
+    expect(rememberedTrim("job_1", "c001")).toBeNull();
   });
 });

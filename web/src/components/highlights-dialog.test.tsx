@@ -5,10 +5,11 @@
 // when the dialog is actually closed.
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HighlightsDialog } from "@/components/highlights-dialog";
 import type { Candidate } from "@/lib/api/types";
+import { rememberTrim } from "@/lib/job-state";
 
 const candidates: Candidate[] = [
   {
@@ -76,6 +77,10 @@ const dialog = (onClose: () => void) => (
 );
 
 describe("HighlightsDialog", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
@@ -86,18 +91,30 @@ describe("HighlightsDialog", () => {
       highlights: video("queued"),
       created: true,
     });
-    api.getHighlights.mockResolvedValueOnce(video("running")).mockResolvedValue(
-      video("done", {
-        download_url: "/mock-media/highlights.mp4",
-        duration_s: 77,
-      }),
-    );
+    api.getHighlights
+      .mockResolvedValueOnce(
+        video("running", {
+          progress: {
+            stage: "rendering",
+            stage_index: 3,
+            stage_count: 3,
+            stage_fraction: 0.5,
+            message: "Rendering the highlights video",
+          },
+        }),
+      )
+      .mockResolvedValue(
+        video("done", {
+          download_url: "/mock-media/highlights.mp4",
+          duration_s: 77,
+        }),
+      );
 
     const { rerender } = render(dialog(() => undefined));
     fireEvent.click(
       screen.getByRole("button", { name: "Make highlights video" }),
     );
-    await screen.findByText(/Making the highlights video/);
+    await screen.findByText(/Waiting in render queue/);
 
     // Every finished clip re-renders the results screen with a fresh onClose: the polling
     // must survive these rerenders (#72's review round).
@@ -120,19 +137,161 @@ describe("HighlightsDialog", () => {
       highlights: video("queued"),
       created: true,
     });
-    api.getHighlights.mockResolvedValue(video("running"));
+    api.getHighlights.mockResolvedValue(
+      video("running", {
+        progress: {
+          stage: "obtaining_media",
+          stage_index: 1,
+          stage_count: 3,
+          stage_fraction: null,
+          message: "Getting the video",
+        },
+      }),
+    );
 
     const { rerender, unmount } = render(dialog(() => undefined));
     fireEvent.click(
       screen.getByRole("button", { name: "Make highlights video" }),
     );
-    await screen.findByText(/Making the highlights video/);
+    await screen.findByText(/Waiting in render queue/);
     rerender(dialog(() => undefined));
-    await screen.findByText(/Making the highlights video/);
+    await screen.findByText(/Step 1 of 3: Getting the video/);
     unmount();
 
     const calls = api.getHighlights.mock.calls.length;
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(api.getHighlights.mock.calls.length).toBe(calls); // no further polls
+  });
+
+  it("initializes moments from shared saved trims and submits them", async () => {
+    rememberTrim("job_1", "c001", { start_s: 112.5, end_s: 151 });
+    api.createHighlights.mockResolvedValue({
+      highlights: video("done", {
+        download_url: "/mock-media/highlights.mp4",
+        duration_s: 63.5,
+      }),
+      created: true,
+    });
+
+    render(dialog(() => undefined));
+
+    const start1 = document.getElementById("start-c001") as HTMLInputElement;
+    const end1 = document.getElementById("end-c001") as HTMLInputElement;
+    expect(start1.value).toBe("112.5");
+    expect(end1.value).toBe("151");
+    expect(screen.getByText("Trimmed")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Make highlights video" }),
+    );
+    await screen.findByText(/The highlights video is ready/);
+    expect(api.createHighlights).toHaveBeenCalledWith({
+      job_id: "job_1",
+      segments: [
+        { candidate_id: "c001", start_s: 112.5, end_s: 151 },
+        { candidate_id: "c002", start_s: 251.5, end_s: 276.5 },
+      ],
+      order: "chronological",
+      captions: false,
+    });
+  });
+
+  it("distinguishes queued from active running stages and shows progress bar when measured", async () => {
+    let resolveNextPoll: ((value: unknown) => void) | null = null;
+    api.createHighlights.mockResolvedValue({
+      highlights: video("queued"),
+      created: true,
+    });
+    api.getHighlights.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveNextPoll = resolve;
+        }),
+    );
+
+    render(dialog(() => undefined));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Make highlights video" }),
+    );
+
+    // Queued state is distinct from active rendering.
+    expect(await screen.findByText("Queued")).toBeTruthy();
+    expect(screen.getByText("Waiting in render queue…")).toBeTruthy();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+
+    // Wait for first poll to start, then advance to running (rendering with fraction).
+    await vi.waitFor(() => expect(resolveNextPoll).not.toBeNull());
+    const finishPoll = resolveNextPoll!;
+    resolveNextPoll = null;
+    finishPoll(
+      video("running", {
+        progress: {
+          stage: "rendering",
+          stage_index: 3,
+          stage_count: 3,
+          stage_fraction: 0.65,
+          message: "Rendering the highlights video",
+        },
+      }),
+    );
+
+    expect(await screen.findByText("Rendering")).toBeTruthy();
+    expect(
+      screen.getByText("Step 3 of 3: Rendering the highlights video"),
+    ).toBeTruthy();
+    const bar = screen.getByRole("progressbar");
+    expect(bar.getAttribute("aria-valuenow")).toBe("65");
+  });
+
+  it("ignores saved trims outside current export bounds and picks up late-arriving initialTrims", () => {
+    const { rerender } = render(
+      <HighlightsDialog
+        jobId="job_1"
+        videoId="9000000001"
+        vodDurationS={360}
+        candidates={candidates}
+        initialTrims={{ c001: { start_s: 50, end_s: 148 } }}
+        exportBounds={{
+          c001: {
+            status: "available",
+            reason: null,
+            message: null,
+            min_start_s: 88,
+            max_end_s: 178,
+            max_duration_s: 90,
+            layouts: ["center_crop"],
+          },
+        }}
+        onClose={() => undefined}
+      />,
+    );
+
+    // Out-of-bounds saved trim (start 50 < min_start_s 88) falls back to candidate bounds (118..148).
+    const start1 = document.getElementById("start-c001") as HTMLInputElement;
+    expect(start1.value).toBe("118");
+
+    // When a remembered export trim arrives after the dialog opened, untouched rows update.
+    rerender(
+      <HighlightsDialog
+        jobId="job_1"
+        videoId="9000000001"
+        vodDurationS={360}
+        candidates={candidates}
+        initialTrims={{ c001: { start_s: 112, end_s: 148 } }}
+        exportBounds={{
+          c001: {
+            status: "available",
+            reason: null,
+            message: null,
+            min_start_s: 88,
+            max_end_s: 178,
+            max_duration_s: 90,
+            layouts: ["center_crop"],
+          },
+        }}
+        onClose={() => undefined}
+      />,
+    );
+    expect(start1.value).toBe("112");
   });
 });
