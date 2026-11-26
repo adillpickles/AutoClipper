@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PreflightBanner } from "@/components/preflight-banner";
@@ -408,5 +414,233 @@ describe("PreflightBanner", () => {
 
     await screen.findByText("Setup issues need attention");
     expect(screen.queryByRole("button", { name: /Download/i })).toBeNull();
+  });
+
+  it("keeps deferred preflight refresh alive after polling stops", async () => {
+    state.getToolSetup.mockResolvedValueOnce(IDLE_SETUP);
+
+    let resolveRefreshedPreflight: (report: PreflightReport) => void = () => {};
+    state.getPreflight
+      .mockResolvedValueOnce({
+        status: "fail",
+        checks: [
+          {
+            name: "ffmpeg",
+            label: "FFmpeg & FFprobe",
+            status: "fail",
+            message: "ffmpeg is not found.",
+            fix: "Run `uv run autoclipper setup-tools --tool ffmpeg`.",
+            source: null,
+          },
+        ],
+      })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveRefreshedPreflight = resolve;
+        }),
+      );
+
+    state.startToolSetup.mockResolvedValue({
+      setup: {
+        state: "running",
+        items: [
+          {
+            tool: "ffmpeg",
+            label: "FFmpeg & FFprobe",
+            stage: "downloading",
+            message: "Downloading...",
+            bytes_downloaded: 10,
+            bytes_total: 100,
+            fraction: 0.1,
+            error: null,
+          },
+        ],
+        error: null,
+        started_at: "2026-11-26T00:00:00Z",
+        updated_at: "2026-11-26T00:00:01Z",
+        finished_at: null,
+      },
+      started: true,
+    });
+    state.getToolSetup.mockResolvedValue({
+      state: "done",
+      items: [
+        {
+          tool: "ffmpeg",
+          label: "FFmpeg & FFprobe",
+          stage: "done",
+          message: "Installed FFmpeg & FFprobe 9.0.2.",
+          bytes_downloaded: 100,
+          bytes_total: 100,
+          fraction: 1.0,
+          error: null,
+        },
+      ],
+      error: null,
+      started_at: "2026-11-26T00:00:00Z",
+      updated_at: "2026-11-26T00:00:02Z",
+      finished_at: "2026-11-26T00:00:02Z",
+    });
+
+    render(<PreflightBanner />);
+    const btn = await screen.findByRole("button", {
+      name: "Download FFmpeg & FFprobe",
+    });
+    fireEvent.click(btn);
+
+    // Wait until polling transitions to done and kicks off the deferred preflight refresh.
+    await vi.waitFor(
+      () => expect(state.getPreflight).toHaveBeenCalledTimes(2),
+      {
+        timeout: 3000,
+      },
+    );
+
+    // Resolving the deferred preflight AFTER the polling effect cleaned up must still apply.
+    resolveRefreshedPreflight({
+      status: "ok",
+      checks: [
+        {
+          name: "ffmpeg",
+          label: "FFmpeg & FFprobe",
+          status: "ok",
+          message: "FFmpeg and FFprobe are available (managed tools folder).",
+          fix: null,
+          source: "managed",
+        },
+      ],
+    });
+
+    expect(await screen.findByText("Managed tools installed")).toBeTruthy();
+  });
+
+  it("ignores a late initial setup GET once the user starts a download", async () => {
+    let resolveInitialSetup: (status: ToolSetupStatus) => void = () => {};
+    state.getToolSetup.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveInitialSetup = resolve;
+      }),
+    );
+    state.getPreflight.mockResolvedValue({
+      status: "fail",
+      checks: [
+        {
+          name: "ffmpeg",
+          label: "FFmpeg & FFprobe",
+          status: "fail",
+          message: "ffmpeg is not found.",
+          fix: "Run `uv run autoclipper setup-tools --tool ffmpeg`.",
+          source: null,
+        },
+      ],
+    });
+    state.startToolSetup.mockResolvedValue({
+      setup: {
+        state: "running",
+        items: [
+          {
+            tool: "ffmpeg",
+            label: "FFmpeg & FFprobe",
+            stage: "downloading",
+            message: "Downloading...",
+            bytes_downloaded: 25,
+            bytes_total: 100,
+            fraction: 0.25,
+            error: null,
+          },
+        ],
+        error: null,
+        started_at: "2026-11-26T00:00:05Z",
+        updated_at: "2026-11-26T00:00:06Z",
+        finished_at: null,
+      },
+      started: true,
+    });
+
+    render(<PreflightBanner />);
+    const btn = await screen.findByRole("button", {
+      name: "Download FFmpeg & FFprobe",
+    });
+    fireEvent.click(btn);
+    expect(await screen.findByText(/25%/)).toBeTruthy();
+
+    // Late stale response from an earlier failed run must not overwrite active progress.
+    resolveInitialSetup({
+      state: "failed",
+      items: [],
+      error: { code: "download_failed", message: "Old error", details: null },
+      started_at: "2026-11-26T00:00:00Z",
+      updated_at: "2026-11-26T00:00:01Z",
+      finished_at: "2026-11-26T00:00:01Z",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByText("Old error")).toBeNull();
+    expect(screen.getByText(/25%/)).toBeTruthy();
+  });
+
+  it("backs off and shows a retry action when polling loses the backend", async () => {
+    vi.useFakeTimers();
+    state.getToolSetup.mockResolvedValueOnce(IDLE_SETUP);
+    state.getPreflight.mockResolvedValue({
+      status: "fail",
+      checks: [
+        {
+          name: "ffmpeg",
+          label: "FFmpeg & FFprobe",
+          status: "fail",
+          message: "ffmpeg is not found.",
+          fix: "Run `uv run autoclipper setup-tools --tool ffmpeg`.",
+          source: null,
+        },
+      ],
+    });
+    state.startToolSetup.mockResolvedValue({
+      setup: {
+        state: "running",
+        items: [
+          {
+            tool: "ffmpeg",
+            label: "FFmpeg & FFprobe",
+            stage: "downloading",
+            message: "Downloading...",
+            bytes_downloaded: 10,
+            bytes_total: 100,
+            fraction: 0.1,
+            error: null,
+          },
+        ],
+        error: null,
+        started_at: "2026-11-26T00:00:00Z",
+        updated_at: "2026-11-26T00:00:00Z",
+        finished_at: null,
+      },
+      started: true,
+    });
+    state.getToolSetup.mockRejectedValue(new Error("network down"));
+
+    render(<PreflightBanner />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const btn = screen.getByRole("button", {
+      name: "Download FFmpeg & FFprobe",
+    });
+    await act(async () => {
+      fireEvent.click(btn);
+      await Promise.resolve();
+    });
+
+    // Advance through 4 failed polls with exponential backoff (1s + 1s + 2s + 4s).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    expect(
+      screen.getByText(/Lost connection to the AutoClipper server/i),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Check setup status" }),
+    ).toBeTruthy();
   });
 });

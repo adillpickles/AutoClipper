@@ -12,7 +12,9 @@ import type {
   ToolSetupStatus,
 } from "@/lib/api/types";
 
-const SETUP_POLL_INTERVAL_MS = 1000;
+const SETUP_POLL_BASE_MS = 1000;
+const SETUP_POLL_MAX_BACKOFF_MS = 8000;
+const SETUP_POLL_MAX_FAILURES = 4;
 
 function problemChecks(report: PreflightReport | null): PreflightCheck[] {
   if (!report) return [];
@@ -42,8 +44,10 @@ function downloadButtonLabel(
   missing: ToolSetupName[],
   running: boolean,
   hasError: boolean,
+  pollLost: boolean,
 ): string {
   if (running) return "Downloading tools...";
+  if (pollLost) return "Check setup status";
   if (hasError) return "Retry download";
   if (missing.length === 1) {
     return missing[0] === "ffmpeg"
@@ -76,15 +80,33 @@ function stageBadgeText(stage: string): string {
   }
 }
 
+function stageAnnouncement(setup: ToolSetupStatus | null): string {
+  if (!setup || setup.items.length === 0) return "";
+  return setup.items
+    .map((item) => `${item.label}: ${stageBadgeText(item.stage)}`)
+    .join(". ");
+}
+
 export function PreflightBanner() {
   const browserMock = isMockMode();
   const [report, setReport] = useState<PreflightReport | null>(null);
   const [setup, setSetup] = useState<ToolSetupStatus | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
+  const [pollLost, setPollLost] = useState(false);
+  const [pollAttempt, setPollAttempt] = useState(0);
   const [starting, setStarting] = useState(false);
   const [completedInstall, setCompletedInstall] = useState(false);
   const [dismissed, setDismissed] = useState(false);
-  const pollInFlight = useRef(false);
+
+  const mountedRef = useRef(true);
+  const userStartedRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (browserMock) return;
@@ -102,7 +124,12 @@ export function PreflightBanner() {
     if (initialSetup) {
       initialSetup
         .then((result) => {
-          if (!cancelled && result && result.state !== "idle") {
+          if (
+            !cancelled &&
+            !userStartedRef.current &&
+            result &&
+            result.state !== "idle"
+          ) {
             setSetup(result);
           }
         })
@@ -118,48 +145,68 @@ export function PreflightBanner() {
   const setupState = setup?.state ?? null;
 
   useEffect(() => {
-    if (browserMock || setupState !== "running") return;
+    if (browserMock || setupState !== "running" || pollLost) return;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let failures = 0;
+    let delayMs = SETUP_POLL_BASE_MS;
     const api = getApiClient();
 
-    const poll = () => {
-      if (pollInFlight.current) return;
+    function scheduleNext(waitMs: number) {
+      if (cancelled) return;
+      timer = setTimeout(() => {
+        void poll();
+      }, waitMs);
+    }
+
+    async function poll() {
       const pending = api.getToolSetup?.();
       if (!pending) return;
-      pollInFlight.current = true;
-      pending
-        .then((next) => {
-          if (cancelled || !next) return;
-          setSetup(next);
-          if (next.state === "done" || next.state === "failed") {
-            if (next.state === "done") {
-              setCompletedInstall(true);
-            }
-            api
-              .getPreflight()
-              .then((fresh) => {
-                if (!cancelled) setReport(fresh);
-              })
-              .catch(() => {
-                // Ignore refresh failure; user still sees the setup outcome.
-              });
+      try {
+        const next = await pending;
+        if (cancelled || !next) return;
+        failures = 0;
+        delayMs = SETUP_POLL_BASE_MS;
+        setSetup(next);
+        if (next.state === "done" || next.state === "failed") {
+          if (next.state === "done") {
+            setCompletedInstall(true);
           }
-        })
-        .catch(() => {
-          // Transient poll failure: keep trying on the next tick.
-        })
-        .finally(() => {
-          pollInFlight.current = false;
-        });
-    };
+          // Gate this refresh on component mount (not this effect's `cancelled`),
+          // because `setSetup(next)` immediately cleans up this polling effect.
+          api
+            .getPreflight()
+            .then((fresh) => {
+              if (mountedRef.current) setReport(fresh);
+            })
+            .catch(() => {
+              // Ignore refresh failure; user still sees the setup outcome.
+            });
+          return;
+        }
+        scheduleNext(SETUP_POLL_BASE_MS);
+      } catch {
+        if (cancelled) return;
+        failures += 1;
+        if (failures >= SETUP_POLL_MAX_FAILURES) {
+          setPollLost(true);
+          setRequestError(
+            "Lost connection to the AutoClipper server while checking tool setup. Check that the server is running and retry.",
+          );
+          return;
+        }
+        const wait = delayMs;
+        delayMs = Math.min(delayMs * 2, SETUP_POLL_MAX_BACKOFF_MS);
+        scheduleNext(wait);
+      }
+    }
 
-    const timer = window.setInterval(poll, SETUP_POLL_INTERVAL_MS);
+    scheduleNext(SETUP_POLL_BASE_MS);
     return () => {
       cancelled = true;
-      pollInFlight.current = false;
-      window.clearInterval(timer);
+      if (timer !== undefined) clearTimeout(timer);
     };
-  }, [browserMock, setupState]);
+  }, [browserMock, setupState, pollLost, pollAttempt]);
 
   useEffect(() => {
     if (!dismissed) return;
@@ -172,7 +219,7 @@ export function PreflightBanner() {
 
   const problems = problemChecks(report);
   const missingTools = installableMissingTools(problems);
-  const running = starting || setup?.state === "running";
+  const running = starting || (setup?.state === "running" && !pollLost);
   const setupError =
     requestError ??
     (setup?.state === "failed"
@@ -184,30 +231,66 @@ export function PreflightBanner() {
     completedInstall && problems.length === 0 && !running;
   const visible = problems.length > 0 || running || showCompletedBanner;
 
-  async function handleStartSetup() {
+  async function handleActionClick() {
     if (running) return;
+    const api = getApiClient();
     setRequestError(null);
+
+    if (pollLost) {
+      setStarting(true);
+      try {
+        const current = await api.getToolSetup();
+        if (!mountedRef.current) return;
+        setPollLost(false);
+        setSetup(current);
+        if (current.state === "running") {
+          setPollAttempt((n) => n + 1);
+          return;
+        }
+        if (current.state === "done") {
+          setCompletedInstall(true);
+        }
+        const fresh = await api.getPreflight().catch(() => null);
+        if (mountedRef.current && fresh) setReport(fresh);
+      } catch (error) {
+        if (mountedRef.current) {
+          setRequestError(
+            error instanceof Error
+              ? error.message
+              : "Could not reach the AutoClipper server. Check that it is running and retry.",
+          );
+        }
+      } finally {
+        if (mountedRef.current) setStarting(false);
+      }
+      return;
+    }
+
+    userStartedRef.current = true;
+    setPollLost(false);
     setStarting(true);
     try {
-      const api = getApiClient();
       const targetTools = missingTools.length > 0 ? missingTools : undefined;
       const { setup: next } = await api.startToolSetup(
         targetTools ? { tools: targetTools } : undefined,
       );
+      if (!mountedRef.current) return;
       setSetup(next);
       if (next.state === "done") {
         setCompletedInstall(true);
         const fresh = await api.getPreflight().catch(() => null);
-        if (fresh) setReport(fresh);
+        if (mountedRef.current && fresh) setReport(fresh);
       }
     } catch (error) {
-      setRequestError(
-        error instanceof Error
-          ? error.message
-          : "Could not start tool download. Try again or run `uv run autoclipper setup-tools`.",
-      );
+      if (mountedRef.current) {
+        setRequestError(
+          error instanceof Error
+            ? error.message
+            : "Could not start tool download. Try again or run `uv run autoclipper setup-tools`.",
+        );
+      }
     } finally {
-      setStarting(false);
+      if (mountedRef.current) setStarting(false);
     }
   }
 
@@ -249,164 +332,215 @@ export function PreflightBanner() {
     );
   }
 
+  const showInstallPanel =
+    missingTools.length > 0 || running || setupError !== null || pollLost;
+  const announcement = stageAnnouncement(setup);
+
   // The polite region is mounted before the request resolves so a warning-only
   // result is announced as a change to an existing live region.
   if (!hasFailure) {
     return (
-      <section
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
+      <div
         onKeyDown={handleKeyDown}
         className={
           visible
             ? "rounded-card border border-signal-border bg-signal-soft p-4 text-sm text-signal-soft-ink shadow-card"
-            : "sr-only"
+            : undefined
         }
       >
-        {visible && (
-          <BannerBody
-            tone="warn"
-            title="Optional setup items missing"
-            summary="AutoClipper can run, but some optional features are currently unavailable."
-            problems={problems}
+        <section
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className={visible ? undefined : "sr-only"}
+        >
+          {visible && (
+            <BannerHeader
+              tone="warn"
+              title="Optional setup items missing"
+              summary="AutoClipper can run, but some optional features are currently unavailable."
+              onDismiss={() => setDismissed(true)}
+            />
+          )}
+        </section>
+        {visible && showInstallPanel && (
+          <InstallPanel
             missingTools={missingTools}
             setup={setup}
             running={running}
             setupError={setupError}
-            completedInstall={completedInstall}
-            onStartSetup={handleStartSetup}
-            onDismiss={() => setDismissed(true)}
+            pollLost={pollLost}
+            announcement={announcement}
+            onActionClick={handleActionClick}
           />
         )}
-      </section>
+        {visible && (
+          <BannerChecklist
+            problems={problems}
+            completedInstall={completedInstall}
+            running={running}
+            setupError={setupError}
+          />
+        )}
+      </div>
     );
   }
 
+  // Keep the assertive alert limited to static readiness status so live download
+  // byte-count updates in InstallPanel never interrupt screen readers.
   return (
-    <section
-      role="alert"
-      aria-atomic="true"
+    <div
       onKeyDown={handleKeyDown}
       className="rounded-card border border-danger-border bg-danger-soft p-4 text-sm text-danger-soft-ink shadow-card"
     >
-      <BannerBody
-        tone="fail"
-        title="Setup issues need attention"
-        summary="Some required local tools or credentials are missing before real VOD analysis can run."
+      <section role="alert" aria-atomic="true">
+        <BannerHeader
+          tone="fail"
+          title="Setup issues need attention"
+          summary="Some required local tools or credentials are missing before real VOD analysis can run."
+          onDismiss={() => setDismissed(true)}
+        />
+      </section>
+      {showInstallPanel && (
+        <InstallPanel
+          missingTools={missingTools}
+          setup={setup}
+          running={running}
+          setupError={setupError}
+          pollLost={pollLost}
+          announcement={announcement}
+          onActionClick={handleActionClick}
+        />
+      )}
+      <BannerChecklist
         problems={problems}
-        missingTools={missingTools}
-        setup={setup}
+        completedInstall={completedInstall}
         running={running}
         setupError={setupError}
-        completedInstall={completedInstall}
-        onStartSetup={handleStartSetup}
-        onDismiss={() => setDismissed(true)}
       />
-    </section>
+    </div>
   );
 }
 
-function BannerBody({
+function BannerHeader({
   tone,
   title,
   summary,
-  problems,
-  missingTools,
-  setup,
-  running,
-  setupError,
-  completedInstall,
-  onStartSetup,
   onDismiss,
 }: {
   tone: "warn" | "fail";
   title: string;
   summary: string;
-  problems: PreflightCheck[];
+  onDismiss: () => void;
+}) {
+  const fail = tone === "fail";
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col gap-1">
+        <h2 className="font-display text-base font-semibold">{title}</h2>
+        <p>{summary}</p>
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss setup notice"
+        className={`shrink-0 rounded-control border bg-surface-panel px-2.5 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:outline-none ${
+          fail
+            ? "border-danger-border text-danger-soft-ink ring-offset-danger-soft hover:bg-surface-elevated"
+            : "border-signal-border text-signal-soft-ink ring-offset-signal-soft hover:bg-surface-elevated"
+        }`}
+      >
+        Dismiss
+      </button>
+    </div>
+  );
+}
+
+function InstallPanel({
+  missingTools,
+  setup,
+  running,
+  setupError,
+  pollLost,
+  announcement,
+  onActionClick,
+}: {
   missingTools: ToolSetupName[];
   setup: ToolSetupStatus | null;
   running: boolean;
   setupError: string | null;
-  completedInstall: boolean;
-  onStartSetup: () => void;
-  onDismiss: () => void;
+  pollLost: boolean;
+  announcement: string;
+  onActionClick: () => void;
 }) {
-  const fail = tone === "fail";
-  const showInstallPanel =
-    missingTools.length > 0 || running || setupError !== null;
   const items = setup?.items ?? [];
-
   return (
-    <>
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <h2 className="font-display text-base font-semibold">{title}</h2>
-          <p>{summary}</p>
+    <div className="mt-3 rounded-control border border-border-subtle bg-surface-panel p-3 text-ink-primary">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-0.5">
+          <p className="font-medium text-ink-primary">
+            Automatic local tool setup
+          </p>
+          <p className="text-xs text-ink-secondary">
+            Downloads pinned upstream builds (FFmpeg/FFprobe GPL-3.0,
+            TwitchDownloaderCLI MIT) into your AutoClipper tools folder with
+            SHA-256 verification.
+          </p>
         </div>
-        <button
-          type="button"
-          onClick={onDismiss}
-          aria-label="Dismiss setup notice"
-          className={`shrink-0 rounded-control border bg-surface-panel px-2.5 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:outline-none ${
-            fail
-              ? "border-danger-border text-danger-soft-ink ring-offset-danger-soft hover:bg-surface-elevated"
-              : "border-signal-border text-signal-soft-ink ring-offset-signal-soft hover:bg-surface-elevated"
-          }`}
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={onActionClick}
+          disabled={running}
+          className="shrink-0 self-start sm:self-center"
         >
-          Dismiss
-        </button>
+          {downloadButtonLabel(
+            missingTools,
+            running,
+            setupError !== null,
+            pollLost,
+          )}
+        </Button>
       </div>
 
-      {showInstallPanel && (
-        <div className="mt-3 rounded-control border border-border-subtle bg-surface-panel p-3 text-ink-primary">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex flex-col gap-0.5">
-              <p className="font-medium text-ink-primary">
-                Automatic local tool setup
-              </p>
-              <p className="text-xs text-ink-secondary">
-                Downloads pinned upstream builds (FFmpeg/FFprobe GPL-3.0,
-                TwitchDownloaderCLI MIT) into your AutoClipper tools folder with
-                SHA-256 verification.
-              </p>
-            </div>
-            {(missingTools.length > 0 || running || setupError !== null) && (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={onStartSetup}
-                disabled={running}
-                className="shrink-0 self-start sm:self-center"
-              >
-                {downloadButtonLabel(
-                  missingTools,
-                  running,
-                  setupError !== null,
-                )}
-              </Button>
-            )}
-          </div>
+      {/* Stage-only polite announcement so byte-count ticks stay quiet. */}
+      <p className="sr-only" role="status" aria-live="polite">
+        {announcement}
+      </p>
 
-          {items.length > 0 && (
-            <div className="mt-3 flex flex-col gap-2 border-t border-border-subtle pt-2.5">
-              {items.map((item) => (
-                <ToolProgressRow key={item.tool} item={item} />
-              ))}
-            </div>
-          )}
-
-          {setupError && (
-            <p
-              role="alert"
-              className="mt-2.5 rounded-control border border-danger-border bg-danger-soft px-3 py-2 text-xs text-danger-soft-ink"
-            >
-              {setupError}
-            </p>
-          )}
+      {items.length > 0 && (
+        <div className="mt-3 flex flex-col gap-2 border-t border-border-subtle pt-2.5">
+          {items.map((item) => (
+            <ToolProgressRow key={item.tool} item={item} />
+          ))}
         </div>
       )}
 
+      {setupError && (
+        <p
+          role="alert"
+          className="mt-2.5 rounded-control border border-danger-border bg-danger-soft px-3 py-2 text-xs text-danger-soft-ink"
+        >
+          {setupError}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function BannerChecklist({
+  problems,
+  completedInstall,
+  running,
+  setupError,
+}: {
+  problems: PreflightCheck[];
+  completedInstall: boolean;
+  running: boolean;
+  setupError: string | null;
+}) {
+  return (
+    <>
       {completedInstall && !running && !setupError && problems.length > 0 && (
         <p className="mt-2.5 rounded-control border border-source-both-border bg-source-both-soft px-3 py-2 text-xs text-source-both-soft-ink">
           Managed tools installed. Complete the remaining items below to finish

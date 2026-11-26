@@ -1,4 +1,4 @@
-"""Managed external tool setup router and background worker (api-contract.md § 9.7).
+"""Managed external tool setup router and background worker (api-contract.md § 9.8).
 
 Lives in its own module so ``POST /api/v1/tools/setup`` and ``GET /api/v1/tools/setup`` stay
 independent of analysis/render job state in `autoclipper.api.service`. Responses never include
@@ -12,11 +12,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 
 from autoclipper.config import Settings, get_settings
 from autoclipper.schemas import (
     ApiError,
+    ErrorResponse,
     ToolSetupItem,
     ToolSetupName,
     ToolSetupRequest,
@@ -144,6 +145,10 @@ def _api_error_for(tool: ToolSetupName, exc: Exception) -> ApiError:
     )
 
 
+class _SetupCancelled(Exception):
+    """Raised inside the background worker when the API server is shutting down."""
+
+
 class ToolSetupManager:
     """Runs at most one background managed-tool setup at a time and tracks live progress."""
 
@@ -160,6 +165,7 @@ class ToolSetupManager:
         )
         self._install_one_fn = _default_install_one if install_one_fn is None else install_one_fn
         self._lock = threading.Lock()
+        self._closed = threading.Event()
         self._worker: threading.Thread | None = None
         now = _utc_now()
         self._status = ToolSetupStatus(
@@ -187,7 +193,7 @@ class ToolSetupManager:
         requested = request.tools if request is not None else None
 
         with self._lock:
-            if self._status.state == "running":
+            if self._closed.is_set() or self._status.state == "running":
                 return self._status, False
 
             settings = self._settings_provider()
@@ -276,8 +282,16 @@ class ToolSetupManager:
         succeeded = 0
 
         for tool in selected:
+            if self._closed.is_set():
+                first_error = first_error or ApiError(
+                    code="setup_cancelled",
+                    message="Tool setup was cancelled because the server is shutting down.",
+                )
+                break
 
             def _on_progress(event: InstallProgress, *, current: ToolSetupName = tool) -> None:
+                if self._closed.is_set():
+                    raise _SetupCancelled
                 if event.stage == "failed":
                     # The exception handler below records a sanitized path-free error message.
                     return
@@ -297,6 +311,27 @@ class ToolSetupManager:
 
             try:
                 outcome = self._install_one_fn(tool, tools_dir, force, _on_progress)
+            except _SetupCancelled:
+                api_err = ApiError(
+                    code="setup_cancelled",
+                    message="Tool setup was cancelled because the server is shutting down.",
+                )
+                if first_error is None:
+                    first_error = api_err
+                self._update_item(
+                    tool,
+                    lambda item, err=api_err: ToolSetupItem(
+                        tool=item.tool,
+                        label=item.label,
+                        stage="failed",
+                        message=err.message,
+                        bytes_downloaded=item.bytes_downloaded,
+                        bytes_total=item.bytes_total,
+                        fraction=None,
+                        error=err,
+                    ),
+                )
+                break
             except Exception as exc:
                 api_err = _api_error_for(tool, exc)
                 if first_error is None:
@@ -367,7 +402,8 @@ class ToolSetupManager:
                 )
 
     def close(self, *, timeout_s: float = 5.0) -> None:
-        """Wait briefly for any in-flight tool setup worker when shutting down."""
+        """Signal cancellation and wait for any in-flight tool setup worker to exit cleanly."""
+        self._closed.set()
         with self._lock:
             worker = self._worker
         if worker is not None and worker.is_alive():
@@ -383,8 +419,34 @@ def _json_response(model: ToolSetupStatus, status_code: int) -> Response:
     )
 
 
-def create_tools_router(manager: ToolSetupManager, *, prefix: str = "/api/v1") -> APIRouter:
-    """Create the FastAPI router exposing ``GET`` and ``POST /api/v1/tools/setup``."""
+def _origin_forbidden() -> Response:
+    body = ErrorResponse(
+        error=ApiError(
+            code="origin_not_allowed",
+            message="Tool setup requests from this browser origin are not allowed.",
+        )
+    )
+    return Response(
+        content=body.model_dump_json(),
+        status_code=403,
+        media_type=_JSON_TYPE,
+        headers=_NO_STORE,
+    )
+
+
+def create_tools_router(
+    manager: ToolSetupManager,
+    *,
+    prefix: str = "/api/v1",
+    allowed_origins: Sequence[str] = (),
+) -> APIRouter:
+    """Create the FastAPI router exposing ``GET`` and ``POST /api/v1/tools/setup``.
+
+    When ``allowed_origins`` is non-empty, ``POST /tools/setup`` rejects browser requests whose
+    ``Origin`` header is not in the allowlist (preventing unpreflighted cross-origin POSTs from
+    triggering downloads). Requests without an ``Origin`` header (CLI/local tools) are allowed.
+    """
+    normalized_origins = frozenset(o.strip().rstrip("/").lower() for o in allowed_origins if o)
     router = APIRouter(prefix=prefix)
 
     @router.get("/tools/setup", response_model=ToolSetupStatus)
@@ -392,7 +454,17 @@ def create_tools_router(manager: ToolSetupManager, *, prefix: str = "/api/v1") -
         return _json_response(manager.status(), 200)
 
     @router.post("/tools/setup", response_model=ToolSetupStatus, status_code=202)
-    def start_tool_setup(request: ToolSetupRequest | None = None) -> Response:
+    def start_tool_setup(
+        http_request: Request,
+        request: ToolSetupRequest | None = None,
+    ) -> Response:
+        origin = http_request.headers.get("origin")
+        if (
+            origin is not None
+            and normalized_origins
+            and origin.strip().rstrip("/").lower() not in normalized_origins
+        ):
+            return _origin_forbidden()
         status, started = manager.start(request)
         return _json_response(status, 202 if started else 200)
 

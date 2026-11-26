@@ -186,7 +186,9 @@ def create_app(
         )
         return _json(report, headers=_NO_STORE)
 
-    app.include_router(create_tools_router(active_tool_setup, prefix=API_PREFIX))
+    app.include_router(
+        create_tools_router(active_tool_setup, prefix=API_PREFIX, allowed_origins=cors_origins)
+    )
 
     @app.post(f"{API_PREFIX}/jobs", response_model=Job, status_code=201)
     def create_job(request: CreateJobRequest) -> Response:

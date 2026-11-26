@@ -25,9 +25,9 @@ export interface ApiClient {
   getHealth(): Promise<Health>;
   /** `GET /preflight`: local setup readiness checks (§ 9.6). */
   getPreflight(): Promise<PreflightReport>;
-  /** `GET /tools/setup`: managed tool setup status and progress (§ 9.7). */
+  /** `GET /tools/setup`: managed tool setup status and progress (§ 9.8). */
   getToolSetup(): Promise<ToolSetupStatus>;
-  /** `POST /tools/setup`: start downloading missing managed tools (§ 9.7). */
+  /** `POST /tools/setup`: start downloading missing managed tools (§ 9.8). */
   startToolSetup(
     request?: ToolSetupRequest,
   ): Promise<{ setup: ToolSetupStatus; started: boolean }>;

@@ -229,3 +229,91 @@ def test_post_tools_setup_rejects_unknown_tool_name(tmp_path: Path) -> None:
 
     assert resp.status_code == 422
     assert resp.json()["error"]["code"] == "invalid_request"
+
+
+def test_post_tools_setup_rejects_unapproved_browser_origin(tmp_path: Path) -> None:
+    started = False
+
+    def should_not_run(
+        tool: ToolGroup,
+        tools_dir: Path,
+        force: bool,
+        on_progress: ProgressCallback | None,
+    ) -> ToolInstallOutcome:
+        nonlocal started
+        started = True
+        raise AssertionError("should not run for disallowed origin")
+
+    manager = ToolSetupManager(
+        missing_tools_fn=lambda _s: ("ffmpeg",),
+        install_one_fn=should_not_run,
+    )
+    app = create_app(
+        _dummy_service(tmp_path),
+        cors_origins=("http://localhost:3000",),
+        tool_setup=manager,
+    )
+    with TestClient(app) as client:
+        blocked = client.post(
+            f"{API_PREFIX}/tools/setup",
+            headers={"Origin": "https://evil.example"},
+        )
+        assert blocked.status_code == 403
+        assert blocked.json()["error"]["code"] == "origin_not_allowed"
+        assert not started
+
+
+def test_close_cancels_remaining_tools_and_aborts_progress(tmp_path: Path) -> None:
+    entered = threading.Event()
+    resume = threading.Event()
+    calls: list[ToolGroup] = []
+
+    def gated_install(
+        tool: ToolGroup,
+        tools_dir: Path,
+        force: bool,
+        on_progress: ProgressCallback | None,
+    ) -> ToolInstallOutcome:
+        del force
+        calls.append(tool)
+        if tool == "ffmpeg":
+            entered.set()
+            resume.wait(timeout=3.0)
+            if on_progress is not None:
+                on_progress(
+                    InstallProgress(
+                        tool="ffmpeg",
+                        label="FFmpeg & FFprobe",
+                        stage="downloading",
+                        message="Downloading...",
+                        bytes_downloaded=10,
+                        bytes_total=100,
+                    )
+                )
+        return ToolInstallOutcome(
+            tool=tool,
+            label=tool,
+            version="9.0.2",
+            status="installed",
+            source_name="Fake",
+            license="GPL-3.0",
+            binaries=(tools_dir / "bin" / "ffmpeg",),
+        )
+
+    manager = ToolSetupManager(
+        missing_tools_fn=lambda _s: ("ffmpeg", "twitch_downloader"),
+        install_one_fn=gated_install,
+    )
+    manager.start()
+    assert entered.wait(timeout=3.0)
+    close_thread = threading.Thread(target=manager.close, kwargs={"timeout_s": 3.0})
+    close_thread.start()
+    time.sleep(0.05)
+    resume.set()
+    close_thread.join(timeout=3.0)
+
+    assert calls == ["ffmpeg"]
+    final = manager.status()
+    assert final.state == "failed"
+    assert final.error is not None
+    assert final.error.code == "setup_cancelled"

@@ -1173,6 +1173,7 @@ Request body for `POST /api/v1/tools/setup` (optional; an empty body or `{}` ins
 Responses:
 - `202 Accepted` with `ToolSetupStatus` (`state: "running"`) when a new setup run starts.
 - `200 OK` with `ToolSetupStatus` when a setup run is already in progress (idempotent) or no missing tools need installation.
+- `403 Forbidden` (`origin_not_allowed`) when a browser `Origin` header is outside `AUTOCLIPPER_CORS_ORIGINS`.
 
 `ToolSetupStatus`:
 
