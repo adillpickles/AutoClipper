@@ -338,8 +338,8 @@ def test_a_job_from_start_to_finish(client: TestClient) -> None:
     assert result["scorer"] == {"kind": "mock", "name": "mock", "run_id": None}
     assert [c["source"] for c in result["candidates"]] == ["both", "discovered", "viewer_clips"]
     assert result["candidates"][0]["top_signals"] == ["chat_msg_rate_z", "audio_rms_max_z"]
-    assert result["candidates"][0]["title"] == "Loud laughs & chat burst"
-    assert "3 viewers clipped it" in result["candidates"][0]["reason"]
+    assert result["candidates"][0]["title"] == "Loud audio & laughing chat"
+    assert "3 viewer clips" in result["candidates"][0]["reason"]
     assert len(result["candidates"][0]["signal_details"]) >= 3
     assert result["n_viewer_clips_total"] == 4
 
@@ -430,7 +430,7 @@ def test_scenario_9000000002_has_no_viewer_clips(client: TestClient) -> None:
             "n_viewer_clips": 0,
             "top_signals": ["chat_msg_rate_z"],
             "title": "Hype chat surge",
-            "reason": "Chat jumped to 4\u00d7 its usual rate with lots of hype",
+            "reason": "Chat jumped to 4\u00d7 its usual rate with lots of hype reactions",
             "signal_details": [
                 {
                     "kind": "chat_rate",
@@ -440,7 +440,7 @@ def test_scenario_9000000002_has_no_viewer_clips(client: TestClient) -> None:
                 {
                     "kind": "chat_hype",
                     "label": "Chat reaction",
-                    "detail": "High hype activity",
+                    "detail": "High hype-reaction activity",
                 },
             ],
         }
@@ -456,6 +456,10 @@ def test_scenario_9000000003_is_done_with_a_chat_missing_warning(client: TestCli
     assert result["warnings"] == job["warnings"]
     assert result["vod"]["duration_s"] == 300.0
     assert [c["source"] for c in result["candidates"]] == ["discovered", "viewer_clips"]
+    # Chat is missing on 9000000003, so no candidate should report chat signals.
+    for cand in result["candidates"]:
+        assert not any(sig.startswith("chat_") for sig in cand["top_signals"])
+        assert not any(detail["kind"].startswith("chat_") for detail in cand["signal_details"])
 
 
 def test_scenario_9000000004_fails_with_vod_unavailable(client: TestClient) -> None:

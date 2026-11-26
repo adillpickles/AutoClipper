@@ -96,17 +96,17 @@ _EXAMPLE_CANDIDATES: Final = (
         source="both",
         n_viewer_clips=3,
         top_signals=("chat_msg_rate_z", "audio_rms_max_z"),
-        title="Loud laughs & chat burst",
+        title="Loud audio & laughing chat",
         reason=(
-            "Chat jumped to 6\u00d7 its usual rate with lots of LUL; "
-            "loudest moment of the stream; 3 viewers clipped it"
+            "Chat jumped to 6\u00d7 its usual rate with lots of laugh reactions; "
+            "loudest moment of the stream; 3 viewer clips"
         ),
         signal_details=(
             SignalDetail(
                 kind="chat_rate", label="Chat rate", detail="6\u00d7 usual stream rate (z=3.4)"
             ),
             SignalDetail(
-                kind="chat_laugh", label="Chat reaction", detail="High laugh/LUL activity"
+                kind="chat_laugh", label="Chat reaction", detail="High laugh-reaction activity"
             ),
             SignalDetail(
                 kind="audio_loudness",
@@ -114,7 +114,9 @@ _EXAMPLE_CANDIDATES: Final = (
                 detail="Loudest moment of the stream (z=2.6)",
             ),
             SignalDetail(
-                kind="viewer_clips", label="Viewer clips", detail="3 viewers clipped this moment"
+                kind="viewer_clips",
+                label="Viewer clips",
+                detail="3 viewer clips overlap this moment",
             ),
         ),
     ),
@@ -152,10 +154,12 @@ _EXAMPLE_CANDIDATES: Final = (
         n_viewer_clips=1,
         top_signals=(),
         title="Viewer-clipped moment",
-        reason="1 viewer clipped it",
+        reason="1 viewer clip",
         signal_details=(
             SignalDetail(
-                kind="viewer_clips", label="Viewer clips", detail="1 viewer clipped this moment"
+                kind="viewer_clips",
+                label="Viewer clips",
+                detail="1 viewer clip overlaps this moment",
             ),
         ),
     ),
@@ -192,7 +196,7 @@ def scenario_for(video_id: str) -> Scenario:
                     n_viewer_clips=0,
                     top_signals=("chat_msg_rate_z",),
                     title="Hype chat surge",
-                    reason="Chat jumped to 4\u00d7 its usual rate with lots of hype",
+                    reason="Chat jumped to 4\u00d7 its usual rate with lots of hype reactions",
                     signal_details=(
                         SignalDetail(
                             kind="chat_rate",
@@ -200,7 +204,9 @@ def scenario_for(video_id: str) -> Scenario:
                             detail="4\u00d7 usual stream rate (z=2.4)",
                         ),
                         SignalDetail(
-                            kind="chat_hype", label="Chat reaction", detail="High hype activity"
+                            kind="chat_hype",
+                            label="Chat reaction",
+                            detail="High hype-reaction activity",
                         ),
                     ),
                 ),
@@ -242,15 +248,14 @@ def scenario_for(video_id: str) -> Scenario:
                     end_s=215.0,
                     source="viewer_clips",
                     n_viewer_clips=1,
-                    top_signals=("chat_msg_rate_z",),
-                    title="Chat surge",
-                    reason="Chat spiked; 1 viewer clipped it",
+                    top_signals=(),
+                    title="Viewer-clipped moment",
+                    reason="1 viewer clip",
                     signal_details=(
-                        SignalDetail(kind="chat_rate", label="Chat rate", detail="Chat spiked"),
                         SignalDetail(
                             kind="viewer_clips",
                             label="Viewer clips",
-                            detail="1 viewer clipped this moment",
+                            detail="1 viewer clip overlaps this moment",
                         ),
                     ),
                 ),

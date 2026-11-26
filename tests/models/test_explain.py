@@ -10,6 +10,7 @@ import pytest
 
 from autoclipper.analysis import Candidate
 from autoclipper.models.explain import explain_candidates
+from autoclipper.models.pauses import snap_interval_to_wav
 
 
 def _candidate(
@@ -96,10 +97,11 @@ def test_chat_spike_laugh_loudness_lookback_and_viewer_clips() -> None:
 
     (explained,) = explain_candidates([cand], windows=win, features=features, duration_s=2000.0)
 
-    assert explained.title == "Loud laughs & chat burst"
+    # Without an audio-event laughter feature, title keeps loud audio and laughing chat distinct.
+    assert explained.title == "Loud audio & laughing chat"
     assert explained.reason == (
-        "Chat jumped to 6\u00d7 its usual rate with lots of LUL; "
-        "loudest moment in the last 21 minutes; 3 viewers clipped it"
+        "Chat jumped to 6\u00d7 its usual rate with lots of laugh reactions; "
+        "loudest moment in the last 21 minutes; 3 viewer clips"
     )
     kinds = [d.kind for d in explained.signal_details]
     assert "chat_rate" in kinds
@@ -129,10 +131,14 @@ def test_loudest_moment_of_stream_and_muted_guard() -> None:
     unmuted_cand = _candidate(
         1, score=3.0, start_s=40.0, end_s=70.0, top_signals=("audio_rms_max_z",)
     )
-    muted_cand = _candidate(2, score=1.0, start_s=150.0, end_s=160.0)
+    # Partly muted candidate: window 15 is muted (loud), window 16 is unmuted (quiet),
+    # yet `top_signals` still carries `audio_rms_max_z` from the muted window.
+    partly_muted_cand = _candidate(
+        2, score=1.0, start_s=150.0, end_s=170.0, top_signals=("audio_rms_max_z",)
+    )
 
     out = explain_candidates(
-        [unmuted_cand, muted_cand], windows=win, features=features, duration_s=300.0
+        [unmuted_cand, partly_muted_cand], windows=win, features=features, duration_s=300.0
     )
 
     assert out[0].title == "Loudest moment of stream"
@@ -163,9 +169,10 @@ def test_flat_audio_does_not_claim_loudest_of_stream() -> None:
 @pytest.mark.parametrize(
     ("column", "expected_title", "expected_fragment"),
     [
-        ("chat_hype_rate", "Hype chat surge", "lots of hype"),
+        ("chat_laugh_rate", "Chat erupts laughing", "lots of laugh reactions"),
+        ("chat_hype_rate", "Hype chat surge", "lots of hype reactions"),
         ("chat_shock_rate", "Shocked chat reaction", "shocked reactions"),
-        ("chat_keyword_rate", '"Clip it" chat spike', '"clip it" calls'),
+        ("chat_keyword_rate", "Reaction-heavy chat spike", "reaction keywords"),
     ],
 )
 def test_chat_reaction_categories(column: str, expected_title: str, expected_fragment: str) -> None:
@@ -193,6 +200,57 @@ def test_chat_reaction_categories(column: str, expected_title: str, expected_fra
     assert expected_fragment in (out.reason or "")
 
 
+def test_unique_chatter_spike_stays_distinct_from_message_rate_spike() -> None:
+    # Total message rate is flat across the entire stream (z == 0), while unique chatters spike
+    # modestly (z == 1.2, so it appears in `top_signals`). Must NOT claim "Chat spiked".
+    n = 30
+    win = _windows(n)
+    unique_z = np.zeros(n)
+    unique_z[10] = 1.2
+    features = pl.DataFrame(
+        {
+            "window_id": win["window_id"],
+            "chat_msg_rate": np.full(n, 1.0),
+            "chat_msg_rate_z": np.zeros(n),
+            "chat_unique_rate_z": unique_z,
+        }
+    )
+    cand = _candidate(1, start_s=90.0, end_s=120.0, top_signals=("chat_unique_rate_z",))
+
+    (out,) = explain_candidates([cand], windows=win, features=features, duration_s=300.0)
+
+    assert out.reason == "Lots of viewers reacted at once"
+    assert [d.kind for d in out.signal_details] == ["chat_unique"]
+
+
+def test_emote_and_caps_fractions_measured_on_peak_chat_window_only() -> None:
+    # Window 8 has 1 emote in a quiet window (0.1 msg/s, 100% emotes); window 9 is the busy peak
+    # (10.0 msg/s, 0% emotes, 0% caps). Must NOT claim "100% emotes in peak window".
+    n = 30
+    win = _windows(n)
+    msg_rate = np.full(n, 1.0)
+    msg_rate[8] = 0.1
+    msg_rate[9] = 10.0
+    emote_frac = np.zeros(n)
+    emote_frac[8] = 1.0
+    caps_frac = np.zeros(n)
+    caps_frac[8] = 1.0
+
+    features = pl.DataFrame(
+        {
+            "window_id": win["window_id"],
+            "chat_msg_rate": msg_rate,
+            "chat_emote_frac": emote_frac,
+            "chat_caps_frac": caps_frac,
+        }
+    )
+    cand = _candidate(1, start_s=80.0, end_s=110.0)
+
+    (out,) = explain_candidates([cand], windows=win, features=features, duration_s=300.0)
+
+    assert all(d.kind not in ("chat_emotes", "chat_caps") for d in out.signal_details)
+
+
 def test_delayed_chat_lead_spike_and_secondary_chat_details() -> None:
     n = 20
     win = _windows(n)
@@ -203,6 +261,7 @@ def test_delayed_chat_lead_spike_and_secondary_chat_details() -> None:
     emote_frac = np.zeros(n)
     emote_frac[5] = 0.72
     msg_rate = np.full(n, 0.5)
+    msg_rate[5] = 1.0
 
     features = pl.DataFrame(
         {
@@ -221,9 +280,11 @@ def test_delayed_chat_lead_spike_and_secondary_chat_details() -> None:
     assert "chat spiked right after" in (out.reason or "").lower()
     kinds = {d.kind for d in out.signal_details}
     assert {"chat_rate", "chat_events", "chat_emotes"} <= kinds
+    event_detail = next(d for d in out.signal_details if d.kind == "chat_events")
+    assert event_detail.detail == "3 stream events in chat"
 
 
-def test_optional_audio_events_with_null_unscored_windows() -> None:
+def test_optional_audio_events_with_null_unscored_windows_and_vocal_titles() -> None:
     n = 15
     win = _windows(n)
     # Subset mode leaves unselected windows as None/null.
@@ -231,10 +292,16 @@ def test_optional_audio_events_with_null_unscored_windows() -> None:
     scream: list[float | None] = [None] * n
     laughter[4] = 0.88
     scream[9] = 0.91
+    hype_rate = np.zeros(n)
+    hype_rate[9] = 2.0
+    msg_rate = np.full(n, 1.0)
+    msg_rate[9] = 5.0
 
     features = pl.DataFrame(
         {
             "window_id": win["window_id"],
+            "chat_msg_rate": msg_rate,
+            "chat_hype_rate": hype_rate,
             "audio_evt_laughter": pl.Series(laughter, dtype=pl.Float64),
             "audio_evt_scream": pl.Series(scream, dtype=pl.Float64),
         }
@@ -249,33 +316,54 @@ def test_optional_audio_events_with_null_unscored_windows() -> None:
     assert "laughter detected" in (out[0].reason or "").lower()
     assert any(d.kind == "audio_event" and "88%" in d.detail for d in out[0].signal_details)
 
-    assert out[1].title == "Loud scream moment"
-    assert "screamed or shouted" in (out[1].reason or "").lower()
+    # With actual audio_evt_scream + hype chat, vocal "Hype shout" title IS used.
+    assert out[1].title == "Hype shout & chat surge"
     assert any(d.kind == "audio_event" and "91%" in d.detail for d in out[1].signal_details)
 
     # Unscored (null) window should fall back cleanly without errors.
     assert out[2].reason == "Steady activity throughout"
 
 
-def test_pause_snapped_speech_detected_from_wav_and_not_on_silence(tmp_path: Path) -> None:
+def test_pause_snapped_speech_detected_from_wav_explicit_edges_and_not_on_silence(
+    tmp_path: Path,
+) -> None:
     sr = 16_000
-    duration_s = 30.0
+    duration_s = 40.0
     t = np.arange(int(duration_s * sr)) / sr
-    # Active speech-like tone from 5.2 s to 24.8 s; quiet pauses before 5.2 s and after 24.8 s.
+    # Speech from 0..10.2 s, long pause 10.2..13.0 s, speech 13.0..34.8 s, silence 34.8..40.0 s.
     speech = np.zeros_like(t, dtype=np.float32)
-    active = (t >= 5.2) & (t <= 24.8)
+    active = ((t >= 0.0) & (t <= 10.2)) | ((t >= 13.0) & (t <= 34.8))
     speech[active] = (0.3 * np.sin(2 * math.pi * 440.0 * t[active])).astype(np.float32)
     speech_wav = _write_wav(tmp_path / "speech.wav", speech, sr)
 
-    # Candidate snapped cleanly to pauses right outside speech (5.05 s and 24.95 s).
-    snapped = _candidate(1, score=2.0, start_s=5.05, end_s=24.95)
-    # Candidate cut mid-speech (8.0 s to 20.0 s).
-    unsnapped = _candidate(2, score=1.0, start_s=8.0, end_s=20.0)
+    # Reproduce actual snapping from 10.0..35.0 -> ~12.85..34.95.
+    snapped_start, snapped_end = snap_interval_to_wav(
+        speech_wav,
+        10.0,
+        35.0,
+        peak=(20.0, 30.0),
+        duration_s=duration_s,
+        min_len_s=20.0,
+        max_len_s=45.0,
+    )
+    assert snapped_start == pytest.approx(12.85, abs=0.1)
+
+    snapped = _candidate(1, score=2.0, start_s=snapped_start, end_s=snapped_end)
+    unsnapped = _candidate(2, score=1.0, start_s=16.0, end_s=28.0)
 
     out = explain_candidates([snapped, unsnapped], duration_s=duration_s, audio_path=speech_wav)
     assert any(d.kind == "pause_snap" for d in out[0].signal_details)
     assert "speech pauses" in (out[0].reason or "").lower()
     assert all(d.kind != "pause_snap" for d in out[1].signal_details)
+
+    # Explicit per-edge snap metadata takes precedence cleanly.
+    (explicit_start_only,) = explain_candidates(
+        [unsnapped], pause_snapped_edges={"c002": (True, False)}
+    )
+    assert any(
+        d.kind == "pause_snap" and "Start aligned" in d.detail
+        for d in explicit_start_only.signal_details
+    )
 
     # Completely silent WAV must NOT claim pause-snapped speech boundaries.
     silent_wav = _write_wav(tmp_path / "silent.wav", np.zeros_like(t, dtype=np.float32), sr)
@@ -306,10 +394,10 @@ def test_fallback_without_features_uses_top_signals_and_viewer_clips() -> None:
 
     out = explain_candidates([c1, c2, c3])
 
-    assert out[0].title == "Loud reaction & chat spike"
-    assert out[0].reason == "Chat spiked; streamer got loud; 2 viewers clipped it"
+    assert out[0].title == "Loud audio & chat spike"
+    assert out[0].reason == "Chat spiked; loud audio spike; 2 viewer clips"
     assert out[1].title == "Viewer-clipped moment"
-    assert out[1].reason == "1 viewer clipped it"
+    assert out[1].reason == "1 viewer clip"
     assert out[2].title == "Stream moment"
     assert out[2].reason == "Steady activity throughout"
 

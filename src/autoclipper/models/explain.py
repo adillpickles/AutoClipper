@@ -14,7 +14,7 @@ attach three fields to each `Candidate`:
 import logging
 import math
 import wave
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -73,40 +73,47 @@ _MIN_REACTION_SHARE: Final = 0.15
 _MIN_REACTION_LIFT: Final = 2.0
 _MIN_LOOKBACK_MINUTES: Final = 5
 _MIN_STREAM_SPAN_FOR_LOUDEST_S: Final = 60.0
-_PAUSE_CHECK_HALF_WINDOW_S: Final = 1.0
+_PAUSE_NARROW_HALF_WINDOW_S: Final = 1.0
 _PAUSE_EDGE_TOLERANCE_S: Final = 0.05
 
-# Priority order when breaking ties between reaction categories.
+# Priority order when breaking ties between reaction categories. Wordings describe the lexicon
+# category rather than any single emote or phrase.
 _REACTION_SPECS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # (category, column, with_suffix, standalone, detail_text)
     (
         "laugh",
         "chat_laugh_rate",
-        "with lots of LUL",
-        "lots of LUL in chat",
-        "High laugh/LUL activity",
+        "with lots of laugh reactions",
+        "lots of laugh reactions in chat",
+        "High laugh-reaction activity",
     ),
-    ("hype", "chat_hype_rate", "with lots of hype", "chat got hyped", "High hype activity"),
+    (
+        "hype",
+        "chat_hype_rate",
+        "with lots of hype reactions",
+        "chat got hyped",
+        "High hype-reaction activity",
+    ),
     (
         "shock",
         "chat_shock_rate",
         "with shocked reactions",
         "chat reacted with shock",
-        "High shock/surprise activity",
+        "High shock-reaction activity",
     ),
     (
         "keyword",
         "chat_keyword_rate",
-        'with "clip it" calls',
-        'chat called to "clip it"',
-        'Frequent "clip it" reactions',
+        "with reaction keywords",
+        "chat surged with reaction keywords",
+        "High reaction-keyword activity",
     ),
 )
 
 _AUDIO_EVENT_SPECS: Final[tuple[tuple[str, float, str, str, str], ...]] = (
     # (column, threshold, event_kind, reason_phrase, detail_prefix)
-    ("audio_evt_scream", 0.5, "scream", "streamer screamed or shouted", "Scream/shout detected"),
-    ("audio_evt_laughter", 0.5, "laughter", "streamer laughter detected", "Laughter detected"),
+    ("audio_evt_scream", 0.5, "scream", "scream or shout detected", "Scream/shout detected"),
+    ("audio_evt_laughter", 0.5, "laughter", "laughter detected in audio", "Laughter detected"),
     ("audio_evt_cheer", 0.5, "cheer", "cheering detected", "Cheering/applause detected"),
     ("audio_evt_music", 0.7, "music", "music cue detected", "Music cue detected"),
 )
@@ -114,20 +121,20 @@ _AUDIO_EVENT_SPECS: Final[tuple[tuple[str, float, str, str, str], ...]] = (
 # Fallback signal mapping when `features` is absent and only `top_signals` is available.
 _TOP_SIGNAL_FALLBACKS: Final[tuple[tuple[str, str, str, str], ...]] = (
     # (prefix, kind, label, phrase)
-    ("chat_unique_rate", "chat_unique", "Unique chatters", "lots of viewers reacted"),
+    ("chat_unique_rate", "chat_unique", "Unique chatters", "lots of viewers reacted at once"),
     ("chat_msg_rate_lead", "chat_rate", "Chat rate", "chat spiked right after"),
     ("chat_msg_rate_rz", "chat_rate", "Chat rate", "chat suddenly surged"),
     ("chat_msg_rate", "chat_rate", "Chat rate", "chat spiked"),
-    ("chat_laugh_rate", "chat_laugh", "Chat reaction", "lots of LUL in chat"),
+    ("chat_laugh_rate", "chat_laugh", "Chat reaction", "lots of laugh reactions in chat"),
     ("chat_hype_rate", "chat_hype", "Chat reaction", "chat got hyped"),
     ("chat_shock_rate", "chat_shock", "Chat reaction", "chat reacted with shock"),
-    ("chat_keyword_rate", "chat_keyword", "Chat reaction", 'chat called to "clip it"'),
-    ("audio_evt_scream", "audio_event", "Audio event", "streamer screamed or shouted"),
-    ("audio_evt_laughter", "audio_event", "Audio event", "streamer laughter detected"),
+    ("chat_keyword_rate", "chat_keyword", "Chat reaction", "chat surged with reaction keywords"),
+    ("audio_evt_scream", "audio_event", "Audio event", "scream or shout detected"),
+    ("audio_evt_laughter", "audio_event", "Audio event", "laughter detected in audio"),
     ("audio_evt_cheer", "audio_event", "Audio event", "cheering detected"),
     ("audio_evt_music", "audio_event", "Audio event", "music cue detected"),
     ("audio_rms_rz", "audio_loudness", "Audio loudness", "sudden audio loudness spike"),
-    ("audio_rms", "audio_loudness", "Audio loudness", "streamer got loud"),
+    ("audio_rms", "audio_loudness", "Audio loudness", "loud audio spike"),
     ("audio_onset_rate", "audio_onset", "Audio activity", "burst of rapid audio activity"),
 )
 
@@ -176,6 +183,7 @@ def explain_candidates(
     features: pl.DataFrame | None = None,
     duration_s: float | None = None,
     audio_path: Path | None = None,
+    pause_snapped_edges: Mapping[str, tuple[bool, bool]] | None = None,
     pause_snapped_ids: Collection[str] | None = None,
     pause_snap: PauseSnapParams | None = None,
 ) -> list[Candidate]:
@@ -192,8 +200,11 @@ def explain_candidates(
             columns in `ALLOWED_FEATURE_COLUMNS` are read.
         duration_s: Optional VOD duration in seconds (for clamping WAV pause checks).
         audio_path: Optional normalized 16 kHz WAV used to detect whether clip boundaries sit on
-            speech pauses.
-        pause_snapped_ids: Optional explicit set of ``candidate_id``s known to be pause-snapped.
+            speech pauses when explicit per-edge snap flags are not passed.
+        pause_snapped_edges: Optional mapping ``candidate_id -> (start_snapped, end_snapped)``
+            from candidate generation. Takes precedence over WAV re-detection.
+        pause_snapped_ids: Optional explicit set of ``candidate_id``s known to have both edges
+            snapped to speech pauses.
         pause_snap: Optional `PauseSnapParams` for WAV pause checks.
 
     Returns:
@@ -212,7 +223,10 @@ def explain_candidates(
     explained: list[Candidate] = []
     for candidate in candidates:
         pause_state: str | None = None
-        if snapped_set is not None and candidate.candidate_id in snapped_set:
+        if pause_snapped_edges is not None and candidate.candidate_id in pause_snapped_edges:
+            start_snapped, end_snapped = pause_snapped_edges[candidate.candidate_id]
+            pause_state = _pause_state_from_flags(start_snapped, end_snapped)
+        elif snapped_set is not None and candidate.candidate_id in snapped_set:
             pause_state = "both"
         elif wav is not None and not wav_failed:
             eff_duration = duration_s
@@ -220,7 +234,7 @@ def explain_candidates(
                 eff_duration = (
                     float(index.ends[-1])
                     if index is not None and index.ends.size > 0
-                    else candidate.end_s + _PAUSE_CHECK_HALF_WINDOW_S
+                    else candidate.end_s + _PAUSE_NARROW_HALF_WINDOW_S
                 )
             try:
                 pause_state = _detect_pause_alignment(
@@ -229,6 +243,7 @@ def explain_candidates(
                     candidate.end_s,
                     duration_s=eff_duration,
                     params=snap_params,
+                    index=index,
                 )
             except (OSError, ValueError, wave.Error) as exc:
                 log.warning("skipping pause alignment check path=%s error=%s", wav, exc)
@@ -336,23 +351,23 @@ def _explain_one(
     else:
         _extract_top_signal_fallbacks(candidate, summary)
 
-    # Viewer clips (always derived from candidate counts, never raw clip titles/creators).
+    # Viewer clips (counts distinct clip IDs merged into this candidate, never creators).
     if candidate.n_viewer_clips == 1:
-        summary.clips_clause = "1 viewer clipped it"
+        summary.clips_clause = "1 viewer clip"
         summary.details.append(
             SignalDetail(
                 kind="viewer_clips",
                 label="Viewer clips",
-                detail="1 viewer clipped this moment",
+                detail="1 viewer clip overlaps this moment",
             )
         )
     elif candidate.n_viewer_clips > 1:
-        summary.clips_clause = f"{candidate.n_viewer_clips} viewers clipped it"
+        summary.clips_clause = f"{candidate.n_viewer_clips} viewer clips"
         summary.details.append(
             SignalDetail(
                 kind="viewer_clips",
                 label="Viewer clips",
-                detail=f"{candidate.n_viewer_clips} viewers clipped this moment",
+                detail=f"{candidate.n_viewer_clips} viewer clips overlap this moment",
             )
         )
 
@@ -399,7 +414,17 @@ def _extract_chat_signals(
     assert summary.details is not None
     cols = index.columns
 
-    peak_rate = _max_finite(cols["chat_msg_rate"][inside]) if "chat_msg_rate" in cols else None
+    inside_indices = np.flatnonzero(inside)
+    peak_rate: float | None = None
+    peak_rate_idx: int | None = None
+    if "chat_msg_rate" in cols:
+        rate_vals = cols["chat_msg_rate"][inside_indices]
+        finite_mask = np.isfinite(rate_vals)
+        if finite_mask.any():
+            local_best = int(np.argmax(np.where(finite_mask, rate_vals, -np.inf)))
+            peak_rate = float(rate_vals[local_best])
+            peak_rate_idx = int(inside_indices[local_best])
+
     peak_z = _max_finite(cols["chat_msg_rate_z"][inside]) if "chat_msg_rate_z" in cols else None
     peak_rz = _max_finite(cols["chat_msg_rate_rz"][inside]) if "chat_msg_rate_rz" in cols else None
     peak_unique_z = (
@@ -434,7 +459,8 @@ def _extract_chat_signals(
             best_reaction = (cat, suffix, standalone, detail_text, peak_cat)
 
     top_set = set(candidate.top_signals)
-    has_chat_spike = (
+    has_rate_columns = bool({"chat_msg_rate", "chat_msg_rate_z", "chat_msg_rate_rz"} & set(cols))
+    has_msg_rate_spike = (
         (
             chat_ratio is not None
             and chat_ratio >= _MIN_CHAT_RATIO
@@ -442,17 +468,24 @@ def _extract_chat_signals(
         )
         or (peak_z is not None and peak_z >= 1.5)
         or (peak_rz is not None and peak_rz >= 2.0)
-        or bool(top_set & {"chat_msg_rate_z", "chat_msg_rate_rz", "chat_unique_rate_z"})
+        or (not has_rate_columns and bool(top_set & {"chat_msg_rate_z", "chat_msg_rate_rz"}))
     )
-    has_delayed_spike = not has_chat_spike and (
+    has_delayed_spike = not has_msg_rate_spike and (
         (peak_lead_z is not None and peak_lead_z >= 1.5)
-        or any(sig.startswith("chat_msg_rate_lead") for sig in top_set)
+        or (
+            "chat_msg_rate_lead1" not in cols
+            and "chat_msg_rate_lead2" not in cols
+            and any(sig.startswith("chat_msg_rate_lead") for sig in top_set)
+        )
+    )
+    has_unique_spike = (peak_unique_z is not None and peak_unique_z >= 1.5) or (
+        "chat_unique_rate_z" in top_set and (peak_unique_z is None or peak_unique_z >= 1.0)
     )
 
     if best_reaction is not None:
         summary.chat_mood = best_reaction[0]
 
-    if has_chat_spike:
+    if has_msg_rate_spike:
         summary.chat_strong = (chat_ratio is not None and chat_ratio >= 3.5) or (
             peak_z is not None and peak_z >= 3.0
         )
@@ -485,22 +518,13 @@ def _extract_chat_signals(
                     detail=f"Sudden surge vs. last 5 min (rz={peak_rz:.1f})",
                 )
             )
-        elif peak_unique_z is not None and peak_unique_z >= 1.5:
-            base_clause = "lots of viewers reacted at once"
-            summary.details.append(
-                SignalDetail(
-                    kind="chat_unique",
-                    label="Unique chatters",
-                    detail=f"Broad chatter spike (z={peak_unique_z:.1f})",
-                )
-            )
         else:
             base_clause = "chat spiked"
             summary.details.append(
                 SignalDetail(
                     kind="chat_rate",
                     label="Chat rate",
-                    detail="Above-average chat activity",
+                    detail="Above-average chat rate",
                 )
             )
 
@@ -525,6 +549,31 @@ def _extract_chat_signals(
                 kind="chat_rate",
                 label="Chat rate",
                 detail=f"Chat surge followed right after{z_suffix}",
+            )
+        )
+        if best_reaction is not None:
+            summary.chat_clause = f"{base_clause} {best_reaction[1]}"
+            summary.details.append(
+                SignalDetail(
+                    kind=f"chat_{best_reaction[0]}",
+                    label="Chat reaction",
+                    detail=best_reaction[3],
+                )
+            )
+        else:
+            summary.chat_clause = base_clause
+    elif has_unique_spike:
+        base_clause = "lots of viewers reacted at once"
+        unique_detail = (
+            f"Broad chatter spike (z={peak_unique_z:.1f})"
+            if peak_unique_z is not None and peak_unique_z >= 0.5
+            else "More unique chatters reacted"
+        )
+        summary.details.append(
+            SignalDetail(
+                kind="chat_unique",
+                label="Unique chatters",
+                detail=unique_detail,
             )
         )
         if best_reaction is not None:
@@ -571,16 +620,18 @@ def _extract_chat_signals(
                 SignalDetail(
                     kind="chat_events",
                     label="Stream events",
-                    detail=f"{n_events} sub/bit events in chat",
+                    detail=f"{n_events} stream events in chat",
                 )
             )
             if summary.chat_clause is None:
-                summary.chat_clause = f"{n_events} sub/bit events rolled in"
+                summary.chat_clause = f"{n_events} stream events rolled in"
 
-    if peak_rate is not None and peak_rate >= 0.3:
+    # Measure emote and uppercase fractions on the actual peak chat-rate window so an almost-empty
+    # neighboring window can't mischaracterize the peak window.
+    if peak_rate is not None and peak_rate >= 0.3 and peak_rate_idx is not None:
         if "chat_emote_frac" in cols:
-            emote_frac = _max_finite(cols["chat_emote_frac"][inside])
-            if emote_frac is not None and emote_frac >= 0.5:
+            emote_frac = float(cols["chat_emote_frac"][peak_rate_idx])
+            if math.isfinite(emote_frac) and emote_frac >= 0.5:
                 summary.details.append(
                     SignalDetail(
                         kind="chat_emotes",
@@ -589,8 +640,8 @@ def _extract_chat_signals(
                     )
                 )
         if "chat_caps_frac" in cols:
-            caps_frac = _max_finite(cols["chat_caps_frac"][inside])
-            if caps_frac is not None and caps_frac >= 0.5:
+            caps_frac = float(cols["chat_caps_frac"][peak_rate_idx])
+            if math.isfinite(caps_frac) and caps_frac >= 0.5:
                 summary.details.append(
                     SignalDetail(
                         kind="chat_caps",
@@ -614,12 +665,15 @@ def _extract_audio_signals(
 
     peak_z = _max_finite(cols["audio_rms_max_z"][eligible]) if "audio_rms_max_z" in cols else None
     peak_rz = _max_finite(cols["audio_rms_rz"][eligible]) if "audio_rms_rz" in cols else None
+    has_loud_z_cols = "audio_rms_max_z" in cols or "audio_rms_rz" in cols
     top_set = set(candidate.top_signals)
 
+    # When loudness z-score columns are present, judge strictly from unmuted windows so a muted
+    # window that appeared in `top_signals` never triggers a loudness claim.
     loud_notable = (
         (peak_z is not None and peak_z >= 1.0)
         or (peak_rz is not None and peak_rz >= 1.5)
-        or bool(top_set & {"audio_rms_max_z", "audio_rms_rz"})
+        or (not has_loud_z_cols and bool(top_set & {"audio_rms_max_z", "audio_rms_rz"}))
     )
 
     if loud_notable and "audio_rms_max" in cols:
@@ -680,7 +734,7 @@ def _extract_audio_signals(
                         )
                     )
                 else:
-                    summary.audio_clause = "streamer got loud"
+                    summary.audio_clause = "loud audio spike"
                     summary.details.append(
                         SignalDetail(
                             kind="audio_loudness",
@@ -703,7 +757,7 @@ def _extract_audio_signals(
             )
         else:
             z_note = f" (z={peak_z:.1f})" if peak_z is not None and peak_z >= 0.5 else ""
-            summary.audio_clause = "streamer got loud"
+            summary.audio_clause = "loud audio spike"
             summary.details.append(
                 SignalDetail(
                     kind="audio_loudness",
@@ -793,6 +847,23 @@ def _extract_top_signal_fallbacks(candidate: Candidate, summary: _SignalSummary)
             break
 
 
+def _pause_state_from_flags(start_snapped: bool, end_snapped: bool) -> str | None:
+    if start_snapped and end_snapped:
+        return "both"
+    if start_snapped:
+        return "start"
+    if end_snapped:
+        return "end"
+    return None
+
+
+def _edge_is_muted(edge_s: float, index: _FeatureIndex | None) -> bool:
+    if index is None:
+        return False
+    hits = np.flatnonzero((index.starts <= edge_s) & (edge_s < index.ends))
+    return bool(hits.size > 0 and not index.unmuted[int(hits[0])])
+
+
 def _detect_pause_alignment(
     wav_path: Path,
     start_s: float,
@@ -800,16 +871,15 @@ def _detect_pause_alignment(
     *,
     duration_s: float,
     params: PauseSnapParams,
+    index: _FeatureIndex | None,
 ) -> str | None:
-    start_aligned = _edge_on_pause(wav_path, start_s, duration_s, params)
-    end_aligned = _edge_on_pause(wav_path, end_s, duration_s, params)
-    if start_aligned and end_aligned:
-        return "both"
-    if start_aligned:
-        return "start"
-    if end_aligned:
-        return "end"
-    return None
+    start_aligned = not _edge_is_muted(start_s, index) and _edge_on_pause(
+        wav_path, start_s, duration_s, params
+    )
+    end_aligned = not _edge_is_muted(end_s, index) and _edge_on_pause(
+        wav_path, end_s, duration_s, params
+    )
+    return _pause_state_from_flags(start_aligned, end_aligned)
 
 
 def _edge_on_pause(
@@ -818,18 +888,32 @@ def _edge_on_pause(
     duration_s: float,
     params: PauseSnapParams,
 ) -> bool:
-    lo = max(0.0, edge_s - _PAUSE_CHECK_HALF_WINDOW_S)
-    hi = min(duration_s, edge_s + _PAUSE_CHECK_HALF_WINDOW_S)
-    if hi - lo < params.min_pause_s:
-        return False
-    pauses = find_pauses_in_wav(wav_path, lo, hi, params=params)
-    # Require adjacent active audio inside the check slice so completely silent/muted audio isn't
-    # misreported as a speech-pause boundary.
-    return any(
-        (p_start - _PAUSE_EDGE_TOLERANCE_S <= edge_s <= p_end + _PAUSE_EDGE_TOLERANCE_S)
-        and not (p_start <= lo + 0.02 and p_end >= hi - 0.02)
-        for p_start, p_end in pauses
+    # Check both the snap search radius (`max_shift_s + min_pause_s`, matching
+    # `snap_interval_to_wav`) and a narrower ±1 s window so both long pauses and short speech
+    # bursts adjacent to the boundary are recognized, while completely silent stretches are never
+    # reported as speech pauses.
+    wide_pad = params.max_shift_s + params.min_pause_s
+    radii = (
+        (wide_pad,)
+        if wide_pad <= _PAUSE_NARROW_HALF_WINDOW_S
+        else (
+            wide_pad,
+            _PAUSE_NARROW_HALF_WINDOW_S,
+        )
     )
+    for pad in radii:
+        lo = max(0.0, edge_s - pad)
+        hi = min(duration_s, edge_s + pad)
+        if hi - lo < params.min_pause_s:
+            continue
+        pauses = find_pauses_in_wav(wav_path, lo, hi, params=params)
+        if any(
+            (p_start - _PAUSE_EDGE_TOLERANCE_S <= edge_s <= p_end + _PAUSE_EDGE_TOLERANCE_S)
+            and not (p_start <= lo + 0.02 and p_end >= hi - 0.02)
+            for p_start, p_end in pauses
+        ):
+            return True
+    return False
 
 
 def _compose_reason(summary: _SignalSummary) -> str:
@@ -858,20 +942,28 @@ def _compose_title(candidate: Candidate, summary: _SignalSummary) -> str:
     mood = summary.chat_mood
     evt = summary.audio_event_kind
 
+    # Vocal titles ("Laughter", "Shout", "Scream") require an audio-event signal; plain RMS
+    # loudness is described separately from chat reactions.
     if mood == "laugh":
-        if has_loud or evt == "laughter":
-            return "Loud laughs & chat burst"
+        if evt == "laughter":
+            return "Laughter & chat burst"
+        if has_loud:
+            return "Loud audio & laughing chat"
         return "Chat erupts laughing"
     if mood == "hype":
-        if has_loud or evt == "scream":
-            return "Hype yell & chat surge"
+        if evt == "scream":
+            return "Hype shout & chat surge"
+        if has_loud:
+            return "Loud audio & hype chat"
         return "Hype chat surge"
     if mood == "shock":
-        if has_loud or evt == "scream":
-            return "Shocked reaction & spike"
+        if evt == "scream":
+            return "Shocked shout & chat spike"
+        if has_loud:
+            return "Loud audio & shocked chat"
         return "Shocked chat reaction"
     if mood == "keyword":
-        return '"Clip it" chat spike'
+        return "Reaction-heavy chat spike"
 
     if evt == "scream":
         return "Loud scream & chat spike" if has_chat else "Loud scream moment"
@@ -881,13 +973,15 @@ def _compose_title(candidate: Candidate, summary: _SignalSummary) -> str:
         return "Cheering & chat surge" if has_chat else "Cheering moment"
 
     if has_chat and has_loud:
-        return "Loud reaction & chat spike"
+        return "Loud audio & chat spike"
     if has_chat:
         return "Big chat spike" if summary.chat_strong else "Chat surge"
     if summary.audio_loudest_stream:
         return "Loudest moment of stream"
     if has_loud:
-        return "Loud moment viewers clipped" if candidate.n_viewer_clips > 0 else "Loud audio spike"
+        return (
+            "Loud moment with viewer clips" if candidate.n_viewer_clips > 0 else "Loud audio spike"
+        )
     if evt == "music":
         return "Music cue moment"
     if candidate.n_viewer_clips >= 3:

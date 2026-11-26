@@ -369,8 +369,8 @@ HTTP errors for jobs use the envelope from § 8:
 | `source` | `viewer_clips` \| `discovered` \| `both` | How it was generated (§ 4.4) |
 | `n_viewer_clips` | int | Distinct viewer clip IDs merged into this candidate |
 | `top_signals` | list<str> | Feature names that contributed most, strongest first (names from [features](../ml/features.md), e.g. `chat_msg_rate_z`). Always present; empty only when no signal stands out (then a client without `reason` falls back to "Viewers clipped this moment" if `n_viewer_clips` > 0, else "Steady activity throughout"). An explanation aid, not evidence of quality. |
-| `title` | str \| null | Short human title (2–5 words) summarizing the moment from aggregate signals, e.g. `"Loud laughs & chat burst"`. Never contains raw chat text or usernames. `null` only on older `"1.0"` results or raw pre-explanation candidates. |
-| `reason` | str \| null | Deterministic plain-English one-line "why this moment" explanation from aggregate signals (chat rate/reaction categories, audio loudness lookback, viewer clips, optional audio events, pause-snapped edges), e.g. `"Chat jumped to 6× its usual rate with lots of LUL; loudest moment in the last 20 minutes; 3 viewers clipped it"`. Never alters rank or score; never contains raw chat text or usernames. `null` only on older `"1.0"` results or raw pre-explanation candidates. |
+| `title` | str \| null | Short human title (2–5 words) summarizing the moment from aggregate signals, e.g. `"Loud audio & laughing chat"`. Never contains raw chat text or usernames. `null` only on older `"1.0"` results or raw pre-explanation candidates. |
+| `reason` | str \| null | Deterministic plain-English one-line "why this moment" explanation from aggregate signals (chat rate/reaction categories, audio loudness lookback, viewer clip counts, optional audio events, pause-snapped edges), e.g. `"Chat jumped to 6× its usual rate with lots of laugh reactions; loudest moment in the last 20 minutes; 3 viewer clips"`. Never alters rank or score; never contains raw chat text or usernames. `null` only on older `"1.0"` results or raw pre-explanation candidates. |
 | `signal_details` | list<`SignalDetail`> | Structured contributing signals behind `reason`, for UI "why" tooltips/expanders. Always present; `[]` when no explanation details are attached. |
 
 `SignalDetail`:
@@ -379,7 +379,7 @@ HTTP errors for jobs use the envelope from § 8:
 |---|---|---|
 | `kind` | str (open enum) | Stable signal category, e.g. `chat_rate`, `chat_laugh`, `chat_hype`, `chat_shock`, `chat_keyword`, `chat_unique`, `chat_events`, `chat_emotes`, `chat_caps`, `audio_loudness`, `audio_onset`, `audio_event`, `viewer_clips`, `pause_snap` |
 | `label` | str | Short human-readable label, e.g. `"Chat rate"`, `"Audio loudness"`, `"Viewer clips"` |
-| `detail` | str | Concrete aggregate summary, e.g. `"6× usual stream rate (z=3.4)"`, `"Loudest in the last 20 min (z=2.6)"`, `"3 viewers clipped this moment"` |
+| `detail` | str | Concrete aggregate summary, e.g. `"6× usual stream rate (z=3.4)"`, `"Loudest in the last 20 min (z=2.6)"`, `"3 viewer clips overlap this moment"` |
 
 `start_s` and `end_s` are the interval exactly as the candidate generator produced it, including any context padding it chose. They're already source time: a chat-time heuristic was converted once during generation ([labeling § 5](../data/labeling.md#5-chat-lag)). Preview, export and highlights use them as given; the server never shifts or pads them again.
 
@@ -458,13 +458,13 @@ Candidates may overlap each other; the timeline has to cope with overlapping mar
       "source": "both",
       "n_viewer_clips": 3,
       "top_signals": ["chat_msg_rate_z", "audio_rms_max_z"],
-      "title": "Loud laughs & chat burst",
-      "reason": "Chat jumped to 6× its usual rate with lots of LUL; loudest moment of the stream; 3 viewers clipped it",
+      "title": "Loud audio & laughing chat",
+      "reason": "Chat jumped to 6× its usual rate with lots of laugh reactions; loudest moment of the stream; 3 viewer clips",
       "signal_details": [
         { "kind": "chat_rate", "label": "Chat rate", "detail": "6× usual stream rate (z=3.4)" },
-        { "kind": "chat_laugh", "label": "Chat reaction", "detail": "High laugh/LUL activity" },
+        { "kind": "chat_laugh", "label": "Chat reaction", "detail": "High laugh-reaction activity" },
         { "kind": "audio_loudness", "label": "Audio loudness", "detail": "Loudest moment of the stream (z=2.6)" },
-        { "kind": "viewer_clips", "label": "Viewer clips", "detail": "3 viewers clipped this moment" }
+        { "kind": "viewer_clips", "label": "Viewer clips", "detail": "3 viewer clips overlap this moment" }
       ]
     },
     {
@@ -493,9 +493,9 @@ Candidates may overlap each other; the timeline has to cope with overlapping mar
       "n_viewer_clips": 1,
       "top_signals": [],
       "title": "Viewer-clipped moment",
-      "reason": "1 viewer clipped it",
+      "reason": "1 viewer clip",
       "signal_details": [
-        { "kind": "viewer_clips", "label": "Viewer clips", "detail": "1 viewer clipped this moment" }
+        { "kind": "viewer_clips", "label": "Viewer clips", "detail": "1 viewer clip overlaps this moment" }
       ]
     }
   ]
@@ -548,19 +548,18 @@ Degraded result for `job_8d2e6f0a9b1c4d7e` (chat missing):
       "end_s": 215.0,
       "source": "viewer_clips",
       "n_viewer_clips": 1,
-      "top_signals": ["chat_msg_rate_z"],
-      "title": "Chat surge",
-      "reason": "Chat spiked; 1 viewer clipped it",
+      "top_signals": [],
+      "title": "Viewer-clipped moment",
+      "reason": "1 viewer clip",
       "signal_details": [
-        { "kind": "chat_rate", "label": "Chat rate", "detail": "Chat spiked" },
-        { "kind": "viewer_clips", "label": "Viewer clips", "detail": "1 viewer clipped this moment" }
+        { "kind": "viewer_clips", "label": "Viewer clips", "detail": "1 viewer clip overlaps this moment" }
       ]
     }
   ]
 }
 ```
 
-A VOD with no viewer clips has the same shape with `"n_viewer_clips_total": 0` and only `discovered` candidates, e.g. `{ "candidate_id": "c001", "rank": 1, "score": 1.8, "start_s": 12.0, "end_s": 40.0, "source": "discovered", "n_viewer_clips": 0, "top_signals": ["chat_msg_rate_z"], "title": "Hype chat surge", "reason": "Chat jumped to 4× its usual rate with lots of hype", "signal_details": [{ "kind": "chat_rate", "label": "Chat rate", "detail": "4× usual stream rate (z=2.4)" }, { "kind": "chat_hype", "label": "Chat reaction", "detail": "High hype activity" }] }`. A result with no candidates has `"candidates": []`.
+A VOD with no viewer clips has the same shape with `"n_viewer_clips_total": 0` and only `discovered` candidates, e.g. `{ "candidate_id": "c001", "rank": 1, "score": 1.8, "start_s": 12.0, "end_s": 40.0, "source": "discovered", "n_viewer_clips": 0, "top_signals": ["chat_msg_rate_z"], "title": "Hype chat surge", "reason": "Chat jumped to 4× its usual rate with lots of hype reactions", "signal_details": [{ "kind": "chat_rate", "label": "Chat rate", "detail": "4× usual stream rate (z=2.4)" }, { "kind": "chat_hype", "label": "Chat reaction", "detail": "High hype-reaction activity" }] }`. A result with no candidates has `"candidates": []`.
 
 ## 5. Media (preview)
 

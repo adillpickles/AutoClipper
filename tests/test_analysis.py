@@ -60,8 +60,10 @@ def test_a_valid_result_serializes_like_the_contract_example() -> None:
             source="both",
             n_viewer_clips=3,
             top_signals=("chat_msg_rate_z",),
-            title="Loud laughs & chat burst",
-            reason="Chat jumped to 6\u00d7 its usual rate with lots of LUL; 3 viewers clipped it",
+            title="Loud audio & laughing chat",
+            reason=(
+                "Chat jumped to 6\u00d7 its usual rate with lots of laugh reactions; 3 viewer clips"
+            ),
             signal_details=(
                 SignalDetail(
                     kind="chat_rate", label="Chat rate", detail="6\u00d7 usual stream rate"
@@ -77,9 +79,9 @@ def test_a_valid_result_serializes_like_the_contract_example() -> None:
     assert data["generated_at"] == "2026-10-19T15:02:41Z"
     assert data["vod"]["created_at"] == "2026-10-12T18:00:00Z"
     assert data["candidates"][0]["top_signals"] == ["chat_msg_rate_z"]
-    assert data["candidates"][0]["title"] == "Loud laughs & chat burst"
+    assert data["candidates"][0]["title"] == "Loud audio & laughing chat"
     assert data["candidates"][0]["reason"] == (
-        "Chat jumped to 6\u00d7 its usual rate with lots of LUL; 3 viewers clipped it"
+        "Chat jumped to 6\u00d7 its usual rate with lots of laugh reactions; 3 viewer clips"
     )
     assert data["candidates"][0]["signal_details"] == [
         {"kind": "chat_rate", "label": "Chat rate", "detail": "6\u00d7 usual stream rate"}
