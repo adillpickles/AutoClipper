@@ -868,13 +868,19 @@ def doctor(
     ] = False,
 ) -> None:
     """Check local tools, optional extras and credentials before running AutoClipper."""
-    from autoclipper.preflight import format_preflight_summary, run_preflight
+    from autoclipper.preflight import (
+        format_preflight_summary,
+        format_tool_locations,
+        run_preflight,
+    )
 
-    report = run_preflight(get_settings(), job_runner=jobs.value)
+    settings = get_settings()
+    report = run_preflight(settings, job_runner=jobs.value)
     if json_output:
         typer.echo(report.model_dump_json(indent=2))
     else:
         typer.echo(format_preflight_summary(report))
+        typer.echo(format_tool_locations(settings))
     if report.status == "fail":
         raise typer.Exit(ExitCode.USER_ERROR)
 

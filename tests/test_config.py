@@ -701,3 +701,57 @@ def test_tilde_path_raises_config_error_when_home_directory_is_unknown(
 
     with pytest.raises(ConfigError, match=r"AUTOCLIPPER_DATA_DIR:.*home directory is unknown"):
         get_settings()
+
+
+def test_tool_path_settings_default_to_none_and_accept_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    defaults = get_settings()
+    assert defaults.tools_dir is None
+    assert defaults.ffmpeg_path is None
+    assert defaults.ffprobe_path is None
+    assert defaults.twitch_downloader_path is None
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("AUTOCLIPPER_TOOLS_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("AUTOCLIPPER_FFMPEG_PATH", str(tmp_path / "bin" / "ffmpeg"))
+    monkeypatch.setenv("AUTOCLIPPER_FFPROBE_PATH", str(tmp_path / "bin" / "ffprobe"))
+    monkeypatch.setenv("AUTOCLIPPER_TWITCH_DOWNLOADER_PATH", str(tmp_path / "bin" / "td"))
+
+    overridden = get_settings()
+    assert overridden.tools_dir == tmp_path / "managed"
+    assert overridden.resolved_tools_dir() == tmp_path / "managed"
+    assert overridden.ffmpeg_path == tmp_path / "bin" / "ffmpeg"
+    assert overridden.ffprobe_path == tmp_path / "bin" / "ffprobe"
+    assert overridden.twitch_downloader_path == tmp_path / "bin" / "td"
+
+
+def test_default_tools_dir_follows_os_conventions(tmp_path: Path) -> None:
+    from autoclipper.config import default_tools_dir
+
+    home = tmp_path / "home"
+    win_local = tmp_path / "LocalAppData"
+    assert (
+        default_tools_dir(platform="win32", env={"LOCALAPPDATA": str(win_local)}, home=home)
+        == win_local / "AutoClipper" / "tools"
+    )
+    assert (
+        default_tools_dir(platform="win32", env={}, home=home)
+        == home / "AppData" / "Local" / "AutoClipper" / "tools"
+    )
+    assert (
+        default_tools_dir(platform="darwin", env={}, home=home)
+        == home / "Library" / "Application Support" / "AutoClipper" / "tools"
+    )
+    assert (
+        default_tools_dir(platform="linux", env={"XDG_DATA_HOME": "/var/xdg"}, home=home)
+        == Path("/var/xdg") / "autoclipper" / "tools"
+    )
+    assert (
+        default_tools_dir(platform="linux", env={"XDG_DATA_HOME": "relative/xdg"}, home=home)
+        == home / ".local" / "share" / "autoclipper" / "tools"
+    )
+    assert (
+        default_tools_dir(platform="linux", env={}, home=home)
+        == home / ".local" / "share" / "autoclipper" / "tools"
+    )

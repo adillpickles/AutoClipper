@@ -267,6 +267,7 @@ class PreflightCheck(_Response):
     status: PreflightStatus
     message: str
     fix: str | None
+    source: str | None = None
 
 
 class PreflightReport(_Response):

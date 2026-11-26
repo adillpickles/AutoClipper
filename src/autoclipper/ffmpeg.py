@@ -178,7 +178,7 @@ class FFmpegError(Exception):
 
 
 class FFmpegNotFoundError(FFmpegError):
-    """The program is not on ``PATH`` (FFmpeg is not installed, or the terminal predates it).
+    """The program could not be found via config, managed tools folder, or ``PATH``.
 
     Attributes:
         program: The program name or path that could not be found.
@@ -186,11 +186,16 @@ class FFmpegNotFoundError(FFmpegError):
 
     program: str
 
-    def __init__(self, program: str) -> None:
+    def __init__(self, program: str, *, message: str | None = None) -> None:
         self.program = program
         super().__init__(
-            f"{program!r} was not found on PATH. Install FFmpeg, which provides ffmpeg and "
-            f"ffprobe, as described in {SETUP_DOC}, then open a new terminal so PATH is reloaded."
+            message
+            if message is not None
+            else (
+                f"{program!r} was not found on PATH or in AutoClipper's managed tools folder. "
+                f"Install FFmpeg, which provides ffmpeg and ffprobe, as described in {SETUP_DOC}, "
+                "then open a new terminal if you added it to PATH."
+            )
         )
 
 
@@ -315,17 +320,33 @@ class Runner(Protocol):
 
 
 def find_program(program: str) -> Path:
-    """Locate a program the way `run_subprocess` does, with `shutil.which`.
+    """Locate a program the way `run_subprocess` does.
+
+    Bare ``"ffmpeg"`` and ``"ffprobe"`` names use AutoClipper's tool discovery order
+    (explicit config path -> managed tools folder -> ``PATH``). Any other program name or
+    explicit path is resolved with `shutil.which`.
 
     Args:
-        program: A name to look up on ``PATH`` (``"ffmpeg"``), or a path to an executable.
+        program: A name to look up (``"ffmpeg"``, ``"ffprobe"``), or a path to an executable.
 
     Returns:
         The full path of the executable.
 
     Raises:
-        FFmpegNotFoundError: The program is not on ``PATH`` or not executable.
+        FFmpegNotFoundError: The program was not found or its configured path is invalid.
     """
+    if program in (FFMPEG, FFPROBE):
+        from autoclipper.tools.discovery import ConfiguredToolError, ToolName, resolve_tool
+
+        tool: ToolName = "ffmpeg" if program == FFMPEG else "ffprobe"
+        try:
+            resolved = resolve_tool(tool)
+        except ConfiguredToolError as exc:
+            raise FFmpegNotFoundError(program, message=str(exc)) from None
+        if resolved is None:
+            raise FFmpegNotFoundError(program)
+        return resolved.path
+
     found = shutil.which(program)
     if found is None:
         raise FFmpegNotFoundError(program)

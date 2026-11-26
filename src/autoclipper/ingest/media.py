@@ -730,14 +730,22 @@ VIDEO_SEGMENT_TIMEOUT_CAP_S: Final = 7200.0
 
 
 def build_videodownload_command(
-    binary: Path, video_id: str, output_path: Path, *, begin_s: int, end_s: int
+    binary: Path,
+    video_id: str,
+    output_path: Path,
+    *,
+    begin_s: int,
+    end_s: int,
+    ffmpeg_path: Path | None = None,
 ) -> FFmpegCommand:
     """Return the TwitchDownloaderCLI ``videodownload`` argument list for one VOD segment.
 
     ``--beginning`` and ``--ending`` are TimeSpans (``hh:mm:ss``; the ranges are whole
     seconds; those are the argument names of the pinned 1.56.5 release) and ``--collision
-    Overwrite`` keeps the tool from prompting (stdin is closed), like the chat download. The
-    tool writes one MP4 of the VOD's own video and audio.
+    Overwrite`` keeps the tool from prompting (stdin is closed), like the chat download. When
+    ``ffmpeg_path`` is provided, ``--ffmpeg-path`` passes AutoClipper's resolved FFmpeg binary
+    so TwitchDownloaderCLI uses the same copy even when FFmpeg is not on ``PATH``. The tool
+    writes one MP4 of the VOD's own video and audio.
 
     Raises:
         ValueError: ``video_id`` is not all digits, or the range isn't ``0 <= begin < end``.
@@ -746,22 +754,23 @@ def build_videodownload_command(
         raise ValueError(f"video_id must be digits only, got {video_id!r}")
     if not 0 <= begin_s < end_s:
         raise ValueError(f"the segment range must be 0 <= begin < end, got {begin_s}-{end_s}")
-    return FFmpegCommand(
-        (
-            str(binary),
-            "videodownload",
-            "--id",
-            video_id,
-            "--beginning",
-            _timespan(begin_s),
-            "--ending",
-            _timespan(end_s),
-            "--collision",
-            "Overwrite",
-            "-o",
-            str(output_path),
-        )
-    )
+    args: list[str] = [
+        str(binary),
+        "videodownload",
+        "--id",
+        video_id,
+        "--beginning",
+        _timespan(begin_s),
+        "--ending",
+        _timespan(end_s),
+        "--collision",
+        "Overwrite",
+        "-o",
+        str(output_path),
+    ]
+    if ffmpeg_path is not None:
+        args.extend(("--ffmpeg-path", str(ffmpeg_path)))
+    return FFmpegCommand(tuple(args))
 
 
 def _timespan(seconds: int) -> str:
@@ -845,13 +854,26 @@ def download_video_segment(
         info = probe(complete[0], runner=runner)
         return VideoSegment(complete[0], float(begin), begin + info.duration_s)
 
+    from autoclipper.tools.discovery import ConfiguredToolError, resolve_tool
+
     try:
         binary = find_twitchdownloader()
     except ChatDownloadError as exc:
         raise DownloadToolError(video_id, str(exc)) from exc
+    try:
+        resolved_ffmpeg = resolve_tool("ffmpeg")
+    except ConfiguredToolError as exc:
+        raise DownloadToolError(video_id, str(exc)) from exc
     staging = output_dir / f"{name}{_STAGING_SUFFIX}.mp4"
     staging.unlink(missing_ok=True)  # the tool doesn't resume; a leftover restarts cleanly
-    command = build_videodownload_command(binary, video_id, staging, begin_s=begin, end_s=end)
+    command = build_videodownload_command(
+        binary,
+        video_id,
+        staging,
+        begin_s=begin,
+        end_s=end,
+        ffmpeg_path=resolved_ffmpeg.path if resolved_ffmpeg is not None else None,
+    )
     timeout_s = min(
         VIDEO_SEGMENT_TIMEOUT_BASE_S + VIDEO_SEGMENT_TIMEOUT_PER_S * requested_s,
         VIDEO_SEGMENT_TIMEOUT_CAP_S,
