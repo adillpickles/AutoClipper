@@ -212,6 +212,10 @@ describe("ChannelBrowser", () => {
     expect(within(queue).getByText(/2 VODs · 2 queued/)).toBeTruthy();
 
     // First poll: job_a is running with measured progress, job_b is still queued.
+    // Cards for in-flight jobs hide their selection checkbox while running or queued.
+    expect(screen.queryByLabelText("Select Synthetic stream 3")).toBeNull();
+    expect(screen.queryByLabelText("Select Synthetic stream 1")).toBeNull();
+    expect(screen.getByLabelText("Select Synthetic stream 2")).toBeTruthy();
     state.getJob
       .mockResolvedValueOnce(
         makeJob({
@@ -435,10 +439,8 @@ describe("ChannelBrowser", () => {
       (screen.getByLabelText("Select Synthetic stream 1") as HTMLInputElement)
         .checked,
     ).toBe(true);
-    expect(
-      (screen.getByLabelText("Select Synthetic stream 3") as HTMLInputElement)
-        .checked,
-    ).toBe(false);
+    // Accepted VOD is now queued, so its selection checkbox is hidden.
+    expect(screen.queryByLabelText("Select Synthetic stream 3")).toBeNull();
   });
 
   it("revalidates restored done jobs, prefers server last_job_id, and displays all warnings while running", async () => {

@@ -553,7 +553,20 @@ export function ChannelBrowser() {
 
   function selectAll() {
     if (lookup.kind !== "loaded") return;
-    setSelectedIds(new Set(lookup.data.vods.map((vod) => vod.video_id)));
+    const next = new Set<string>();
+    for (const vod of lookup.data.vods) {
+      const queued = queueByVideoId.get(vod.video_id);
+      const isInFlight =
+        queued !== undefined &&
+        !queued.missing &&
+        (queued.job === null ||
+          queued.job.state === "queued" ||
+          queued.job.state === "running");
+      if (!isInFlight) {
+        next.add(vod.video_id);
+      }
+    }
+    setSelectedIds(next);
   }
 
   function clearSelection() {
@@ -1055,6 +1068,8 @@ export function ChannelBrowser() {
                       ? queueItem.jobId
                       : null);
                   const isAnalyzed = vod.analyzed || queueState === "done";
+                  const isInFlight =
+                    queueState === "queued" || queueState === "running";
                   const checkboxId = `vod-select-${vod.video_id}`;
 
                   return (
@@ -1067,29 +1082,70 @@ export function ChannelBrowser() {
                       }`}
                     >
                       <div className="relative aspect-video w-full overflow-hidden bg-surface-media">
-                        <label
-                          htmlFor={checkboxId}
-                          className="block size-full cursor-pointer"
-                        >
-                          <VodThumbnail
-                            vod={vod}
-                            channelName={lookup.data.channel.display_name}
-                          />
-                        </label>
+                        {isInFlight ? (
+                          <div className="block size-full">
+                            <VodThumbnail
+                              vod={vod}
+                              channelName={lookup.data.channel.display_name}
+                            />
+                          </div>
+                        ) : (
+                          <label
+                            htmlFor={checkboxId}
+                            className="block size-full cursor-pointer"
+                          >
+                            <VodThumbnail
+                              vod={vod}
+                              channelName={lookup.data.channel.display_name}
+                            />
+                          </label>
+                        )}
 
-                        <label
-                          htmlFor={checkboxId}
-                          className="absolute top-2.5 left-2.5 flex min-h-8 min-w-8 cursor-pointer items-center justify-center rounded-control border border-white/25 bg-black/65 backdrop-blur-xs"
-                        >
-                          <input
-                            id={checkboxId}
-                            type="checkbox"
-                            checked={selected}
-                            onChange={() => toggleVod(vod.video_id)}
-                            aria-label={`Select ${vod.title}`}
-                            className="size-4 cursor-pointer accent-accent"
-                          />
-                        </label>
+                        {!isInFlight && (
+                          <label
+                            htmlFor={checkboxId}
+                            className={`absolute top-2.5 left-2.5 flex min-h-8 min-w-8 cursor-pointer items-center justify-center rounded-control border backdrop-blur-xs transition-colors ${
+                              selected
+                                ? "border-accent bg-accent/20"
+                                : isAnalyzed
+                                  ? "border-border-subtle/50 bg-surface-panel/15 hover:border-border-strong"
+                                  : "border-white/30 bg-surface-panel/15 hover:border-white/55"
+                            }`}
+                          >
+                            <input
+                              id={checkboxId}
+                              type="checkbox"
+                              checked={selected}
+                              onChange={() => toggleVod(vod.video_id)}
+                              aria-label={`Select ${vod.title}`}
+                              className="peer sr-only"
+                            />
+                            <span
+                              aria-hidden="true"
+                              className={`flex size-4 items-center justify-center rounded-[4px] border transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-focus-ring-media peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-surface-media ${
+                                selected
+                                  ? "border-accent bg-accent text-accent-ink"
+                                  : isAnalyzed
+                                    ? "border-white/35 bg-transparent"
+                                    : "border-white/65 bg-white/10"
+                              }`}
+                            >
+                              {selected && (
+                                <svg
+                                  viewBox="0 0 16 16"
+                                  fill="none"
+                                  className="size-3"
+                                  stroke="currentColor"
+                                  strokeWidth="2.4"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M3.5 8.5 6.5 11.5 12.5 4.5" />
+                                </svg>
+                              )}
+                            </span>
+                          </label>
+                        )}
 
                         <div className="pointer-events-none absolute top-2.5 right-2.5 flex flex-wrap justify-end gap-1.5">
                           {queueState === "running" && (
