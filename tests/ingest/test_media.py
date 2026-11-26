@@ -1974,6 +1974,23 @@ def test_a_segment_far_shorter_than_requested_is_rejected(
         pytest.param(
             b"",
             b"System.Net.Http.HttpRequestException: Response status code does not indicate "
+            b"success: 403 (Forbidden).\n"
+            b"   at TwitchDownloaderCore.Tools.DownloadTools.DownloadFileAsync()\n"
+            b"   at TwitchDownloaderCore.VideoDownloader.DownloadVideoPartAsync()\n",
+            DownloadNetworkError,
+            id="fragment-403-stays-retryable",
+        ),
+        pytest.param(
+            b"",
+            b"System.Net.Http.HttpRequestException: Response status code does not indicate "
+            b"success: 403 (Forbidden).\n"
+            b"   at TwitchDownloaderCore.VideoDownloader.GetQualityPlaylist()\n",
+            VodAccessRestrictedError,
+            id="vod-403-is-restricted",
+        ),
+        pytest.param(
+            b"",
+            b"System.Net.Http.HttpRequestException: Response status code does not indicate "
             b"success: 404 (Not Found).\n"
             b"   at TwitchDownloaderCore.Tools.DownloadTools.DownloadFileAsync()\n"
             b"   at TwitchDownloaderCore.VideoDownloader.GetHeaderFile()\n",

@@ -350,10 +350,13 @@ _VIDEO_RESTRICTED: Final = re.compile(
     + r"|requires?\s+(?:a\s+)?subscription|subscription\s+required"
     + r"|need\s+(?:an?\s+)?oauth(?:\s+token)?"
     + r"|only\s+available\s+to\s+subscribers"
-    + r"|response status code does not indicate success:\s*403\b"
-    + r"|\b(?:http\s+error\s+|status(?:\s+code)?[:\s]+)403\b"
-    + r"|\b403\s*\(\s*forbidden\s*\)"
     + r"|\bvideo\s+is\s+private\b|\bprivate\s+video\b",
+    re.IGNORECASE,
+)
+_VIDEO_HTTP_FORBIDDEN: Final = re.compile(
+    r"response status code does not indicate success:\s*403\b"
+    r"|\b(?:http\s+error\s+|status(?:\s+code)?[:\s]+)403\b"
+    r"|\b403\s*\(\s*forbidden\s*\)",
     re.IGNORECASE,
 )
 _VIDEO_UNAVAILABLE: Final = re.compile(
@@ -391,10 +394,11 @@ def classify_video_download_error(
     2. `DownloadNetworkError`: ``FFmpegTimeoutError`` (timed out and killed).
     3. `DownloadToolError`: local filesystem errors (e.g. ``DirectoryNotFoundException``).
     4. `VodAccessRestrictedError`: subscriber-only, insufficient VOD access / OAuth-required,
-       private, or HTTP 403 refusal.
+       private, or VOD-level HTTP 403 refusal (fragment/part 403s stay retryable as
+       `DownloadNetworkError`).
     5. `VodUnavailableError`: deleted, expired, invalid/nonexistent VOD, or VOD-level HTTP
        404/410 refusal (fragment/header 404s stay retryable as `DownloadNetworkError`).
-    6. `DownloadNetworkError`: transient network/connectivity, fragment 404, or HTTP
+    6. `DownloadNetworkError`: transient network/connectivity, fragment 403/404, or HTTP
        429/502/503/504 failure.
     7. `DownloadToolError`: any other tool failure.
     """
@@ -424,6 +428,10 @@ def classify_video_download_error(
         return VodAccessRestrictedError(video_id, detail)
     if _VIDEO_UNAVAILABLE.search(combined):
         return VodUnavailableError(video_id, detail)
+    if _VIDEO_HTTP_FORBIDDEN.search(combined):
+        if _FRAGMENT_DOWNLOAD_CONTEXT.search(combined):
+            return DownloadNetworkError(video_id, detail)
+        return VodAccessRestrictedError(video_id, detail)
     if _VIDEO_HTTP_GONE.search(combined):
         if _FRAGMENT_DOWNLOAD_CONTEXT.search(combined):
             return DownloadNetworkError(video_id, detail)
