@@ -29,16 +29,20 @@ from autoclipper.ingest.media import (
     VodAccessRestrictedError,
     normalized_audio_path,
 )
-from autoclipper.ingest.twitch_api import HelixClient
+from autoclipper.ingest.twitch_api import Broadcaster, HelixClient
 from autoclipper.ingest.vod import (
     IngestReport,
     IngestTools,
     audio_source_path,
+    broadcasters_path,
     chat_path,
     clips_dir,
     ingest_vod,
     raw_chat_path,
+    read_broadcaster,
+    read_broadcaster_login,
     vods_path,
+    write_broadcaster,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -867,6 +871,60 @@ def test_the_catalog_keeps_one_row_per_object(tmp_path: Path, chat_binary: Path)
     table = pl.read_parquet(catalog_path(data))
     assert len(table) == 4
     assert table.filter(pl.col("object_type") == "audio")["status"].to_list() == ["failed"]
+
+
+def test_write_and_read_broadcaster_upserts_by_broadcaster_id(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    assert read_broadcaster(data, "9000000001") is None
+
+    first = Broadcaster("9000000002", "caseoh_", "CaseOh", "partner", NOW)
+    second = Broadcaster("9000000001", "jynxzi", "Jynxzi", "partner", NOW)
+    write_broadcaster(data, first)
+    write_broadcaster(data, second)
+    updated = Broadcaster("9000000002", "caseoh_", "CaseOh_", "partner", NOW + timedelta(days=1))
+    write_broadcaster(data, updated)
+
+    assert broadcasters_path(data).is_file()
+    assert read_broadcaster(data, "9000000002") == updated
+    assert read_broadcaster(data, "9000000001") == second
+    assert read_broadcaster(data, "9999999999") is None
+    assert read_broadcaster_login(data, "9000000002") == "caseoh_"
+    table = pl.read_parquet(broadcasters_path(data))
+    assert table["broadcaster_id"].to_list() == ["9000000001", "9000000002"]
+
+
+def test_broadcaster_cache_reads_and_writes_coordinate_across_threads(tmp_path: Path) -> None:
+    """Concurrent login lookups never block atomic broadcaster upserts on Windows."""
+    import threading
+
+    data = tmp_path / "data"
+    write_broadcaster(data, Broadcaster("1", "caseoh_", "CaseOh", "partner", NOW))
+    started = threading.Event()
+    stop = threading.Event()
+    read_errors: list[BaseException] = []
+
+    def reader() -> None:
+        try:
+            while not stop.is_set():
+                assert read_broadcaster_login(data, "1") == "caseoh_"
+                started.set()
+        except BaseException as exc:
+            read_errors.append(exc)
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    started.wait(timeout=5.0)
+    try:
+        for i in range(40):
+            write_broadcaster(
+                data, Broadcaster("2", f"channel_{i}", f"Channel {i}", "partner", NOW)
+            )
+    finally:
+        stop.set()
+        thread.join(timeout=5.0)
+
+    assert not read_errors
+    assert read_broadcaster_login(data, "2") == "channel_39"
 
 
 # --- CLI ---------------------------------------------------------------------------------------

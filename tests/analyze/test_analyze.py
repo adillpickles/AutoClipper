@@ -1188,6 +1188,83 @@ def test_a_broadcaster_that_cannot_be_fetched_falls_back_to_the_id(
     assert result.vod.broadcaster_display_name == BROADCASTER_ID
 
 
+@pytest.mark.ffmpeg
+def test_analyze_persists_broadcaster_login_and_reuses_it_without_helix(
+    tmp_path: Path, chat_binary: Path, audio_source: Path, lexicon: Lexicon
+) -> None:
+    """Analysis retains the canonical login from its single Get Users call in broadcasters.parquet
+    even when display_name differs beyond case, and reuses the cached display name offline."""
+    from autoclipper.ingest.vod import read_broadcaster
+
+    data = tmp_path / "data"
+    twitch = FakeTwitch(
+        users={
+            "id": BROADCASTER_ID,
+            "login": "caseoh_",
+            "display_name": "CaseOh",
+            "broadcaster_type": "partner",
+            "created_at": "2000-01-01T00:00:00Z",
+        }
+    )
+
+    first = analyze_vod(
+        VIDEO_ID,
+        data_dir=data,
+        artifacts_dir=tmp_path / "artifacts",
+        tools=tools(chat_binary, twitch=twitch, downloader=FakeDownloader(audio_source)),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    assert first.vod.broadcaster_display_name == "CaseOh"
+    assert twitch.paths.count("/helix/users") == 1
+    saved = read_broadcaster(data, BROADCASTER_ID)
+    assert saved is not None
+    assert saved.login == "caseoh_"
+    assert saved.display_name == "CaseOh"
+
+    # Re-analyzing the cached VOD without Helix credentials reuses the cached display name.
+    second = analyze_vod(
+        VIDEO_ID,
+        data_dir=data,
+        artifacts_dir=tmp_path / "artifacts",
+        tools=IngestTools(clock=lambda: NOW),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+    assert second.vod.broadcaster_display_name == "CaseOh"
+
+
+@pytest.mark.ffmpeg
+def test_broadcaster_cache_write_failure_does_not_fail_analysis(
+    tmp_path: Path,
+    chat_binary: Path,
+    audio_source: Path,
+    lexicon: Lexicon,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    def fail_write(*_args: object, **_kwargs: object) -> None:
+        raise OSError("read-only data dir")
+
+    monkeypatch.setattr("autoclipper.analyze.write_broadcaster", fail_write)
+    caplog.set_level(logging.WARNING)
+
+    result = analyze_vod(
+        VIDEO_ID,
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        tools=tools(chat_binary, downloader=FakeDownloader(audio_source)),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    assert result.vod.broadcaster_display_name == "Streamer_000"
+    assert "broadcaster cache write failed" in caplog.text
+
+
 # --- The synthetic dataset, post-ingest stages end to end ----------------------------------------
 
 

@@ -1097,15 +1097,18 @@ class MockService:
         """Return the channel preset or global facecam stacked layout for `job`, if any (#68)."""
         if self.channel_layouts and job.result is not None:
             vod = job.result.vod
+            layouts = {k.strip().lower(): v for k, v in self.channel_layouts.items()}
             # Prefer canonical broadcaster_id or login (from processed/broadcasters.parquet
             # when present) before falling back to display name.
-            keys: list[str] = [vod.broadcaster_id]
+            keys: list[str] = [vod.broadcaster_id.strip().lower()]
             login = self._broadcaster_login(vod.broadcaster_id)
             if login is not None:
-                keys.append(login.lower())
-            keys.append(vod.broadcaster_display_name.lower())
+                keys.append(login)
+            display_name = vod.broadcaster_display_name.strip().lower()
+            if display_name:
+                keys.append(display_name)
             for key in keys:
-                preset = self.channel_layouts.get(key)
+                preset = layouts.get(key)
                 if preset is not None:
                     return preset
         if self.export_facecam_region is not None:
@@ -1116,19 +1119,10 @@ class MockService:
         """Resolve canonical Twitch login for `broadcaster_id` from processed data, if present."""
         if self.data_dir is None:
             return None
-        table = self.data_dir / "processed" / "broadcasters.parquet"
-        if not table.is_file():
-            return None
         try:
-            import polars as pl
+            from autoclipper.ingest.vod import read_broadcaster_login
 
-            rows = (
-                pl.read_parquet(table, columns=["broadcaster_id", "login"])
-                .filter(pl.col("broadcaster_id") == broadcaster_id)
-                .get_column("login")
-                .to_list()
-            )
-            return str(rows[0]) if rows else None
+            return read_broadcaster_login(self.data_dir, broadcaster_id)
         except Exception:
             return None
 
