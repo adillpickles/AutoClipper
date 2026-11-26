@@ -62,6 +62,13 @@ _TIME_EPSILON_S = 1e-6
 # stream ended earlier, or the reported duration is off), finally to the whole file.
 END_SEARCH_WINDOW_S = 10.0
 
+# Explicit relative end offset (in seconds, ~31.7 years) for `probe_stream_ends` `-read_intervals`.
+# An open-ended `START%` leaves ffprobe's `ReadInterval` end fields uninitialized in FFmpeg's
+# `fftools/ffprobe.c` (`av_malloc_array` without zeroing), which can read heap garbage as an end
+# offset and stop early or return zero packets (observed intermittently on Windows). Passing an
+# explicit `+offset` initializes every field while still reading through EOF for any media file.
+_OPEN_END_OFFSET_S = 1_000_000_000
+
 # ffprobe only reads headers or packets (no decoding), but a wide packet read on a long VOD
 # reads a lot of data: allow a base time plus this much per second of media read.
 PACKET_PROBE_TIMEOUT_BASE_S = 60.0
@@ -183,7 +190,10 @@ def probe_stream_ends(
     while True:
         from_s = duration_hint_s - window_s
         # Without an interval, ffprobe reads the whole file instead of seeking.
-        interval = ("-read_intervals", f"{_seconds(container_start_s + from_s)}%")
+        interval = (
+            "-read_intervals",
+            f"{_seconds(container_start_s + from_s)}%+{_OPEN_END_OFFSET_S}",
+        )
         command = ffprobe_command(
             *(interval if from_s > 0 else ()),
             "-print_format",
