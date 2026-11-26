@@ -595,8 +595,8 @@ export function ClipEditor() {
                 aria-label={`Preview of clip ${candidate.rank}`}
               />
             ) : retryingPreview ||
-              previewInfo?.status === "preparing" ||
-              (media === null && mediaError === null) ? (
+              (mediaError === null &&
+                (previewInfo?.status === "preparing" || media === null)) ? (
               <div className="flex size-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-zinc-300">
                 <span
                   className="size-7 animate-spin rounded-full border-2 border-amber-500 border-t-transparent"

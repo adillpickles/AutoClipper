@@ -3244,6 +3244,13 @@ def test_stacked_layout_resolves_channel_preset_by_broadcaster_id_and_login(
         ),
         pytest.param(
             b"",
+            b"Unhandled exception. System.NullReferenceException: Insufficient access to VOD, "
+            b"OAuth may be required.\n   at TwitchDownloaderCore.VideoDownloader."
+            b"GetQualityPlaylist()\n",
+            id="twitchdownloader-restricted-vod",
+        ),
+        pytest.param(
+            b"",
             b"System.Net.Http.HttpRequestException: Response status code does not indicate "
             b"success: 403 (Forbidden).\n",
             id="subscriber-only-stderr",
@@ -3435,3 +3442,36 @@ def test_missing_twitchdownloader_keeps_actionable_install_message_and_stays_ret
     assert failed["error"]["details"] == {"reason": "fetch_failed"}
     assert "TwitchDownloaderCLI" in failed["error"]["message"]
     assert "docs/development/setup.md" in failed["error"]["message"]
+
+
+def test_late_retryable_failure_does_not_overwrite_recorded_source_unavailable(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+) -> None:
+    """Once a candidate is recorded as permanently `source_unavailable`, a late retryable
+    `fetch_failed` from a concurrent fetch must not downgrade or evict it."""
+    from autoclipper.api.service import _SegmentState
+
+    fetcher = FakeSegmentFetcher(tmp_path / "unused.mp4", tmp_path / "raw" / "video")
+    client, service = segment_client(make_client, tmp_path, fetcher)
+    job = done_job(client)
+    job_record = service._jobs[job["job_id"]]
+    candidate = service._candidate(job_record, "c001")
+
+    service._store_segment(
+        job_record,
+        candidate,
+        _SegmentState("failed", 88.0, 178.0, reason="source_unavailable"),
+    )
+    service._store_segment(
+        job_record,
+        candidate,
+        _SegmentState("failed", 88.0, 178.0, reason="fetch_failed"),
+    )
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["reason"] == "source_unavailable"
+    assert media["export"]["status"] == "unavailable"
+    # Second request still sees source_unavailable (was not evicted as fetch_failed).
+    again = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert again["preview"]["reason"] == "source_unavailable"

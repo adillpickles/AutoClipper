@@ -538,4 +538,43 @@ describe("ClipEditor", () => {
     expect(await screen.findByLabelText("Preview of clip 1")).toBeTruthy();
     expect(api.getCandidateMedia).toHaveBeenCalledTimes(3);
   });
+
+  it("shows error and Retry preview if polling fails after an initial preparing response", async () => {
+    const { ApiRequestError } = await import("@/lib/api/client");
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia
+      .mockResolvedValueOnce({
+        ...AVAILABLE_MEDIA,
+        preview: {
+          status: "preparing",
+          kind: null,
+          url: null,
+          media_start_s: null,
+          media_end_s: null,
+          reason: null,
+          message: "Fetching the video for this moment…",
+        },
+      })
+      .mockRejectedValueOnce(
+        new ApiRequestError(500, {
+          code: "internal_error",
+          message: "Media poll failed mid-fetch.",
+          details: null,
+        }),
+      )
+      .mockResolvedValue(AVAILABLE_MEDIA);
+
+    render(<ClipEditor />);
+
+    expect(
+      await screen.findByText("Media poll failed mid-fetch."),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText("Fetching the video for this moment…"),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry preview" }));
+    expect(await screen.findByLabelText("Preview of clip 1")).toBeTruthy();
+    expect(api.getCandidateMedia).toHaveBeenCalledTimes(3);
+  });
 });

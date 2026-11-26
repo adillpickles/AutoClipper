@@ -1774,8 +1774,19 @@ class MockService:
                     return  # no better than what is already served
                 else:
                     self._segments[key] = new
-            elif new.status == "failed" and current is not None and current.status == "ready":
-                return  # usable media beats a late failure
+            elif (
+                new.status == "failed"
+                and current is not None
+                and (
+                    current.status == "ready"
+                    or (
+                        current.status == "failed"
+                        and current.reason == "source_unavailable"
+                        and new.reason != "source_unavailable"
+                    )
+                )
+            ):
+                return  # usable media beats a late failure; permanent refusals beat retryable ones
             else:
                 self._segments[key] = new
         if short_path is not None:

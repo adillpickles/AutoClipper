@@ -332,11 +332,23 @@ _MISSING_FFMPEG: Final = re.compile(
     r"|cannot find ffmpeg|could not find ffmpeg|ffmpeg is not (?:installed|available)",
     re.IGNORECASE,
 )
+_LOCAL_FS_ERROR: Final = re.compile(
+    r"DirectoryNotFoundException|FileNotFoundException|System\.IO\.IOException"
+    r"|UnauthorizedAccessException|Access to the path .* is denied",
+    re.IGNORECASE,
+)
+_FRAGMENT_DOWNLOAD_CONTEXT: Final = re.compile(
+    r"DownloadFileAsync|GetHeaderFile|DownloadVideoPart|DownloadThread"
+    r"|fragment\s+\d+|init-0\.mp4|\b\d+\.ts\b",
+    re.IGNORECASE,
+)
 _VIDEO_RESTRICTED: Final = re.compile(
     _RESTRICTED.pattern
+    + r"|insufficient\s+access\s+to\s+(?:the\s+)?vod"
+    + r"|oauth(?:\s+token)?\s+(?:may\s+be|is)\s+required"
     + r"|sub[- ]?only|subscribers?[- ]?only"
     + r"|requires?\s+(?:a\s+)?subscription|subscription\s+required"
-    + r"|need\s+(?:an?\s+)?oauth(?:\s+token)?|oauth\s+token\s+(?:is\s+)?required"
+    + r"|need\s+(?:an?\s+)?oauth(?:\s+token)?"
     + r"|only\s+available\s+to\s+subscribers"
     + r"|response status code does not indicate success:\s*403\b"
     + r"|\b(?:http\s+error\s+|status(?:\s+code)?[:\s]+)403\b"
@@ -348,10 +360,13 @@ _VIDEO_UNAVAILABLE: Final = re.compile(
     _UNAVAILABLE.pattern
     + r"|invalid\s+vod|deleted/expired\s+vod|expired\s+vod"
     + r"|\b(?:vod|video)\s+(?:is\s+)?(?:not\s+found|deleted|expired|unavailable)"
-    + r"|unable\s+to\s+(?:get|find)\s+(?:video|vod)\s+info"
-    + r"|response status code does not indicate success:\s*(?:404|410)\b"
-    + r"|\b(?:http\s+error\s+|status(?:\s+code)?[:\s]+)(?:404|410)\b"
-    + r"|\b404\s*\(\s*not\s+found\s*\)|\b410\s*\(\s*gone\s*\)",
+    + r"|unable\s+to\s+(?:get|find)\s+(?:video|vod)\s+info",
+    re.IGNORECASE,
+)
+_VIDEO_HTTP_GONE: Final = re.compile(
+    r"response status code does not indicate success:\s*(?:404|410)\b"
+    r"|\b(?:http\s+error\s+|status(?:\s+code)?[:\s]+)(?:404|410)\b"
+    r"|\b404\s*\(\s*not\s+found\s*\)|\b410\s*\(\s*gone\s*\)",
     re.IGNORECASE,
 )
 _VIDEO_NETWORK: Final = re.compile(
@@ -368,15 +383,20 @@ def classify_video_download_error(
 ) -> AudioDownloadError:
     """Turn a ``TwitchDownloaderCLI videodownload`` failure into a typed `AudioDownloadError`.
 
-    Checked in order so missing tools are never misclassified as deleted VODs:
+    Checked in order so missing tools, local filesystem errors, and fragment-level CDN glitches
+    are never misclassified as permanent VOD refusals:
 
     1. `MissingDownloadToolError`: ``FFmpegNotFoundError`` or tool output stating that
        ``TwitchDownloaderCLI`` or ``ffmpeg`` is not installed.
     2. `DownloadNetworkError`: ``FFmpegTimeoutError`` (timed out and killed).
-    3. `VodAccessRestrictedError`: subscriber-only, OAuth-required, private, or HTTP 403 refusal.
-    4. `VodUnavailableError`: deleted, expired, invalid/nonexistent VOD, or HTTP 404/410 refusal.
-    5. `DownloadNetworkError`: transient network/connectivity or HTTP 429/502/503/504 failure.
-    6. `DownloadToolError`: any other tool failure.
+    3. `DownloadToolError`: local filesystem errors (e.g. ``DirectoryNotFoundException``).
+    4. `VodAccessRestrictedError`: subscriber-only, insufficient VOD access / OAuth-required,
+       private, or HTTP 403 refusal.
+    5. `VodUnavailableError`: deleted, expired, invalid/nonexistent VOD, or VOD-level HTTP
+       404/410 refusal (fragment/header 404s stay retryable as `DownloadNetworkError`).
+    6. `DownloadNetworkError`: transient network/connectivity, fragment 404, or HTTP
+       429/502/503/504 failure.
+    7. `DownloadToolError`: any other tool failure.
     """
     if isinstance(exc, MissingDownloadToolError):
         return exc
@@ -398,9 +418,15 @@ def classify_video_download_error(
         return MissingDownloadToolError(video_id, detail, tool="ffmpeg")
     if isinstance(exc, FFmpegTimeoutError):
         return DownloadNetworkError(video_id, f"the video download timed out: {detail}")
+    if _LOCAL_FS_ERROR.search(combined):
+        return DownloadToolError(video_id, f"the video download failed: {detail}")
     if _VIDEO_RESTRICTED.search(combined):
         return VodAccessRestrictedError(video_id, detail)
     if _VIDEO_UNAVAILABLE.search(combined):
+        return VodUnavailableError(video_id, detail)
+    if _VIDEO_HTTP_GONE.search(combined):
+        if _FRAGMENT_DOWNLOAD_CONTEXT.search(combined):
+            return DownloadNetworkError(video_id, detail)
         return VodUnavailableError(video_id, detail)
     if _VIDEO_NETWORK.search(combined):
         return DownloadNetworkError(video_id, detail)
@@ -965,7 +991,10 @@ def download_video_segment(
             end,
             complete[0],
         )
-        info = probe(complete[0], runner=runner)
+        try:
+            info = probe(complete[0], runner=runner)
+        except FFmpegNotFoundError as exc:
+            raise MissingDownloadToolError(video_id, str(exc), tool=exc.program) from exc
         return VideoSegment(complete[0], float(begin), begin + info.duration_s)
 
     from autoclipper.tools.discovery import ConfiguredToolError, resolve_tool
@@ -1016,6 +1045,9 @@ def download_video_segment(
     try:
         info = probe(staging, runner=runner)
         problem = _segment_problem(info, requested_s, runner)
+    except FFmpegNotFoundError as exc:
+        staging.unlink(missing_ok=True)
+        raise MissingDownloadToolError(video_id, str(exc), tool=exc.program) from exc
     except (FFmpegExitError, FFmpegOutputError) as exc:
         staging.unlink(missing_ok=True)
         raise DownloadIntegrityError(video_id, f"FFmpeg can't read it: {exc}") from exc

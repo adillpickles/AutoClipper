@@ -1964,6 +1964,30 @@ def test_a_segment_far_shorter_than_requested_is_rejected(
         ),
         pytest.param(
             b"",
+            b"Unhandled exception. System.AggregateException: One or more errors occurred. "
+            b"(Insufficient access to VOD, OAuth may be required.)\n"
+            b" ---> System.NullReferenceException: Insufficient access to VOD, OAuth may be "
+            b"required.\n   at TwitchDownloaderCore.VideoDownloader.GetQualityPlaylist()\n",
+            VodAccessRestrictedError,
+            id="twitchdownloader-insufficient-access-stderr",
+        ),
+        pytest.param(
+            b"",
+            b"System.Net.Http.HttpRequestException: Response status code does not indicate "
+            b"success: 404 (Not Found).\n"
+            b"   at TwitchDownloaderCore.Tools.DownloadTools.DownloadFileAsync()\n"
+            b"   at TwitchDownloaderCore.VideoDownloader.GetHeaderFile()\n",
+            DownloadNetworkError,
+            id="fragment-404-stays-retryable",
+        ),
+        pytest.param(
+            b"",
+            b"System.IO.DirectoryNotFoundException: The directory does not exist.\n",
+            DownloadToolError,
+            id="local-directory-not-found-stays-tool-error",
+        ),
+        pytest.param(
+            b"",
             b"Error: vod_manifest_restricted (subscriber-only)\n",
             VodAccessRestrictedError,
             id="manifest-restricted-stderr",
@@ -2060,3 +2084,43 @@ def test_video_segment_runner_not_found_and_timeout_are_classified_distinctly(
         download_video_segment(
             VIDEO_ID, begin_s=50.0, end_s=60.0, output_dir=directory, runner=timed_out
         )
+
+
+def test_video_segment_missing_ffprobe_during_validation_and_cache_hit_raises_missing_tool(
+    data_dir: Path, video_tool_binary: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If ffprobe is missing during segment verification or cache-hit probe, raise
+    MissingDownloadToolError and remove any staging file."""
+    directory = raw_video_dir(data_dir) / VIDEO_ID
+    monkeypatch.setenv("PATH", str(video_tool_binary.parent) + os.pathsep + os.environ["PATH"])
+
+    def tool_ok_ffprobe_missing(command: FFmpegCommand, /, *, timeout_s: float) -> CommandResult:
+        del timeout_s
+        if "videodownload" in command.args:
+            output = Path(command.args[command.args.index("-o") + 1])
+            output.write_bytes(b"fake-mp4")
+            return CommandResult(0)
+        raise FFmpegNotFoundError(command.program)
+
+    with pytest.raises(MissingDownloadToolError) as fresh_exc:
+        download_video_segment(
+            VIDEO_ID,
+            begin_s=50.0,
+            end_s=60.0,
+            output_dir=directory,
+            runner=tool_ok_ffprobe_missing,
+        )
+    assert fresh_exc.value.tool == "ffprobe"
+    assert not any(directory.iterdir())  # staging file cleaned up
+
+    cached = directory / "segment-50-60.mp4"
+    cached.write_bytes(b"cached-mp4")
+    with pytest.raises(MissingDownloadToolError) as cached_exc:
+        download_video_segment(
+            VIDEO_ID,
+            begin_s=50.0,
+            end_s=60.0,
+            output_dir=directory,
+            runner=tool_ok_ffprobe_missing,
+        )
+    assert cached_exc.value.tool == "ffprobe"
