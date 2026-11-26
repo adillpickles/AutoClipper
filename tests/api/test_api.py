@@ -333,11 +333,14 @@ def test_a_job_from_start_to_finish(client: TestClient) -> None:
     assert finished["finished_at"] is not None
 
     result = client.get(f"{API}/jobs/{job['job_id']}/result").json()
-    assert result["schema_version"] == "1.0"
+    assert result["schema_version"] == "1.1"
     assert result["vod"]["video_id"] == "9000000001"
     assert result["scorer"] == {"kind": "mock", "name": "mock", "run_id": None}
     assert [c["source"] for c in result["candidates"]] == ["both", "discovered", "viewer_clips"]
     assert result["candidates"][0]["top_signals"] == ["chat_msg_rate_z", "audio_rms_max_z"]
+    assert result["candidates"][0]["title"] == "Loud laughs & chat burst"
+    assert "3 viewers clipped it" in result["candidates"][0]["reason"]
+    assert len(result["candidates"][0]["signal_details"]) >= 3
     assert result["n_viewer_clips_total"] == 4
 
 
@@ -426,6 +429,20 @@ def test_scenario_9000000002_has_no_viewer_clips(client: TestClient) -> None:
             "source": "discovered",
             "n_viewer_clips": 0,
             "top_signals": ["chat_msg_rate_z"],
+            "title": "Hype chat surge",
+            "reason": "Chat jumped to 4\u00d7 its usual rate with lots of hype",
+            "signal_details": [
+                {
+                    "kind": "chat_rate",
+                    "label": "Chat rate",
+                    "detail": "4\u00d7 usual stream rate (z=2.4)",
+                },
+                {
+                    "kind": "chat_hype",
+                    "label": "Chat reaction",
+                    "detail": "High hype activity",
+                },
+            ],
         }
     ]
 

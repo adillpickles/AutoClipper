@@ -105,9 +105,9 @@ Computed from 16 kHz mono audio with librosa/NumPy. Frame-level values are aggre
 - **Subset mode:** pass `window_ids` or `scores` + `top_k` (default `100`, configurable via `AUTOCLIPPER_AUDIO_EVENTS_TOP_K`) so a laptop CPU only reads and scores the top windows of a multi-hour VOD. Unselected windows remain in the output table with `null` values (preserving a 1-to-1 join on `window_id`; `logreg` imputes the training mean and LightGBM handles nulls natively). Selected windows past the end of the WAV get `0.0` and log a warning.
 - **Opt-in only:** invoked explicitly through the standalone `autoclipper audio-events` CLI command or `compute_audio_event_features` / `extract_audio_event_features` (`AUTOCLIPPER_AUDIO_EVENTS_TOP_K` configures the default subset size when `--scores` is passed). Off by default and not wired into the default scorer or ranking; impact vs. Phase 1 baselines remains TBD pending dataset v1 (#40–#43).
 
-## Phase 3: LLM rerank (after Phase 2)
+## Phase 3: Explanations and titles (#65)
 
-An LLM (#65) reads the transcript and a short chat summary for each of the top ~30 candidates of the shortlist, picks the best 10 for a standalone short, and writes a one-line reason and a title for each. It reranks; it doesn't replace the scorer, and the evaluation reports the scorer with and without it.
+`autoclipper.models.explain.explain_candidates` derives a deterministic short `title`, one-line `reason` and structured `signal_details` for every ranked candidate from the aggregate numeric signals already computed by the pipeline (chat rate spikes and lexicon reaction categories, audio loudness relative to the stream and recent minutes, viewer-clip counts, optional `audio_evt_*` probabilities when present, and speech-pause alignment). Raw chat text and usernames are never read or emitted. The scorer's ranking is final: explanations never reorder, drop or rescore candidates. An optional, off-by-default title polisher may polish the title text from the deterministic reason and aggregate stats only.
 
 ## Video features (`features_video`), stretch only
 

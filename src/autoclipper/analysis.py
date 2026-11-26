@@ -22,9 +22,10 @@ from pydantic import (
     model_validator,
 )
 
-SCHEMA_VERSION: Final = "1.0"
+SCHEMA_VERSION: Final = "1.1"
 MAX_CANDIDATES: Final = 200
 
+type SchemaVersion = Literal["1.0", "1.1"]
 type Source = Literal["viewer_clips", "discovered", "both"]
 type ScorerKind = Literal["heuristic", "trained_model", "mock"]
 
@@ -82,6 +83,21 @@ class AnalysisWarning(_Model):
     message: str
 
 
+class SignalDetail(_Model):
+    """One human-readable contributing signal behind a candidate's explanation."""
+
+    kind: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    detail: str = Field(min_length=1)
+
+    @field_validator("kind", "label", "detail")
+    @classmethod
+    def _non_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+
 class Candidate(_Model):
     """One ranked candidate moment (api-contract.md § 4.2)."""
 
@@ -93,6 +109,16 @@ class Candidate(_Model):
     source: Source
     n_viewer_clips: int = Field(ge=0)
     top_signals: tuple[str, ...] = ()
+    title: str | None = None
+    reason: str | None = None
+    signal_details: tuple[SignalDetail, ...] = ()
+
+    @field_validator("title", "reason")
+    @classmethod
+    def _non_blank_optional(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("must not be blank when set")
+        return value
 
     @field_validator("top_signals")
     @classmethod
@@ -113,7 +139,7 @@ class Candidate(_Model):
 class AnalysisResult(_Model):
     """One analyzed VOD (api-contract.md § 4.1), checked against § 4.5."""
 
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: SchemaVersion = SCHEMA_VERSION
     generated_at: UtcDatetime
     vod: VodSummary
     scorer: ScorerInfo

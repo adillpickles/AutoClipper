@@ -185,7 +185,10 @@ One table per signal family (`features_chat`, `features_audio`, optional `featur
 | `end_s` | float | Exclusive: `[start_s, end_s)` with `0 ≤ start_s < end_s ≤ vod.duration_s` |
 | `source` | str | `viewer_clips`, `discovered` or `both`: **how the candidate was generated**, not whether ground truth overlaps it |
 | `n_viewer_clips` | int | Distinct viewer clip IDs merged into the candidate; 0 exactly when `source` is `discovered` |
-| `top_signals` | list<str> | Feature names that contributed most, strongest first. Always present; empty only when no signal stands out. The app turns it into the one-line reason on each clip card |
+| `top_signals` | list<str> | Feature names that contributed most, strongest first. Always present; empty only when no signal stands out. Fallback input when `reason` is absent |
+| `title` | str \| null | Short human title built deterministically from aggregate signals (no raw chat text or usernames); `null` only on older `1.0` results |
+| `reason` | str \| null | Plain-English one-line "why this moment" explanation from aggregate signals without changing order or score; `null` only on older `1.0` results |
+| `signal_details` | list<`SignalDetail`> | Structured contributing signals (`kind`, `label`, `detail`) behind `reason` for UI tooltips/expanders; `[]` if none |
 
 Candidate generation rules (peaks, 20–45 s default length, a shortlist of the top 50 per VOD of which the top 10 are rendered as clips, deduplication with viewer clips) are in [modeling plan § 3](../ml/modeling-plan.md#3-candidate-generation) (#27). Jobs can also take an optional `video_path` (a local VOD file, [API contract § 3.1](api-contract.md#31-create-a-job)). The highlights video (`HighlightsVideo`), built from the top candidates and written to `artifacts/highlights/<highlights_id>.mp4`, is specified in [API contract § 7](api-contract.md#7-highlights-video).
 

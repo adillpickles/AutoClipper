@@ -80,6 +80,7 @@ from autoclipper.labels.windows import make_windows
 from autoclipper.models.base import Scorer, ScorerError, load_scorer, make_scorer
 from autoclipper.models.baselines import ChatLoudness, ChatSpike, Loudness
 from autoclipper.models.candidates import MomentInput, generate_candidates
+from autoclipper.models.explain import explain_candidates
 
 log = logging.getLogger(__name__)
 
@@ -422,6 +423,8 @@ def analyze_vod(
         # fetch failure of an input the scorer needs keeps upstream_unavailable's "try again
         # later"; anything else can't be fixed by retrying).
         raise _nothing_to_rank(catalog, video_id, exc.reason, exc.needed) from None
+    features: pl.DataFrame | None = None
+    audio_wav: Path | None = None
     if scored is None:  # neither signal family arrived, and moments exist
         # Viewer-clip moments alone rank, in stream order; the scorer field records that
         # no signal scored anything (a zero score everywhere would invent a peak at 0 s).
@@ -442,6 +445,16 @@ def analyze_vod(
                 audio_path=audio_wav,
             ),
         )
+    candidates = _timed(
+        "explain",
+        lambda: explain_candidates(
+            candidates,
+            windows=windows,
+            features=features,
+            duration_s=vod.duration_s,
+            audio_path=audio_wav,
+        ),
+    )
     result = AnalysisResult(
         generated_at=clock(),
         vod=VodSummary(
