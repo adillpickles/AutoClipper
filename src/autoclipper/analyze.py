@@ -118,13 +118,16 @@ class AnalyzeError(Exception):
 
     Attributes:
         code: The contract's failure code; § 4.6 maps it to a CLI exit code (1 or 2).
-        message: What to tell the user, without chat content.
+        message: Short English message safe to show in the API/UI (no secrets or file paths).
+        detail: Optional diagnostic message (e.g. with local file paths) for CLI stderr and
+            server logs; defaults to `message`.
     """
 
-    def __init__(self, code: FailureCode, message: str) -> None:
-        super().__init__(f"{code}: {message}")
+    def __init__(self, code: FailureCode, message: str, *, detail: str | None = None) -> None:
         self.code = code
         self.message = message
+        self.detail = detail if detail is not None else message
+        super().__init__(f"{code}: {self.detail}")
 
 
 def analyze_vod(
@@ -208,15 +211,33 @@ def analyze_vod(
                 try:
                     duration_s = corrected_duration_s(video_file, runner=tools.runner)
                 except FFmpegError as exc:
+                    log.warning(
+                        "local video unreadable video_id=%s path=%s error=%r",
+                        video_id,
+                        video_file,
+                        str(exc),
+                    )
                     raise AnalyzeError(
                         "invalid_video_path",
-                        f"{video_file} is not a readable video file: {exc}",
+                        "the video file is not a readable video file",
+                        detail=f"{video_file} is not a readable video file: {exc}",
                     ) from None
             if abs(duration_s - vod.duration_s) > VIDEO_MISMATCH_TOLERANCE_S:
+                log.warning(
+                    "video duration mismatch video_id=%s path=%s file_s=%.1f vod_s=%.1f",
+                    video_id,
+                    video_file,
+                    duration_s,
+                    vod.duration_s,
+                )
+                suffix = (
+                    f"is {duration_s:.1f} s long but the VOD is {vod.duration_s:.1f} s; "
+                    "pass a file of the whole VOD, starting at its start"
+                )
                 raise AnalyzeError(
                     "video_mismatch",
-                    f"{video_file} is {duration_s:.1f} s long but the VOD is "
-                    f"{vod.duration_s:.1f} s; pass a file of the whole VOD, starting at its start",
+                    f"the video file {suffix}",
+                    detail=f"{video_file} {suffix}",
                 )
 
     # Warnings are published as they are found (§ 3.5's "found so far"), starting with the
@@ -265,8 +286,11 @@ def analyze_vod(
     _require_vod_meta(catalog, video_id)
     vod = read_vod(data_dir, video_id)
     if vod is None:  # the catalog says ok, so this row exists; a guard against corruption
+        log.warning("vod metadata row missing video_id=%s dir=%s", video_id, data_dir / "processed")
         raise AnalyzeError(
-            "upstream_unavailable", f"the VOD's row is missing from {data_dir / 'processed'}"
+            "upstream_unavailable",
+            "the VOD's cached metadata row is missing from the local data directory",
+            detail=f"the VOD's row is missing from {data_dir / 'processed'}",
         )
 
     # --- Warnings: which inputs arrived (§ 3.5, published before the classification can raise,
@@ -331,8 +355,8 @@ def analyze_vod(
                 AnalysisWarning(
                     code="viewer_clips_missing",
                     message="the clip snapshot on disk couldn't be read; remove the "
-                    f"{video_id}-* files from {clips_dir(data_dir)} and analyze again to "
-                    "re-take it",
+                    f"{video_id}-* files from processed/clips in the data directory and analyze "
+                    "again to re-take it",
                 )
             )
         else:
@@ -473,16 +497,27 @@ def _probe_video_file(video_file: Path | None, runner: Runner | None) -> MediaIn
     if video_file is None:
         return None
     if not video_file.is_file():
-        raise AnalyzeError("invalid_video_path", f"video file not found: {video_file}")
+        log.warning("local video not found path=%s", video_file)
+        raise AnalyzeError(
+            "invalid_video_path",
+            "the video file was not found",
+            detail=f"video file not found: {video_file}",
+        )
     try:
         info = probe(video_file, runner=runner)
     except FFmpegError as exc:
+        log.warning("local video unreadable path=%s error=%r", video_file, str(exc))
         raise AnalyzeError(
-            "invalid_video_path", f"{video_file} is not a readable video file: {exc}"
+            "invalid_video_path",
+            "the video file is not a readable video file",
+            detail=f"{video_file} is not a readable video file: {exc}",
         ) from None
     if not info.video_streams or not math.isfinite(info.duration_s) or info.duration_s <= 0:
+        log.warning("local video has no video stream or duration path=%s", video_file)
         raise AnalyzeError(
-            "invalid_video_path", f"{video_file} has no video stream or no known duration"
+            "invalid_video_path",
+            "the video file has no video stream or no known duration",
+            detail=f"{video_file} has no video stream or no known duration",
         )
     return info
 

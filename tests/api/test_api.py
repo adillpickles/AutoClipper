@@ -1921,6 +1921,52 @@ def test_a_non_archive_vod_fails_where_it_was_rejected(
     assert job["warnings"] == []
 
 
+@pytest.mark.ffmpeg
+def test_a_video_mismatch_api_error_omits_local_file_path_while_logging_it(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    make_test_media: Callable[..., Path],
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`Job.error.message` never leaks local filesystem paths (api-contract.md § 1), while server
+    logs keep the full path for diagnostics."""
+    import logging
+
+    short_video = make_test_media("secret-folder/wrong-length.mp4", duration_s=5.0).resolve()
+    credentials = TwitchCredentials(SecretStr("fake-client-id"), SecretStr("fake-client-secret"))
+    clock = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
+
+    def tools_for() -> IngestTools:
+        http = httpx.Client(transport=httpx.MockTransport(FakeHelix()))
+        return IngestTools(
+            helix=HelixClient(credentials, http_client=http, clock=lambda: clock),
+            salt=SecretStr("fake-salt-5b1e"),
+        )
+
+    client, _ = make_client(
+        job_runner="pipeline",
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=tools_for,
+        segment_fetcher=unused_fetcher,
+    )
+    caplog.set_level(logging.WARNING)
+
+    created = client.post(
+        f"{API}/jobs", json={"vod": PIPELINE_VIDEO_ID, "video_path": str(short_video)}
+    )
+    assert created.status_code == 201, created.text
+    job = client.get(f"{API}/jobs/{created.json()['job_id']}").json()
+
+    assert job["state"] == "failed"
+    assert job["error"]["code"] == "video_mismatch"
+    assert str(short_video) not in job["error"]["message"]
+    assert "secret-folder" not in job["error"]["message"]
+    assert short_video.name not in job["error"]["message"]
+    assert str(short_video) in caplog.text
+
+
 def test_an_expired_vod_fails_where_the_audio_stopped_and_keeps_found_warnings(
     make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
 ) -> None:

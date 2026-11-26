@@ -770,9 +770,16 @@ def test_metadata_that_keeps_failing_is_upstream_unavailable(
 
 
 def test_a_local_video_of_another_length_is_video_mismatch(
-    tmp_path: Path, chat_binary: Path, make_test_media: Callable[..., Path], lexicon: Lexicon
+    tmp_path: Path,
+    chat_binary: Path,
+    make_test_media: Callable[..., Path],
+    lexicon: Lexicon,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    import logging
+
     other_vod = make_test_media("other.mp4", duration_s=60.0)
+    caplog.set_level(logging.WARNING)
 
     with pytest.raises(AnalyzeError) as excinfo:
         analyze_vod(
@@ -787,6 +794,11 @@ def test_a_local_video_of_another_length_is_video_mismatch(
 
     assert excinfo.value.code == "video_mismatch"
     assert "is 60.0 s long but the VOD is 3600.0 s" in excinfo.value.message
+    # API-facing message stays free of local filesystem paths; CLI/detail and logs retain them.
+    assert str(other_vod) not in excinfo.value.message
+    assert other_vod.name not in excinfo.value.message
+    assert str(other_vod) in str(excinfo.value)
+    assert str(other_vod) in caplog.text
 
 
 @pytest.mark.ffmpeg
@@ -827,6 +839,7 @@ def test_an_unreadable_snapshot_degrades_with_recovery_advice(
         )
         assert "couldn't be read" in advice
         assert "processed" in advice  # names where the broken snapshot lives
+        assert str(data) not in advice  # no absolute host path in user-facing warnings
         assert result.n_viewer_clips_total is None
         assert all(candidate.source == "discovered" for candidate in result.candidates)
         damaged.write_bytes(keep)
@@ -906,10 +919,16 @@ def test_a_rejected_video_keeps_earlier_valid_audio(
 
 
 def test_a_local_video_the_probe_cannot_read_is_invalid(
-    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+    tmp_path: Path,
+    chat_binary: Path,
+    lexicon: Lexicon,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    import logging
+
     not_a_video = tmp_path / "not-a-video.mp4"
     not_a_video.write_bytes(b"definitely not an mp4")
+    caplog.set_level(logging.WARNING)
 
     with pytest.raises(AnalyzeError) as excinfo:
         analyze_vod(
@@ -923,6 +942,9 @@ def test_a_local_video_the_probe_cannot_read_is_invalid(
         )
 
     assert excinfo.value.code == "invalid_video_path"
+    assert str(not_a_video) not in excinfo.value.message
+    assert str(not_a_video) in str(excinfo.value)
+    assert str(not_a_video) in caplog.text
 
 
 def test_a_matching_local_video_is_used_for_audio(
