@@ -5,7 +5,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import {
   ApiRequestError,
@@ -94,6 +94,7 @@ export function ClipEditor() {
   const [mediaRetryCount, setMediaRetryCount] = useState(0);
   const [retryingPreview, setRetryingPreview] = useState(false);
   const [whyOpen, setWhyOpen] = useState(false);
+  const whyPanelId = useId();
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const pollRunRef = useRef(0);
@@ -575,7 +576,7 @@ export function ClipEditor() {
               type="button"
               onClick={() => setWhyOpen((open) => !open)}
               aria-expanded={whyOpen}
-              aria-controls="editor-why-signals"
+              aria-controls={whyPanelId}
               className="inline-flex min-h-8 items-center gap-1.5 self-start rounded-pill border border-border-subtle bg-surface-subtle/70 px-3 py-1 text-xs font-medium text-ink-secondary transition-colors hover:border-border-strong hover:text-ink-primary focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
             >
               <span>Why this moment</span>
@@ -585,7 +586,7 @@ export function ClipEditor() {
             </button>
             {whyOpen && (
               <dl
-                id="editor-why-signals"
+                id={whyPanelId}
                 aria-label="Contributing signals"
                 className="grid max-w-2xl grid-cols-1 gap-2 rounded-control border border-border-subtle bg-surface-panel p-3.5 text-xs sm:grid-cols-2"
               >

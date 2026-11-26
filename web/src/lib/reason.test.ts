@@ -129,6 +129,16 @@ describe("signalDetailsFor", () => {
     ]);
   });
 
+  it("respects an explicit empty signal_details array from schema 1.1", () => {
+    expect(
+      signalDetailsFor({
+        top_signals: ["audio_rms_max_z"],
+        n_viewer_clips: 0,
+        signal_details: [],
+      }),
+    ).toEqual([]);
+  });
+
   it("returns empty array when neither signals nor viewer clips exist", () => {
     expect(signalDetailsFor({ top_signals: [], n_viewer_clips: 0 })).toEqual(
       [],

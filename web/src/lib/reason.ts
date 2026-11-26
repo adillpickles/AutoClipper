@@ -111,7 +111,7 @@ export function reasonFor(candidate: CandidateSummary): string {
 
 /** Structured contributing signals for the "Why" breakdown, with a fallback for 1.0 results. */
 export function signalDetailsFor(candidate: CandidateSummary): SignalDetail[] {
-  if (candidate.signal_details && candidate.signal_details.length > 0) {
+  if (Array.isArray(candidate.signal_details)) {
     return candidate.signal_details;
   }
 

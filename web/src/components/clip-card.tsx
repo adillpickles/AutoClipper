@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import { Button, buttonClasses, ButtonLink } from "@/components/ui/button";
 import type { Candidate, Export } from "@/lib/api/types";
@@ -48,7 +48,7 @@ export function ClipCard({
   const title = titleFor(candidate);
   const reason = reasonFor(candidate);
   const details = signalDetailsFor(candidate);
-  const whyPanelId = `why-signals-${candidate.candidate_id}`;
+  const whyPanelId = useId();
   const ready =
     clip.kind === "export" && clip.export.state === "done" && clip.url !== null;
   const filename = `autoclipper_${videoId}_${candidate.start_s}-${candidate.end_s}.mp4`;
@@ -110,7 +110,13 @@ export function ClipCard({
               aria-controls={whyPanelId}
               className="inline-flex min-h-8 items-center gap-1.5 self-start rounded-pill border border-border-subtle bg-surface-subtle/70 px-2.5 py-1 text-xs font-medium text-ink-secondary transition-colors hover:border-border-strong hover:text-ink-primary focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
             >
-              <span>Why</span>
+              <span>
+                Why
+                <span className="sr-only">
+                  {" "}
+                  clip {candidate.rank} was picked
+                </span>
+              </span>
               <span aria-hidden="true" className="text-[10px] leading-none">
                 {whyOpen ? "▴" : "▾"}
               </span>
