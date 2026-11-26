@@ -288,7 +288,13 @@ class EndRunner:
     def __call__(self, command: FFmpegCommand, /, *, timeout_s: float) -> CommandResult:
         self.commands.append(command)
         interval = self.interval(command)
-        low_s = -math.inf if interval is None else float(interval.removesuffix("%"))
+        if interval is None:
+            low_s = -math.inf
+        else:
+            low, sep, high = interval.partition("%")
+            assert sep == "%"
+            assert high, f"open-ended -read_intervals {interval!r} hits ffprobe uninitialized end"
+            low_s = float(low)
         packets: list[dict[str, object]] = []
         for index, pts_s, dur_s in self.packets:
             if pts_s < low_s:
@@ -316,7 +322,8 @@ def test_stream_ends_come_from_the_last_packets_near_the_end(source: Path) -> No
 
     assert ends == {0: pytest.approx(10.021333), 1: pytest.approx(9.834666)}
     (command,) = runner.commands
-    assert EndRunner.interval(command) == "1.421333%"  # 10 s before the expected end
+    # 10 s before the expected end, with an explicit relative end offset (avoids open `START%`).
+    assert EndRunner.interval(command) == "1.421333%+1000000000"
 
 
 def test_stream_ends_widen_the_read_until_every_stream_has_packets(source: Path) -> None:
@@ -329,11 +336,11 @@ def test_stream_ends_widen_the_read_until_every_stream_has_packets(source: Path)
 
     assert ends == {0: pytest.approx(3599.04), 1: pytest.approx(100.02)}
     assert [EndRunner.interval(c) for c in runner.commands] == [
-        "3590.000000%",
-        "3560.000000%",
-        "3440.000000%",
-        "2960.000000%",
-        "1040.000000%",
+        "3590.000000%+1000000000",
+        "3560.000000%+1000000000",
+        "3440.000000%+1000000000",
+        "2960.000000%+1000000000",
+        "1040.000000%+1000000000",
         None,  # the whole file
     ]
 
@@ -348,7 +355,7 @@ def test_stream_ends_with_a_wrong_hint_fall_back_to_reading_the_whole_file(sourc
     )
 
     assert ends == {0: pytest.approx(8.0), 1: pytest.approx(8.0)}
-    assert [EndRunner.interval(c) for c in runner.commands] == ["18.021000%", None]
+    assert [EndRunner.interval(c) for c in runner.commands] == ["18.021000%+1000000000", None]
 
 
 def test_a_last_packet_without_a_duration_lasts_the_median_frame_spacing(source: Path) -> None:
