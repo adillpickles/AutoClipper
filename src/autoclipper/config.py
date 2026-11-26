@@ -19,14 +19,15 @@ An empty value counts as unset, so the blank ``TWITCH_CLIENT_ID=`` lines copied 
 
 import functools
 import io
+import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Final, Literal
 
 from dotenv.parser import parse_stream
-from pydantic import Field, SecretStr, ValidationError, field_validator
+from pydantic import Field, SecretStr, ValidationError, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -36,6 +37,43 @@ ENV_FILE: Final = Path(".env")
 """The dotenv file `get_settings()` reads, relative to the current working directory."""
 
 _SETUP_DOCS: Final = "docs/development/setup.md"
+
+
+def default_tools_dir(
+    *,
+    platform: str | None = None,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> Path:
+    """Return the OS-specific per-user managed tools folder for AutoClipper.
+
+    This lives in `autoclipper.config` because it reads ``LOCALAPPDATA`` (Windows) and
+    ``XDG_DATA_HOME`` (Linux) from the process environment (docs/development/conventions.md §4).
+    Never creates the directory.
+
+    Locations:
+    - Windows: ``%LOCALAPPDATA%/AutoClipper/tools`` (fallback ``~/AppData/Local/AutoClipper/tools``)
+    - macOS: ``~/Library/Application Support/AutoClipper/tools``
+    - Linux / other POSIX: ``$XDG_DATA_HOME/autoclipper/tools`` when ``XDG_DATA_HOME`` is absolute,
+      otherwise ``~/.local/share/autoclipper/tools``
+    """
+    plat = sys.platform if platform is None else platform
+    environ = os.environ if env is None else env
+    user_home = Path.home() if home is None else home
+
+    if plat == "win32":
+        local_app_data = environ.get("LOCALAPPDATA", "").strip()
+        if local_app_data:
+            return Path(local_app_data).expanduser().absolute() / "AutoClipper" / "tools"
+        return user_home / "AppData" / "Local" / "AutoClipper" / "tools"
+
+    if plat == "darwin":
+        return user_home / "Library" / "Application Support" / "AutoClipper" / "tools"
+
+    xdg_data_home = environ.get("XDG_DATA_HOME", "").strip()
+    if xdg_data_home and xdg_data_home.startswith("/"):
+        return Path(xdg_data_home) / "autoclipper" / "tools"
+    return user_home / ".local" / "share" / "autoclipper" / "tools"
 
 
 class ConfigError(Exception):
@@ -117,6 +155,16 @@ class Settings(BaseSettings):
         audio_events_top_k: ``AUTOCLIPPER_AUDIO_EVENTS_TOP_K``: default maximum number of
             top-scoring windows evaluated when running ``autoclipper audio-events --scores``
             (defaults to 100 so a laptop CPU can handle multi-hour VODs).
+        tools_dir: ``AUTOCLIPPER_TOOLS_DIR``: optional override for AutoClipper's per-user
+            managed tools folder (where ``autoclipper setup-tools`` installs FFmpeg, FFprobe
+            and TwitchDownloaderCLI). None means use `default_tools_dir()`.
+        ffmpeg_path: ``AUTOCLIPPER_FFMPEG_PATH``: optional explicit path to the ``ffmpeg``
+            executable. When set, takes precedence over the managed tools folder and ``PATH``.
+        ffprobe_path: ``AUTOCLIPPER_FFPROBE_PATH``: optional explicit path to the ``ffprobe``
+            executable. When set, takes precedence over the managed tools folder and ``PATH``.
+        twitch_downloader_path: ``AUTOCLIPPER_TWITCH_DOWNLOADER_PATH``: optional explicit path to
+            the ``TwitchDownloaderCLI`` executable. When set, takes precedence over the managed
+            tools folder and ``PATH``.
 
     Both directories are absolute. A relative value, including the defaults, is taken relative to
     the working directory at the time the settings are loaded (the directory ``.env`` is read
@@ -172,6 +220,12 @@ class Settings(BaseSettings):
     audio_events_top_k: int = Field(
         default=100, ge=1, validation_alias="AUTOCLIPPER_AUDIO_EVENTS_TOP_K"
     )
+    tools_dir: Path | None = Field(default=None, validation_alias="AUTOCLIPPER_TOOLS_DIR")
+    ffmpeg_path: Path | None = Field(default=None, validation_alias="AUTOCLIPPER_FFMPEG_PATH")
+    ffprobe_path: Path | None = Field(default=None, validation_alias="AUTOCLIPPER_FFPROBE_PATH")
+    twitch_downloader_path: Path | None = Field(
+        default=None, validation_alias="AUTOCLIPPER_TWITCH_DOWNLOADER_PATH"
+    )
 
     @field_validator("twitch_client_id", "twitch_client_secret", "chat_hash_salt", mode="before")
     @classmethod
@@ -182,14 +236,23 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("data_dir", "artifacts_dir", mode="before")
+    @field_validator(
+        "data_dir",
+        "artifacts_dir",
+        "tools_dir",
+        "ffmpeg_path",
+        "ffprobe_path",
+        "twitch_downloader_path",
+        mode="before",
+    )
     @classmethod
-    def _check_path_text(cls, value: object) -> object:
+    def _check_path_text(cls, value: object, info: ValidationInfo) -> object:
         if not isinstance(value, str):
             return value
         if not value.strip():
+            kind = "directory" if (info.field_name or "").endswith("_dir") else "file"
             raise ValueError(
-                "must be a directory path; leave it empty or unset it to use the default"
+                f"must be a {kind} path; leave it empty or unset it to use the default"
             )
         if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
             # python-dotenv decodes escapes inside double quotes, so "C:\new" becomes "C:" + a
@@ -201,9 +264,19 @@ class Settings(BaseSettings):
             )
         return value
 
-    @field_validator("data_dir", "artifacts_dir", mode="after")
+    @field_validator(
+        "data_dir",
+        "artifacts_dir",
+        "tools_dir",
+        "ffmpeg_path",
+        "ffprobe_path",
+        "twitch_downloader_path",
+        mode="after",
+    )
     @classmethod
-    def _make_absolute(cls, value: Path) -> Path:
+    def _make_absolute(cls, value: Path | None) -> Path | None:
+        if value is None:
+            return None
         # Anchoring relative paths once, at load time, keeps them stable if the process changes
         # directory later. `absolute()` does not resolve symlinks or mapped drives, so a path
         # that is already absolute stays exactly as written.
@@ -264,6 +337,10 @@ class Settings(BaseSettings):
         if x + width > 1.0 + 1e-9 or y + height > 1.0 + 1e-9:
             raise ValueError("the region reaches outside the frame (x + width or y + height > 1)")
         return (x, y, width, height)
+
+    def resolved_tools_dir(self) -> Path:
+        """Return the managed tools folder: ``AUTOCLIPPER_TOOLS_DIR`` or the OS default."""
+        return self.tools_dir if self.tools_dir is not None else default_tools_dir()
 
     def require_twitch_credentials(self) -> TwitchCredentials:
         """Return the Twitch app credentials, for code that calls the Helix API.

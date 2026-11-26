@@ -74,11 +74,17 @@ def _isolate_from_local_setup(
     cache and logging are still reset around them.
     """
     if request.node.get_closest_marker("live") is None:
+        from autoclipper.tools import discovery as tool_discovery
+
         monkeypatch.chdir(tmp_path)
         for name in list(os.environ):
             # Settings match variable names case-insensitively, so remove every spelling.
             if name.upper() in SETTINGS_ENV_VARS:
                 monkeypatch.delenv(name)
+        # Keep unit tests isolated from any binaries installed in the user's real tools folder.
+        monkeypatch.setattr(
+            tool_discovery, "_default_tools_dir", lambda: tmp_path / ".managed-tools"
+        )
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

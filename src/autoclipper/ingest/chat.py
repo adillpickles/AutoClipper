@@ -236,17 +236,32 @@ def find_twitchdownloader(binary: str | Path | None = None) -> Path:
     """Return the path of the TwitchDownloaderCLI executable.
 
     Args:
-        binary: A path to the executable, or a command name to look up on ``PATH``. None looks up
-            ``TwitchDownloaderCLI`` on ``PATH``.
+        binary: A path to the executable, or a command name to look up on ``PATH``. None uses
+            AutoClipper's tool discovery order (``AUTOCLIPPER_TWITCH_DOWNLOADER_PATH`` ->
+            managed tools folder -> ``PATH``).
 
     Raises:
         ChatDownloadError: No such executable was found. The message says how to install it.
     """
-    found = shutil.which(binary if binary is not None else TOOL_NAME)
+    if binary is None:
+        from autoclipper.tools.discovery import ConfiguredToolError, resolve_tool
+
+        try:
+            resolved = resolve_tool("twitch_downloader")
+        except ConfiguredToolError as exc:
+            raise ChatDownloadError(str(exc)) from None
+        if resolved is None:
+            raise ChatDownloadError(
+                f"{TOOL_NAME} was not found on PATH or in AutoClipper's managed tools folder. "
+                f"Download release {PINNED_TOOL_VERSION} from {_RELEASES_URL} and put it on "
+                f"PATH, or set AUTOCLIPPER_TWITCH_DOWNLOADER_PATH (see {_SETUP_DOCS})."
+            )
+        return resolved.path
+
+    found = shutil.which(binary)
     if found is None:
-        where = f"at {binary}" if binary is not None else "on PATH"
         raise ChatDownloadError(
-            f"{TOOL_NAME} was not found {where}. Download release {PINNED_TOOL_VERSION} from "
+            f"{TOOL_NAME} was not found at {binary}. Download release {PINNED_TOOL_VERSION} from "
             f"{_RELEASES_URL} and put it on PATH, or pass its path (see {_SETUP_DOCS})."
         )
     return Path(found)

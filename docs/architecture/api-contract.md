@@ -1053,6 +1053,7 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 | `status` | `ok` \| `warn` \| `fail` | Readiness state for this check |
 | `message` | str | Short English status sentence safe for the UI |
 | `fix` | str \| null | Actionable fix (exact command or env var name) when `status` is `warn` or `fail`; `null` when `ok` |
+| `source` | str \| null (open enum) | Which copy is in use for external tool checks: `config`, `managed`, `path`, `mixed`, or `null` when missing or not applicable (never a local file path) |
 
 Example:
 
@@ -1064,15 +1065,17 @@ Example:
       "name": "ffmpeg",
       "label": "FFmpeg & FFprobe",
       "status": "ok",
-      "message": "FFmpeg and FFprobe are available on PATH.",
-      "fix": null
+      "message": "FFmpeg and FFprobe are available (managed tools folder).",
+      "fix": null,
+      "source": "managed"
     },
     {
       "name": "captions",
       "label": "Captions extra",
       "status": "warn",
       "message": "faster-whisper is not installed; exports and highlights work without captions, but burned-in captions are unavailable.",
-      "fix": "Install the captions extra with: uv sync --extra captions"
+      "fix": "Install the captions extra with: uv sync --extra captions",
+      "source": null
     }
   ]
 }
@@ -1083,7 +1086,7 @@ Example:
 - The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` (`"1.0"`) and `Health` (`"1.1"`, adding `captions_available`).
 - **Minor change** (same path, `1.x`): a new endpoint, a new response field, an optional request field with a default, or a new value in an **open** enum. Clients must already ignore unknown fields and handle unknown open-enum values with a default branch.
 - **Major change** (`/api/v2`): anything else, such as renaming or removing a field, changing a type, unit or meaning, adding a required request field, or adding a value to a **closed** enum.
-- **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, `PreflightCheck.name`, and layouts listed in `export.layouts`. **Closed enums:** job, export and highlights `state`, `source`, `preview.status`, `export.status`, `scorer.kind`, highlights `order`, and preflight `status`. A request's `layout` must be one the server lists.
+- **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, `PreflightCheck.name`, `PreflightCheck.source`, and layouts listed in `export.layouts`. **Closed enums:** job, export and highlights `state`, `source`, `preview.status`, `export.status`, `scorer.kind`, highlights `order`, and preflight `status`. A request's `layout` must be one the server lists.
 - Update this doc, its examples and [data model § candidates](data-model.md#candidates-apicli-output-json) with the implementation in the same PR ([AGENTS.md § 6](../../AGENTS.md#6-engineering-basics), rule 4).
 
 ## 11. Mock scenarios (#28)

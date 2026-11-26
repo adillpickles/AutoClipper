@@ -249,7 +249,7 @@ def test_preflight_returns_readiness_checks_with_no_store(
         "twitch_credentials",
     ]
     for check in body["checks"]:
-        assert set(check) == {"name", "label", "status", "message", "fix"}
+        assert set(check) == {"name", "label", "status", "message", "fix", "source"}
         if check["status"] == "ok":
             assert check["fix"] is None
         else:

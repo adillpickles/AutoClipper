@@ -147,6 +147,8 @@ An untracked `.env` is convenient for local development. A shared worker or host
 - `AUTOCLIPPER_EXPORT_REGION` picks the part of the source frame vertical clips show, as `x,y,width,height` fractions of the frame (for example `0.25,0,0.5,1`), cropped to 9:16 around its center. Empty means a center crop.
 - `AUTOCLIPPER_EXPORT_FACECAM_REGION` sets the default facecam rectangle (`x,y,width,height` fractions of the frame) for `--layout stacked` (#68); per-channel presets in `configs/channels.yaml` can also supply stacked layouts per pilot channel.
 - `AUTOCLIPPER_WHISPER_MODEL` is the faster-whisper model used for captions (`tiny`, `base`, `small`, …; default `base`). Captions need the optional extra: `uv sync --extra captions`. The model downloads on first use.
+- `AUTOCLIPPER_TOOLS_DIR` overrides AutoClipper's per-user managed tools folder (default: `%LOCALAPPDATA%\AutoClipper\tools` on Windows, `~/Library/Application Support/AutoClipper/tools` on macOS, `$XDG_DATA_HOME/autoclipper/tools` or `~/.local/share/autoclipper/tools` on Linux).
+- `AUTOCLIPPER_FFMPEG_PATH`, `AUTOCLIPPER_FFPROBE_PATH` and `AUTOCLIPPER_TWITCH_DOWNLOADER_PATH` optionally point to explicit executable paths. Tool discovery checks explicit config path → managed tools folder → `PATH`.
 - **Malformed lines:** a line python-dotenv can't parse (for example an unclosed quote), or a `.env` that isn't UTF-8, stops every command with exit code 1 and the line number. AutoClipper never skips the line and falls back to a default.
 - `.env` may only contain AutoClipper's variables, so a misspelled name is caught. An invalid value or an unknown name stops every command with `Error: invalid settings ...` and exit code 1. The message names the variable but never shows its value.
 

@@ -86,6 +86,8 @@ def test_check_ffmpeg_ok_when_both_on_path(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert result.name == "ffmpeg"
     assert result.status == "ok"
+    assert result.source == "path"
+    assert "PATH" in result.message
     assert result.fix is None
     assert "/fake/bin" not in result.message
 
@@ -94,8 +96,8 @@ def test_check_ffmpeg_ok_when_both_on_path(monkeypatch: pytest.MonkeyPatch) -> N
     ("available", "expected_part", "absent_part"),
     [
         (set(), "ffmpeg and ffprobe", None),
-        ({"ffprobe"}, "ffmpeg is not on PATH", "ffprobe"),
-        ({"ffmpeg"}, "ffprobe is not on PATH", "ffmpeg"),
+        ({"ffprobe"}, "ffmpeg is not found", "ffprobe"),
+        ({"ffmpeg"}, "ffprobe is not found", "ffmpeg"),
     ],
     ids=["both-missing", "ffmpeg-missing", "ffprobe-missing"],
 )
@@ -110,11 +112,77 @@ def test_check_ffmpeg_fails_when_missing(
     result = check_ffmpeg()
 
     assert result.status == "fail"
+    assert result.source is None
     assert expected_part in result.message
     if absent_part is not None:
         assert absent_part not in result.message
     assert result.fix is not None
     assert "winget install Gyan.FFmpeg" in result.fix
+
+
+def test_check_ffmpeg_reports_managed_source_without_local_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autoclipper.tools.discovery import managed_binary_path
+
+    tools_dir = tmp_path / "tools"
+    for tool in ("ffmpeg", "ffprobe"):
+        binary = managed_binary_path(tool, tools_dir)
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"bin")
+        binary.chmod(0o755)
+    _patch_which(monkeypatch, set())
+    monkeypatch.setenv("AUTOCLIPPER_TOOLS_DIR", str(tools_dir))
+    get_settings.cache_clear()
+
+    result = check_ffmpeg(get_settings())
+
+    assert result.status == "ok"
+    assert result.source == "managed"
+    assert "managed tools folder" in result.message
+    assert str(tools_dir) not in result.model_dump_json()
+
+
+def test_check_ffmpeg_reports_mixed_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autoclipper.tools.discovery import managed_binary_path
+
+    tools_dir = tmp_path / "tools"
+    managed_ffmpeg = managed_binary_path("ffmpeg", tools_dir)
+    managed_ffmpeg.parent.mkdir(parents=True, exist_ok=True)
+    managed_ffmpeg.write_bytes(b"bin")
+    managed_ffmpeg.chmod(0o755)
+    _patch_which(monkeypatch, {"ffprobe"})
+    monkeypatch.setenv("AUTOCLIPPER_TOOLS_DIR", str(tools_dir))
+    get_settings.cache_clear()
+
+    result = check_ffmpeg(get_settings())
+
+    assert result.status == "ok"
+    assert result.source == "mixed"
+    assert "managed tools folder" in result.message
+    assert "PATH" in result.message
+    assert str(tools_dir) not in result.model_dump_json()
+    assert "/fake/bin" not in result.model_dump_json()
+
+
+def test_check_ffmpeg_reports_invalid_configured_path_without_leaking_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing_path = tmp_path / "secret-dir" / "missing-ffmpeg"
+    monkeypatch.setenv("AUTOCLIPPER_FFMPEG_PATH", str(missing_path))
+    _patch_which(monkeypatch, {"ffmpeg", "ffprobe"})
+    get_settings.cache_clear()
+
+    result = check_ffmpeg(get_settings())
+
+    assert result.status == "fail"
+    assert result.source == "config"
+    assert "AUTOCLIPPER_FFMPEG_PATH" in result.message
+    assert result.fix is not None
+    assert "AUTOCLIPPER_FFMPEG_PATH" in result.fix
+    assert "secret-dir" not in result.model_dump_json()
 
 
 # --- TwitchDownloaderCLI -----------------------------------------------------------------------
@@ -127,8 +195,45 @@ def test_check_twitch_downloader_ok_when_on_path(monkeypatch: pytest.MonkeyPatch
 
     assert result.name == "twitch_downloader"
     assert result.status == "ok"
+    assert result.source == "path"
+    assert "PATH" in result.message
     assert result.fix is None
     assert "/fake/bin" not in result.message
+
+
+def test_check_twitch_downloader_reports_config_source_without_local_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custom = tmp_path / "private-bin" / "TwitchDownloaderCLI.exe"
+    custom.parent.mkdir(parents=True)
+    custom.write_bytes(b"bin")
+    custom.chmod(0o755)
+    monkeypatch.setenv("AUTOCLIPPER_TWITCH_DOWNLOADER_PATH", str(custom))
+    _patch_which(monkeypatch, set())
+    get_settings.cache_clear()
+
+    result = check_twitch_downloader(get_settings())
+
+    assert result.status == "ok"
+    assert result.source == "config"
+    assert "AUTOCLIPPER_TWITCH_DOWNLOADER_PATH" in result.message
+    assert "private-bin" not in result.model_dump_json()
+
+
+def test_check_twitch_downloader_warns_on_invalid_config_path_without_leaking_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = tmp_path / "private-bin" / "missing-td"
+    monkeypatch.setenv("AUTOCLIPPER_TWITCH_DOWNLOADER_PATH", str(missing))
+    _patch_which(monkeypatch, {TOOL_NAME})
+    get_settings.cache_clear()
+
+    result = check_twitch_downloader(get_settings())
+
+    assert result.status == "warn"
+    assert result.source == "config"
+    assert "AUTOCLIPPER_TWITCH_DOWNLOADER_PATH" in result.message
+    assert "private-bin" not in result.model_dump_json()
 
 
 def test_check_twitch_downloader_warns_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,6 +242,7 @@ def test_check_twitch_downloader_warns_when_missing(monkeypatch: pytest.MonkeyPa
     result = check_twitch_downloader()
 
     assert result.status == "warn"
+    assert result.source is None
     assert TOOL_NAME in result.message
     assert "--video" in result.message
     assert result.fix is not None
@@ -417,3 +523,28 @@ def test_doctor_json_prints_valid_preflight_report(monkeypatch: pytest.MonkeyPat
     parsed = PreflightReport.model_validate(json.loads(result.output))
     assert parsed.status == "warn"
     assert len(parsed.checks) == 5
+    assert "/fake/bin" not in result.output
+
+
+def test_doctor_text_shows_resolved_tool_locations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autoclipper.tools.discovery import managed_binary_path
+
+    tools_dir = tmp_path / "tools"
+    managed_ffmpeg = managed_binary_path("ffmpeg", tools_dir)
+    managed_ffmpeg.parent.mkdir(parents=True, exist_ok=True)
+    managed_ffmpeg.write_bytes(b"bin")
+    managed_ffmpeg.chmod(0o755)
+    _patch_which(monkeypatch, {"ffprobe", TOOL_NAME})
+    _patch_captions(monkeypatch, available=True)
+    monkeypatch.setenv("AUTOCLIPPER_TOOLS_DIR", str(tools_dir))
+    _full_settings(monkeypatch)
+
+    result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == ExitCode.SUCCESS, result.output
+    assert "Tool locations" in result.output
+    assert "[managed]" in result.output
+    assert str(managed_ffmpeg) in result.output
+    assert "[path]" in result.output

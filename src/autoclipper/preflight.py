@@ -9,14 +9,21 @@ import importlib
 from typing import Final, Literal
 
 from autoclipper.config import MissingSettingError, Settings
-from autoclipper.ffmpeg import FFMPEG, FFPROBE, FFmpegNotFoundError, find_program
 from autoclipper.ingest.chat import (
     PINNED_TOOL_VERSION,
     TOOL_NAME,
-    ChatDownloadError,
-    find_twitchdownloader,
 )
 from autoclipper.schemas import PreflightCheck, PreflightReport, PreflightStatus
+from autoclipper.tools.discovery import (
+    TOOL_COMMANDS,
+    ConfiguredToolError,
+    ResolvedTool,
+    ToolName,
+    ToolSource,
+    effective_tools_dir,
+    resolve_all_tools,
+    resolve_tool,
+)
 
 type RunnerMode = Literal["mock", "pipeline"]
 
@@ -29,61 +36,137 @@ _STATUS_TAGS: Final[dict[PreflightStatus, str]] = {
     "warn": "[WARN]",
     "fail": "[FAIL]",
 }
+_SOURCE_LABELS: Final[dict[ToolSource, str]] = {
+    "config": "configured path",
+    "managed": "managed tools folder",
+    "path": "PATH",
+}
 
 
-def check_ffmpeg() -> PreflightCheck:
-    """Check that both ``ffmpeg`` and ``ffprobe`` are available on ``PATH``."""
+def _describe_tool_source(resolved: ResolvedTool) -> str:
+    if resolved.source == "config" and resolved.config_var:
+        return f"configured via {resolved.config_var}"
+    return _SOURCE_LABELS[resolved.source]
+
+
+def check_ffmpeg(settings: Settings | None = None) -> PreflightCheck:
+    """Check that both ``ffmpeg`` and ``ffprobe`` are discoverable and report which copy is used."""
+    resolved_tools: dict[str, ResolvedTool] = {}
+    config_errors: list[ConfiguredToolError] = []
     missing: list[str] = []
-    for program in (FFMPEG, FFPROBE):
+
+    ffmpeg_targets: tuple[tuple[ToolName, str], ...] = (
+        ("ffmpeg", "ffmpeg"),
+        ("ffprobe", "ffprobe"),
+    )
+    for tool_name, label in ffmpeg_targets:
         try:
-            find_program(program)
-        except FFmpegNotFoundError:
-            missing.append(program)
+            found = resolve_tool(tool_name, settings=settings)
+        except ConfiguredToolError as exc:
+            config_errors.append(exc)
+        else:
+            if found is None:
+                missing.append(label)
+            else:
+                resolved_tools[tool_name] = found
+
+    if config_errors:
+        message_parts = [exc.safe_message for exc in config_errors]
+        if missing:
+            verb = "is" if len(missing) == 1 else "are"
+            message_parts.append(
+                f"{' and '.join(missing)} {verb} not found in the managed tools folder or on PATH."
+            )
+        vars_text = " and ".join(exc.config_var for exc in config_errors)
+        return PreflightCheck(
+            name="ffmpeg",
+            label="FFmpeg & FFprobe",
+            status="fail",
+            message=" ".join(message_parts),
+            fix=f"Update or unset {vars_text} in .env or the environment.",
+            source="config",
+        )
+
     if not missing:
+        ffmpeg_tool = resolved_tools["ffmpeg"]
+        ffprobe_tool = resolved_tools["ffprobe"]
+        if ffmpeg_tool.source == ffprobe_tool.source:
+            source = ffmpeg_tool.source
+            if source == "config":
+                where = f"configured via {ffmpeg_tool.config_var} and {ffprobe_tool.config_var}"
+            else:
+                where = _SOURCE_LABELS[source]
+            message = f"FFmpeg and FFprobe are available ({where})."
+        else:
+            source = "mixed"
+            message = (
+                f"FFmpeg ({_describe_tool_source(ffmpeg_tool)}) and "
+                f"FFprobe ({_describe_tool_source(ffprobe_tool)}) are available."
+            )
         return PreflightCheck(
             name="ffmpeg",
             label="FFmpeg & FFprobe",
             status="ok",
-            message="FFmpeg and FFprobe are available on PATH.",
+            message=message,
             fix=None,
+            source=source,
         )
+
     verb = "is" if len(missing) == 1 else "are"
     return PreflightCheck(
         name="ffmpeg",
         label="FFmpeg & FFprobe",
         status="fail",
-        message=f"{' and '.join(missing)} {verb} not on PATH.",
+        message=f"{' and '.join(missing)} {verb} not found in the managed tools folder or on PATH.",
         fix=(
             "Install FFmpeg (Windows: winget install Gyan.FFmpeg, macOS: brew install ffmpeg, "
-            "Linux: sudo apt install ffmpeg), then open a new terminal."
+            "Linux: sudo apt install ffmpeg), place it in the managed tools folder, or set "
+            "AUTOCLIPPER_FFMPEG_PATH / AUTOCLIPPER_FFPROBE_PATH."
         ),
+        source=None,
     )
 
 
-def check_twitch_downloader() -> PreflightCheck:
-    """Check that ``TwitchDownloaderCLI`` is available the same way ingest locates it."""
+def check_twitch_downloader(settings: Settings | None = None) -> PreflightCheck:
+    """Check that ``TwitchDownloaderCLI`` is discoverable and report which copy is used."""
     try:
-        find_twitchdownloader()
-    except ChatDownloadError:
+        found = resolve_tool("twitch_downloader", settings=settings)
+    except ConfiguredToolError as exc:
         return PreflightCheck(
             name="twitch_downloader",
             label="TwitchDownloaderCLI",
             status="warn",
             message=(
-                f"{TOOL_NAME} is not on PATH; chat replay and automatic video segment downloads "
-                "are unavailable (local --video files still work)."
+                f"{exc.safe_message} Chat replay and automatic video segment downloads are "
+                "unavailable (local --video files still work)."
+            ),
+            fix=f"Update or unset {exc.config_var} in .env or the environment.",
+            source="config",
+        )
+    if found is None:
+        return PreflightCheck(
+            name="twitch_downloader",
+            label="TwitchDownloaderCLI",
+            status="warn",
+            message=(
+                f"{TOOL_NAME} is not found in the managed tools folder or on PATH; chat replay "
+                "and automatic video segment downloads are unavailable (local --video files "
+                "still work)."
             ),
             fix=(
                 f"Download {TOOL_NAME} {PINNED_TOOL_VERSION} from "
-                f"{_TWITCH_DOWNLOADER_RELEASE_URL} and add it to PATH."
+                f"{_TWITCH_DOWNLOADER_RELEASE_URL} and add it to PATH, place it in the managed "
+                "tools folder, or set AUTOCLIPPER_TWITCH_DOWNLOADER_PATH."
             ),
+            source=None,
         )
     return PreflightCheck(
         name="twitch_downloader",
         label="TwitchDownloaderCLI",
         status="ok",
-        message=f"{TOOL_NAME} is available on PATH.",
+        message=f"{TOOL_NAME} is available ({_describe_tool_source(found)}).",
         fix=None,
+        source=found.source,
     )
 
 
@@ -225,8 +308,8 @@ def _worst_status(checks: tuple[PreflightCheck, ...]) -> PreflightStatus:
 def run_preflight(settings: Settings, *, job_runner: RunnerMode = "pipeline") -> PreflightReport:
     """Run all local readiness checks and summarize their worst status."""
     checks = (
-        check_ffmpeg(),
-        check_twitch_downloader(),
+        check_ffmpeg(settings),
+        check_twitch_downloader(settings),
         check_chat_hash_salt(settings, job_runner=job_runner),
         check_captions(),
         check_twitch_credentials(settings, job_runner=job_runner),
@@ -242,4 +325,21 @@ def format_preflight_summary(report: PreflightReport) -> str:
         lines.append(f"  {tag} {check.label}: {check.message}")
         if check.fix is not None:
             lines.append(f"         Fix: {check.fix}")
+    return "\n".join(lines)
+
+
+def format_tool_locations(settings: Settings) -> str:
+    """Format local tool paths for CLI ``doctor`` output (never sent over HTTP)."""
+    tools_dir = effective_tools_dir(settings)
+    resolved = resolve_all_tools(settings)
+    lines = [f"Tool locations (managed folder: {tools_dir}):"]
+    for tool_name in ("ffmpeg", "ffprobe", "twitch_downloader"):
+        label = TOOL_COMMANDS[tool_name]
+        entry = resolved[tool_name]
+        if isinstance(entry, ResolvedTool):
+            lines.append(f"  {label:<19} [{entry.source}] {entry.path}")
+        elif isinstance(entry, ConfiguredToolError):
+            lines.append(f"  {label:<19} [config error] {entry.configured_path} ({entry.reason})")
+        else:
+            lines.append(f"  {label:<19} [missing]")
     return "\n".join(lines)
