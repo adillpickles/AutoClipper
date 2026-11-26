@@ -22,7 +22,9 @@ with its reason and the other steps still run; the clip snapshot needs the metad
 recorded as failed (or unavailable) when the metadata is.
 """
 
+import contextlib
 import dataclasses
+import hashlib
 import json
 import logging
 from collections.abc import Callable
@@ -148,6 +150,11 @@ def chat_path(data_dir: Path, video_id: str) -> Path:
 def raw_chat_path(data_dir: Path, video_id: str) -> Path:
     """``<data_dir>/raw/chat/<video_id>.json``, deleted after parsing."""
     return data_dir / "raw" / "chat" / f"{validate_video_id(video_id)}.json"
+
+
+def audio_source_path(data_dir: Path, video_id: str) -> Path:
+    """``<data_dir>/interim/audio/<video_id>.source.json``: identity of a local-file WAV."""
+    return normalized_audio_path(data_dir, video_id).with_suffix(".source.json")
 
 
 def snapshot_id_for(video_id: str, captured_at: datetime) -> str:
@@ -334,10 +341,24 @@ def ingest_vod(
 
     # 4. Audio.
     wav = normalized_audio_path(data_dir, video_id)
+    source_file = audio_source_path(data_dir, video_id)
+    aliases_wav = media_file is not None and _paths_match(media_file, wav)
     audio_entry = done_before("audio", wav.is_file())
-    if audio_entry is not None and audio_entry.status == "unavailable" and media_file is not None:
-        audio_entry = None  # the user's own file replaces a download Twitch refused
     audio_tool = LOCAL_FILE_TOOL if media_file is not None else _ytdlp_tool()
+    local_identity: dict[str, object] | None = None
+    if media_file is not None:
+        try:
+            local_identity = _local_file_identity(media_file)
+        except OSError as exc:
+            if not aliases_wav:
+                _unlink_quietly(wav)
+            _unlink_quietly(source_file)
+            finish("audio", "failed", audio_tool, _describe(exc))
+            return IngestReport(video_id, tuple(results))
+    if audio_entry is not None and not _audio_cache_matches(
+        audio_entry, source_file, media_file, local_identity
+    ):
+        audio_entry = None  # source changed (downloaded <-> local file, or local file changed)
     if audio_entry is not None:
         if audio_entry.status == "ok" and audio_entry.tool == LOCAL_FILE_TOOL and vod is not None:
             # Audio from a local file is checked against the VOD's length, which an earlier run
@@ -348,32 +369,72 @@ def ingest_vod(
                     probe(wav, runner=tools.runner).duration_s, vod.duration_s, media_file or wav
                 )
             except Exception as exc:  # the wrong length, or unreadable: recorded, not fatal
-                wav.unlink(missing_ok=True)
+                if not aliases_wav:
+                    _unlink_quietly(wav)
+                _unlink_quietly(source_file)
                 finish("audio", "failed", LOCAL_FILE_TOOL, _describe(exc))
             else:
                 skip("audio", audio_entry)
         else:
             skip("audio", audio_entry)
     elif vod_gone and media_file is None:
+        _unlink_quietly(wav)
+        _unlink_quietly(source_file)
         finish("audio", "unavailable", audio_tool, gone)
     else:
+        # Invalidate any earlier `ok` audio cache before replacing the WAV, so an interruption
+        # between replacing the WAV and writing its new source metadata never lets a later run
+        # skip normalization against stale source metadata.
+        prior_audio = catalog.get(("audio", video_id))
+        if prior_audio is not None and prior_audio.status == "ok":
+            invalidated = CatalogEntry(
+                "audio",
+                video_id,
+                "failed",
+                audio_tool,
+                STAGE_VERSION,
+                tools.clock(),
+                "audio source changed; rebuilding",
+            )
+            record(data_dir, invalidated)
+            catalog[("audio", video_id)] = invalidated
+        _unlink_quietly(source_file)
         try:
             if media_file is not None:
                 audio = normalize_audio(
-                    media_file, video_id, data_dir=data_dir, runner=tools.runner
+                    media_file,
+                    video_id,
+                    data_dir=data_dir,
+                    runner=tools.runner,
+                    force=not aliases_wav,
                 )
             else:
+                # Remove any stale WAV (e.g. from a previous local file) so prepare_vod_audio's
+                # normalize_audio call never reuses it by duration alone.
+                _unlink_quietly(wav)
                 audio = prepare_vod_audio(
                     video_id, data_dir=data_dir, downloader=tools.downloader, runner=tools.runner
                 )
             if media_file is not None and vod is not None:
                 _check_media_length(audio.duration_s, vod.duration_s, media_file)
+            if media_file is not None:
+                identity = _local_file_identity(media_file) if aliases_wav else local_identity
+                assert identity is not None
+                _write_audio_source(source_file, identity)
         except (VodUnavailableError, VodAccessRestrictedError) as exc:
+            if not aliases_wav:
+                _unlink_quietly(wav)
+            _unlink_quietly(source_file)
             finish("audio", "unavailable", audio_tool, _describe(exc))
         except MediaLengthError as exc:
-            wav.unlink(missing_ok=True)  # its timeline doesn't match the VOD's
+            if not aliases_wav:
+                _unlink_quietly(wav)  # its timeline doesn't match the VOD's
+            _unlink_quietly(source_file)
             finish("audio", "failed", audio_tool, _describe(exc))
         except Exception as exc:  # recorded, not fatal
+            if not aliases_wav:
+                _unlink_quietly(wav)
+            _unlink_quietly(source_file)
             finish("audio", "failed", audio_tool, _describe(exc))
         else:
             finish("audio", "ok", audio_tool, f"{audio.duration_s:.1f} s in {audio.path}")
@@ -385,6 +446,87 @@ def ingest_vod(
 
 # The catalog's `tool` for audio converted from a file the user gave (`--media`).
 LOCAL_FILE_TOOL: Final = "local-file"
+
+# Bytes hashed from the start, middle and end of a local media file to detect in-place edits
+# without reading multi-gigabyte VODs in full on every cached re-run.
+_AUDIO_FINGERPRINT_CHUNK_BYTES: Final = 64 * 1024
+
+
+def _local_file_identity(path: Path) -> dict[str, object]:
+    """Identify a local media file by resolved path, stat metadata and sampled content hash."""
+    resolved = path.resolve()
+    stat = resolved.stat()
+    size = stat.st_size
+    digest = hashlib.sha256()
+    with resolved.open("rb") as handle:
+        if size <= 3 * _AUDIO_FINGERPRINT_CHUNK_BYTES:
+            digest.update(handle.read())
+        else:
+            digest.update(handle.read(_AUDIO_FINGERPRINT_CHUNK_BYTES))
+            handle.seek((size - _AUDIO_FINGERPRINT_CHUNK_BYTES) // 2)
+            digest.update(handle.read(_AUDIO_FINGERPRINT_CHUNK_BYTES))
+            handle.seek(size - _AUDIO_FINGERPRINT_CHUNK_BYTES)
+            digest.update(handle.read(_AUDIO_FINGERPRINT_CHUNK_BYTES))
+    return {
+        "kind": "local_file",
+        "path": str(resolved),
+        "size": size,
+        "mtime_ns": stat.st_mtime_ns,
+        "sample_sha256": digest.hexdigest(),
+    }
+
+
+def _read_audio_source(path: Path) -> dict[str, object] | None:
+    if not path.is_file():
+        return None
+    try:
+        data: object = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _unlink_quietly(path: Path) -> None:
+    """Remove `path` if present, ignoring OS errors (e.g. a locked file on Windows)."""
+    with contextlib.suppress(OSError):
+        path.unlink(missing_ok=True)
+
+
+def _paths_match(a: Path, b: Path) -> bool:
+    """True when `a` and `b` refer to the same file path (including symlinks/hardlinks)."""
+    try:
+        if a.exists() and b.exists():
+            return a.samefile(b)
+    except OSError:
+        pass
+    return a.resolve() == b.resolve()
+
+
+def _write_audio_source(path: Path, identity: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_name(f".{path.name}.part")
+    try:
+        part.write_text(
+            json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n"
+        )
+        part.replace(path)
+    except BaseException:
+        _unlink_quietly(part)
+        raise
+
+
+def _audio_cache_matches(
+    entry: CatalogEntry,
+    source_file: Path,
+    media_file: Path | None,
+    local_identity: dict[str, object] | None,
+) -> bool:
+    """True when the cached audio entry was produced from the same source as this run."""
+    if entry.status == "unavailable":
+        return media_file is None
+    if media_file is not None:
+        return entry.tool == LOCAL_FILE_TOOL and _read_audio_source(source_file) == local_identity
+    return entry.tool != LOCAL_FILE_TOOL and not source_file.exists()
 
 
 # A local file may differ from Twitch's duration by this much (whichever is larger).

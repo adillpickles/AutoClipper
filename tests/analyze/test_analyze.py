@@ -949,6 +949,98 @@ def test_a_matching_local_video_is_used_for_audio(
     assert warning_codes(result) == ["audio_partly_muted"]
 
 
+@pytest.mark.ffmpeg
+def test_switching_to_local_video_replaces_cached_audio_for_ranking(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    """Analyzing from Twitch and then re-analyzing with a same-length local --video that has
+    different audio re-normalizes the WAV so loudness ranking uses the local file's audio."""
+    duration_s = 60.0
+    twitch_audio = tmp_path / "twitch.m4a"
+    local_video = tmp_path / "local.mp4"
+
+    # Loud burst at 10-15 s in Twitch audio; loud burst at 45-50 s in the local video.
+    run_command(
+        ffmpeg_command(
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:sample_rate=48000:duration={duration_s:g}",
+            "-af",
+            "volume='if(between(t,10,15),1.0,0.02)':eval=frame",
+            "-c:a",
+            "aac",
+            twitch_audio,
+        ),
+        timeout_s=60,
+    )
+    run_command(
+        ffmpeg_command(
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=black:size=160x90:rate=5:duration={duration_s:g}",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:sample_rate=48000:duration={duration_s:g}",
+            "-af",
+            "volume='if(between(t,45,50),1.0,0.02)':eval=frame",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            local_video,
+        ),
+        timeout_s=60,
+    )
+
+    class FullLengthDownloader(FakeDownloader):
+        def __call__(self, request: DownloadRequest, /) -> DownloadedMedia:
+            res = super().__call__(request)
+            return DownloadedMedia(res.path, duration_s)
+
+    data = tmp_path / "data"
+    artifacts = tmp_path / "artifacts"
+    one_minute = FakeTwitch(video=video_record(duration="0h1m0s"), clips=[])
+
+    first = analyze_vod(
+        VIDEO_ID,
+        data_dir=data,
+        artifacts_dir=artifacts,
+        tools=tools(chat_binary, twitch=one_minute, downloader=FullLengthDownloader(twitch_audio)),
+        lexicon=lexicon,
+        baseline="loudness",
+        clock=lambda: NOW,
+    )
+    second = analyze_vod(
+        VIDEO_ID,
+        data_dir=data,
+        artifacts_dir=artifacts,
+        tools=tools(
+            chat_binary,
+            twitch=one_minute,
+            downloader=FakeDownloader(None, AssertionError("not used")),
+        ),
+        lexicon=lexicon,
+        video_file=local_video,
+        baseline="loudness",
+        clock=lambda: NOW,
+    )
+
+    assert first.candidates
+    assert second.candidates
+    first_top = first.candidates[0]
+    second_top = second.candidates[0]
+    assert first_top.start_s <= 15.0 <= first_top.end_s
+    assert second_top.start_s <= 45.0 <= second_top.end_s
+    assert (first_top.start_s, first_top.end_s) != (second_top.start_s, second_top.end_s)
+
+
 def _reset_video_source(tmp_path: Path, *, part_s: float = 15.0) -> Path:
     """Two MPEG-TS parts joined byte for byte whose timestamps restart halfway (#95)."""
     first = tmp_path / "part0.ts"
