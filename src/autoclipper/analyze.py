@@ -6,10 +6,11 @@ analyze`` writes and the API will return (#45):
 
 1. **Ingest** (`ingest_vod`): metadata, the viewer-clip snapshot, chat and audio; resumable,
    recorded in the catalog. A video file the user already has (`video_file`) replaces the
-   audio download. The chosen scorer is validated first, and the VOD's type and the file's
-   length against the VOD's (the contract's ``video_mismatch``, 2 s, § 3.1) are checked in
-   ``ingest_vod``'s ``after_vod_meta`` hook, at the ``resolving_vod`` stage — before
-   anything is downloaded, so a rejected video or scorer costs nothing and leaves nothing.
+   audio download. The chosen scorer is validated first, and unresolved metadata
+   (`vod_unavailable` / `upstream_unavailable`), the VOD's type, and the file's length against
+   the VOD's (the contract's ``video_mismatch``, 2 s, § 3.1) are checked in ``ingest_vod``'s
+   ``after_vod_meta`` hook, at the ``resolving_vod`` stage — before anything is downloaded, so
+   a failed lookup or rejected video or scorer costs nothing and leaves nothing.
 2. **Inputs as warnings** (§ 3.5): a signal that couldn't be obtained degrades the result
    with `chat_missing`, `audio_missing` or `viewer_clips_missing` (the clip list being
    incomplete adds `viewer_clips_incomplete`), and Twitch having muted part of the audio
@@ -188,7 +189,11 @@ def analyze_vod(
     def check_vod(vod: Vod | None) -> None:
         """§ 3.5's `resolving_vod` checks, before any other step downloads anything."""
         if vod is None:
-            return  # a failed or missing metadata step is classified after the ingest
+            _require_vod_meta(read_catalog(data_dir), video_id)
+            raise AnalyzeError(
+                "upstream_unavailable",
+                "the VOD's metadata couldn't be read from the local data directory",
+            )
         if vod.type != "archive":
             raise AnalyzeError(
                 "vod_unsupported", f"the video is a {vod.type}, not a past broadcast"
@@ -255,6 +260,15 @@ def analyze_vod(
     catalog = read_catalog(data_dir)
     started = time.monotonic()
 
+    # --- The VOD itself (§ 3.5: resolving it is required; checked in `check_vod` before
+    # downloads, and verified again here as a guard against catalog/table corruption) -----------
+    _require_vod_meta(catalog, video_id)
+    vod = read_vod(data_dir, video_id)
+    if vod is None:  # the catalog says ok, so this row exists; a guard against corruption
+        raise AnalyzeError(
+            "upstream_unavailable", f"the VOD's row is missing from {data_dir / 'processed'}"
+        )
+
     # --- Warnings: which inputs arrived (§ 3.5, published before the classification can raise,
     # so a job that fails on a fresh or a cached catalog carries what was already found) --------
     chat_entry = catalog.get(("chat", video_id))
@@ -276,20 +290,6 @@ def analyze_vod(
                 "already have with --video to analyze it anyway",
             )
 
-    # --- The VOD itself (§ 3.5: resolving it is required) --------------------------------------
-    meta = catalog.get(("vod_meta", video_id))
-    if meta is not None and meta.status == "unavailable":
-        raise AnalyzeError("vod_unavailable", "Twitch has no published video with this ID")
-    if meta is None or meta.status != "ok":
-        detail = "no details" if meta is None else (meta.error or "no details")
-        raise AnalyzeError(
-            "upstream_unavailable", f"the VOD's metadata couldn't be fetched: {detail}"
-        )
-    vod = read_vod(data_dir, video_id)
-    if vod is None:  # the catalog says ok, so this row exists; a guard against corruption
-        raise AnalyzeError(
-            "upstream_unavailable", f"the VOD's row is missing from {data_dir / 'processed'}"
-        )
     if vod.muted_segments:
         spans = ", ".join(f"{s.offset_s:.0f}s+{s.duration_s:.0f}s" for s in vod.muted_segments)
         warnings.append(
@@ -446,6 +446,18 @@ def analyze_vod(
 
 
 # --- Pieces -------------------------------------------------------------------------------------
+
+
+def _require_vod_meta(catalog: dict[tuple[str, str], CatalogEntry], video_id: str) -> None:
+    """Classify an unresolved `vod_meta` catalog entry per api-contract.md § 3.5."""
+    meta = catalog.get(("vod_meta", video_id))
+    if meta is not None and meta.status == "unavailable":
+        raise AnalyzeError("vod_unavailable", "Twitch has no published video with this ID")
+    if meta is None or meta.status != "ok":
+        detail = "no details" if meta is None else (meta.error or "no details")
+        raise AnalyzeError(
+            "upstream_unavailable", f"the VOD's metadata couldn't be fetched: {detail}"
+        )
 
 
 def _timed[T](stage: str, work: Callable[[], T]) -> T:

@@ -575,21 +575,137 @@ def test_a_video_that_is_not_a_past_broadcast_is_rejected(
 def test_a_vod_twitch_does_not_have_is_unavailable(
     tmp_path: Path, chat_binary: Path, lexicon: Lexicon
 ) -> None:
+    data = tmp_path / "data"
+    chat = FakeChatTool()
+    downloader = FakeDownloader(None, AssertionError("must not download"))
+    stages: list[str] = []
+    seen_warnings: list[tuple[str, ...]] = []
+
     with pytest.raises(AnalyzeError) as excinfo:
         analyze_vod(
             VIDEO_ID,
-            data_dir=tmp_path / "data",
+            data_dir=data,
             artifacts_dir=tmp_path / "artifacts",
             tools=tools(
                 chat_binary,
                 twitch=FakeTwitch(video=None),
-                downloader=FakeDownloader(None, RuntimeError("x")),
+                chat=chat,
+                downloader=downloader,
             ),
             lexicon=lexicon,
             clock=lambda: NOW,
+            on_stage=stages.append,
+            on_warnings=lambda ws: seen_warnings.append(tuple(w.code for w in ws)),
         )
 
     assert excinfo.value.code == "vod_unavailable"
+    assert "--video" not in excinfo.value.message
+    assert stages == ["resolving_vod"]
+    assert seen_warnings == []
+    assert (chat.calls, downloader.calls) == (0, 0)
+    assert set(read_catalog(data)) == {("vod_meta", VIDEO_ID)}
+
+    # A second run hits the cached unavailable metadata entry and still fails at resolving_vod.
+    stages.clear()
+    with pytest.raises(AnalyzeError) as cached:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=data,
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(
+                chat_binary,
+                twitch=FakeTwitch(video=None),
+                chat=chat,
+                downloader=downloader,
+            ),
+            lexicon=lexicon,
+            clock=lambda: NOW,
+            on_stage=stages.append,
+            on_warnings=lambda ws: seen_warnings.append(tuple(w.code for w in ws)),
+        )
+
+    assert cached.value.code == "vod_unavailable"
+    assert "--video" not in cached.value.message
+    assert stages == ["resolving_vod"]
+    assert seen_warnings == []
+    assert (chat.calls, downloader.calls) == (0, 0)
+
+
+def test_expired_vod_ingested_earlier_still_fails_at_resolving_vod(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    """Even if standalone ingest already marked all steps unavailable, analyze stops at
+    resolving_vod instead of advancing to downloading_audio and advising --video."""
+    from autoclipper.ingest.vod import ingest_vod
+
+    data = tmp_path / "data"
+    downloader = FakeDownloader(None, AssertionError("must not download"))
+    ingest_vod(
+        VIDEO_ID,
+        data_dir=data,
+        tools=tools(chat_binary, twitch=FakeTwitch(video=None), downloader=downloader),
+    )
+    stages: list[str] = []
+    seen_warnings: list[tuple[str, ...]] = []
+
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=data,
+            artifacts_dir=tmp_path / "artifacts",
+            tools=tools(chat_binary, twitch=FakeTwitch(video=None), downloader=downloader),
+            lexicon=lexicon,
+            clock=lambda: NOW,
+            on_stage=stages.append,
+            on_warnings=lambda ws: seen_warnings.append(tuple(w.code for w in ws)),
+        )
+
+    assert excinfo.value.code == "vod_unavailable"
+    assert "--video" not in excinfo.value.message
+    assert stages == ["resolving_vod"]
+    assert seen_warnings == []
+
+
+def test_missing_helix_credentials_stop_before_downloads(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    """Uncached VOD with no Helix credentials fails at resolving_vod without downloading chat or
+    audio."""
+    data = tmp_path / "data"
+    raw_chat = data / "raw" / "chat" / f"{VIDEO_ID}.json"
+    raw_chat.parent.mkdir(parents=True)
+    raw_chat.write_text('{"commenter": "user_001"}', encoding="utf-8")
+    chat = FakeChatTool()
+    downloader = FakeDownloader(None, AssertionError("must not download"))
+    stages: list[str] = []
+    seen_warnings: list[tuple[str, ...]] = []
+
+    with pytest.raises(AnalyzeError) as excinfo:
+        analyze_vod(
+            VIDEO_ID,
+            data_dir=data,
+            artifacts_dir=tmp_path / "artifacts",
+            tools=IngestTools(
+                helix=None,
+                salt=SALT,
+                chat_runner=chat,
+                chat_binary=chat_binary,
+                downloader=downloader,
+                clock=lambda: NOW,
+            ),
+            lexicon=lexicon,
+            clock=lambda: NOW,
+            on_stage=stages.append,
+            on_warnings=lambda ws: seen_warnings.append(tuple(w.code for w in ws)),
+        )
+
+    assert excinfo.value.code == "upstream_unavailable"
+    assert "metadata" in excinfo.value.message
+    assert stages == ["resolving_vod"]
+    assert seen_warnings == []
+    assert (chat.calls, downloader.calls) == (0, 0)
+    assert set(read_catalog(data)) == {("vod_meta", VIDEO_ID)}
+    assert not raw_chat.exists()
 
 
 def test_media_twitch_refuses_is_vod_unavailable_without_a_user_file(
@@ -622,22 +738,35 @@ def test_media_twitch_refuses_is_vod_unavailable_without_a_user_file(
 def test_metadata_that_keeps_failing_is_upstream_unavailable(
     tmp_path: Path, chat_binary: Path, lexicon: Lexicon
 ) -> None:
+    data = tmp_path / "data"
+    chat = FakeChatTool()
+    downloader = FakeDownloader(None, AssertionError("must not download"))
+    stages: list[str] = []
+    seen_warnings: list[tuple[str, ...]] = []
+
     with pytest.raises(AnalyzeError) as excinfo:
         analyze_vod(
             VIDEO_ID,
-            data_dir=tmp_path / "data",
+            data_dir=data,
             artifacts_dir=tmp_path / "artifacts",
             tools=tools(
                 chat_binary,
                 twitch=FakeTwitch(videos_status=500),
-                downloader=FakeDownloader(None, RuntimeError("x")),
+                chat=chat,
+                downloader=downloader,
             ),
             lexicon=lexicon,
             clock=lambda: NOW,
+            on_stage=stages.append,
+            on_warnings=lambda ws: seen_warnings.append(tuple(w.code for w in ws)),
         )
 
     assert excinfo.value.code == "upstream_unavailable"
     assert "metadata" in excinfo.value.message
+    assert stages == ["resolving_vod"]
+    assert seen_warnings == []
+    assert (chat.calls, downloader.calls) == (0, 0)
+    assert set(read_catalog(data)) == {("vod_meta", VIDEO_ID)}
 
 
 def test_a_local_video_of_another_length_is_video_mismatch(
