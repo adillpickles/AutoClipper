@@ -137,13 +137,19 @@ describe("trim helpers", () => {
       ),
     ).toBeNull();
 
-    // Fractional bounds are formatted accurately in error messages (never 160.0s for 159.96).
+    // Fractional bounds are formatted without rounding past the actual limit.
     expect(
       trimError(
         { startS: 120, endS: 160 },
         { minStartS: 80, maxEndS: 159.96, maxDurationS: 90 },
       ),
     ).toContain("159.96s");
+    expect(
+      trimError(
+        { startS: 120, endS: 159.93 },
+        { minStartS: 80, maxEndS: 159.926, maxDurationS: 90 },
+      ),
+    ).toContain("159.926s");
   });
 
   it("reports validation errors for out-of-range, reversed, and too-long trims", () => {

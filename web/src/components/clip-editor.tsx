@@ -330,8 +330,8 @@ export function ClipEditor() {
   }
 
   const isModified =
-    Math.abs(trim.startS - candidate.start_s) > 0.05 ||
-    Math.abs(trim.endS - candidate.end_s) > 0.05;
+    Math.abs(trim.startS - candidate.start_s) > 1e-6 ||
+    Math.abs(trim.endS - candidate.end_s) > 1e-6;
 
   function seekToVodTime(vodTimeS: number) {
     const element = videoRef.current;

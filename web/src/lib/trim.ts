@@ -56,7 +56,7 @@ function formatBoundS(value: number): string {
   if (Math.abs(value * 10 - Math.round(value * 10)) < DURATION_EPSILON_S) {
     return value.toFixed(1);
   }
-  return String(Math.round(value * 100) / 100);
+  return String(value);
 }
 
 function fitMaxDurationStart(

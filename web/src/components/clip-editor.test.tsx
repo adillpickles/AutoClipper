@@ -273,6 +273,8 @@ describe("ClipEditor", () => {
       "Start (seconds)",
     )) as HTMLInputElement;
     const endInput = screen.getByLabelText("End (seconds)") as HTMLInputElement;
+    // Wait for candidate media bounds (min_start_s = 88, max_end_s = 178) to load.
+    await screen.findByLabelText("Center crop (9:16)");
 
     // Typing an intermediate out-of-range prefix ("1", "12") must not clamp mid-keystroke.
     fireEvent.change(startInput, { target: { value: "1" } });
@@ -612,6 +614,10 @@ describe("ClipEditor", () => {
 
     fireEvent.click(screen.getByLabelText("Move end 5 seconds later"));
     expect(endInput.value).toBe("159.96");
+    expect(
+      (screen.getByRole("button", { name: "Reset" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
 
     const rerenderButton = screen.getByRole("button", {
       name: "Re-render clip",
@@ -624,6 +630,27 @@ describe("ClipEditor", () => {
         expect.objectContaining({ start_s: 120, end_s: 159.96 }),
       ),
     );
+
+    // Even a sub-0.05 s nudge to a fractional media limit enables Reset.
+    cleanup();
+    const nearLimitResult: AnalysisResult = {
+      ...RESULT,
+      candidates: [{ ...RESULT.candidates[0], start_s: 120, end_s: 159.94 }],
+    };
+    api.getResult.mockResolvedValue(nearLimitResult);
+    api.getCandidateMedia.mockResolvedValue(probedMedia);
+    render(<ClipEditor />);
+    const endInput2 = (await screen.findByLabelText(
+      "End (seconds)",
+    )) as HTMLInputElement;
+    fireEvent.click(screen.getByLabelText("Move end 1 second later"));
+    expect(endInput2.value).toBe("159.96");
+    const resetBtn = screen.getByRole("button", {
+      name: "Reset",
+    }) as HTMLButtonElement;
+    expect(resetBtn.disabled).toBe(false);
+    fireEvent.click(resetBtn);
+    expect(endInput2.value).toBe("159.94");
   });
 
   it("enforces the 0.5 s minimum for manual entries and short initial candidates", async () => {
