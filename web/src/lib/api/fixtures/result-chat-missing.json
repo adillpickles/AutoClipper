@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "generated_at": "2026-10-19T15:10:12Z",
   "vod": {
     "video_id": "9000000003",
@@ -26,7 +26,16 @@
       "end_s": 100.0,
       "source": "discovered",
       "n_viewer_clips": 0,
-      "top_signals": ["audio_rms_max_z"]
+      "top_signals": ["audio_rms_max_z"],
+      "title": "Loudest moment of stream",
+      "reason": "Loudest moment of the stream",
+      "signal_details": [
+        {
+          "kind": "audio_loudness",
+          "label": "Audio loudness",
+          "detail": "Loudest moment of the stream (z=2.1)"
+        }
+      ]
     },
     {
       "candidate_id": "c002",
@@ -36,7 +45,16 @@
       "end_s": 215.0,
       "source": "viewer_clips",
       "n_viewer_clips": 1,
-      "top_signals": ["chat_msg_rate_z"]
+      "top_signals": [],
+      "title": "Viewer-clipped moment",
+      "reason": "1 viewer clip",
+      "signal_details": [
+        {
+          "kind": "viewer_clips",
+          "label": "Viewer clips",
+          "detail": "1 viewer clip overlaps this moment"
+        }
+      ]
     }
   ]
 }

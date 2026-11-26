@@ -5,7 +5,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import {
   ApiRequestError,
@@ -27,7 +27,7 @@ import {
   rememberTrim,
   rememberedTrim,
 } from "@/lib/job-state";
-import { reasonFor } from "@/lib/reason";
+import { reasonFor, signalDetailsFor, titleFor } from "@/lib/reason";
 import {
   clampTrim,
   MIN_TRIM_DURATION_S,
@@ -93,6 +93,8 @@ export function ClipEditor() {
   const [videoFailed, setVideoFailed] = useState(false);
   const [mediaRetryCount, setMediaRetryCount] = useState(0);
   const [retryingPreview, setRetryingPreview] = useState(false);
+  const [whyOpen, setWhyOpen] = useState(false);
+  const whyPanelId = useId();
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const pollRunRef = useRef(0);
@@ -143,6 +145,7 @@ export function ClipEditor() {
         setMediaError(null);
         setVideoFailed(false);
         setRetryingPreview(false);
+        setWhyOpen(false);
         const candidate = result.candidates.find(
           (item) => item.candidate_id === candidateId,
         );
@@ -544,6 +547,9 @@ export function ClipEditor() {
 
   const selectionDurationS = Math.max(0, trim.endS - trim.startS);
   const downloadFilename = `autoclipper_${result.vod.video_id}_${trim.startS}-${trim.endS}.mp4`;
+  const clipTitle = titleFor(candidate);
+  const clipReason = reasonFor(candidate);
+  const signalDetails = signalDetailsFor(candidate);
 
   return (
     <div className="flex flex-col gap-8">
@@ -559,8 +565,48 @@ export function ClipEditor() {
           {result.vod.video_id}
         </p>
         <h1 className="text-2xl font-semibold tracking-tight text-balance sm:text-3xl">
-          {reasonFor(candidate)}
+          {clipTitle}
         </h1>
+        <p className="max-w-3xl text-sm leading-relaxed text-pretty text-ink-secondary">
+          {clipReason}
+        </p>
+        {signalDetails.length > 0 && (
+          <div className="mt-1 flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => setWhyOpen((open) => !open)}
+              aria-expanded={whyOpen}
+              aria-controls={whyPanelId}
+              className="inline-flex min-h-8 items-center gap-1.5 self-start rounded-pill border border-border-subtle bg-surface-subtle/70 px-3 py-1 text-xs font-medium text-ink-secondary transition-colors hover:border-border-strong hover:text-ink-primary focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+            >
+              <span>Why this moment</span>
+              <span aria-hidden="true" className="text-[10px] leading-none">
+                {whyOpen ? "▴" : "▾"}
+              </span>
+            </button>
+            {whyOpen && (
+              <dl
+                id={whyPanelId}
+                aria-label="Contributing signals"
+                className="grid max-w-2xl grid-cols-1 gap-2 rounded-control border border-border-subtle bg-surface-panel p-3.5 text-xs sm:grid-cols-2"
+              >
+                {signalDetails.map((item, idx) => (
+                  <div
+                    key={`${item.kind}-${idx}`}
+                    className="flex flex-col gap-0.5 rounded-md bg-surface-subtle/50 px-2.5 py-2"
+                  >
+                    <dt className="font-medium text-ink-primary">
+                      {item.label}
+                    </dt>
+                    <dd className="text-pretty break-words text-ink-secondary">
+                      {item.detail}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </div>
+        )}
       </div>
 
       {mediaError && previewPlayable && !videoFailed && !retryingPreview && (

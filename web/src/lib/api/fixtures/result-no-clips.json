@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "generated_at": "2026-10-19T15:02:41Z",
   "vod": {
     "video_id": "9000000002",
@@ -21,7 +21,21 @@
       "end_s": 40.0,
       "source": "discovered",
       "n_viewer_clips": 0,
-      "top_signals": ["chat_msg_rate_z"]
+      "top_signals": ["chat_msg_rate_z"],
+      "title": "Hype chat surge",
+      "reason": "Chat jumped to 4× its usual rate with lots of hype reactions",
+      "signal_details": [
+        {
+          "kind": "chat_rate",
+          "label": "Chat rate",
+          "detail": "4× usual stream rate (z=2.4)"
+        },
+        {
+          "kind": "chat_hype",
+          "label": "Chat reaction",
+          "detail": "High hype-reaction activity"
+        }
+      ]
     }
   ]
 }
