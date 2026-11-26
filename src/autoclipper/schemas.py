@@ -46,6 +46,11 @@ __all__ = [
     "PreviewMedia",
     "Progress",
     "ScorerInfo",
+    "ToolSetupItem",
+    "ToolSetupName",
+    "ToolSetupRequest",
+    "ToolSetupState",
+    "ToolSetupStatus",
     "VodSummary",
     "parse_channel",
     "parse_vod",
@@ -57,6 +62,8 @@ type State = Literal["queued", "running", "done", "failed"]
 type Layout = Literal["center_crop", "configured_region", "stacked"]
 type Order = Literal["chronological", "rank"]
 type PreflightStatus = Literal["ok", "warn", "fail"]
+type ToolSetupState = Literal["idle", "running", "done", "failed"]
+type ToolSetupName = Literal["ffmpeg", "twitch_downloader"]
 
 # api-contract.md § 3.1, case-insensitive; the ID is in group 1 or 2.
 VOD_PATTERN: Final = re.compile(
@@ -368,3 +375,34 @@ class ChannelVodsResponse(_Response):
     channel: ChannelInfo
     vods: tuple[ChannelVod, ...]
     truncated: bool
+
+
+class ToolSetupRequest(_Request):
+    """``POST /api/v1/tools/setup`` (§ 9.8)."""
+
+    tools: Annotated[list[ToolSetupName], Field(min_length=1, max_length=2)] | None = None
+    force: bool = False
+
+
+class ToolSetupItem(_Response):
+    """Status and progress of one managed tool group during setup (§ 9.8)."""
+
+    tool: ToolSetupName
+    label: str
+    stage: str
+    message: str
+    bytes_downloaded: int | None = None
+    bytes_total: int | None = None
+    fraction: Annotated[float, Field(ge=0, le=1)] | None = None
+    error: ApiError | None = None
+
+
+class ToolSetupStatus(_Response):
+    """``GET /api/v1/tools/setup`` and ``POST /api/v1/tools/setup`` (§ 9.8)."""
+
+    state: ToolSetupState
+    items: tuple[ToolSetupItem, ...]
+    error: ApiError | None
+    started_at: UtcDatetime | None
+    updated_at: UtcDatetime
+    finished_at: UtcDatetime | None

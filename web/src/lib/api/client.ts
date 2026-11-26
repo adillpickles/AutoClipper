@@ -16,6 +16,8 @@ import type {
   HighlightsVideo,
   Job,
   PreflightReport,
+  ToolSetupRequest,
+  ToolSetupStatus,
 } from "@/lib/api/types";
 
 export interface ApiClient {
@@ -23,6 +25,12 @@ export interface ApiClient {
   getHealth(): Promise<Health>;
   /** `GET /preflight`: local setup readiness checks (§ 9.6). */
   getPreflight(): Promise<PreflightReport>;
+  /** `GET /tools/setup`: managed tool setup status and progress (§ 9.7). */
+  getToolSetup(): Promise<ToolSetupStatus>;
+  /** `POST /tools/setup`: start downloading missing managed tools (§ 9.7). */
+  startToolSetup(
+    request?: ToolSetupRequest,
+  ): Promise<{ setup: ToolSetupStatus; started: boolean }>;
   /** `POST /jobs`: `created` is false when a queued or running job for the same input came back. */
   createJob(request: CreateJobRequest): Promise<{ job: Job; created: boolean }>;
   /** `GET /jobs/{job_id}`. */

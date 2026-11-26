@@ -44,6 +44,8 @@ Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`
 | `GET` | `/api/v1/health` | Liveness, active job runner and caption capability | `200` `Health` |
 | `GET` | `/api/v1/preflight` | Local setup readiness checks (tools, optional extras, credentials presence) | `200` `PreflightReport` |
 | `GET` | `/api/v1/channels/vods` | Resolve a channel URL or login and list recent archive VODs (§ 9.7) | `200` `ChannelVodsResponse` |
+| `POST` | `/api/v1/tools/setup` | Start downloading pinned managed tools (`ffmpeg`, `twitch_downloader`) in the background (§ 9.8) | `202` (or `200` if already running/up to date) `ToolSetupStatus` |
+| `GET` | `/api/v1/tools/setup` | Current progress and result of managed tool setup (§ 9.8) | `200` `ToolSetupStatus` |
 | `POST` | `/api/v1/jobs` | Start analyzing a VOD | `201` new `Job`; `200` if the same VOD is already queued/running |
 | `GET` | `/api/v1/jobs/{job_id}` | Job status and progress (poll this) | `200` `Job` |
 | `GET` | `/api/v1/jobs/{job_id}/result` | Ranked candidates of a `done` job | `200` `AnalysisResult` |
@@ -1156,6 +1158,45 @@ Example:
   "truncated": false
 }
 ```
+
+### 9.8 Managed tool setup
+
+`POST /api/v1/tools/setup` starts a background installation of pinned, SHA-256-verified external tools (`ffmpeg` and/or `twitch_downloader`) into AutoClipper's per-user managed tools folder. Both `POST` and `GET /api/v1/tools/setup` return `Cache-Control: no-store` and never include local filesystem paths.
+
+Request body for `POST /api/v1/tools/setup` (optional; an empty body or `{}` installs whichever of `ffmpeg` and `twitch_downloader` are currently missing):
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `tools` | list<`ffmpeg` \| `twitch_downloader`> \| null | no | Specific tool groups to install; `null` selects currently missing managed tools |
+| `force` | bool | no (default `false`) | Re-download and reinstall even if pinned tools are already installed |
+
+Responses:
+- `202 Accepted` with `ToolSetupStatus` (`state: "running"`) when a new setup run starts.
+- `200 OK` with `ToolSetupStatus` when a setup run is already in progress (idempotent) or no missing tools need installation.
+
+`ToolSetupStatus`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `state` | `idle` \| `running` \| `done` \| `failed` | Overall setup status |
+| `items` | list<`ToolSetupItem`> | Per-tool progress entries for the current or most recent run |
+| `error` | `ApiError` \| null | Summary error when `state` is `failed`; `null` otherwise |
+| `started_at` | UTC ISO-8601 \| null | When the current or most recent run started |
+| `updated_at` | UTC ISO-8601 | Last status update time |
+| `finished_at` | UTC ISO-8601 \| null | When the run completed or failed |
+
+`ToolSetupItem`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `tool` | `ffmpeg` \| `twitch_downloader` | Tool group identifier |
+| `label` | str | Human-readable label (`FFmpeg & FFprobe`, `TwitchDownloaderCLI`) |
+| `stage` | str (open enum) | `queued`, `checking`, `downloading`, `verifying`, `extracting`, `done`, `skipped`, or `failed` |
+| `message` | str | Path-free status message safe for the UI |
+| `bytes_downloaded` | int \| null | Bytes downloaded so far when streaming |
+| `bytes_total` | int \| null | Expected total archive bytes when known |
+| `fraction` | float \| null | Progress in `[0, 1]` when known |
+| `error` | `ApiError` \| null | Per-tool error when `stage` is `failed` |
 
 ## 10. Versioning
 

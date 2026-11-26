@@ -645,6 +645,32 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       };
     },
 
+    async getToolSetup() {
+      return {
+        state: "idle" as const,
+        items: [],
+        error: null,
+        started_at: null,
+        updated_at: iso(now()),
+        finished_at: null,
+      };
+    },
+
+    async startToolSetup() {
+      const ts = iso(now());
+      return {
+        setup: {
+          state: "done" as const,
+          items: [],
+          error: null,
+          started_at: ts,
+          updated_at: ts,
+          finished_at: ts,
+        },
+        started: false,
+      };
+    },
+
     async createJob(request: CreateJobRequest) {
       const videoId = parseVod(request.vod);
       if (videoId === null) {

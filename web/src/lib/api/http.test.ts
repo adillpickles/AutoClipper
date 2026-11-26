@@ -216,4 +216,39 @@ describe("HTTP API client", () => {
       "/mock-media/clip.mp4",
     );
   });
+
+  it("fetches and starts managed tool setup via /tools/setup", async () => {
+    const setupBody = {
+      state: "running",
+      items: [],
+      error: null,
+      started_at: "2026-11-26T00:00:00Z",
+      updated_at: "2026-11-26T00:00:00Z",
+      finished_at: null,
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(setupBody), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(setupBody), { status: 202 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(setupBody), { status: 200 }),
+      );
+    const client = createHttpClient("http://127.0.0.1:8000", fetchMock);
+
+    const status = await client.getToolSetup();
+    expect(status.state).toBe("running");
+
+    const started = await client.startToolSetup({ tools: ["ffmpeg"] });
+    expect(started.started).toBe(true);
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "http://127.0.0.1:8000/api/v1/tools/setup",
+    );
+
+    const alreadyRunning = await client.startToolSetup();
+    expect(alreadyRunning.started).toBe(false);
+  });
 });

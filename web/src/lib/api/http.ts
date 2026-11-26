@@ -16,6 +16,8 @@ import type {
   HighlightsVideo,
   Job,
   PreflightReport,
+  ToolSetupRequest,
+  ToolSetupStatus,
 } from "@/lib/api/types";
 
 const API_PREFIX = "/api/v1";
@@ -97,6 +99,25 @@ export function createHttpClient(
     async getPreflight(): Promise<PreflightReport> {
       const { data } = await request<PreflightReport>("/preflight");
       return data;
+    },
+
+    async getToolSetup(): Promise<ToolSetupStatus> {
+      const { data } = await request<ToolSetupStatus>("/tools/setup");
+      return data;
+    },
+
+    async startToolSetup(
+      body?: ToolSetupRequest,
+    ): Promise<{ setup: ToolSetupStatus; started: boolean }> {
+      const init: RequestInit =
+        body !== undefined
+          ? { method: "POST", body: JSON.stringify(body) }
+          : { method: "POST" };
+      const { status, data } = await request<ToolSetupStatus>(
+        "/tools/setup",
+        init,
+      );
+      return { setup: data, started: status === 202 };
     },
 
     async createJob(
