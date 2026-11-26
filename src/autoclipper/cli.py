@@ -958,6 +958,12 @@ def setup_tools(
             err=True,
         )
         raise typer.Exit(ExitCode.USER_ERROR) from None
+    if target_dir.exists() and not target_dir.is_dir():
+        typer.echo(
+            f"Error: --tools-dir must be a directory path, not an existing file: {target_dir}",
+            err=True,
+        )
+        raise typer.Exit(ExitCode.USER_ERROR)
 
     last_stage_key: tuple[str, str] | None = None
     last_pct = -1

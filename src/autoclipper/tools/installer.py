@@ -13,12 +13,14 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import shutil
 import stat
+import sys
 import tarfile
 import tempfile
 import zipfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -151,6 +153,34 @@ def _load_manifest(tools_dir: Path) -> dict[str, dict[str, object]]:
     return cleaned
 
 
+@contextlib.contextmanager
+def _manifest_lock(tools_dir: Path) -> Iterator[None]:
+    """Serialize manifest read-modify-write updates across concurrent processes."""
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = tools_dir / ".manifest.lock"
+    with lock_path.open("a+b") as handle:
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                with contextlib.suppress(OSError):
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _save_manifest(tools_dir: Path, tools_map: Mapping[str, Mapping[str, object]]) -> None:
     tools_dir.mkdir(parents=True, exist_ok=True)
     target = manifest_path(tools_dir)
@@ -203,6 +233,8 @@ def _is_already_installed(
             return None
         binary_path = bin_dir / name
         if not binary_path.is_file():
+            return None
+        if sys.platform != "win32" and not os.access(binary_path, os.X_OK):
             return None
         try:
             if _sha256_file(binary_path) != expected_hash:
@@ -432,8 +464,14 @@ def _verify_offline_archive(
     artifact: ToolArtifact,
     *,
     archive_dir: Path,
+    tmp_dir: Path,
     on_progress: ProgressCallback | None,
 ) -> Path:
+    """Copy an offline archive into private staging while computing and verifying its SHA-256.
+
+    Hashing the staged copy guarantees extraction reads the exact bytes that passed verification,
+    even if ``archive_dir`` is a shared or synchronized folder.
+    """
     candidate = archive_dir / artifact.filename
     if not candidate.is_file():
         raise ToolDownloadError(
@@ -450,12 +488,23 @@ def _verify_offline_archive(
                 message=f"Verifying offline archive {artifact.filename}...",
             )
         )
-    actual_sha = _sha256_file(candidate)
+    staged_copy = tmp_dir / artifact.filename
+    digest = hashlib.sha256()
+    try:
+        with candidate.open("rb") as src, staged_copy.open("wb") as dst:
+            while chunk := src.read(_DOWNLOAD_CHUNK_BYTES):
+                dst.write(chunk)
+                digest.update(chunk)
+    except OSError as exc:
+        staged_copy.unlink(missing_ok=True)
+        raise ToolDownloadError(f"Could not read offline archive {candidate}: {exc}") from exc
+    actual_sha = digest.hexdigest()
     if actual_sha != artifact.sha256.lower():
+        staged_copy.unlink(missing_ok=True)
         raise ChecksumMismatchError(
             artifact.filename, expected=artifact.sha256.lower(), actual=actual_sha
         )
-    return candidate
+    return staged_copy
 
 
 def install_tool(
@@ -514,22 +563,42 @@ def install_tool(
                 binaries=existing,
             )
 
+    if tools_dir.exists() and not tools_dir.is_dir():
+        raise ToolInstallError(
+            f"Managed tools path {tools_dir} is not a directory. Choose a folder path or remove "
+            "the conflicting file."
+        )
     bin_dir = managed_bin_dir(tools_dir)
+    if bin_dir.exists() and not bin_dir.is_dir():
+        raise ToolInstallError(
+            f"Managed tools bin path {bin_dir} is not a directory. Remove the conflicting file."
+        )
     tmp_root = tools_dir / ".tmp"
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    tmp_root.mkdir(parents=True, exist_ok=True)
+    try:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        tmp_root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ToolInstallError(
+            f"Could not create managed tools directory {tools_dir}: {exc}"
+        ) from exc
 
     owns_client = client is None and archive_dir is None
     active_client = (
         httpx.Client(follow_redirects=True, timeout=_HTTP_TIMEOUT) if owns_client else client
     )
     work_dir = Path(tempfile.mkdtemp(prefix=f"{spec.tool}-", dir=tmp_root))
+    backup_dir = work_dir / "backup"
+    backup_dir.mkdir()
     try:
         staged: dict[str, tuple[Path, str]] = {}
         for artifact in spec.artifacts:
             if archive_dir is not None:
                 archive_file = _verify_offline_archive(
-                    spec, artifact, archive_dir=archive_dir, on_progress=on_progress
+                    spec,
+                    artifact,
+                    archive_dir=archive_dir,
+                    tmp_dir=work_dir,
+                    on_progress=on_progress,
                 )
             else:
                 assert active_client is not None
@@ -554,32 +623,50 @@ def install_tool(
 
         installed_paths: list[Path] = []
         binary_hashes: dict[str, str] = {}
-        for name in spec.binary_names:
-            src_path, bin_sha = staged[name]
-            if spec.platform.os != "windows":
-                src_path.chmod(0o755)
-            dest_path = bin_dir / name
-            try:
-                src_path.replace(dest_path)
-            except OSError as exc:
-                raise ToolInstallError(
-                    f"Could not write {dest_path}: {exc}. Close any running AutoClipper processes "
-                    "using this binary and try again."
-                ) from exc
-            installed_paths.append(dest_path)
-            binary_hashes[name] = bin_sha
+        published: list[tuple[Path, Path | None]] = []
+        try:
+            for name in spec.binary_names:
+                src_path, bin_sha = staged[name]
+                if spec.platform.os != "windows":
+                    src_path.chmod(0o755)
+                dest_path = bin_dir / name
+                backup_path: Path | None = None
+                if dest_path.exists():
+                    backup_path = backup_dir / name
+                    shutil.copy2(dest_path, backup_path)
+                try:
+                    src_path.replace(dest_path)
+                except OSError as exc:
+                    raise ToolInstallError(
+                        f"Could not write {dest_path}: {exc}. Close any running AutoClipper "
+                        "processes using this binary and try again."
+                    ) from exc
+                published.append((dest_path, backup_path))
+                installed_paths.append(dest_path)
+                binary_hashes[name] = bin_sha
 
-        manifest[spec.tool] = {
-            "version": spec.version,
-            "platform": spec.platform.key,
-            "source": spec.source_name,
-            "source_url": spec.source_url,
-            "license": spec.license,
-            "artifact_sha256s": [art.sha256.lower() for art in spec.artifacts],
-            "binaries": binary_hashes,
-            "installed_at": datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }
-        _save_manifest(tools_dir, manifest)
+            new_entry: dict[str, object] = {
+                "version": spec.version,
+                "platform": spec.platform.key,
+                "source": spec.source_name,
+                "source_url": spec.source_url,
+                "license": spec.license,
+                "artifact_sha256s": [art.sha256.lower() for art in spec.artifacts],
+                "binaries": binary_hashes,
+                "installed_at": datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            with _manifest_lock(tools_dir):
+                latest_manifest = _load_manifest(tools_dir)
+                latest_manifest[spec.tool] = new_entry
+                _save_manifest(tools_dir, latest_manifest)
+        except Exception:
+            for dest_path, backup_path in reversed(published):
+                with contextlib.suppress(OSError):
+                    if backup_path is not None and backup_path.exists():
+                        backup_path.replace(dest_path)
+                    else:
+                        dest_path.unlink(missing_ok=True)
+            raise
 
         log.info(
             "installed managed tool tool=%s version=%s platform=%s binaries=%d",

@@ -27,6 +27,7 @@ from autoclipper.tools.installer import (
     InstallProgress,
     ToolArchiveError,
     ToolDownloadError,
+    ToolInstallError,
     install_tool,
     install_tools,
     manifest_path,
@@ -542,6 +543,185 @@ def test_cli_setup_tools_error_exit_codes(tmp_path: Path, monkeypatch: pytest.Mo
     unsupported = cli_runner.invoke(app, ["setup-tools", "--tool", "twitch-downloader"])
     assert unsupported.exit_code == ExitCode.USER_ERROR
     assert "windows-arm64" in unsupported.output
+
+    existing_file = tmp_path / "not-a-dir"
+    existing_file.write_text("file", encoding="utf-8")
+    bad_tools_dir = cli_runner.invoke(
+        app, ["setup-tools", "--tool", "ffmpeg", "--tools-dir", str(existing_file)]
+    )
+    assert bad_tools_dir.exit_code == ExitCode.USER_ERROR
+    assert "must be a directory" in bad_tools_dir.output
+
+
+def test_partial_replace_failure_rolls_back_previous_binaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools_dir = tmp_path / "tools"
+    bin_dir = tools_dir / "bin"
+    bin_dir.mkdir(parents=True)
+    old_ffmpeg = bin_dir / "ffmpeg.exe"
+    old_ffprobe = bin_dir / "ffprobe.exe"
+    old_ffmpeg.write_bytes(b"old-ffmpeg")
+    old_ffprobe.write_bytes(b"old-ffprobe")
+
+    archive_bytes = _make_zip_bytes(
+        {
+            "pkg/bin/ffmpeg.exe": b"new-ffmpeg",
+            "pkg/bin/ffprobe.exe": b"new-ffprobe",
+        }
+    )
+    spec = _spec_for(
+        platform=PlatformKey("windows", "x86_64"),
+        artifacts=(
+            ToolArtifact(
+                filename="ffmpeg.zip",
+                url="https://example.invalid/ffmpeg.zip",
+                sha256=_sha256(archive_bytes),
+                archive_format="zip",
+                members=(
+                    ArchiveMember("ffmpeg.exe", "bin/ffmpeg.exe"),
+                    ArchiveMember("ffprobe.exe", "bin/ffprobe.exe"),
+                ),
+            ),
+        ),
+    )
+
+    real_replace = Path.replace
+
+    def fail_on_ffprobe(self: Path, target: Path) -> Path:
+        if target == old_ffprobe:
+            raise PermissionError("locked by running process")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_on_ffprobe)
+    with (
+        httpx.Client(
+            transport=httpx.MockTransport(lambda _req: httpx.Response(200, content=archive_bytes))
+        ) as client,
+        pytest.raises(ToolInstallError, match="locked by running process"),
+    ):
+        install_tool(spec, tools_dir=tools_dir, client=client)
+
+    assert old_ffmpeg.read_bytes() == b"old-ffmpeg"
+    assert old_ffprobe.read_bytes() == b"old-ffprobe"
+
+
+def test_overlapping_installs_preserve_both_manifest_entries(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "tools"
+    ffmpeg_zip = _make_zip_bytes(
+        {"pkg/bin/ffmpeg.exe": b"ff-bin", "pkg/bin/ffprobe.exe": b"fp-bin"}
+    )
+    td_zip = _make_zip_bytes({"TwitchDownloaderCLI.exe": b"td-bin"})
+    ffmpeg_spec = _spec_for(
+        tool="ffmpeg",
+        platform=PlatformKey("windows", "x86_64"),
+        artifacts=(
+            ToolArtifact(
+                filename="ffmpeg.zip",
+                url="https://example.invalid/ffmpeg.zip",
+                sha256=_sha256(ffmpeg_zip),
+                archive_format="zip",
+                members=(
+                    ArchiveMember("ffmpeg.exe", "bin/ffmpeg.exe"),
+                    ArchiveMember("ffprobe.exe", "bin/ffprobe.exe"),
+                ),
+            ),
+        ),
+    )
+    td_spec = _spec_for(
+        tool="twitch_downloader",
+        platform=PlatformKey("windows", "x86_64"),
+        artifacts=(
+            ToolArtifact(
+                filename="td.zip",
+                url="https://example.invalid/td.zip",
+                sha256=_sha256(td_zip),
+                archive_format="zip",
+                members=(ArchiveMember("TwitchDownloaderCLI.exe", "TwitchDownloaderCLI.exe"),),
+            ),
+        ),
+    )
+
+    # Simulate td installing after ffmpeg already loaded an empty manifest snapshot.
+    td_installed = False
+
+    def ffmpeg_handler(_req: httpx.Request) -> httpx.Response:
+        nonlocal td_installed
+        if not td_installed:
+            td_installed = True
+            with httpx.Client(
+                transport=httpx.MockTransport(lambda _r: httpx.Response(200, content=td_zip))
+            ) as td_client:
+                install_tool(td_spec, tools_dir=tools_dir, client=td_client)
+        return httpx.Response(200, content=ffmpeg_zip)
+
+    with httpx.Client(transport=httpx.MockTransport(ffmpeg_handler)) as ff_client:
+        install_tool(ffmpeg_spec, tools_dir=tools_dir, client=ff_client)
+
+    manifest_data = json.loads(manifest_path(tools_dir).read_text(encoding="utf-8"))
+    assert set(manifest_data["tools"]) == {"ffmpeg", "twitch_downloader"}
+
+
+def test_offline_archive_extracts_verified_staged_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_dir = tmp_path / "shared"
+    archive_dir.mkdir()
+    good_zip = _make_zip_bytes({"TwitchDownloaderCLI.exe": b"verified-bytes"})
+    source_archive = archive_dir / "td.zip"
+    source_archive.write_bytes(good_zip)
+    spec = _spec_for(
+        tool="twitch_downloader",
+        platform=PlatformKey("windows", "x86_64"),
+        artifacts=(
+            ToolArtifact(
+                filename="td.zip",
+                url="https://example.invalid/td.zip",
+                sha256=_sha256(good_zip),
+                archive_format="zip",
+                members=(ArchiveMember("TwitchDownloaderCLI.exe", "TwitchDownloaderCLI.exe"),),
+            ),
+        ),
+    )
+
+    # Mutate the source file right before extraction starts; staging must isolate the bytes.
+    def tamper_on_extract(event: InstallProgress) -> None:
+        if event.stage == "extracting":
+            source_archive.write_bytes(_make_zip_bytes({"TwitchDownloaderCLI.exe": b"tampered"}))
+
+    tools_dir = tmp_path / "tools"
+    outcome = install_tool(
+        spec, tools_dir=tools_dir, archive_dir=archive_dir, on_progress=tamper_on_extract
+    )
+    assert outcome.status == "installed"
+    assert (tools_dir / "bin" / "TwitchDownloaderCLI.exe").read_bytes() == b"verified-bytes"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX execute bit check")
+def test_non_executable_managed_binary_is_repaired_on_rerun(tmp_path: Path) -> None:
+    archive_bytes = _make_tar_xz_bytes({"pkg/bin/ffmpeg": b"#!/bin/sh\necho ok\n"})
+    spec = _spec_for(
+        platform=PlatformKey("linux", "x86_64"),
+        artifacts=(
+            ToolArtifact(
+                filename="ffmpeg.tar.xz",
+                url="https://example.invalid/ffmpeg.tar.xz",
+                sha256=_sha256(archive_bytes),
+                archive_format="tar.xz",
+                members=(ArchiveMember("ffmpeg", "bin/ffmpeg"),),
+            ),
+        ),
+    )
+    tools_dir = tmp_path / "tools"
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda _req: httpx.Response(200, content=archive_bytes))
+    ) as client:
+        install_tool(spec, tools_dir=tools_dir, client=client)
+        binary = tools_dir / "bin" / "ffmpeg"
+        binary.chmod(0o644)
+        repaired = install_tool(spec, tools_dir=tools_dir, client=client)
+        assert repaired.status == "installed"
+        assert binary.stat().st_mode & 0o111
 
 
 @pytest.mark.live

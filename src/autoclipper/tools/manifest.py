@@ -52,14 +52,17 @@ class UnsupportedPlatformError(ValueError):
         arch_name: str,
         tool: ToolGroup | None = None,
         supported: tuple[str, ...] = (),
+        detail: str | None = None,
     ) -> None:
         self.os_name = os_name
         self.arch_name = arch_name
         self.tool = tool
         self.supported = supported
         target = f"{os_name}-{arch_name}"
-        if tool is None:
-            detail = (
+        if detail is not None:
+            message = detail
+        elif tool is None:
+            message = (
                 f"Unsupported platform {target!r} for automated tool setup. "
                 "Install FFmpeg and TwitchDownloaderCLI manually and add them to PATH or set "
                 "AUTOCLIPPER_FFMPEG_PATH, AUTOCLIPPER_FFPROBE_PATH and "
@@ -72,12 +75,12 @@ class UnsupportedPlatformError(ValueError):
                 if tool == "twitch_downloader" and os_name == "windows" and arch_name == "arm64"
                 else ""
             )
-            detail = (
+            message = (
                 f"No pinned {tool} build is available for {target}. "
                 f"Supported platforms: {supported_text}. Install it manually on PATH or set "
                 f"its AUTOCLIPPER_*_PATH variable.{other_hint}"
             )
-        super().__init__(detail)
+        super().__init__(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,15 +150,30 @@ class ToolSpec:
         return tuple(member.binary_name for art in self.artifacts for member in art.members)
 
 
+_MIN_LINUX_GLIBC: Final = (2, 28)
+
+
+def _parse_glibc_version(version_text: str) -> tuple[int, int] | None:
+    parts = version_text.strip().split(".")
+    if len(parts) < 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return None
+    return (int(parts[0]), int(parts[1]))
+
+
 def detect_platform(
     *,
     sys_platform: str | None = None,
     machine: str | None = None,
+    libc_ver: tuple[str, str] | None = None,
 ) -> PlatformKey:
     """Detect and normalize the host OS and CPU architecture.
 
+    On Linux hosts, also verifies that glibc >= 2.28 is present (required by the pinned
+    BtbN FFmpeg and glibc TwitchDownloaderCLI builds; musl/Alpine hosts are rejected with an
+    actionable error).
+
     Raises:
-        UnsupportedPlatformError: The OS or CPU architecture is not supported for pinned downloads.
+        UnsupportedPlatformError: The OS, CPU architecture, or Linux C library is unsupported.
     """
     raw_os = (sys.platform if sys_platform is None else sys_platform).strip().lower()
     raw_arch = (stdlib_platform.machine() if machine is None else machine).strip().lower()
@@ -170,6 +188,24 @@ def detect_platform(
             os_name=os_key or raw_os or "unknown",
             arch_name=arch_key or raw_arch or "unknown",
         )
+
+    if os_key == "linux" and (sys_platform is None or libc_ver is not None):
+        libc_name, libc_version = stdlib_platform.libc_ver() if libc_ver is None else libc_ver
+        parsed = _parse_glibc_version(libc_version) if libc_name == "glibc" else None
+        if parsed is None or parsed < _MIN_LINUX_GLIBC:
+            found = f"{libc_name} {libc_version}".strip() or "non-glibc (e.g. musl/Alpine)"
+            raise UnsupportedPlatformError(
+                os_name=os_key,
+                arch_name=arch_key,
+                detail=(
+                    f"Unsupported Linux C library ({found}) for pinned downloads; "
+                    f"pinned Linux builds require glibc >= {_MIN_LINUX_GLIBC[0]}."
+                    f"{_MIN_LINUX_GLIBC[1]}. Install FFmpeg and TwitchDownloaderCLI via your "
+                    "system package manager or set AUTOCLIPPER_FFMPEG_PATH, "
+                    "AUTOCLIPPER_FFPROBE_PATH and AUTOCLIPPER_TWITCH_DOWNLOADER_PATH."
+                ),
+            )
+
     return PlatformKey(os=os_key, arch=arch_key)
 
 

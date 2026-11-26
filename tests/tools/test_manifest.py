@@ -82,3 +82,25 @@ def test_supported_platforms_lists_pinned_targets(tool: str) -> None:
     assert "windows-x86_64" in platforms
     assert "macos-arm64" in platforms
     assert "linux-x86_64" in platforms
+
+
+@pytest.mark.parametrize(
+    ("libc_ver", "should_pass"),
+    [
+        (("glibc", "2.28"), True),
+        (("glibc", "2.39"), True),
+        (("glibc", "2.27"), False),
+        (("", ""), False),
+        (("musl", "1.2.5"), False),
+    ],
+)
+def test_detect_platform_checks_linux_glibc_baseline(
+    libc_ver: tuple[str, str], should_pass: bool
+) -> None:
+    if should_pass:
+        assert detect_platform(
+            sys_platform="linux", machine="x86_64", libc_ver=libc_ver
+        ) == PlatformKey("linux", "x86_64")
+    else:
+        with pytest.raises(UnsupportedPlatformError, match=r"glibc >= 2\.28"):
+            detect_platform(sys_platform="linux", machine="x86_64", libc_ver=libc_ver)

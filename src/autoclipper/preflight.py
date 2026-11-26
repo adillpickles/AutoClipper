@@ -119,7 +119,7 @@ def check_ffmpeg(settings: Settings | None = None) -> PreflightCheck:
         status="fail",
         message=f"{' and '.join(missing)} {verb} not found in the managed tools folder or on PATH.",
         fix=(
-            "Run `uv run autoclipper setup-tools`, or install FFmpeg manually "
+            "Run `uv run autoclipper setup-tools --tool ffmpeg`, or install FFmpeg manually "
             "(Windows: winget install Gyan.FFmpeg, macOS: brew install ffmpeg, "
             "Linux: sudo apt install ffmpeg), or set AUTOCLIPPER_FFMPEG_PATH / "
             "AUTOCLIPPER_FFPROBE_PATH."
@@ -155,7 +155,7 @@ def check_twitch_downloader(settings: Settings | None = None) -> PreflightCheck:
                 "still work)."
             ),
             fix=(
-                "Run `uv run autoclipper setup-tools`, or download "
+                "Run `uv run autoclipper setup-tools --tool twitch-downloader`, or download "
                 f"{TOOL_NAME} {PINNED_TOOL_VERSION} from {_TWITCH_DOWNLOADER_RELEASE_URL} "
                 "and add it to PATH or set AUTOCLIPPER_TWITCH_DOWNLOADER_PATH."
             ),
