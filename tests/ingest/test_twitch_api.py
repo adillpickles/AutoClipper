@@ -26,6 +26,7 @@ from autoclipper.ingest.twitch_api import (
     TwitchResponseError,
     TwitchUnavailableError,
     parse_duration_s,
+    resolve_thumbnail_url,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -740,3 +741,70 @@ def test_error_classes_say_whether_the_user_can_fix_them() -> None:
 
 def _all_subclasses(cls: type[TwitchAPIError]) -> list[type[TwitchAPIError]]:
     return [sub for direct in cls.__subclasses__() for sub in [direct, *_all_subclasses(direct)]]
+
+
+def test_parse_vod_and_broadcaster_include_optional_media_urls(make_client: MakeClient) -> None:
+    client, _ = make_client(
+        ok(load("helix_users.json")),
+        ok(load("helix_videos_archive_page1.json")),
+        ok(load("helix_videos_archive_page2.json")),
+    )
+
+    users = client.get_users(["user_001"])
+    listing = client.get_archive_videos("9000000001")
+
+    assert users[0].profile_image_url == "https://example.invalid/profile.png"
+    assert listing.items[0].thumbnail_url == "https://example.invalid/thumb-%{width}x%{height}.jpg"
+
+
+def test_optional_media_urls_default_to_none_when_absent_or_blank(make_client: MakeClient) -> None:
+    user_payload: dict[str, object] = {"data": [_user("user_001")]}
+    vod_body = copy.deepcopy(load("helix_videos_by_id.json"))
+    cast(list[dict[str, object]], vod_body["data"])[0]["thumbnail_url"] = "   "
+    client, _ = make_client(ok(user_payload), ok(vod_body))
+
+    (user,) = client.get_users(["user_001"])
+    (vod,) = client.get_videos(["9100000001"])
+
+    assert user.profile_image_url is None
+    assert vod.thumbnail_url is None
+
+
+def test_optional_media_url_rejects_non_string(make_client: MakeClient) -> None:
+    vod_body = copy.deepcopy(load("helix_videos_by_id.json"))
+    cast(list[dict[str, object]], vod_body["data"])[0]["thumbnail_url"] = 12345
+    client, _ = make_client(ok(vod_body))
+
+    with pytest.raises(TwitchResponseError, match="thumbnail_url"):
+        client.get_videos(["9100000001"])
+
+
+def test_resolve_thumbnail_url() -> None:
+    assert (
+        resolve_thumbnail_url("https://example.invalid/thumb-%{width}x%{height}.jpg")
+        == "https://example.invalid/thumb-320x180.jpg"
+    )
+    assert (
+        resolve_thumbnail_url("https://example.invalid/{width}x{height}.png", width=640, height=360)
+        == "https://example.invalid/640x360.png"
+    )
+    assert resolve_thumbnail_url("") is None
+    assert resolve_thumbnail_url("   ") is None
+    assert resolve_thumbnail_url(None) is None
+    with pytest.raises(ValueError, match="positive"):
+        resolve_thumbnail_url("https://example.invalid/%{width}x%{height}.jpg", width=0)
+
+
+def test_get_live_stream_id_returns_active_id_or_none(make_client: MakeClient) -> None:
+    client, fake = make_client(
+        ok({"data": [{"id": "9200000003", "user_id": "9000000001", "type": "live"}]}),
+        ok({"data": []}),
+    )
+
+    assert client.get_live_stream_id("9000000001") == "9200000003"
+    assert client.get_live_stream_id("9000000001") is None
+    assert fake.helix_requests[0].url.path == "/helix/streams"
+    assert fake.helix_requests[0].url.params["user_id"] == "9000000001"
+    assert fake.helix_requests[0].url.params["type"] == "live"
+    with pytest.raises(ValueError, match="user_id"):
+        client.get_live_stream_id("   ")

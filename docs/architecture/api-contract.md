@@ -35,7 +35,7 @@ The initial setup uses `autoclipper serve` on a development machine and the app 
 | nullable | `T \| None`, always serialized | `T \| null` |
 | enum | `Literal[...]` (always in request models, § 1) or `StrEnum` | string-literal union |
 
-Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`, `ApiError`, `ErrorResponse`, `AnalysisResult`, `VodSummary`, `ScorerInfo`, `Candidate`, `CandidateMedia`, `PreviewMedia`, `ExportAvailability`, `CreateExportRequest`, `Export`, `CreateHighlightsRequest`, `HighlightsSegment`, `HighlightsVideo`, `Health`, `PreflightCheck`, `PreflightReport`.
+Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`, `ApiError`, `ErrorResponse`, `AnalysisResult`, `VodSummary`, `ScorerInfo`, `Candidate`, `CandidateMedia`, `PreviewMedia`, `ExportAvailability`, `CreateExportRequest`, `Export`, `CreateHighlightsRequest`, `HighlightsSegment`, `HighlightsVideo`, `Health`, `PreflightCheck`, `PreflightReport`, `ChannelInfo`, `ChannelVod`, `ChannelVodsResponse`.
 
 ## 2. Endpoints
 
@@ -43,6 +43,7 @@ Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`
 |---|---|---|---|
 | `GET` | `/api/v1/health` | Liveness, active job runner and caption capability | `200` `Health` |
 | `GET` | `/api/v1/preflight` | Local setup readiness checks (tools, optional extras, credentials presence) | `200` `PreflightReport` |
+| `GET` | `/api/v1/channels/vods` | Resolve a channel URL or login and list recent archive VODs (§ 9.7) | `200` `ChannelVodsResponse` |
 | `POST` | `/api/v1/jobs` | Start analyzing a VOD | `201` new `Job`; `200` if the same VOD is already queued/running |
 | `GET` | `/api/v1/jobs/{job_id}` | Job status and progress (poll this) | `200` `Job` |
 | `GET` | `/api/v1/jobs/{job_id}/result` | Ranked candidates of a `done` job | `200` `AnalysisResult` |
@@ -952,17 +953,23 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 | 404 | `highlights_not_found` | `/highlights/{highlights_id}…` | `null` |
 | 404 | `highlights_file_missing` | Highlights file | `null` |
 | 404 | `media_not_found` | `/media/{media_id}` | `null` |
+| 404 | `channel_not_found` | `GET /channels/vods` | `null` |
 | 405 | `method_not_allowed` | Known path, wrong method | `null` |
 | 409 | `job_not_done` | Result, media, `POST /exports`, `POST /highlights` | `{ "state": "<job state>" }` |
 | 409 | `export_not_done` | Export file | `{ "state": "<export state>" }` |
 | 409 | `highlights_not_done` | Highlights file | `{ "state": "<highlights state>" }` |
 | 409 | `media_unavailable` | `POST /exports`, `POST /highlights` | `{ "reason": "<MediaUnavailableReason>" }` |
-| 422 | `invalid_request` | Any body: malformed JSON, missing or unknown field, wrong type, invalid or unavailable enum value | `{ "fields": ["<field>", …] }` |
+| 422 | `invalid_request` | Any body or query: malformed JSON, missing or unknown field, wrong type, invalid or unavailable enum value | `{ "fields": ["<field>", …] }` |
+| 422 | `invalid_channel` | `GET /channels/vods` | `null` |
 | 422 | `invalid_vod_link` | `POST /jobs` | `null` |
 | 422 | `invalid_video_path` | `POST /jobs` | `null` |
 | 422 | `invalid_export_bounds` | `POST /exports` | `{ "min_start_s": …, "max_end_s": …, "max_duration_s": … }` |
 | 422 | `invalid_highlights_bounds` | `POST /highlights` | `{ "segment_index": <int or null>, "max_duration_s": …, "max_total_duration_s": … }` |
 | 500 | `internal_error` | Any | `null` |
+| 502 | `twitch_auth_failed` | `GET /channels/vods` | `null` |
+| 502 | `upstream_unavailable` | `GET /channels/vods` (Twitch server, network or response error) | `null` |
+| 503 | `twitch_credentials_missing` | `GET /channels/vods` | `{ "missing": ["TWITCH_CLIENT_ID", …] }` |
+| 503 | `upstream_unavailable` | `GET /channels/vods` (Twitch rate limit exhausted) | `null` |
 
 Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§ 6.3) and highlights failure codes (§ 7.3) are reported inside `Job.error`, `Export.error` or `HighlightsVideo.error` of a `200` status response, because fetching the status itself succeeded. Two codes are also HTTP errors and mean the same in both places: `media_unavailable` (`409` when `POST /exports` or `POST /highlights` can't start; a render failure when media is lost after it started) and `internal_error` (`500` for a request; a job, export or highlights failure for background work). Examples for each HTTP code are in § 3.6, § 6.5 and § 7.5; the rest are:
 
@@ -1081,6 +1088,75 @@ Example:
 }
 ```
 
+### 9.7 Channel VODs
+
+`GET /api/v1/channels/vods?channel=<url-or-login>&limit=<1..100>` returns `200` with `Cache-Control: no-store` and a `ChannelVodsResponse` listing the channel's recent completed past broadcasts (`type=archive`, newest first; any in-progress live stream matching Helix `GET /streams?type=live` is excluded before applying `limit` and `truncated`). `limit` defaults to `20` and is capped at `100`; unknown query parameters, missing `channel`, non-integer `limit`, or `limit` outside `1..100` fail with `422 invalid_request`.
+
+**Accepted `channel` inputs** (anything else is `422 invalid_channel`, case-insensitive after trimming whitespace):
+
+1. A **bare channel login** (optional leading `@`): 1–25 ASCII letters, digits or underscores starting with a letter or digit, not all digits (bare numeric strings are VOD IDs).
+2. A **Twitch channel URL**: optional `https://` or `http://` scheme, host `twitch.tv`, `www.twitch.tv` or `m.twitch.tv`, path `/<login>` optionally followed by `/videos`, `/home`, `/about`, `/schedule`, or `/clips` and an optional trailing `/`, query string or fragment. Reserved Twitch paths (`/videos/...`, `/directory`, `/search`, etc.) and clip links are rejected.
+
+`ChannelVodsResponse`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `channel` | `ChannelInfo` | Resolved Twitch channel |
+| `vods` | list<`ChannelVod`> | Completed archive VODs, newest first; `[]` when the channel has no past broadcasts |
+| `truncated` | bool | `true` if Twitch may have more completed archive VODs beyond `limit` |
+
+`ChannelInfo`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `broadcaster_id` | str | Twitch user ID |
+| `login` | str | Lowercase login name |
+| `display_name` | str | Public display name |
+| `profile_image_url` | str \| null | Channel avatar URL when present |
+
+`ChannelVod`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `video_id` | str | Twitch video ID |
+| `title` | str | Broadcast title |
+| `created_at` | timestamp | Twitch's video creation time (UTC) |
+| `duration_s` | float | Broadcast duration in seconds |
+| `thumbnail_url` | str \| null | Ready-to-display 320×180 thumbnail URL, or `null` when unavailable |
+| `url` | str | Canonical Twitch VOD URL (`https://www.twitch.tv/videos/<video_id>`) |
+| `view_count` | int | View count reported by Twitch |
+| `analyzed` | bool | `true` if an analysis result exists on disk (`artifacts/analysis/<video_id>.json`) or a `done` job exists in the current server session |
+| `last_job_id` | str \| null | Most recent `done` job ID in the current server session for this VOD, or `null` |
+
+Errors: `422 invalid_channel`, `422 invalid_request` (missing `channel`, unknown query parameter, or `limit` outside `1..100`), `404 channel_not_found`, `503 twitch_credentials_missing` (when `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET` are unset in pipeline mode), `502 twitch_auth_failed` (Twitch rejected the app credentials), `503 upstream_unavailable` (rate limit exhausted), and `502 upstream_unavailable` (other Twitch or network errors).
+
+Example:
+
+```json
+{
+  "channel": {
+    "broadcaster_id": "9100000001",
+    "login": "user_001",
+    "display_name": "User_001",
+    "profile_image_url": null
+  },
+  "vods": [
+    {
+      "video_id": "9000000003",
+      "title": "Synthetic stream 3",
+      "created_at": "2026-10-13T18:00:00Z",
+      "duration_s": 300.0,
+      "thumbnail_url": null,
+      "url": "https://www.twitch.tv/videos/9000000003",
+      "view_count": 2890,
+      "analyzed": false,
+      "last_job_id": null
+    }
+  ],
+  "truncated": false
+}
+```
+
 ## 10. Versioning
 
 - The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` (`"1.0"`) and `Health` (`"1.1"`, adding `captions_available`).
@@ -1103,6 +1179,16 @@ Fixed synthetic inputs let the frontend exercise every state against the mock ba
 | `9000000006` | `done` with zero candidates: `n_viewer_clips_total` is 0 and `candidates` is `[]` |
 | `9000000007` | `done`; the media endpoint returns preview and export `unavailable` (`source_unavailable`), as in § 5.2, so `POST /exports` and `POST /highlights` return `409 media_unavailable`. With a `video_path` the job's media is available, as the message suggests |
 | `twitch.tv/user_001` | `422 invalid_vod_link` (normal validation, not mock-specific) |
+
+Mock channel scenarios for `GET /api/v1/channels/vods` (in `--jobs mock` mode, no credentials needed):
+
+| `channel` | Mock outcome |
+|---|---|
+| `user_001`, or any valid channel URL/login not listed below | `200` with 5 synthetic archive VODs (`9000000003`, `9000000001`, `9000000002`, `9000000006`, `9000000007`) reusing each scenario's `vod` metadata, with `9000000002` pre-marked `analyzed: true` and finished session jobs updating `analyzed` and `last_job_id` |
+| `empty_channel` | `200` with `vods: []`, `truncated: false` |
+| `unknown_channel` | `404 channel_not_found` |
+| `no_credentials` | `503 twitch_credentials_missing` |
+| `twitch_error` | `502 upstream_unavailable` |
 
 Each mock job should take a few seconds so `queued` and `running` are visible, and report `scorer.kind: "mock"`. The mock applies the normal `video_path` check (`422 invalid_video_path`), never reports `video_mismatch`, and always serves its own sample video. Exports are rendered for real (#32): the request validates exactly as in § 6, and the shared render worker cuts the requested interval from the job's `video_path`, or from the sample preview video when the job has none, with the export pipeline (exact interval, layout, captions if asked) and reports the § 6.3 stages. Highlights videos are rendered for real too (#72): a request validates exactly as in § 7, and the same worker joins the resolved segments from the job's `video_path`, or the sample preview video, with the highlights pipeline (exact cuts, the source's own framing at 1920×1080, fades, captions if asked) and reports the § 7.3 stages. So every scenario with candidates and available export can make a clip and a highlights video. The mock lists `configured_region` only when `AUTOCLIPPER_EXPORT_REGION` is set (§ 5); its examples above show a server with a region configured.
 
