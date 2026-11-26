@@ -169,6 +169,7 @@ class Broadcaster:
         display_name: Display name.
         broadcaster_type: ``"partner"``, ``"affiliate"`` or ``""``.
         fetched_at: When the response was received (UTC).
+        profile_image_url: Channel avatar URL when returned by Get Users, else None.
     """
 
     broadcaster_id: str
@@ -176,6 +177,7 @@ class Broadcaster:
     display_name: str
     broadcaster_type: str
     fetched_at: datetime
+    profile_image_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +205,7 @@ class Vod:
         muted_segments: Muted parts; empty when Twitch reports ``null`` (nothing muted).
         game_ids: Always None here: Get Videos has no category field.
         fetched_at: When the response was received (UTC).
+        thumbnail_url: Thumbnail URL template from Get Videos when present, else None.
     """
 
     video_id: str
@@ -217,6 +220,7 @@ class Vod:
     muted_segments: tuple[MutedSegment, ...]
     game_ids: tuple[str, ...] | None
     fetched_at: datetime
+    thumbnail_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +257,31 @@ def parse_duration_s(text: str) -> float:
     if seconds is not None and (hours, minutes) != (None, None) and seconds >= 60:
         raise ValueError(f"seconds must be below 60 after hours or minutes: {text!r}")
     return float((hours or 0) * 3600 + (minutes or 0) * 60 + (seconds or 0))
+
+
+def resolve_thumbnail_url(
+    template: str | None, *, width: int = 320, height: int = 180
+) -> str | None:
+    """Expand a Helix ``thumbnail_url`` template's width/height placeholders, or return None.
+
+    Defaults to Twitch's documented 320x180 VOD thumbnail size.
+
+    Raises:
+        ValueError: ``width`` or ``height`` is not positive.
+    """
+    if width <= 0 or height <= 0:
+        raise ValueError("thumbnail width and height must be positive")
+    if template is None:
+        return None
+    cleaned = template.strip()
+    if not cleaned:
+        return None
+    return (
+        cleaned.replace("%{width}", str(width))
+        .replace("%{height}", str(height))
+        .replace("{width}", str(width))
+        .replace("{height}", str(height))
+    )
 
 
 def parse_timestamp(text: str) -> datetime:
@@ -303,6 +332,23 @@ class ResponseRecord:
     def optional_str(self, field: str) -> str | None:
         """Return a string field that may be ``null``. Raises if it is missing or another type."""
         return None if self._get(field) is None else self.require_str(field)
+
+    def maybe_str(self, field: str) -> str | None:
+        """Return a non-empty string if ``field`` is present and non-null, else None.
+
+        Unlike `optional_str`, an absent or empty field returns None rather than raising, so
+        optional display metadata (such as thumbnails or avatars) stays compatible with minimal
+        records. Raises if present with a non-string, non-null type.
+        """
+        if field not in self.raw:
+            return None
+        value = self.raw[field]
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise self.invalid(field, f"is {type(value).__name__}, expected a string or null")
+        stripped = value.strip()
+        return stripped or None
 
     def require_int(self, field: str) -> int:
         """Return a non-negative integer field (JSON booleans are rejected)."""
@@ -512,6 +558,20 @@ class HelixClient:
                     raise record.invalid("type", "is not 'archive' in a type=archive listing")
                 videos.append(video)
         return Listing(tuple(videos), truncated=listing.truncated)
+
+    def get_live_stream_id(self, user_id: str) -> str | None:
+        """Return the active live stream's ID for `user_id`, or None when the channel is offline.
+
+        Uses ``GET /streams?user_id=<user_id>&type=live`` so callers listing archive videos can
+        exclude an in-progress broadcast that Twitch already exposes as ``type=archive``.
+        """
+        if not user_id.strip():
+            raise ValueError("user_id is blank")
+        page = self.get("/streams", [("user_id", user_id), ("type", "live")])
+        for record in page.records:
+            if record.require_str("type") == "live":
+                return record.require_str("id", allow_empty=False)
+        return None
 
     # --- Reusable request core ----------------------------------------------------------------
 
@@ -790,6 +850,7 @@ def _parse_broadcaster(record: ResponseRecord, fetched_at: datetime) -> Broadcas
         display_name=record.require_str("display_name"),
         broadcaster_type=record.require_str("broadcaster_type"),
         fetched_at=fetched_at,
+        profile_image_url=record.maybe_str("profile_image_url"),
     )
 
 
@@ -807,6 +868,7 @@ def _parse_vod(record: ResponseRecord, fetched_at: datetime) -> Vod:
         muted_segments=_parse_muted_segments(record),
         game_ids=None,
         fetched_at=fetched_at,
+        thumbnail_url=record.maybe_str("thumbnail_url"),
     )
 
 

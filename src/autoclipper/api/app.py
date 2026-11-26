@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from autoclipper.analysis import AnalysisResult
+from autoclipper.api.channels import HelixFactory, register_channel_routes
 from autoclipper.api.service import ApiException, MockService
 from autoclipper.config import get_settings
 from autoclipper.preflight import run_preflight
@@ -93,12 +94,16 @@ def create_app(
     *,
     cors_origins: Sequence[str] = DEFAULT_CORS_ORIGINS,
     preflight: Callable[[], PreflightReport] | None = None,
+    helix_factory: HelixFactory | None = None,
 ) -> FastAPI:
     """Build the API around `service`; closing the app stops its workers."""
+    close_channels: Callable[[], None] | None = None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
+        if close_channels is not None:
+            close_channels()
         service.close()
 
     app = FastAPI(
@@ -237,5 +242,9 @@ def create_app(
     def highlights_file(highlights_id: str) -> FileResponse:
         path, name = service.highlights_file(highlights_id)
         return FileResponse(path, media_type="video/mp4", filename=name)
+
+    close_channels = register_channel_routes(
+        app, service, api_prefix=API_PREFIX, helix_factory=helix_factory
+    )
 
     return app

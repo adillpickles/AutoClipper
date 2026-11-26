@@ -652,6 +652,19 @@ class MockService:
             assert record.result is not None
             return record.result
 
+    def done_jobs_by_video(self) -> dict[str, str]:
+        """Map each video ID with a finished job in memory to its most recent done job ID."""
+        with self._lock:
+            latest: dict[str, tuple[datetime, str]] = {}
+            for record in self._jobs.values():
+                if record.state != "done":
+                    continue
+                finished = record.times.finished_at or record.times.updated_at
+                prev = latest.get(record.video_id)
+                if prev is None or finished >= prev[0]:
+                    latest[record.video_id] = (finished, record.job_id)
+            return {video_id: job_id for video_id, (_, job_id) in latest.items()}
+
     def candidate_media(self, job_id: str, candidate_id: str) -> CandidateMedia:
         """Preview and export availability of one candidate (§ 5).
 

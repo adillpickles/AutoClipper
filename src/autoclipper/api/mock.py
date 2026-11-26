@@ -5,6 +5,7 @@ values follow the contract's examples exactly, so frontend fixtures written from
 match the mock. Scores are made up and measure nothing (``scorer.kind`` is ``mock``).
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final
@@ -16,7 +17,13 @@ from autoclipper.analysis import (
     ScorerInfo,
     VodSummary,
 )
-from autoclipper.schemas import ApiError, Progress
+from autoclipper.schemas import (
+    ApiError,
+    ChannelInfo,
+    ChannelVod,
+    ChannelVodsResponse,
+    Progress,
+)
 
 MOCK_SCORER: Final = ScorerInfo(kind="mock", name="mock", run_id=None)
 
@@ -220,4 +227,121 @@ def stage_progress(index: int, fraction: float | None = None) -> Progress:
         stage_count=len(JOB_STAGES),
         stage_fraction=fraction,
         message=message,
+    )
+
+
+# --- Mock channel VOD listings (§ 9.7, § 11) --------------------------------------------------
+
+MOCK_PREANALYZED_VIDEO_IDS: Final = frozenset({"9000000002"})
+"""VOD IDs pre-marked as already analyzed in mock channel listings."""
+
+
+@dataclass(frozen=True, slots=True)
+class MockChannelOutcome:
+    """What the mock returns for ``GET /api/v1/channels/vods``."""
+
+    response: ChannelVodsResponse | None = None
+    error_status: int | None = None
+    error: ApiError | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _MockVodEntry:
+    video_id: str
+    view_count: int
+
+
+# Ordered newest-first; title, duration_s and created_at come from `scenario_for(video_id)` so
+# browsing a channel and opening a VOD's analysis result show identical VOD metadata (§ 11).
+_MOCK_CHANNEL_VODS: Final = (
+    _MockVodEntry(video_id="9000000003", view_count=2890),
+    _MockVodEntry(video_id="9000000001", view_count=4820),
+    _MockVodEntry(video_id="9000000002", view_count=3410),
+    _MockVodEntry(video_id="9000000006", view_count=640),
+    _MockVodEntry(video_id="9000000007", view_count=1210),
+)
+
+
+def _mock_channel_vod(entry: _MockVodEntry, finished: Mapping[str, str]) -> ChannelVod:
+    scenario = scenario_for(entry.video_id)
+    assert scenario.result is not None
+    vod = scenario.result.vod
+    return ChannelVod(
+        video_id=entry.video_id,
+        title=vod.title,
+        created_at=vod.created_at,
+        duration_s=vod.duration_s,
+        thumbnail_url=None,
+        url=f"https://www.twitch.tv/videos/{entry.video_id}",
+        view_count=entry.view_count,
+        analyzed=(entry.video_id in finished or entry.video_id in MOCK_PREANALYZED_VIDEO_IDS),
+        last_job_id=finished.get(entry.video_id),
+    )
+
+
+def channel_scenario_for(
+    login: str,
+    *,
+    limit: int = 20,
+    done_jobs: Mapping[str, str] | None = None,
+) -> MockChannelOutcome:
+    """The § 11 channel VOD listing scenario for a normalized lowercase channel login."""
+    if login == "unknown_channel":
+        return MockChannelOutcome(
+            error_status=404,
+            error=ApiError(
+                code="channel_not_found",
+                message=(
+                    "No Twitch channel with that name was found. Check the spelling and try again."
+                ),
+            ),
+        )
+    if login == "no_credentials":
+        return MockChannelOutcome(
+            error_status=503,
+            error=ApiError(
+                code="twitch_credentials_missing",
+                message=(
+                    "Twitch API credentials aren't configured on this server. Set "
+                    "TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET in .env to browse channel VODs."
+                ),
+                details={"missing": ["TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET"]},
+            ),
+        )
+    if login == "twitch_error":
+        return MockChannelOutcome(
+            error_status=502,
+            error=ApiError(
+                code="upstream_unavailable",
+                message="Twitch isn't responding right now. Try again in a moment.",
+            ),
+        )
+    if login == "empty_channel":
+        return MockChannelOutcome(
+            response=ChannelVodsResponse(
+                channel=ChannelInfo(
+                    broadcaster_id="9100000099",
+                    login="empty_channel",
+                    display_name="Empty_Channel",
+                    profile_image_url=None,
+                ),
+                vods=(),
+                truncated=False,
+            )
+        )
+    finished = done_jobs or {}
+    selected = _MOCK_CHANNEL_VODS[:limit]
+    vods = tuple(_mock_channel_vod(entry, finished) for entry in selected)
+    display_name = "User_001" if login == "user_001" else login
+    return MockChannelOutcome(
+        response=ChannelVodsResponse(
+            channel=ChannelInfo(
+                broadcaster_id="9100000001",
+                login=login,
+                display_name=display_name,
+                profile_image_url=None,
+            ),
+            vods=vods,
+            truncated=len(_MOCK_CHANNEL_VODS) > limit,
+        )
     )

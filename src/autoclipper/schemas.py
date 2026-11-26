@@ -27,6 +27,9 @@ __all__ = [
     "ApiError",
     "Candidate",
     "CandidateMedia",
+    "ChannelInfo",
+    "ChannelVod",
+    "ChannelVodsResponse",
     "CreateExportRequest",
     "CreateHighlightsRequest",
     "CreateJobRequest",
@@ -44,6 +47,7 @@ __all__ = [
     "Progress",
     "ScorerInfo",
     "VodSummary",
+    "parse_channel",
     "parse_vod",
 ]
 
@@ -60,6 +64,38 @@ VOD_PATTERN: Final = re.compile(
     re.IGNORECASE,
 )
 
+# api-contract.md § 9.7: channel URL or bare login (optional leading @).
+_CHANNEL_LOGIN_PATTERN: Final = re.compile(r"^@?([A-Za-z0-9][A-Za-z0-9_]{0,24})$")
+_CHANNEL_URL_PATTERN: Final = re.compile(
+    r"^(?:https?://)?(?:www\.|m\.)?twitch\.tv/([A-Za-z0-9][A-Za-z0-9_]{0,24})"
+    r"(?:/(?:videos|home|about|schedule|clips))?/?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+_TWITCH_RESERVED_PATHS: Final = frozenset(
+    {
+        "clips",
+        "directory",
+        "downloads",
+        "drops",
+        "inventory",
+        "jobs",
+        "login",
+        "moderator",
+        "p",
+        "popout",
+        "prime",
+        "search",
+        "settings",
+        "signup",
+        "subscriptions",
+        "turbo",
+        "u",
+        "user",
+        "videos",
+        "wallet",
+    }
+)
+
 
 def parse_vod(text: str) -> str | None:
     """The video ID in a VOD link or bare ID (§ 3.1), or None if it isn't one."""
@@ -69,6 +105,32 @@ def parse_vod(text: str) -> str | None:
     video_id = match.group(1) or match.group(2)
     # Only ASCII digits: `[0-9]` with IGNORECASE matches nothing else, but be explicit.
     return video_id if video_id.isascii() else None
+
+
+def parse_channel(text: str) -> str | None:
+    """The normalized lowercase channel login from a Twitch channel URL or bare login (§ 9.7).
+
+    Rejects VOD links, clip links, non-Twitch URLs, bare numeric IDs, and reserved Twitch routes.
+    """
+    trimmed = text.strip()
+    if not trimmed:
+        return None
+    url_match = _CHANNEL_URL_PATTERN.match(trimmed)
+    if url_match is not None:
+        login = url_match.group(1)
+        if not login.isascii():
+            return None
+        lowered = login.lower()
+        if lowered in _TWITCH_RESERVED_PATHS or lowered.isdigit():
+            return None
+        return lowered
+    login_match = _CHANNEL_LOGIN_PATTERN.match(trimmed)
+    if login_match is not None:
+        login = login_match.group(1)
+        if not login.isascii() or login.isdigit():
+            return None
+        return login.lower()
+    return None
 
 
 class _Response(BaseModel):
@@ -275,3 +337,34 @@ class PreflightReport(_Response):
 
     status: PreflightStatus
     checks: tuple[PreflightCheck, ...]
+
+
+class ChannelInfo(_Response):
+    """A resolved Twitch channel (§ 9.7)."""
+
+    broadcaster_id: str
+    login: str
+    display_name: str
+    profile_image_url: str | None
+
+
+class ChannelVod(_Response):
+    """One recent archive VOD of a channel (§ 9.7)."""
+
+    video_id: str
+    title: str
+    created_at: UtcDatetime
+    duration_s: FiniteFloat
+    thumbnail_url: str | None
+    url: str
+    view_count: int = Field(ge=0)
+    analyzed: bool
+    last_job_id: str | None
+
+
+class ChannelVodsResponse(_Response):
+    """``GET /api/v1/channels/vods`` (§ 9.7)."""
+
+    channel: ChannelInfo
+    vods: tuple[ChannelVod, ...]
+    truncated: bool
