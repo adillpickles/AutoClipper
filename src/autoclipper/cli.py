@@ -854,6 +854,165 @@ class JobRunner(StrEnum):
     PIPELINE = "pipeline"
 
 
+class SetupToolOption(StrEnum):
+    """Tool names accepted by ``autoclipper setup-tools --tool``."""
+
+    FFMPEG = "ffmpeg"
+    TWITCH_DOWNLOADER = "twitch-downloader"
+
+
+def _format_mb(n_bytes: int) -> str:
+    return f"{n_bytes / (1024 * 1024):.1f} MB"
+
+
+@app.command(name="setup-tools")
+def setup_tools(
+    tool: Annotated[
+        list[SetupToolOption] | None,
+        typer.Option(
+            "--tool",
+            help="Install only specific tool(s) (repeat to select several). Default: all.",
+            show_default=False,
+        ),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(help="Re-download and reinstall even if pinned tools are already installed."),
+    ] = False,
+    from_dir: Annotated[
+        Path | None,
+        typer.Option(
+            help="Install offline from pre-downloaded archives in this directory "
+            "(SHA-256 verified).",
+            show_default=False,
+        ),
+    ] = None,
+    tools_dir: Annotated[
+        Path | None,
+        typer.Option(
+            help="Target managed tools directory. Default: AUTOCLIPPER_TOOLS_DIR or "
+            "per-user folder.",
+            show_default=False,
+        ),
+    ] = None,
+    show_urls: Annotated[
+        bool,
+        typer.Option(
+            "--show-urls",
+            help="Print pinned release URLs, expected filenames, SHA-256 checksums, and licenses "
+            "for this platform without downloading.",
+        ),
+    ] = False,
+) -> None:
+    """Download and verify pinned FFmpeg/FFprobe and TwitchDownloaderCLI builds."""
+    from autoclipper.tools.discovery import effective_tools_dir
+    from autoclipper.tools.installer import InstallProgress, ToolInstallError, install_tools
+    from autoclipper.tools.manifest import (
+        ALL_TOOL_GROUPS,
+        ToolGroup,
+        UnsupportedPlatformError,
+        detect_platform,
+        get_tool_spec,
+    )
+
+    selected: tuple[ToolGroup, ...] = (
+        ALL_TOOL_GROUPS
+        if not tool
+        else tuple(
+            "twitch_downloader" if t == SetupToolOption.TWITCH_DOWNLOADER else "ffmpeg"
+            for t in tool
+        )
+    )
+
+    if show_urls:
+        try:
+            plat = detect_platform()
+            specs = [get_tool_spec(name, plat) for name in selected]
+        except UnsupportedPlatformError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(ExitCode.USER_ERROR) from None
+        typer.echo(f"Pinned tool downloads for {plat.key}:")
+        for spec in specs:
+            typer.echo(f"  {spec.label} {spec.version} ({spec.license}) - {spec.source_name}")
+            for artifact in spec.artifacts:
+                typer.echo(f"    file:   {artifact.filename}")
+                typer.echo(f"    url:    {artifact.url}")
+                typer.echo(f"    sha256: {artifact.sha256}")
+        return
+
+    if from_dir is not None and not from_dir.is_dir():
+        typer.echo(f"Error: offline archive directory not found: {from_dir}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR)
+
+    settings = get_settings()
+    try:
+        target_dir = (
+            tools_dir.expanduser().absolute()
+            if tools_dir is not None
+            else effective_tools_dir(settings)
+        )
+    except RuntimeError as exc:
+        typer.echo(
+            f"Error: could not determine default tools directory ({exc}); pass --tools-dir or set "
+            "AUTOCLIPPER_TOOLS_DIR.",
+            err=True,
+        )
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+
+    last_stage_key: tuple[str, str] | None = None
+    last_pct = -1
+
+    def _on_progress(event: InstallProgress) -> None:
+        nonlocal last_stage_key, last_pct
+        key = (event.tool, event.stage)
+        if event.stage == "downloading" and event.bytes_downloaded is not None:
+            if event.fraction is not None:
+                pct = int(event.fraction * 100)
+                if key == last_stage_key and pct < 100 and pct - last_pct < 10:
+                    return
+                last_stage_key = key
+                last_pct = pct
+                total_text = _format_mb(event.bytes_total) if event.bytes_total else "?"
+                typer.echo(
+                    f"  [{event.label}] {event.message} "
+                    f"{_format_mb(event.bytes_downloaded)} / {total_text} ({pct}%)"
+                )
+            elif key != last_stage_key:
+                last_stage_key = key
+                typer.echo(f"  [{event.label}] {event.message}")
+            return
+        if key != last_stage_key:
+            last_stage_key = key
+            last_pct = -1
+            typer.echo(f"  [{event.label}] {event.message}")
+
+    typer.echo(f"Setting up managed tools in {target_dir}...")
+    try:
+        outcomes = install_tools(
+            selected,
+            tools_dir=target_dir,
+            force=force,
+            archive_dir=from_dir,
+            on_progress=_on_progress,
+        )
+    except UnsupportedPlatformError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.USER_ERROR) from None
+    except ToolInstallError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+
+    typer.echo("Managed tools summary:")
+    for outcome in outcomes:
+        state_text = "installed" if outcome.status == "installed" else "already installed"
+        typer.echo(
+            f"  [OK] {outcome.label} {outcome.version} ({state_text}, {outcome.license}, "
+            f"{outcome.source_name})"
+        )
+        for binary in outcome.binaries:
+            typer.echo(f"       -> {binary}")
+
+
 @app.command()
 def doctor(
     jobs: Annotated[

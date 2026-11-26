@@ -12,9 +12,9 @@
 | Git | recent | Version control | <https://git-scm.com/> |
 | Python | 3.12 (pinned in `.python-version`) | Pipeline and ML | Nothing to install: `uv sync` uses an installed 3.12 or downloads one |
 | uv | latest (the lockfile was made with 0.13) | Python package/env manager | Windows: `winget install --id astral-sh.uv -e` · macOS: `brew install uv` · [all options](https://docs.astral.sh/uv/getting-started/installation/) |
-| FFmpeg | 6+ | Audio/video processing | Windows: `winget install Gyan.FFmpeg` · macOS: `brew install ffmpeg` · Linux: package manager |
+| FFmpeg | 6+ | Audio/video processing | Run `uv run autoclipper setup-tools` (recommended), or install manually: Windows `winget install Gyan.FFmpeg` · macOS `brew install ffmpeg` · Linux package manager |
 | yt-dlp | 2026.8.19 or later (locked) | VOD audio download | Nothing to install: a Python dependency, installed by `uv sync` |
-| TwitchDownloaderCLI | 1.56.5 | Chat replay | Download the pinned release from <https://github.com/lay295/TwitchDownloader/releases/tag/1.56.5> and put it on `PATH` |
+| TwitchDownloaderCLI | 1.56.5 | Chat replay and video segments | Run `uv run autoclipper setup-tools` (recommended), or download manually from <https://github.com/lay295/TwitchDownloader/releases/tag/1.56.5> |
 | Node.js | 24 LTS (pinned in `web/.nvmrc`) | Web app in `web/` | <https://nodejs.org/> or a version manager (fnm, nvm, nvm-windows, Volta). npm comes with it. See [Frontend](#frontend-web). |
 | GitHub CLI | optional | Issues/PRs from the terminal | <https://cli.github.com/> |
 
@@ -50,6 +50,8 @@ cp .env.example .env
 uv run pre-commit install
 
 # Smoke test
+uv run autoclipper setup-tools
+uv run autoclipper doctor --jobs mock
 uv run pytest
 uv run autoclipper --help
 ```
@@ -62,11 +64,46 @@ cd AutoClipper
 uv sync --extra captions
 Copy-Item .env.example .env
 uv run pre-commit install
+uv run autoclipper setup-tools
+uv run autoclipper doctor --jobs mock
 uv run pytest
 uv run autoclipper --help
 ```
 
 `uv run pytest` should report only passed tests (tests that need FFmpeg are skipped until it is installed; see [testing](testing.md#ffmpeg-tests)), and `autoclipper --help` prints the CLI usage. The everyday lint, format, type-check and test commands are in [`AGENTS.md` § 5](../../AGENTS.md#5-commands).
+
+### Managed external tools
+
+`autoclipper setup-tools` downloads pinned, SHA-256-verified builds of **FFmpeg/FFprobe** and **TwitchDownloaderCLI** directly from upstream releases into a per-user managed tools folder (AutoClipper does not bundle these binaries in git or its package):
+
+| OS | Default managed tools folder (`AUTOCLIPPER_TOOLS_DIR` overrides) |
+|---|---|
+| Windows | `%LOCALAPPDATA%\AutoClipper\tools` (fallback `~/AppData/Local/AutoClipper/tools`) |
+| macOS | `~/Library/Application Support/AutoClipper/tools` |
+| Linux | `$XDG_DATA_HOME/autoclipper/tools` (fallback `~/.local/share/autoclipper/tools`) |
+
+**Discovery precedence:** explicit path setting (`AUTOCLIPPER_FFMPEG_PATH`, `AUTOCLIPPER_FFPROBE_PATH`, `AUTOCLIPPER_TWITCH_DOWNLOADER_PATH`) → managed tools folder (`<tools_dir>/bin/`) → `PATH`. Run `uv run autoclipper doctor` to see which copy is in use.
+
+**Pinned release sources and licenses:**
+
+| Tool | Platforms | Pinned version | Upstream source | License |
+|---|---|---|---|---|
+| FFmpeg & FFprobe | Windows x86_64 | 9.0.2 | [Gyan.dev codexffmpeg](https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2) (essentials build, static, `libx264` + `libass`) | GPL-3.0 |
+| FFmpeg & FFprobe | Windows ARM64, Linux x86_64, Linux ARM64 | 9.0.2 (`autobuild-2026-10-31-12-59`) | [BtbN/FFmpeg-Builds](https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/tag/autobuild-2026-10-31-12-59) (`gpl-9.0`, static, `libx264` + `libass`) | GPL-3.0 |
+| FFmpeg & FFprobe | macOS ARM64, macOS x86_64 | 9.1 | [Martin Riedl FFmpeg Build Server](https://ffmpeg.martin-riedl.de/) (signed static release builds, `libx264` + `libass`) | GPL-3.0 |
+| TwitchDownloaderCLI | Windows x86_64, macOS ARM64/x86_64, Linux x86_64/ARM64 | 1.56.5 | [lay295/TwitchDownloader](https://github.com/lay295/TwitchDownloader/releases/tag/1.56.5) | MIT |
+
+Windows ARM64 has no official upstream `TwitchDownloaderCLI` release; pass `--tool ffmpeg` to install FFmpeg only, and provide TwitchDownloaderCLI manually via `PATH` or `AUTOCLIPPER_TWITCH_DOWNLOADER_PATH` if needed.
+
+**Useful options:**
+
+```bash
+uv run autoclipper setup-tools                    # install missing tools (idempotent; skips verified copies)
+uv run autoclipper setup-tools --force            # re-download and verify all tools
+uv run autoclipper setup-tools --tool ffmpeg      # install FFmpeg/FFprobe only
+uv run autoclipper setup-tools --show-urls        # list pinned URLs, filenames, SHA-256s and licenses
+uv run autoclipper setup-tools --from-dir ./pkg   # offline install from pre-downloaded archives (SHA-256 verified)
+```
 
 ### Git hooks
 
