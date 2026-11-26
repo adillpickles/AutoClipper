@@ -60,9 +60,22 @@ from autoclipper.export.highlights import (
 from autoclipper.export.reframe import StackedLayout, stacked_layout_from_region
 from autoclipper.export.seek import covered_span, probe_stream_ends, probe_stream_times
 from autoclipper.features.chat import Lexicon
-from autoclipper.ffmpeg import FFmpegError, ffmpeg_command, probe, run_command
+from autoclipper.ffmpeg import (
+    FFmpegError,
+    FFmpegNotFoundError,
+    ffmpeg_command,
+    probe,
+    run_command,
+)
+from autoclipper.ingest.chat import (
+    PINNED_TOOL_VERSION as TWITCHDOWNLOADER_VERSION,
+)
+from autoclipper.ingest.chat import (
+    TOOL_NAME as TWITCHDOWNLOADER_TOOL_NAME,
+)
 from autoclipper.ingest.media import (
     DownloadIntegrityError,
+    MissingDownloadToolError,
     VideoSegment,
     VodAccessRestrictedError,
     VodUnavailableError,
@@ -104,6 +117,24 @@ _FETCH_FAILED_PREVIEW: Final = (
 )
 _FETCH_FAILED_EXPORT: Final = (
     "Export isn't available: downloading the video failed. Trying again later may work."
+)
+_MISSING_TWITCHDOWNLOADER_PREVIEW: Final = (
+    f"Preview isn't available: {TWITCHDOWNLOADER_TOOL_NAME} isn't installed on PATH. "
+    f"Install release {TWITCHDOWNLOADER_VERSION} (see docs/development/setup.md), or analyze "
+    "the VOD with a local video file."
+)
+_MISSING_TWITCHDOWNLOADER_EXPORT: Final = (
+    f"Export isn't available: {TWITCHDOWNLOADER_TOOL_NAME} isn't installed on PATH. "
+    f"Install release {TWITCHDOWNLOADER_VERSION} (see docs/development/setup.md), or analyze "
+    "the VOD with a local video file."
+)
+_MISSING_FFMPEG_PREVIEW: Final = (
+    "Preview isn't available: FFmpeg or FFprobe isn't installed on PATH. "
+    "Install FFmpeg (see docs/development/setup.md), then try again."
+)
+_MISSING_FFMPEG_EXPORT: Final = (
+    "Export isn't available: FFmpeg or FFprobe isn't installed on PATH. "
+    "Install FFmpeg (see docs/development/setup.md), then try again."
 )
 _SEGMENT_PREVIEW_FAILED: Final = (
     "Preview isn't available: this moment's video couldn't be prepared for playback. "
@@ -394,6 +425,8 @@ class _SegmentState:
     media_id: str | None = None
     # `source_unavailable` or `fetch_failed` (§ 5.2); the messages derive from it.
     reason: str | None = None
+    # Custom message for `fetch_failed` (e.g. actionable missing-tool guidance); None uses default.
+    message: str | None = None
     # When a segment downloaded fine (`status == "ready"`) but preview transcoding failed
     # transiently (`media_id is None`), report `fetch_failed` once and allow retrying preview
     # preparation on the next media request without losing the downloaded segment for exports.
@@ -423,6 +456,20 @@ class _MediaUnavailable(Exception):
         super().__init__(message)
         self.reason = reason
         self.message = message
+
+
+def _classify_segment_error(exc: Exception) -> tuple[str, str, str]:
+    """Map a segment-download exception to contract `(reason, preview_message, export_message)`."""
+    if isinstance(exc, VodUnavailableError | VodAccessRestrictedError):
+        return ("source_unavailable", _SOURCE_PREVIEW_UNAVAILABLE, _SOURCE_EXPORT_UNAVAILABLE)
+    if isinstance(exc, MissingDownloadToolError):
+        tool = (exc.tool or "").lower()
+        if "ffmpeg" in tool or "ffprobe" in tool:
+            return ("fetch_failed", _MISSING_FFMPEG_PREVIEW, _MISSING_FFMPEG_EXPORT)
+        return ("fetch_failed", _MISSING_TWITCHDOWNLOADER_PREVIEW, _MISSING_TWITCHDOWNLOADER_EXPORT)
+    if isinstance(exc, FFmpegNotFoundError):
+        return ("fetch_failed", _MISSING_FFMPEG_PREVIEW, _MISSING_FFMPEG_EXPORT)
+    return ("fetch_failed", _FETCH_FAILED_PREVIEW, _FETCH_FAILED_EXPORT)
 
 
 def _utc_now() -> datetime:
@@ -1154,7 +1201,7 @@ class MockService:
                 media_start_s=None,
                 media_end_s=None,
                 reason=state.reason,
-                message=_FETCH_FAILED_PREVIEW,
+                message=state.message or _FETCH_FAILED_PREVIEW,
             )
             export = ExportAvailability(
                 status="available",
@@ -1478,13 +1525,18 @@ class MockService:
                 lease_path=True,
             )
         except Exception as exc:  # the downloader's typed errors (§ 5.2 reasons)
-            reason = (
-                "source_unavailable"
-                if isinstance(exc, VodUnavailableError | VodAccessRestrictedError)
-                else "fetch_failed"
-            )
+            reason, preview_message, _ = _classify_segment_error(exc)
             log.warning("video segment failed job_id=%s reason=%s: %s", job_id, reason, exc)
-            self._store_segment(job, candidate, replace(state, status="failed", reason=reason))
+            self._store_segment(
+                job,
+                candidate,
+                replace(
+                    state,
+                    status="failed",
+                    reason=reason,
+                    message=preview_message if reason == "fetch_failed" else None,
+                ),
+            )
             with self._lock:
                 self._fetches_done += 1
             return
@@ -1664,10 +1716,10 @@ class MockService:
                 lease_path=lease_path,
             )
         except Exception as exc:
-            if isinstance(exc, VodUnavailableError | VodAccessRestrictedError):
-                raise _MediaUnavailable("source_unavailable", _SOURCE_EXPORT_UNAVAILABLE) from None
-            log.warning("video segment fetch failed video_id=%s: %s", job.video_id, exc)
-            raise _MediaUnavailable("fetch_failed", _FETCH_FAILED_EXPORT) from None
+            reason, _, export_message = _classify_segment_error(exc)
+            if reason != "source_unavailable":
+                log.warning("video segment fetch failed video_id=%s: %s", job.video_id, exc)
+            raise _MediaUnavailable(reason, export_message) from None
 
     def _store_segment(
         self,
@@ -1722,8 +1774,19 @@ class MockService:
                     return  # no better than what is already served
                 else:
                     self._segments[key] = new
-            elif new.status == "failed" and current is not None and current.status == "ready":
-                return  # usable media beats a late failure
+            elif (
+                new.status == "failed"
+                and current is not None
+                and (
+                    current.status == "ready"
+                    or (
+                        current.status == "failed"
+                        and current.reason == "source_unavailable"
+                        and new.reason != "source_unavailable"
+                    )
+                )
+            ):
+                return  # usable media beats a late failure; permanent refusals beat retryable ones
             else:
                 self._segments[key] = new
         if short_path is not None:
@@ -1780,7 +1843,17 @@ class MockService:
                 return VideoSegment(state.path, state.begin_s, state.end_s)
         if state is not None and state.status == "failed" and state.reason == "source_unavailable":
             raise _MediaUnavailable(state.reason, _SOURCE_EXPORT_UNAVAILABLE)
-        segment = self._fetch_segment(job, begin_needed_s, end_needed_s, lease_path=lease_path)
+        try:
+            segment = self._fetch_segment(job, begin_needed_s, end_needed_s, lease_path=lease_path)
+        except _MediaUnavailable as exc:
+            if exc.reason == "source_unavailable":
+                span = self._segment_span(job, candidate.start_s, candidate.end_s)
+                self._store_segment(
+                    job,
+                    candidate,
+                    _SegmentState("failed", *span, reason="source_unavailable"),
+                )
+            raise
         try:
             if segment.begin_s <= candidate.start_s and candidate.end_s <= segment.end_s:
                 media_id = self._register_segment_media(segment)
@@ -1997,12 +2070,23 @@ class MockService:
                         lease_path=True,
                     )
                 except Exception as exc:
-                    if isinstance(exc, VodUnavailableError | VodAccessRestrictedError):
-                        raise _MediaUnavailable(
-                            "source_unavailable", _SOURCE_EXPORT_UNAVAILABLE
-                        ) from None
-                    log.warning("video segment fetch failed video_id=%s: %s", job.video_id, exc)
-                    raise _MediaUnavailable("fetch_failed", _FETCH_FAILED_EXPORT) from None
+                    reason, _, export_message = _classify_segment_error(exc)
+                    if reason == "source_unavailable":
+                        with self._lock:
+                            candidates_to_mark = [
+                                self._candidate(job, member_seg.candidate_id)
+                                for _, member_seg in members
+                            ]
+                        for cand in candidates_to_mark:
+                            span = self._segment_span(job, cand.start_s, cand.end_s)
+                            self._store_segment(
+                                job,
+                                cand,
+                                _SegmentState("failed", *span, reason="source_unavailable"),
+                            )
+                    else:
+                        log.warning("video segment fetch failed video_id=%s: %s", job.video_id, exc)
+                    raise _MediaUnavailable(reason, export_message) from None
                 leased_paths.append(video.path)
                 for index, seg in members:
                     resolved[index] = Segment(

@@ -104,6 +104,8 @@ export function ClipEditor() {
   >("checking");
   const [render, setRender] = useState<RenderState>({ kind: "idle" });
   const [videoFailed, setVideoFailed] = useState(false);
+  const [mediaRetryCount, setMediaRetryCount] = useState(0);
+  const [retryingPreview, setRetryingPreview] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const pollRunRef = useRef(0);
@@ -150,6 +152,10 @@ export function ClipEditor() {
       .getResult(jobId)
       .then((result) => {
         if (cancelled) return;
+        setMedia(null);
+        setMediaError(null);
+        setVideoFailed(false);
+        setRetryingPreview(false);
         const candidate = result.candidates.find(
           (item) => item.candidate_id === candidateId,
         );
@@ -204,6 +210,7 @@ export function ClipEditor() {
         if (cancelled) return;
         failingSince = null;
         backoff = FIRST_BACKOFF_MS;
+        setRetryingPreview(false);
         setMediaError(null);
         setMedia(next);
         const available = supportedLayouts(next.export.layouts);
@@ -218,11 +225,13 @@ export function ClipEditor() {
       } catch (error) {
         if (cancelled) return;
         if (error instanceof ApiRequestError) {
+          setRetryingPreview(false);
           setMediaError(error.error.message);
           return;
         }
         failingSince ??= Date.now();
         if (Date.now() - failingSince > GIVE_UP_AFTER_MS) {
+          setRetryingPreview(false);
           setMediaError("Can't reach the server to load media details.");
           return;
         }
@@ -236,7 +245,7 @@ export function ClipEditor() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [readyData, jobId, candidateId]);
+  }, [readyData, jobId, candidateId, mediaRetryCount]);
 
   // Cancel any in-flight export polling on unmount.
   useEffect(() => {
@@ -302,6 +311,22 @@ export function ClipEditor() {
       : null;
   const mediaStartS = previewInfo?.media_start_s ?? 0;
   const mediaEndS = previewInfo?.media_end_s ?? result.vod.duration_s;
+
+  const canRetryPreview =
+    videoFailed ||
+    mediaError !== null ||
+    previewInfo?.reason === "fetch_failed";
+  const isPermanentUnavailable =
+    !videoFailed &&
+    (previewInfo?.reason === "source_unavailable" ||
+      previewInfo?.reason === "local_file_missing");
+
+  function retryPreview() {
+    setMediaError(null);
+    setVideoFailed(false);
+    setRetryingPreview(true);
+    setMediaRetryCount((count) => count + 1);
+  }
 
   const isModified =
     Math.abs(trim.startS - candidate.start_s) > 0.05 ||
@@ -525,13 +550,20 @@ export function ClipEditor() {
         </h1>
       </div>
 
-      {mediaError && (
-        <p
+      {mediaError && previewPlayable && !videoFailed && !retryingPreview && (
+        <div
           role="alert"
-          className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800 dark:bg-red-950/50 dark:text-red-200"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800 dark:bg-red-950/50 dark:text-red-200"
         >
-          {mediaError}
-        </p>
+          <p>{mediaError}</p>
+          <button
+            type="button"
+            onClick={retryPreview}
+            className="rounded-md bg-red-100 px-3 py-1 text-xs font-semibold text-red-900 hover:bg-red-200 dark:bg-red-900/60 dark:text-red-100 dark:hover:bg-red-900"
+          >
+            Retry preview
+          </button>
+        </div>
       )}
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
@@ -539,8 +571,17 @@ export function ClipEditor() {
           aria-label="Clip preview"
           className="flex flex-col gap-4 lg:col-span-7"
         >
-          <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-950 dark:border-zinc-800">
-            {previewPlayable && previewUrl && !videoFailed ? (
+          <div
+            className={`relative w-full overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-950 dark:border-zinc-800 ${
+              previewPlayable && previewUrl && !videoFailed && !retryingPreview
+                ? "aspect-video"
+                : "flex min-h-64 items-center justify-center sm:aspect-video"
+            }`}
+          >
+            {previewPlayable &&
+            previewUrl &&
+            !videoFailed &&
+            !retryingPreview ? (
               <video
                 ref={videoRef}
                 src={previewUrl}
@@ -553,23 +594,38 @@ export function ClipEditor() {
                 className="size-full object-contain"
                 aria-label={`Preview of clip ${candidate.rank}`}
               />
-            ) : previewInfo?.status === "preparing" || media === null ? (
+            ) : retryingPreview ||
+              (mediaError === null &&
+                (previewInfo?.status === "preparing" || media === null)) ? (
               <div className="flex size-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-zinc-300">
                 <span
                   className="size-7 animate-spin rounded-full border-2 border-amber-500 border-t-transparent"
                   aria-hidden="true"
                 />
-                <p>{previewInfo?.message ?? "Loading video preview…"}</p>
+                <p>
+                  {retryingPreview
+                    ? "Retrying video preview…"
+                    : (previewInfo?.message ?? "Loading video preview…")}
+                </p>
               </div>
             ) : (
               <div
-                role="status"
+                role={mediaError !== null ? "alert" : "status"}
                 className="flex size-full flex-col items-center justify-center gap-3 p-6 text-center"
               >
-                <span className="rounded-full bg-amber-500/20 px-3 py-1 text-xs font-semibold text-amber-200">
+                <span
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                    isPermanentUnavailable
+                      ? "bg-red-500/20 text-red-200"
+                      : "bg-amber-500/20 text-amber-200"
+                  }`}
+                >
                   {videoFailed
                     ? "Preview playback failed"
-                    : unavailableReasonLabel(previewInfo?.reason ?? null)}
+                    : mediaError !== null &&
+                        previewInfo?.status !== "unavailable"
+                      ? "Connection failed"
+                      : unavailableReasonLabel(previewInfo?.reason ?? null)}
                 </span>
                 <h2 className="text-lg font-semibold text-white">
                   Video unavailable
@@ -577,9 +633,38 @@ export function ClipEditor() {
                 <p className="max-w-md text-sm text-zinc-300">
                   {videoFailed
                     ? "The preview video couldn't be played in this browser."
-                    : (previewInfo?.message ??
-                      "Preview isn't available for this moment.")}
+                    : mediaError !== null &&
+                        previewInfo?.status !== "unavailable"
+                      ? mediaError
+                      : (previewInfo?.message ??
+                        "Preview isn't available for this moment.")}
                 </p>
+                {canRetryPreview && (
+                  <>
+                    {exportInfo?.status === "available" && (
+                      <p className="max-w-md text-xs text-zinc-400">
+                        Your trim and export settings are kept. You can retry
+                        the preview or export directly.
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      onClick={retryPreview}
+                      className="mt-1 rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-amber-400 focus-visible:ring-2 focus-visible:ring-amber-300 focus-visible:outline-none"
+                    >
+                      Retry preview
+                    </button>
+                  </>
+                )}
+                {previewInfo?.reason === "source_unavailable" &&
+                  !videoFailed && (
+                    <Link
+                      href="/"
+                      className="mt-1 rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-100 ring-1 ring-zinc-700 hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:outline-none"
+                    >
+                      Analyze with a local file
+                    </Link>
+                  )}
                 {previewInfo?.reason && !videoFailed && (
                   <p className="font-mono text-xs text-zinc-400">
                     Reason: {previewInfo.reason}
@@ -589,7 +674,7 @@ export function ClipEditor() {
             )}
           </div>
 
-          {previewPlayable && !videoFailed && (
+          {previewPlayable && !videoFailed && !retryingPreview && (
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"

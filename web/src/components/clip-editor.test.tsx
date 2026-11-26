@@ -417,4 +417,164 @@ describe("ClipEditor", () => {
       ),
     );
   });
+
+  it("offers an explicit Retry preview button for fetch_failed and preserves edits on retry", async () => {
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia
+      .mockResolvedValueOnce({
+        ...AVAILABLE_MEDIA,
+        preview: {
+          status: "unavailable",
+          kind: null,
+          url: null,
+          media_start_s: null,
+          media_end_s: null,
+          reason: "fetch_failed",
+          message:
+            "Preview isn't available: downloading the video failed. Trying again later may work.",
+        },
+      })
+      .mockResolvedValueOnce({
+        ...AVAILABLE_MEDIA,
+        preview: {
+          status: "preparing",
+          kind: null,
+          url: null,
+          media_start_s: null,
+          media_end_s: null,
+          reason: null,
+          message: "Fetching the video for this moment…",
+        },
+      })
+      .mockResolvedValue(AVAILABLE_MEDIA);
+
+    render(<ClipEditor />);
+
+    expect(await screen.findByText("Download failed")).toBeTruthy();
+    const retryButton = screen.getByRole("button", { name: "Retry preview" });
+    expect(retryButton).toBeTruthy();
+
+    // Trim before retrying to verify retry keeps the user's edits intact.
+    fireEvent.click(screen.getByLabelText("Move start 5 seconds earlier"));
+    const startInput = screen.getByLabelText(
+      "Start (seconds)",
+    ) as HTMLInputElement;
+    expect(startInput.value).toBe("113");
+
+    fireEvent.click(retryButton);
+
+    expect(await screen.findByLabelText("Preview of clip 1")).toBeTruthy();
+    expect(startInput.value).toBe("113");
+    expect(api.getCandidateMedia).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not show Retry preview for permanent source_unavailable and links to local-file analysis", async () => {
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia.mockResolvedValue({
+      job_id: "job_1",
+      candidate_id: "c001",
+      video_id: "9000000007",
+      preview: {
+        status: "unavailable",
+        kind: null,
+        url: null,
+        media_start_s: null,
+        media_end_s: null,
+        reason: "source_unavailable",
+        message:
+          "Preview isn't available: Twitch doesn't offer this VOD's video for download.",
+      },
+      export: {
+        status: "unavailable",
+        reason: "source_unavailable",
+        message:
+          "Export isn't available: Twitch doesn't offer this VOD's video for download.",
+        min_start_s: null,
+        max_end_s: null,
+        max_duration_s: null,
+        layouts: [],
+      },
+    });
+
+    render(<ClipEditor />);
+
+    expect(await screen.findByText("Source unavailable")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry preview" })).toBeNull();
+    const localLink = screen.getByRole("link", {
+      name: "Analyze with a local file",
+    });
+    expect(localLink.getAttribute("href")).toBe("/");
+  });
+
+  it("recovers from media request errors and video playback errors via Retry preview", async () => {
+    const { ApiRequestError } = await import("@/lib/api/client");
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia
+      .mockRejectedValueOnce(
+        new ApiRequestError(500, {
+          code: "internal_error",
+          message: "Temporary server error loading media.",
+          details: null,
+        }),
+      )
+      .mockResolvedValue(AVAILABLE_MEDIA);
+
+    render(<ClipEditor />);
+
+    // Must stop spinning and offer Retry preview when initial media fetch fails.
+    expect(
+      await screen.findByText("Temporary server error loading media."),
+    ).toBeTruthy();
+    expect(screen.queryByText("Loading video preview…")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry preview" }));
+    const video = await screen.findByLabelText("Preview of clip 1");
+    expect(video).toBeTruthy();
+
+    // If the browser fails to play the video element, Retry preview re-fetches and recovers.
+    fireEvent.error(video);
+    expect(await screen.findByText("Preview playback failed")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry preview" }));
+    expect(await screen.findByLabelText("Preview of clip 1")).toBeTruthy();
+    expect(api.getCandidateMedia).toHaveBeenCalledTimes(3);
+  });
+
+  it("shows error and Retry preview if polling fails after an initial preparing response", async () => {
+    const { ApiRequestError } = await import("@/lib/api/client");
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia
+      .mockResolvedValueOnce({
+        ...AVAILABLE_MEDIA,
+        preview: {
+          status: "preparing",
+          kind: null,
+          url: null,
+          media_start_s: null,
+          media_end_s: null,
+          reason: null,
+          message: "Fetching the video for this moment…",
+        },
+      })
+      .mockRejectedValueOnce(
+        new ApiRequestError(500, {
+          code: "internal_error",
+          message: "Media poll failed mid-fetch.",
+          details: null,
+        }),
+      )
+      .mockResolvedValue(AVAILABLE_MEDIA);
+
+    render(<ClipEditor />);
+
+    expect(
+      await screen.findByText("Media poll failed mid-fetch."),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText("Fetching the video for this moment…"),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry preview" }));
+    expect(await screen.findByLabelText("Preview of clip 1")).toBeTruthy();
+    expect(api.getCandidateMedia).toHaveBeenCalledTimes(3);
+  });
 });

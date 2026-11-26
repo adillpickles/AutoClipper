@@ -3232,3 +3232,246 @@ def test_stacked_layout_resolves_channel_preset_by_broadcaster_id_and_login(
     )
     assert made.status_code == 201
     assert renderer.specs[0].stacked_layout == preset
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [
+        pytest.param(
+            b"[ERROR] - Invalid VOD, deleted/expired VOD possibly?\n",
+            b"",
+            id="deleted-vod-stdout",
+        ),
+        pytest.param(
+            b"",
+            b"Unhandled exception. System.NullReferenceException: Insufficient access to VOD, "
+            b"OAuth may be required.\n   at TwitchDownloaderCore.VideoDownloader."
+            b"GetQualityPlaylist()\n",
+            id="twitchdownloader-restricted-vod",
+        ),
+        pytest.param(
+            b"",
+            b"System.Net.Http.HttpRequestException: Response status code does not indicate "
+            b"success: 403 (Forbidden).\n",
+            id="subscriber-only-stderr",
+        ),
+    ],
+)
+def test_production_segment_downloader_permanent_refusals_report_source_unavailable(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: bytes,
+    stderr: bytes,
+) -> None:
+    """Permanent Twitch refusals through the real `download_video_segment` adapter report
+    `source_unavailable` (not retryable `fetch_failed`) and block exports and highlights."""
+    import os
+    import sys
+
+    from autoclipper.ffmpeg import CommandResult as FFCommandResult
+    from autoclipper.ffmpeg import FFmpegCommand
+    from autoclipper.ingest.media import download_video_segment, raw_video_dir
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    binary = bin_dir / (
+        "TwitchDownloaderCLI.exe" if sys.platform == "win32" else "TwitchDownloaderCLI"
+    )
+    binary.write_bytes(b"")
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+
+    def refused_runner(command: FFmpegCommand, /, *, timeout_s: float) -> FFCommandResult:
+        del command, timeout_s
+        return FFCommandResult(1, stdout=stdout, stderr=stderr)
+
+    data_dir = tmp_path / "data"
+
+    def production_fetcher(video_id: str, begin_s: float, end_s: float) -> VideoSegment:
+        return download_video_segment(
+            video_id,
+            begin_s=begin_s,
+            end_s=end_s,
+            output_dir=raw_video_dir(data_dir) / video_id,
+            runner=refused_runner,
+        )
+
+    probe_runner = PipelineProbe(_scenario_result("9000000001"))
+    client, service = make_client(
+        job_runner="pipeline",
+        data_dir=data_dir,
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=IngestTools,
+        analyze=probe_runner,
+        segment_fetcher=production_fetcher,
+    )
+    probe_runner.service = service
+    job = done_job(client)
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["status"] == "unavailable"
+    assert media["preview"]["reason"] == "source_unavailable"
+    assert media["export"]["status"] == "unavailable"
+    assert media["export"]["reason"] == "source_unavailable"
+    assert media["export"]["layouts"] == []
+
+    export = client.post(f"{API}/exports", json=export_body(job["job_id"]))
+    highlights = client.post(f"{API}/highlights", json={"job_id": job["job_id"]})
+    assert (export.status_code, error_code(export)) == (409, "media_unavailable")
+    assert (highlights.status_code, error_code(highlights)) == (409, "media_unavailable")
+    assert export.json()["error"]["details"] == {"reason": "source_unavailable"}
+
+
+def test_production_segment_downloader_export_refusal_marks_candidate_source_unavailable(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When an export hits a permanent refusal before `/media` was fetched, the export fails
+    with `source_unavailable` and subsequent `/media` reflects the permanent refusal."""
+    import os
+    import sys
+
+    from autoclipper.ffmpeg import CommandResult as FFCommandResult
+    from autoclipper.ffmpeg import FFmpegCommand
+    from autoclipper.ingest.media import download_video_segment, raw_video_dir
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    binary = bin_dir / (
+        "TwitchDownloaderCLI.exe" if sys.platform == "win32" else "TwitchDownloaderCLI"
+    )
+    binary.write_bytes(b"")
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+
+    def refused_runner(command: FFmpegCommand, /, *, timeout_s: float) -> FFCommandResult:
+        del command, timeout_s
+        return FFCommandResult(
+            1,
+            stdout=b"[ERROR] - Unable to get video playlist. You may need an OAuth token if this "
+            b"is a sub-only VOD.\n",
+            stderr=b"",
+        )
+
+    data_dir = tmp_path / "data"
+
+    def production_fetcher(video_id: str, begin_s: float, end_s: float) -> VideoSegment:
+        return download_video_segment(
+            video_id,
+            begin_s=begin_s,
+            end_s=end_s,
+            output_dir=raw_video_dir(data_dir) / video_id,
+            runner=refused_runner,
+        )
+
+    probe_runner = PipelineProbe(_scenario_result("9000000001"))
+    client, service = make_client(
+        job_runner="pipeline",
+        data_dir=data_dir,
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=IngestTools,
+        analyze=probe_runner,
+        segment_fetcher=production_fetcher,
+    )
+    probe_runner.service = service
+    job = done_job(client)
+
+    created = client.post(f"{API}/exports", json=export_body(job["job_id"])).json()
+    failed = client.get(f"{API}/exports/{created['export_id']}").json()
+    assert failed["state"] == "failed"
+    assert failed["error"]["code"] == "media_unavailable"
+    assert failed["error"]["details"] == {"reason": "source_unavailable"}
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["status"] == "unavailable"
+    assert media["preview"]["reason"] == "source_unavailable"
+    assert media["export"]["status"] == "unavailable"
+
+
+def test_missing_twitchdownloader_keeps_actionable_install_message_and_stays_retryable(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When TwitchDownloaderCLI is missing on PATH, the production downloader reports
+    `fetch_failed` (never `source_unavailable`) with actionable install guidance."""
+    from autoclipper.ingest.media import download_video_segment, raw_video_dir
+
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    data_dir = tmp_path / "data"
+
+    def production_fetcher(video_id: str, begin_s: float, end_s: float) -> VideoSegment:
+        return download_video_segment(
+            video_id,
+            begin_s=begin_s,
+            end_s=end_s,
+            output_dir=raw_video_dir(data_dir) / video_id,
+        )
+
+    probe_runner = PipelineProbe(_scenario_result("9000000001"))
+    client, service = make_client(
+        job_runner="pipeline",
+        data_dir=data_dir,
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=IngestTools,
+        analyze=probe_runner,
+        segment_fetcher=production_fetcher,
+    )
+    probe_runner.service = service
+    job = done_job(client)
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["status"] == "unavailable"
+    assert media["preview"]["reason"] == "fetch_failed"
+    assert "TwitchDownloaderCLI" in media["preview"]["message"]
+    assert "docs/development/setup.md" in media["preview"]["message"]
+    assert str(tmp_path) not in media["preview"]["message"]
+    assert media["export"]["status"] == "available"
+
+    created = client.post(f"{API}/exports", json=export_body(job["job_id"])).json()
+    failed = client.get(f"{API}/exports/{created['export_id']}").json()
+    assert failed["state"] == "failed"
+    assert failed["error"]["code"] == "media_unavailable"
+    assert failed["error"]["details"] == {"reason": "fetch_failed"}
+    assert "TwitchDownloaderCLI" in failed["error"]["message"]
+    assert "docs/development/setup.md" in failed["error"]["message"]
+
+
+def test_late_retryable_failure_does_not_overwrite_recorded_source_unavailable(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+) -> None:
+    """Once a candidate is recorded as permanently `source_unavailable`, a late retryable
+    `fetch_failed` from a concurrent fetch must not downgrade or evict it."""
+    from autoclipper.api.service import _SegmentState
+
+    fetcher = FakeSegmentFetcher(tmp_path / "unused.mp4", tmp_path / "raw" / "video")
+    client, service = segment_client(make_client, tmp_path, fetcher)
+    job = done_job(client)
+    job_record = service._jobs[job["job_id"]]
+    candidate = service._candidate(job_record, "c001")
+
+    service._store_segment(
+        job_record,
+        candidate,
+        _SegmentState("failed", 88.0, 178.0, reason="source_unavailable"),
+    )
+    service._store_segment(
+        job_record,
+        candidate,
+        _SegmentState("failed", 88.0, 178.0, reason="fetch_failed"),
+    )
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["reason"] == "source_unavailable"
+    assert media["export"]["status"] == "unavailable"
+    # Second request still sees source_unavailable (was not evicted as fetch_failed).
+    again = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert again["preview"]["reason"] == "source_unavailable"
