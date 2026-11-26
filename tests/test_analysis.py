@@ -10,6 +10,7 @@ from autoclipper.analysis import (
     AnalysisWarning,
     Candidate,
     ScorerInfo,
+    SignalDetail,
     VodSummary,
 )
 
@@ -53,18 +54,90 @@ def result(*candidates: Candidate, **changes: object) -> AnalysisResult:
 def test_a_valid_result_serializes_like_the_contract_example() -> None:
     doc = result(
         candidate(
-            1, 3.42, 118.0, source="both", n_viewer_clips=3, top_signals=("chat_msg_rate_z",)
+            1,
+            3.42,
+            118.0,
+            source="both",
+            n_viewer_clips=3,
+            top_signals=("chat_msg_rate_z",),
+            title="Loud audio & laughing chat",
+            reason=(
+                "Chat jumped to 6\u00d7 its usual rate with lots of laugh reactions; 3 viewer clips"
+            ),
+            signal_details=(
+                SignalDetail(
+                    kind="chat_rate", label="Chat rate", detail="6\u00d7 usual stream rate"
+                ),
+            ),
         ),
         candidate(2, 2.87, 251.5),
     )
 
     data = doc.model_dump(mode="json")
 
-    assert data["schema_version"] == "1.0"
+    assert data["schema_version"] == "1.1"
     assert data["generated_at"] == "2026-10-19T15:02:41Z"
     assert data["vod"]["created_at"] == "2026-10-12T18:00:00Z"
     assert data["candidates"][0]["top_signals"] == ["chat_msg_rate_z"]
+    assert data["candidates"][0]["title"] == "Loud audio & laughing chat"
+    assert data["candidates"][0]["reason"] == (
+        "Chat jumped to 6\u00d7 its usual rate with lots of laugh reactions; 3 viewer clips"
+    )
+    assert data["candidates"][0]["signal_details"] == [
+        {"kind": "chat_rate", "label": "Chat rate", "detail": "6\u00d7 usual stream rate"}
+    ]
+    assert data["candidates"][1]["title"] is None
+    assert data["candidates"][1]["reason"] is None
+    assert data["candidates"][1]["signal_details"] == []
     assert AnalysisResult.model_validate_json(doc.model_dump_json()) == doc
+
+
+def test_old_v1_0_result_json_without_explanation_fields_still_loads() -> None:
+    legacy_json = """
+    {
+      "schema_version": "1.0",
+      "generated_at": "2026-10-19T15:02:41Z",
+      "vod": {
+        "video_id": "9000000001",
+        "title": "Synthetic stream 1",
+        "broadcaster_id": "9100000001",
+        "broadcaster_display_name": "user_001",
+        "duration_s": 360.0,
+        "created_at": "2026-10-12T18:00:00Z"
+      },
+      "scorer": { "kind": "mock", "name": "mock", "run_id": null },
+      "n_viewer_clips_total": 3,
+      "warnings": [],
+      "candidates": [
+        {
+          "candidate_id": "c001",
+          "rank": 1,
+          "score": 3.42,
+          "start_s": 118.0,
+          "end_s": 148.0,
+          "source": "both",
+          "n_viewer_clips": 3,
+          "top_signals": ["chat_msg_rate_z", "audio_rms_max_z"]
+        }
+      ]
+    }
+    """
+
+    parsed = AnalysisResult.model_validate_json(legacy_json)
+
+    assert parsed.schema_version == "1.0"
+    assert parsed.candidates[0].title is None
+    assert parsed.candidates[0].reason is None
+    assert parsed.candidates[0].signal_details == ()
+
+
+def test_blank_explanation_fields_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="blank"):
+        candidate(1, title="   ")
+    with pytest.raises(ValidationError, match="blank"):
+        candidate(1, reason="")
+    with pytest.raises(ValidationError, match="blank"):
+        SignalDetail(kind="chat_rate", label="Chat rate", detail="   ")
 
 
 def test_timestamps_are_normalized_to_utc_and_naive_ones_rejected() -> None:

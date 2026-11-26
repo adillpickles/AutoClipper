@@ -15,6 +15,7 @@ from autoclipper.analysis import (
     AnalysisWarning,
     Candidate,
     ScorerInfo,
+    SignalDetail,
     VodSummary,
 )
 from autoclipper.schemas import (
@@ -95,6 +96,29 @@ _EXAMPLE_CANDIDATES: Final = (
         source="both",
         n_viewer_clips=3,
         top_signals=("chat_msg_rate_z", "audio_rms_max_z"),
+        title="Loud audio & laughing chat",
+        reason=(
+            "Chat jumped to 6\u00d7 its usual rate with lots of laugh reactions; "
+            "loudest moment of the stream; 3 viewer clips"
+        ),
+        signal_details=(
+            SignalDetail(
+                kind="chat_rate", label="Chat rate", detail="6\u00d7 usual stream rate (z=3.4)"
+            ),
+            SignalDetail(
+                kind="chat_laugh", label="Chat reaction", detail="High laugh-reaction activity"
+            ),
+            SignalDetail(
+                kind="audio_loudness",
+                label="Audio loudness",
+                detail="Loudest moment of the stream (z=2.6)",
+            ),
+            SignalDetail(
+                kind="viewer_clips",
+                label="Viewer clips",
+                detail="3 viewer clips overlap this moment",
+            ),
+        ),
     ),
     Candidate(
         candidate_id="c002",
@@ -105,6 +129,20 @@ _EXAMPLE_CANDIDATES: Final = (
         source="discovered",
         n_viewer_clips=0,
         top_signals=("audio_rms_max_z",),
+        title="Loud audio spike",
+        reason="Sudden audio loudness spike; trimmed cleanly on speech pauses",
+        signal_details=(
+            SignalDetail(
+                kind="audio_loudness",
+                label="Audio loudness",
+                detail="Sudden spike vs. last 5 min (rz=2.9)",
+            ),
+            SignalDetail(
+                kind="pause_snap",
+                label="Speech boundaries",
+                detail="Start and end aligned to speech pauses",
+            ),
+        ),
     ),
     Candidate(
         candidate_id="c003",
@@ -115,6 +153,15 @@ _EXAMPLE_CANDIDATES: Final = (
         source="viewer_clips",
         n_viewer_clips=1,
         top_signals=(),
+        title="Viewer-clipped moment",
+        reason="1 viewer clip",
+        signal_details=(
+            SignalDetail(
+                kind="viewer_clips",
+                label="Viewer clips",
+                detail="1 viewer clip overlaps this moment",
+            ),
+        ),
     ),
 )
 
@@ -148,6 +195,20 @@ def scenario_for(video_id: str) -> Scenario:
                     source="discovered",
                     n_viewer_clips=0,
                     top_signals=("chat_msg_rate_z",),
+                    title="Hype chat surge",
+                    reason="Chat jumped to 4\u00d7 its usual rate with lots of hype reactions",
+                    signal_details=(
+                        SignalDetail(
+                            kind="chat_rate",
+                            label="Chat rate",
+                            detail="4\u00d7 usual stream rate (z=2.4)",
+                        ),
+                        SignalDetail(
+                            kind="chat_hype",
+                            label="Chat reaction",
+                            detail="High hype-reaction activity",
+                        ),
+                    ),
                 ),
             ),
         )
@@ -169,6 +230,15 @@ def scenario_for(video_id: str) -> Scenario:
                     source="discovered",
                     n_viewer_clips=0,
                     top_signals=("audio_rms_max_z",),
+                    title="Loudest moment of stream",
+                    reason="Loudest moment of the stream",
+                    signal_details=(
+                        SignalDetail(
+                            kind="audio_loudness",
+                            label="Audio loudness",
+                            detail="Loudest moment of the stream (z=2.1)",
+                        ),
+                    ),
                 ),
                 Candidate(
                     candidate_id="c002",
@@ -178,7 +248,16 @@ def scenario_for(video_id: str) -> Scenario:
                     end_s=215.0,
                     source="viewer_clips",
                     n_viewer_clips=1,
-                    top_signals=("chat_msg_rate_z",),
+                    top_signals=(),
+                    title="Viewer-clipped moment",
+                    reason="1 viewer clip",
+                    signal_details=(
+                        SignalDetail(
+                            kind="viewer_clips",
+                            label="Viewer clips",
+                            detail="1 viewer clip overlaps this moment",
+                        ),
+                    ),
                 ),
             ),
         )

@@ -19,7 +19,7 @@
 1. **Baselines:** random, biggest chat spike, loudest moment, and chat + loudness combined. No training.
 2. **Logistic regression** on the Phase 1 features. Shows which signals matter.
 3. **LightGBM.** Learns combinations such as "loud *and* chat laughing".
-4. **Polish:** pretrained laughter/scream/cheer detection and Whisper speech features for the shortlist (#64); then an LLM reads the transcript and a chat summary of the top ~30 shortlisted moments, picks the best 10 and writes each clip's reason and title (#65). This last step is how tools like Opus Clip judge whether a moment works as a standalone short.
+4. **Polish:** pretrained laughter/scream/cheer detection (#63) and Whisper speech features for the shortlist (#64); plus deterministic plain-English explanations and short titles for every ranked moment derived from aggregate signals, with optional off-by-default LLM polish of the title only (#65). The scorer's ranking is final: explanations describe the ranked moments without reordering, dropping or rescoring them.
 
 **Which scorer ships.** One: whichever of the baselines, logistic regression and LightGBM scores best on validation. It scores every window, and the same scores rank the candidates.
 
@@ -79,7 +79,7 @@ Window scores → candidate moments. These rules apply to every scorer, baseline
 2. **Peak picking:** local maxima of the smoothed score.
 3. **Non-max suppression:** drop peaks within `MIN_GAP_S` (default 60 s) of a higher one.
 4. **Boundaries:** predictions trained against source-time labels already locate the source event. Start `PRE_S = 20` s before the peak window's start; end `POST_S = 10` s after the last consecutive window whose smoothed score stays at or above half the peak's. Then clamp the length to `[MIN_LEN_S, MAX_LEN_S] = [20, 45]` s (keeping the peak inside) and to VOD bounds. A raw chat-time heuristic converts its peak to source time once before this step; export never shifts it again.
-5. **Shortlist and top 10:** keep the top `SHORTLIST_K = 50` candidates per VOD by score (ties by earlier start) as the shortlist. The top 10 of the shortlist are rendered as the vertical clips, and evaluation scores the same 10. The stretch Whisper features (#64) and the LLM rerank (#65) work on the shortlist; the rerank reads its top ~30 and picks the final 10.
+5. **Shortlist and top 10:** keep the top `SHORTLIST_K = 50` candidates per VOD by score (ties by earlier start) as the shortlist. The top 10 of the shortlist are rendered as the vertical clips, and evaluation scores the same 10. The stretch Whisper features (#64) work on the shortlist; explanations and titles (#65) describe the ranked candidates using aggregate signals without altering their order or scores.
 6. **Viewer clips (product only):** a viewer-clip moment overlapping a discovered candidate marks it `source = both`; other moments become `viewer_clips` candidates, scored by the scorer's maximum window score over their span and cut to the same length rules around their highest-scoring window. For independent-discovery evaluation, hide clip metadata through scoring, boundary generation and selection; join ground truth only afterward.
 
 All of these values are config parameters tuned on validation and recorded in each experiment's config.
@@ -102,7 +102,7 @@ All of these values are config parameters tuned on validation and recorded in ea
   - Independent-discovery inputs exclude clip metadata and clip-derived context (counts, titles, views, clip-inferred categories); apply the versioned chat clip-announcement filter in [features](features.md).
   - Fit cross-dataset preprocessing on train only. Unsupervised normalization within the current full input VOD is allowed for offline inference; see [features § Normalization](features.md#normalization).
   - No information from after the prediction time in "live" experiments.
-- **Explainability:** every window prediction and candidate carries `top_signals`, the features that contributed most ([data model § predictions](../architecture/data-model.md#predictions)); the app turns them into each clip card's one-line reason. Permutation importance or SHAP help with analysis. Avoid presenting an explanation as proof of quality.
+- **Explainability:** every window prediction and candidate carries `top_signals`, the features that contributed most ([data model § predictions](../architecture/data-model.md#predictions)), and `autoclipper.models.explain.explain_candidates` (#65) attaches a deterministic `title`, one-line `reason` and structured `signal_details` built strictly from aggregate signals (chat rate/reaction categories, audio loudness lookback, viewer clips, optional audio events and pause-snapped speech boundaries — never raw chat text or usernames) without changing candidate order or scores. Permutation importance or SHAP help with analysis. Avoid presenting an explanation as proof of quality.
 
 ## 5. Ablations we plan to report
 

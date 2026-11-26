@@ -35,7 +35,7 @@ The initial setup uses `autoclipper serve` on a development machine and the app 
 | nullable | `T \| None`, always serialized | `T \| null` |
 | enum | `Literal[...]` (always in request models, § 1) or `StrEnum` | string-literal union |
 
-Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`, `ApiError`, `ErrorResponse`, `AnalysisResult`, `VodSummary`, `ScorerInfo`, `Candidate`, `CandidateMedia`, `PreviewMedia`, `ExportAvailability`, `CreateExportRequest`, `Export`, `CreateHighlightsRequest`, `HighlightsSegment`, `HighlightsVideo`, `Health`, `PreflightCheck`, `PreflightReport`, `ChannelInfo`, `ChannelVod`, `ChannelVodsResponse`.
+Model names used below: `CreateJobRequest`, `Job`, `Progress`, `AnalysisWarning`, `ApiError`, `ErrorResponse`, `AnalysisResult`, `VodSummary`, `ScorerInfo`, `Candidate`, `SignalDetail`, `CandidateMedia`, `PreviewMedia`, `ExportAvailability`, `CreateExportRequest`, `Export`, `CreateHighlightsRequest`, `HighlightsSegment`, `HighlightsVideo`, `Health`, `PreflightCheck`, `PreflightReport`, `ChannelInfo`, `ChannelVod`, `ChannelVodsResponse`.
 
 ## 2. Endpoints
 
@@ -330,7 +330,7 @@ HTTP errors for jobs use the envelope from § 8:
 
 | Field | Type | Notes |
 |---|---|---|
-| `schema_version` | str | `"1.0"` for this contract (§ 10) |
+| `schema_version` | str | `"1.1"` for this contract (§ 10); saved `"1.0"` files without candidate explanation fields remain loadable |
 | `generated_at` | timestamp | When the analysis finished |
 | `vod` | `VodSummary` | What the header and timeline need |
 | `scorer` | `ScorerInfo` | What produced `score` |
@@ -368,7 +368,18 @@ HTTP errors for jobs use the envelope from § 8:
 | `end_s` | float | End of the interval (exclusive) |
 | `source` | `viewer_clips` \| `discovered` \| `both` | How it was generated (§ 4.4) |
 | `n_viewer_clips` | int | Distinct viewer clip IDs merged into this candidate |
-| `top_signals` | list<str> | Feature names that contributed most, strongest first (names from [features](../ml/features.md), e.g. `chat_msg_rate_z`). Always present; empty only when no signal stands out (then the card says "Viewers clipped this moment" if `n_viewer_clips` > 0, else "Steady activity throughout"). The clip card's one-line reason is built from it. An explanation aid, not evidence of quality. |
+| `top_signals` | list<str> | Feature names that contributed most, strongest first (names from [features](../ml/features.md), e.g. `chat_msg_rate_z`). Always present; empty only when no signal stands out (then a client without `reason` falls back to "Viewers clipped this moment" if `n_viewer_clips` > 0, else "Steady activity throughout"). An explanation aid, not evidence of quality. |
+| `title` | str \| null | Short human title (2–5 words) summarizing the moment from aggregate signals, e.g. `"Loud audio & laughing chat"`. Never contains raw chat text or usernames. `null` only on older `"1.0"` results or raw pre-explanation candidates. |
+| `reason` | str \| null | Deterministic plain-English one-line "why this moment" explanation from aggregate signals (chat rate/reaction categories, audio loudness lookback, viewer clip counts, optional audio events, pause-snapped edges), e.g. `"Chat jumped to 6× its usual rate with lots of laugh reactions; loudest moment in the last 20 minutes; 3 viewer clips"`. Never alters rank or score; never contains raw chat text or usernames. `null` only on older `"1.0"` results or raw pre-explanation candidates. |
+| `signal_details` | list<`SignalDetail`> | Structured contributing signals behind `reason`, for UI "why" tooltips/expanders. Always present; `[]` when no explanation details are attached. |
+
+`SignalDetail`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `kind` | str (open enum) | Stable signal category, e.g. `chat_rate`, `chat_laugh`, `chat_hype`, `chat_shock`, `chat_keyword`, `chat_unique`, `chat_events`, `chat_emotes`, `chat_caps`, `audio_loudness`, `audio_onset`, `audio_event`, `viewer_clips`, `pause_snap` |
+| `label` | str | Short human-readable label, e.g. `"Chat rate"`, `"Audio loudness"`, `"Viewer clips"` |
+| `detail` | str | Concrete aggregate summary, e.g. `"6× usual stream rate (z=3.4)"`, `"Loudest in the last 20 min (z=2.6)"`, `"3 viewer clips overlap this moment"` |
 
 `start_s` and `end_s` are the interval exactly as the candidate generator produced it, including any context padding it chose. They're already source time: a chat-time heuristic was converted once during generation ([labeling § 5](../data/labeling.md#5-chat-lag)). Preview, export and highlights use them as given; the server never shifts or pads them again.
 
@@ -424,7 +435,7 @@ Candidates may overlap each other; the timeline has to cope with overlapping mar
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "generated_at": "2026-10-19T15:02:41Z",
   "vod": {
     "video_id": "9000000001",
@@ -446,7 +457,15 @@ Candidates may overlap each other; the timeline has to cope with overlapping mar
       "end_s": 148.0,
       "source": "both",
       "n_viewer_clips": 3,
-      "top_signals": ["chat_msg_rate_z", "audio_rms_max_z"]
+      "top_signals": ["chat_msg_rate_z", "audio_rms_max_z"],
+      "title": "Loud audio & laughing chat",
+      "reason": "Chat jumped to 6× its usual rate with lots of laugh reactions; loudest moment of the stream; 3 viewer clips",
+      "signal_details": [
+        { "kind": "chat_rate", "label": "Chat rate", "detail": "6× usual stream rate (z=3.4)" },
+        { "kind": "chat_laugh", "label": "Chat reaction", "detail": "High laugh-reaction activity" },
+        { "kind": "audio_loudness", "label": "Audio loudness", "detail": "Loudest moment of the stream (z=2.6)" },
+        { "kind": "viewer_clips", "label": "Viewer clips", "detail": "3 viewer clips overlap this moment" }
+      ]
     },
     {
       "candidate_id": "c002",
@@ -456,7 +475,13 @@ Candidates may overlap each other; the timeline has to cope with overlapping mar
       "end_s": 276.5,
       "source": "discovered",
       "n_viewer_clips": 0,
-      "top_signals": ["audio_rms_max_z"]
+      "top_signals": ["audio_rms_max_z"],
+      "title": "Loud audio spike",
+      "reason": "Sudden audio loudness spike; trimmed cleanly on speech pauses",
+      "signal_details": [
+        { "kind": "audio_loudness", "label": "Audio loudness", "detail": "Sudden spike vs. last 5 min (rz=2.9)" },
+        { "kind": "pause_snap", "label": "Speech boundaries", "detail": "Start and end aligned to speech pauses" }
+      ]
     },
     {
       "candidate_id": "c003",
@@ -466,7 +491,12 @@ Candidates may overlap each other; the timeline has to cope with overlapping mar
       "end_s": 62.0,
       "source": "viewer_clips",
       "n_viewer_clips": 1,
-      "top_signals": []
+      "top_signals": [],
+      "title": "Viewer-clipped moment",
+      "reason": "1 viewer clip",
+      "signal_details": [
+        { "kind": "viewer_clips", "label": "Viewer clips", "detail": "1 viewer clip overlaps this moment" }
+      ]
     }
   ]
 }
@@ -476,7 +506,7 @@ Degraded result for `job_8d2e6f0a9b1c4d7e` (chat missing):
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "generated_at": "2026-10-19T15:10:12Z",
   "vod": {
     "video_id": "9000000003",
@@ -495,13 +525,41 @@ Degraded result for `job_8d2e6f0a9b1c4d7e` (chat missing):
     }
   ],
   "candidates": [
-    { "candidate_id": "c001", "rank": 1, "score": 2.1, "start_s": 75.0, "end_s": 100.0, "source": "discovered", "n_viewer_clips": 0, "top_signals": ["audio_rms_max_z"] },
-    { "candidate_id": "c002", "rank": 2, "score": 1.3, "start_s": 190.0, "end_s": 215.0, "source": "viewer_clips", "n_viewer_clips": 1, "top_signals": ["chat_msg_rate_z"] }
+    {
+      "candidate_id": "c001",
+      "rank": 1,
+      "score": 2.1,
+      "start_s": 75.0,
+      "end_s": 100.0,
+      "source": "discovered",
+      "n_viewer_clips": 0,
+      "top_signals": ["audio_rms_max_z"],
+      "title": "Loudest moment of stream",
+      "reason": "Loudest moment of the stream",
+      "signal_details": [
+        { "kind": "audio_loudness", "label": "Audio loudness", "detail": "Loudest moment of the stream (z=2.1)" }
+      ]
+    },
+    {
+      "candidate_id": "c002",
+      "rank": 2,
+      "score": 1.3,
+      "start_s": 190.0,
+      "end_s": 215.0,
+      "source": "viewer_clips",
+      "n_viewer_clips": 1,
+      "top_signals": [],
+      "title": "Viewer-clipped moment",
+      "reason": "1 viewer clip",
+      "signal_details": [
+        { "kind": "viewer_clips", "label": "Viewer clips", "detail": "1 viewer clip overlaps this moment" }
+      ]
+    }
   ]
 }
 ```
 
-A VOD with no viewer clips has the same shape with `"n_viewer_clips_total": 0` and only `discovered` candidates, e.g. `{ "candidate_id": "c001", "rank": 1, "score": 1.8, "start_s": 12.0, "end_s": 40.0, "source": "discovered", "n_viewer_clips": 0, "top_signals": ["chat_msg_rate_z"] }`. A result with no candidates has `"candidates": []`.
+A VOD with no viewer clips has the same shape with `"n_viewer_clips_total": 0` and only `discovered` candidates, e.g. `{ "candidate_id": "c001", "rank": 1, "score": 1.8, "start_s": 12.0, "end_s": 40.0, "source": "discovered", "n_viewer_clips": 0, "top_signals": ["chat_msg_rate_z"], "title": "Hype chat surge", "reason": "Chat jumped to 4× its usual rate with lots of hype reactions", "signal_details": [{ "kind": "chat_rate", "label": "Chat rate", "detail": "4× usual stream rate (z=2.4)" }, { "kind": "chat_hype", "label": "Chat reaction", "detail": "High hype-reaction activity" }] }`. A result with no candidates has `"candidates": []`.
 
 ## 5. Media (preview)
 
@@ -1201,10 +1259,10 @@ Responses:
 
 ## 10. Versioning
 
-- The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` (`"1.0"`) and `Health` (`"1.1"`, adding `captions_available`).
+- The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` (`"1.1"`, adding `title`, `reason`, and `signal_details` on `Candidate`; `"1.0"` files without those fields remain loadable) and `Health` (`"1.1"`, adding `captions_available`).
 - **Minor change** (same path, `1.x`): a new endpoint, a new response field, an optional request field with a default, or a new value in an **open** enum. Clients must already ignore unknown fields and handle unknown open-enum values with a default branch.
 - **Major change** (`/api/v2`): anything else, such as renaming or removing a field, changing a type, unit or meaning, adding a required request field, or adding a value to a **closed** enum.
-- **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, `PreflightCheck.name`, `PreflightCheck.source`, and layouts listed in `export.layouts`. **Closed enums:** job, export and highlights `state`, `source`, `preview.status`, `export.status`, `scorer.kind`, highlights `order`, and preflight `status`. A request's `layout` must be one the server lists.
+- **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, `PreflightCheck.name`, `PreflightCheck.source`, `SignalDetail.kind`, and layouts listed in `export.layouts`. **Closed enums:** job, export and highlights `state`, `source`, `preview.status`, `export.status`, `scorer.kind`, highlights `order`, and preflight `status`. A request's `layout` must be one the server lists.
 - Update this doc, its examples and [data model § candidates](data-model.md#candidates-apicli-output-json) with the implementation in the same PR ([AGENTS.md § 6](../../AGENTS.md#6-engineering-basics), rule 4).
 
 ## 11. Mock scenarios (#28)

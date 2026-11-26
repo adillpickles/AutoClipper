@@ -1293,6 +1293,7 @@ def test_analyze_the_synthetic_dataset_end_to_end(tmp_path: Path, lexicon: Lexic
     with_offsets = clips.filter(pl.col("vod_offset_s").is_not_null())["clip_id"].n_unique()
     assert result.n_viewer_clips_total == with_offsets
     assert result.candidates, "the planted highlights should rank"
+    assert all(c.title and c.reason for c in result.candidates)
     assert "chat_missing" not in warning_codes(result)
     assert "audio_missing" not in warning_codes(result)
     assert (
@@ -1301,6 +1302,57 @@ def test_analyze_the_synthetic_dataset_end_to_end(tmp_path: Path, lexicon: Lexic
         )
         == result
     )
+
+
+def test_analyze_explanations_preserve_candidate_order_and_scores(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attaching deterministic explanations never reorders, drops or rescores candidates."""
+    root = tmp_path / "synthetic"
+    generate_dataset(root, seed=1)
+    vods = pl.read_parquet(root / "processed" / "vods.parquet")
+    video_id = str(vods["video_id"][0])
+    _adapt_clip_snapshot(root, video_id)
+
+    with_explanations = analyze_vod(
+        video_id,
+        data_dir=root,
+        artifacts_dir=tmp_path / "artifacts-explained",
+        tools=IngestTools(),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    monkeypatch.setattr(
+        "autoclipper.analyze.explain_candidates",
+        lambda candidates, **_kwargs: list(candidates),
+    )
+    without_explanations = analyze_vod(
+        video_id,
+        data_dir=root,
+        artifacts_dir=tmp_path / "artifacts-raw",
+        tools=IngestTools(),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    assert len(with_explanations.candidates) == len(without_explanations.candidates)
+    assert with_explanations.candidates
+    for explained, raw in zip(
+        with_explanations.candidates, without_explanations.candidates, strict=True
+    ):
+        assert explained.candidate_id == raw.candidate_id
+        assert explained.rank == raw.rank
+        assert explained.score == raw.score
+        assert explained.start_s == raw.start_s
+        assert explained.end_s == raw.end_s
+        assert explained.source == raw.source
+        assert explained.n_viewer_clips == raw.n_viewer_clips
+        assert explained.top_signals == raw.top_signals
+        assert explained.title is not None
+        assert explained.reason is not None
+        assert raw.title is None
+        assert raw.reason is None
 
 
 def _adapt_clip_snapshot(root: Path, video_id: str) -> None:
