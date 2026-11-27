@@ -41,6 +41,7 @@ from autoclipper.export.errors import ExportError
 from autoclipper.export.reframe import OUTPUT_HEIGHT, OUTPUT_WIDTH
 from autoclipper.export.timeline import timeline_window
 from autoclipper.ffmpeg import (
+    TIMELINE_AUDIO_FILTER,
     TIMELINE_OPTIONS,
     FFmpegError,
     Runner,
@@ -317,7 +318,7 @@ def extract_audio(
             *TIMELINE_OPTIONS,
             *("-ss", f"{local.start_s:.6f}", "-t", f"{local.duration_s:.6f}"),
             *("-i", window.path, "-map", "0:a:0", "-vn"),
-            *("-af", "aresample=async=1:first_pts=0"),
+            *("-af", TIMELINE_AUDIO_FILTER),
             *("-ac", "1", "-ar", str(SAMPLE_RATE_HZ), "-c:a", "pcm_s16le", wav),
         )
         run_command(command, timeout_s=max(60.0, 4 * interval.duration_s), runner=runner)

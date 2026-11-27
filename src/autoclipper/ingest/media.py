@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Final, Protocol
 
 from autoclipper.ffmpeg import (
+    TIMELINE_AUDIO_FILTER,
     TIMELINE_OPTIONS,
     FFmpegCommand,
     FFmpegError,
@@ -1552,9 +1553,7 @@ def normalize_audio(
         "-map_metadata",
         "-1",
         "-af",
-        # Follow the timestamps: fill gaps with silence and drop overlaps, starting at 0.
-        # Without it FFmpeg joins the samples, and everything after a gap moves earlier.
-        "aresample=async=1:first_pts=0",
+        TIMELINE_AUDIO_FILTER,  # follow the timestamps: gaps become silence
         "-ac",
         str(CHANNELS),
         "-ar",

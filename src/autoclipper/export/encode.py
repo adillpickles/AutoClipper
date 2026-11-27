@@ -78,6 +78,7 @@ from autoclipper.export.seek import (
 )
 from autoclipper.export.timeline import file_key, timeline_window
 from autoclipper.ffmpeg import (
+    TIMELINE_AUDIO_FILTER,
     TIMELINE_OPTIONS,
     AudioStream,
     FFmpegCommand,
@@ -292,7 +293,7 @@ def build_export_command(
         # Gaps in the audio's timestamps become silence (and so does missing audio at the start),
         # as when the audio is normalized for analysis, so the clip's audio keeps its timeline
         # in every player instead of relying on each one to honour the gap.
-        "aresample=async=1:first_pts=0",
+        TIMELINE_AUDIO_FILTER,
         f"atrim=start={skip}",
         f"asetpts=PTS-{skip}/TB",
         *audio_filters,
