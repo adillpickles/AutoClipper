@@ -1,5 +1,6 @@
 """Tests for the SQLite job store, restart recovery, listing and deletion."""
 
+import dataclasses
 import sqlite3
 import threading
 from datetime import UTC, datetime, timedelta
@@ -225,6 +226,44 @@ def test_store_round_trips_jobs_and_renders(tmp_path: Path) -> None:
         jobs, renders = reopened.load_all()
         assert jobs == [job]
         assert renders == [export_render, hl_render]
+    finally:
+        reopened.close()
+
+
+def test_store_adds_upload_id_to_a_jobs_table_from_before_uploads(tmp_path: Path) -> None:
+    db_path = tmp_path / "artifacts" / DEFAULT_DB_NAME
+    job = _sample_job("job_1", seq=1)
+    store = JobStore(db_path)
+    store.upsert_job(job)
+    store.close()
+    # Recreate the jobs table as it was before #165: same schema version, no upload_id column.
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("ALTER TABLE jobs DROP COLUMN upload_id")
+        conn.commit()
+        assert "upload_id" not in {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
+    finally:
+        conn.close()
+
+    migrated = JobStore(db_path)
+    try:
+        jobs, _ = migrated.load_all()
+        assert jobs == [job]
+        assert jobs[0].upload_id is None
+        uploaded = dataclasses.replace(
+            _sample_job("job_2", seq=2), upload_id="upl_0123456789abcdef"
+        )
+        migrated.upsert_job(uploaded)
+    finally:
+        migrated.close()
+
+    reopened = JobStore(db_path)
+    try:
+        jobs, _ = reopened.load_all()
+        assert {stored.job_id: stored.upload_id for stored in jobs} == {
+            "job_1": None,
+            "job_2": "upl_0123456789abcdef",
+        }
     finally:
         reopened.close()
 
