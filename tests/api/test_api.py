@@ -1,5 +1,8 @@
 """Tests for the mock backend against docs/architecture/api-contract.md (FastAPI test client)."""
 
+import asyncio
+import contextlib
+import inspect
 import io
 import itertools
 import json
@@ -1426,6 +1429,54 @@ def test_archive_errors(client: TestClient) -> None:
 
     assert (unknown_job.status_code, error_code(unknown_job)) == (404, "job_not_found")
     assert (unknown_kind.status_code, error_code(unknown_kind)) == (422, "invalid_request")
+
+
+@pytest.mark.parametrize("spec_version", ["2.0", "2.4"])
+def test_a_client_disconnect_closes_the_zips_open_file_at_once(
+    tmp_path: Path, spec_version: str
+) -> None:
+    """Both of Starlette's disconnect paths close the generator, so the MP4 it was reading
+    can be deleted right away (Windows refuses to delete an open file)."""
+    from starlette.requests import ClientDisconnect
+
+    from autoclipper.api.app import _ClosingStreamingResponse  # pyright: ignore[reportPrivateUsage]
+    from autoclipper.export.archive import CHUNK_BYTES, ArchiveMember, ArchivePlan, stream_archive
+
+    reel = tmp_path / "hl_1.mp4"
+    reel.write_bytes(b"\0" * (CHUNK_BYTES * 8))
+    member = ArchiveMember(reel, "reel.mp4", "Highlights video (hl_1): file missing")
+    body = stream_archive(ArchivePlan("reels.zip", (member,), (), ()))
+    response = _ClosingStreamingResponse(
+        body, media_type="application/zip", headers={"Cache-Control": "no-store"}
+    )
+
+    async def run() -> None:
+        first_chunk = asyncio.Event()
+        chunks = 0
+
+        async def receive() -> dict[str, object]:
+            await first_chunk.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict[str, object]) -> None:
+            nonlocal chunks
+            if message["type"] != "http.response.body":
+                return
+            chunks += 1
+            first_chunk.set()
+            if spec_version == "2.4" and chunks > 1:
+                raise OSError("connection reset")  # what an ASGI 2.4 server raises
+            await asyncio.sleep(0)  # let the disconnect win on the 2.0 path
+
+        scope = {"type": "http", "asgi": {"spec_version": spec_version}}
+        with contextlib.suppress(ClientDisconnect):
+            await response(scope, receive, send)  # type: ignore[arg-type]
+        assert 0 < chunks < 8
+
+    asyncio.run(run())
+
+    assert inspect.getgeneratorstate(body) == inspect.GEN_CLOSED  # not just abandoned
+    reel.unlink()  # would raise PermissionError on Windows if the file were still open
 
 
 @pytest.mark.ffmpeg

@@ -1475,7 +1475,7 @@ class MockService:
                 label = (
                     f"Clip {rank}"
                     if rank is not None
-                    else (f"Clip {candidate_id}" if candidate_id else "Highlights reel")
+                    else (f"Clip {candidate_id}" if candidate_id else "Highlights video")
                 )
                 note = f"{label} ({record.render_id}): {{}}"
                 if record.state == "done" and record.file is not None and record.file.is_file():
@@ -3070,8 +3070,8 @@ class MockService:
 _INTERNAL: Final = "Something went wrong on the server. Try again."
 _RESULT_FILE_MISSING: Final = "This analysis result is no longer on disk. Analyze the VOD again."
 _DELETE_FAILED: Final = (
-    "Some files for this job couldn't be removed from disk. Close any program using them and "
-    "try deleting again."
+    "Some files for this job couldn't be removed from disk. Let any download of them finish, "
+    "close programs using them, and try deleting again."
 )
 _PIPELINE_MEDIA_IN_MOCK: Final = (
     "This VOD was analyzed with the real pipeline. Restart the server in pipeline mode to "

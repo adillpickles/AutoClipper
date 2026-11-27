@@ -7,7 +7,7 @@ chunk or on disk. Each member records its size up front, so a reel over 4 GiB ge
 """
 
 import io
-from collections.abc import Buffer, Iterator
+from collections.abc import Buffer, Generator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -59,8 +59,11 @@ class _ChunkSink(io.RawIOBase):
         yield from chunks
 
 
-def stream_archive(plan: ArchivePlan) -> Iterator[bytes]:
-    """Yield the ZIP bytes for `plan`, adding ``missing.txt`` when any render is left out."""
+def stream_archive(plan: ArchivePlan) -> Generator[bytes]:
+    """Yield the ZIP bytes for `plan`, adding ``missing.txt`` when any render is left out.
+
+    Closing the generator early (a client disconnect) closes the member file it has open.
+    """
     notes = list(plan.notes)
     sink = _ChunkSink()
     with ZipFile(sink, "w", compression=ZIP_STORED) as archive:

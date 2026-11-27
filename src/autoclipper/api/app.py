@@ -5,8 +5,9 @@ bodies with the contract's envelope (§ 8), allows the configured browser origin
 marks status responses ``Cache-Control: no-store`` (§ 9.1).
 """
 
+import contextlib
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Sequence
 from contextlib import asynccontextmanager
 from typing import Annotated, Final
 from urllib.parse import quote
@@ -16,7 +17,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import Receive, Scope, Send
 
 from autoclipper.analysis import AnalysisResult
 from autoclipper.api.channels import HelixFactory, register_channel_routes
@@ -84,6 +87,32 @@ def _attachment(filename: str) -> str:
     if quoted != filename:
         return f"attachment; filename*=utf-8''{quoted}"
     return f'attachment; filename="{filename}"'
+
+
+class _ClosingStreamingResponse(StreamingResponse):
+    """Streams a sync generator and always closes it when the response ends.
+
+    Starlette stops pulling from the generator when the client disconnects but never closes
+    it, and on ASGI 2.4 servers it skips background tasks then too. Closing it here runs the
+    generator's cleanup right away, so the files it holds open are released (on Windows an
+    open file can't be deleted).
+    """
+
+    def __init__(
+        self, content: Generator[bytes], *, media_type: str, headers: dict[str, str]
+    ) -> None:
+        super().__init__(content, media_type=media_type, headers=headers)
+        self._source = content
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await run_in_threadpool(self._close_source)
+
+    def _close_source(self) -> None:
+        with contextlib.suppress(ValueError):  # still running in a worker thread
+            self._source.close()
 
 
 def _json(model: BaseModel, status: int = 200, headers: dict[str, str] | None = None) -> Response:
@@ -285,7 +314,7 @@ def create_app(
         return _json(status, headers=_NO_STORE)
 
     @app.get(f"{API_PREFIX}/jobs/{{job_id}}/archives/{{kind}}/file")
-    def archive_file(job_id: str, kind: ArchiveKind) -> StreamingResponse:
+    def archive_file(job_id: str, kind: ArchiveKind) -> Response:
         plan = service.export_archive(job_id, kind)
         if not plan.members:
             raise ApiException(
@@ -294,7 +323,7 @@ def create_app(
                 "None of these renders have finished yet, so there's nothing to download.",
             )
         # A sync iterator: Starlette pulls each chunk in its thread pool, off the event loop.
-        return StreamingResponse(
+        return _ClosingStreamingResponse(
             stream_archive(plan),
             media_type="application/zip",
             headers={"Content-Disposition": _attachment(plan.filename), **_NO_STORE},
