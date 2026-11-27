@@ -25,6 +25,7 @@ from autoclipper.analysis import AnalysisResult
 from autoclipper.api.channels import HelixFactory, register_channel_routes
 from autoclipper.api.service import ApiException, MockService
 from autoclipper.api.tools import ToolSetupManager, create_tools_router
+from autoclipper.api.uploads import create_uploads_router
 from autoclipper.config import get_settings
 from autoclipper.export.archive import stream_archive
 from autoclipper.preflight import run_preflight
@@ -252,6 +253,9 @@ def create_app(
 
     app.include_router(
         create_tools_router(active_tool_setup, prefix=API_PREFIX, allowed_origins=cors_origins)
+    )
+    app.include_router(
+        create_uploads_router(service, prefix=API_PREFIX, allowed_origins=cors_origins)
     )
 
     @app.get(f"{API_PREFIX}/jobs", response_model=JobListResponse)

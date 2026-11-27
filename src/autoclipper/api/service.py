@@ -21,6 +21,7 @@ export. Highlights videos are real too (#72): the worker joins the job's resolve
 """
 
 import contextlib
+import json
 import logging
 import queue
 import re
@@ -47,6 +48,7 @@ from autoclipper.api.store import (
     read_result_json,
     write_result_json,
 )
+from autoclipper.api.uploads import UPLOAD_ID_PATTERN, validate_video_file
 from autoclipper.export.archive import ArchiveMember, ArchivePlan
 from autoclipper.export.captions import CaptioningError, Stage, Transcriber, captions_available
 from autoclipper.export.clip import (
@@ -132,6 +134,7 @@ from autoclipper.schemas import (
     PreviewMedia,
     Progress,
     State,
+    VideoUpload,
     parse_vod,
 )
 
@@ -382,6 +385,7 @@ class _JobRecord:
     times: _Timestamps
     seq: int = 0
     runner: Literal["mock", "pipeline"] = "mock"
+    upload_id: str | None = None
     state: State = "queued"
     progress: Progress | None = None
     warnings: tuple[AnalysisWarning, ...] = ()
@@ -417,6 +421,7 @@ class _JobRecord:
             runner=self.runner,
             video_id=self.video_id,
             video_path=self.video_path,
+            upload_id=self.upload_id,
             state=self.state,
             title=self.title,
             broadcaster_id=self.broadcaster_id,
@@ -673,6 +678,7 @@ class MockService:
     _deleting: set[str] = field(default_factory=set, init=False)
     _jobs: dict[str, _JobRecord] = field(default_factory=dict, init=False)
     _renders: dict[str, _RenderRecord] = field(default_factory=dict, init=False)
+    _uploads: dict[str, Path] = field(default_factory=dict, init=False)
     _media: dict[str, Path] = field(default_factory=dict, init=False)
     _preview_media_id: str = field(default="", init=False)
     _file_media: dict[str, _FileMediaState] = field(default_factory=dict, init=False)
@@ -748,6 +754,7 @@ class MockService:
                 times=times,
                 seq=stored.seq,
                 runner=stored.runner,
+                upload_id=stored.upload_id,
                 state=stored.state,
                 progress=stored.progress,
                 warnings=stored.warnings,
@@ -843,6 +850,102 @@ class MockService:
                 path.unlink(missing_ok=True)
         self._store.close()
 
+    # --- Uploads -------------------------------------------------------------------------------
+
+    @property
+    def uploads_dir(self) -> Path:
+        """Directory under artifacts where uploaded VOD videos are stored."""
+        return self.output_dir / "uploads"
+
+    def register_upload(
+        self,
+        *,
+        upload_id: str,
+        filename: str,
+        path: Path,
+        size_bytes: int,
+        duration_s: float | None,
+    ) -> VideoUpload:
+        """Persist upload metadata and return the `VideoUpload` response model."""
+        if not UPLOAD_ID_PATTERN.fullmatch(upload_id):
+            raise ValueError(f"invalid upload_id: {upload_id}")
+        resolved = path.resolve()
+        if not _is_within(resolved, self.uploads_dir):
+            raise ValueError("uploaded file must live inside uploads_dir")
+        meta_path = self.uploads_dir / f"{upload_id}.json"
+        partial = meta_path.with_name(f".{upload_id}.{secrets.token_hex(4)}.json.part")
+        payload = {
+            "upload_id": upload_id,
+            "filename": filename,
+            "stored_name": resolved.name,
+            "size_bytes": size_bytes,
+            "duration_s": duration_s,
+        }
+        try:
+            partial.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+            partial.replace(meta_path)
+        finally:
+            partial.unlink(missing_ok=True)
+        with self._lock:
+            self._uploads[upload_id] = resolved
+        return VideoUpload(
+            upload_id=upload_id,
+            filename=filename,
+            size_bytes=size_bytes,
+            duration_s=duration_s,
+        )
+
+    def _resolve_upload_path_locked(self, upload_id: str) -> Path | None:
+        """Resolve an opaque `upload_id` to its stored file path (call with `self._lock` held)."""
+        if not UPLOAD_ID_PATTERN.fullmatch(upload_id):
+            return None
+        cached = self._uploads.get(upload_id)
+        if cached is not None:
+            return cached if cached.is_file() else None
+        meta_path = self.uploads_dir / f"{upload_id}.json"
+        if not meta_path.is_file():
+            return None
+        try:
+            data: object = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        stored_name = data.get("stored_name")
+        if (
+            not isinstance(stored_name, str)
+            or not stored_name
+            or Path(stored_name).name != stored_name
+        ):
+            return None
+        candidate = (self.uploads_dir / stored_name).resolve()
+        if not _is_within(candidate, self.uploads_dir) or not candidate.is_file():
+            return None
+        self._uploads[upload_id] = candidate
+        return candidate
+
+    def _resolve_upload_path(self, upload_id: str) -> Path | None:
+        """Resolve an opaque `upload_id` to its stored file path, or None if missing/invalid."""
+        with self._lock:
+            return self._resolve_upload_path_locked(upload_id)
+
+    def _has_local_source(self, job: _JobRecord) -> bool:
+        return job.video_path is not None or job.upload_id is not None
+
+    def _source_video_path_locked(self, job: _JobRecord) -> Path | None:
+        if job.video_path is not None:
+            return Path(job.video_path)
+        if job.upload_id is not None:
+            return self._resolve_upload_path_locked(job.upload_id)
+        return None
+
+    def _source_video_path(self, job: _JobRecord) -> Path | None:
+        if job.video_path is not None:
+            return Path(job.video_path)
+        if job.upload_id is not None:
+            return self._resolve_upload_path(job.upload_id)
+        return None
+
     # --- Jobs ----------------------------------------------------------------------------------
 
     def create_job(self, request: CreateJobRequest) -> tuple[Job, bool]:
@@ -855,6 +958,13 @@ class MockService:
                 "That isn't a Twitch VOD link. Paste a link like twitch.tv/videos/<id> or just the "
                 "numeric ID.",
             )
+        if request.video_path is not None and request.upload_id is not None:
+            raise ApiException(
+                422,
+                "invalid_request",
+                "The request is invalid: pass either video_path or upload_id, not both.",
+                {"fields": ["video_path", "upload_id"]},
+            )
         if request.video_path is not None and not self._valid_video(request.video_path):
             raise ApiException(
                 422,
@@ -862,11 +972,24 @@ class MockService:
                 "That video file can't be opened. Check the path and that it's a complete video "
                 "file.",
             )
+        if request.upload_id is not None:
+            upload_path = self._resolve_upload_path(request.upload_id)
+            if (
+                upload_path is None
+                or not validate_video_file(upload_path, probe_video=self.probe_video)[0]
+            ):
+                raise ApiException(
+                    422,
+                    "invalid_video_upload",
+                    "The uploaded video file is missing or can't be opened. Upload the video "
+                    "again.",
+                )
         with self._lock:
             for record in self._jobs.values():
                 if (
                     record.video_id == video_id
                     and record.video_path == request.video_path
+                    and record.upload_id == request.upload_id
                     and record.state in ("queued", "running")
                 ):
                     return record.model(), False
@@ -879,6 +1002,7 @@ class MockService:
                 _Timestamps(now, now),
                 seq=next_seq,
                 runner=self.job_runner,
+                upload_id=request.upload_id,
             )
             self._persist_job(record)
             self._next_seq = next_seq
@@ -1152,8 +1276,9 @@ class MockService:
         with self._lock:
             record = self._done_job(job_id)
             candidate = self._candidate(record, candidate_id)
-            if record.video_path is not None:
-                if Path(record.video_path).is_file() and job_id not in self._file_media:
+            if self._has_local_source(record):
+                source = self._source_video_path_locked(record)
+                if source is not None and source.is_file() and job_id not in self._file_media:
                     self._file_media[job_id] = _FileMediaState("preparing")
                     work = ("file", job_id)
             elif self._needs_segment(record) and self.segment_fetcher is not None:
@@ -1204,10 +1329,9 @@ class MockService:
         """Prepare a browser-playable copy of the job's own video file in the background (#46)."""
         with self._lock:
             job = self._jobs.get(job_id)
-            video_path = None if job is None else job.video_path
-        if video_path is None:
+            source = None if job is None else self._source_video_path_locked(job)
+        if source is None:
             return
-        source = Path(video_path)
         if not source.is_file():
             with self._lock:
                 self._file_media.pop(job_id, None)
@@ -1230,7 +1354,7 @@ class MockService:
 
     def _needs_segment(self, job: _JobRecord) -> bool:
         """Whether this job's media comes from a downloaded segment (#46)."""
-        return job.runner == "pipeline" and job.video_path is None
+        return job.runner == "pipeline" and not self._has_local_source(job)
 
     def _segment_span(
         self, job: _JobRecord, begin_needed_s: float, end_needed_s: float
@@ -1656,7 +1780,8 @@ class MockService:
         result = self._job_result(job)
         duration_s = result.vod.duration_s
         # The VOD's video can't be downloaded, but a local file works (§ 5 source_unavailable).
-        if job.video_path is not None and not Path(job.video_path).is_file():
+        source_path = self._source_video_path_locked(job)
+        if self._has_local_source(job) and (source_path is None or not source_path.is_file()):
             preview = PreviewMedia(
                 status="unavailable",
                 kind=None,
@@ -1675,7 +1800,7 @@ class MockService:
                 max_duration_s=None,
                 layouts=(),
             )
-        elif job.video_path is not None:
+        elif self._has_local_source(job):
             # The server reads the user's file and downloads no video (§ 5); it is the whole
             # VOD (checked against the VOD's length at ingest), so its time 0 is VOD time 0.
             # The preview serves a playable copy prepared in the background (#46, § 5.1).
@@ -1985,15 +2110,10 @@ class MockService:
 
     def _valid_video(self, video_path: str) -> bool:
         path = Path(video_path)
-        if not path.is_absolute() or not path.is_file():
+        if not path.is_absolute():
             return False
-        if self.probe_video is not None:
-            return self.probe_video(path)
-        try:
-            info = probe(path)
-        except FFmpegError:
-            return False
-        return bool(info.video_streams) and info.duration_s > 0
+        valid, _ = validate_video_file(path, probe_video=self.probe_video)
+        return valid
 
     # --- Workers -------------------------------------------------------------------------------
 
@@ -2083,11 +2203,27 @@ class MockService:
             if record is None:
                 return
             now = self.clock()
-            video_id, video_path = record.video_id, record.video_path
+            video_id = record.video_id
+            source_file = self._source_video_path_locked(record)
+            missing_upload = record.upload_id is not None and (
+                source_file is None or not source_file.is_file()
+            )
             record.state = "running"
             record.progress = mock.stage_progress(1)  # never running without progress (§ 3.4)
             record.times.started_at = record.times.updated_at = now
             self._persist_job(record)
+        if missing_upload:
+            self._fail_job(
+                job_id,
+                ApiError(
+                    code="invalid_video_upload",
+                    message=(
+                        "The uploaded video file is missing or can't be opened. Upload the video "
+                        "again."
+                    ),
+                ),
+            )
+            return
 
         def stage(name: str) -> None:
             index = _STAGE_INDEX[name]
@@ -2117,7 +2253,7 @@ class MockService:
                 artifacts_dir=self.artifacts_dir,
                 tools=tools,
                 lexicon=self.lexicon,
-                video_file=Path(video_path) if video_path is not None else None,
+                video_file=source_file,
                 baseline=self.baseline,
                 clock=self.clock,
                 on_stage=stage,
@@ -2638,9 +2774,9 @@ class MockService:
         pipeline job without a file gets a downloaded segment around the needed span with a
         lease that the caller must release via `_release_segment_path`.
         """
-        if job.video_path is not None:
-            source = Path(job.video_path)
-            if not source.is_file():
+        if self._has_local_source(job):
+            source = self._source_video_path(job)
+            if source is None or not source.is_file():
                 raise _MediaUnavailable("local_file_missing", _LOCAL_FILE_MISSING)
             return source, 0.0, None
         if not self._needs_segment(job):
