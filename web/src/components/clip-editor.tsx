@@ -291,10 +291,15 @@ export function ClipEditor() {
     maxDurationS: exportInfo?.max_duration_s ?? 90,
   };
 
-  // Until candidate media arrives, `bounds` is only the whole-VOD fallback, so an edit could
-  // leave (and save to job state) a trim outside the real export limits. Lock trim edits until
-  // the first media response; a failed request keeps them locked and says why.
-  const trimLocked = media === null;
+  // `bounds` is only the whole-VOD fallback until export is `available` with real limits: before
+  // the first media response, after a failed request, and while export is unavailable (the
+  // contract then sends null limits). An edit there could leave, and save to job state, a trim
+  // outside the real export limits, so trim edits stay locked and the status line says why.
+  const limitsKnown =
+    exportInfo?.status === "available" &&
+    exportInfo.min_start_s !== null &&
+    exportInfo.max_end_s !== null;
+  const trimLocked = !limitsKnown;
   const trimLockProps = {
     disabled: trimLocked,
     "aria-describedby": trimLocked ? trimStatusId : undefined,
@@ -732,6 +737,13 @@ export function ClipEditor() {
                         load. Retry to load them.
                       </p>
                     )}
+                    {exportInfo !== null &&
+                      exportInfo.status !== "available" && (
+                        <p className="max-w-md text-xs text-zinc-400">
+                          Trimming and export are paused while this clip
+                          can&apos;t be exported. Retry to check again.
+                        </p>
+                      )}
                     <button
                       type="button"
                       onClick={retryPreview}
@@ -771,14 +783,16 @@ export function ClipEditor() {
               <button
                 type="button"
                 onClick={() => setFromPlayhead("start")}
-                className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-zinc-800 ring-1 ring-zinc-300 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-200 dark:ring-zinc-700 dark:hover:bg-zinc-800"
+                className={PLAYHEAD_BUTTON}
+                {...trimLockProps}
               >
                 Set start to playhead
               </button>
               <button
                 type="button"
                 onClick={() => setFromPlayhead("end")}
-                className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-zinc-800 ring-1 ring-zinc-300 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-200 dark:ring-zinc-700 dark:hover:bg-zinc-800"
+                className={PLAYHEAD_BUTTON}
+                {...trimLockProps}
               >
                 Set end to playhead
               </button>
@@ -954,9 +968,13 @@ export function ClipEditor() {
                 role="status"
                 className="text-xs text-zinc-500 dark:text-zinc-400"
               >
-                {mediaError !== null
-                  ? "Trimming is unavailable because the media limits couldn't be loaded. Use Retry preview to try again."
-                  : "Loading media limits… Trimming unlocks when they arrive."}
+                {exportInfo !== null
+                  ? canRetryPreview
+                    ? "Trimming is unavailable while this clip can't be exported. Use Retry preview to check again."
+                    : "Trimming is unavailable while this clip can't be exported."
+                  : mediaError !== null
+                    ? "Trimming is unavailable because the media limits couldn't be loaded. Use Retry preview to try again."
+                    : "Loading media limits… Trimming unlocks when they arrive."}
               </p>
             ) : (
               <p className="text-xs text-zinc-500 tabular-nums dark:text-zinc-400">
@@ -1169,6 +1187,9 @@ function ExportProgressPanel({ exportRecord }: { exportRecord: Export }) {
     </div>
   );
 }
+
+const PLAYHEAD_BUTTON =
+  "rounded-lg bg-white px-3 py-2 text-sm font-medium text-zinc-800 ring-1 ring-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-zinc-900 dark:text-zinc-200 dark:ring-zinc-700 dark:hover:bg-zinc-800";
 
 const NUDGE_BUTTON =
   "rounded-lg bg-zinc-100 px-2.5 py-2 text-xs font-semibold tabular-nums text-zinc-800 hover:bg-zinc-200 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-45 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700";
