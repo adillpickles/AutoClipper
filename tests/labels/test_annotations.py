@@ -5,25 +5,40 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from autoclipper.labels.annotations import LABELS_SCHEMA, label_windows
-from autoclipper.labels.moments import merge_clips_into_moments
+from autoclipper.labels.annotations import (
+    LABEL_RULES,
+    LABEL_RULES_VERSION,
+    LABELS_SCHEMA,
+    label_windows,
+)
+from autoclipper.labels.moments import (
+    CLIP_END,
+    CLIP_START,
+    ClipPositionRule,
+    merge_clips_into_moments,
+)
 from autoclipper.labels.windows import make_windows
 
 
-def clips_frame(*rows: tuple[str, float, float, int]) -> pl.DataFrame:
+def clips_frame(*rows: tuple[str, float, float, int], reported: bool = False) -> pl.DataFrame:
+    """Clips as (clip_id, start_s, duration_s, view_count) of VOD ``v``.
+
+    ``vod_offset_s`` is written as the clip's end, as Helix reports it; with `reported`, the
+    second value is taken as ``vod_offset_s`` itself.
+    """
     return pl.DataFrame(
         [
             {
                 "clip_id": cid,
                 "video_id": "v",
                 "broadcaster_id": "b",
-                "vod_offset_s": start,
+                "vod_offset_s": position if reported else position + duration,
                 "duration_s": duration,
                 "view_count": views,
                 "created_at": datetime(2026, 1, 1, tzinfo=UTC),
                 "fetched_at": datetime(2026, 1, 10, tzinfo=UTC),
             }
-            for cid, start, duration, views in rows
+            for cid, position, duration, views in rows
         ],
         schema={
             "clip_id": pl.String,
@@ -202,8 +217,8 @@ def test_label_windows_handles_empty_windows_and_rejects_invalid_inputs() -> Non
     with pytest.raises(ValueError, match="non-negative"):
         label_windows(win, moments, neg_views, broadcaster_id="b", split="train", mature=True)
 
-    # Invalid placed clip intervals are rejected.
-    bad_clip = clips_frame(("a", -5, 20, 10))
+    # Invalid placed clip intervals are rejected: a clip reported to end before the VOD starts.
+    bad_clip = clips_frame(("a", -5, 20, 10), reported=True)
     with pytest.raises(ValueError, match="invalid clip interval"):
         label_windows(win, moments, bad_clip, broadcaster_id="b", split="train", mature=True)
 
@@ -216,6 +231,87 @@ def test_label_windows_handles_empty_windows_and_rejects_invalid_inputs() -> Non
         label_windows(
             win.with_columns(start_s=pl.lit(None, dtype=pl.Float64)),
             moments,
+            clips,
+            broadcaster_id="b",
+            split="train",
+            mature=True,
+        )
+
+
+# Clip positions (#126): label rules v1 read Helix's vod_offset as the clip's end.
+
+
+def counts_by_window(frame: pl.DataFrame) -> dict[str, int]:
+    return {
+        row["window_id"]: row["label_n_clips"]
+        for row in frame.iter_rows(named=True)
+        if row["label_n_clips"]
+    }
+
+
+def test_label_rules_v1_is_the_default_and_reads_clip_ends() -> None:
+    assert LABEL_RULES_VERSION == "v1"
+    assert (LABEL_RULES["v1"], LABEL_RULES["v0"]) == (CLIP_END, CLIP_START)
+    clips = clips_frame(("late", 100, 30, 10), ("early", 10, 30, 10), reported=True)
+
+    frame = labels(clips)
+
+    # [70, 100) overlaps windows 7-9 (half-open: window 10 only touches it); [0, 10) window 0.
+    assert counts_by_window(frame) == {"v:0": 1, "v:7": 1, "v:8": 1, "v:9": 1}
+    assert frame.filter(pl.col("label_pos"))["window_id"].to_list() == ["v:0", "v:7", "v:8", "v:9"]
+
+
+def test_label_rules_v0_can_still_read_clip_starts() -> None:
+    clips = clips_frame(("a", 100, 30, 10), reported=True)
+
+    frame = label_windows(
+        make_windows("v", 300),
+        merge_clips_into_moments(clips, rule=CLIP_START).moments,
+        clips,
+        broadcaster_id="b",
+        split="train",
+        mature=True,
+        rule=CLIP_START,
+    )
+
+    assert counts_by_window(frame) == {"v:10": 1, "v:11": 1, "v:12": 1}
+
+
+def test_clip_counts_take_clip_positions_only_from_the_rule() -> None:
+    # A rule no real reading would use places the clip at [200, 250): the counts must follow
+    # it, not vod_offset_s arithmetic of their own (which would give [70, 100) or [100, 130)).
+    fake = ClipPositionRule(
+        "fake", start=lambda offset, duration: offset * 2, end=lambda offset, duration: offset * 2.5
+    )
+    clips = clips_frame(("a", 100, 30, 10), reported=True)
+
+    frame = label_windows(
+        make_windows("v", 300),
+        merge_clips_into_moments(clips, rule=fake).moments,
+        clips,
+        broadcaster_id="b",
+        split="train",
+        mature=True,
+        rule=fake,
+    )
+
+    assert counts_by_window(frame) == {f"v:{i}": 1 for i in range(20, 25)}
+
+
+def test_a_clip_with_an_empty_interval_is_not_counted() -> None:
+    clips = clips_frame(("zero", 0, 30, 10), ("a", 100, 30, 10), reported=True)
+
+    assert counts_by_window(labels(clips)) == {"v:7": 1, "v:8": 1, "v:9": 1}
+
+
+def test_moments_merged_with_another_rule_are_rejected() -> None:
+    clips = clips_frame(("a", 100, 30, 10), reported=True)
+    v0_moments = merge_clips_into_moments(clips, rule=CLIP_START).moments
+
+    with pytest.raises(ValueError, match="another clip position rule than 'end'"):
+        label_windows(
+            make_windows("v", 300),
+            v0_moments,
             clips,
             broadcaster_id="b",
             split="train",

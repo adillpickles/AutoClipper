@@ -105,7 +105,11 @@ def test_load_collection_reads_the_synthetic_snapshot(pilot: Path, tmp_path: Pat
     assert (unclipped.moments.height, unclipped.n_clips) == (0, 0)
     first = vods[0]
     assert first.n_clips_without_offset == 1
-    assert first.moments.height == 3
+    # The study reads reported positions as starts on purpose. Synthetic clips report their
+    # ends (#126), so read as starts the planted touching pair lands 8 s apart (past the 5 s
+    # merge gap) and splits: 4 moments where the pipeline's end reading finds the planted 3.
+    assert first.moments.height == 4
+    assert first.moments["clip_position"].unique().to_list() == ["start"]
     assert first.series.height == int(first.duration_s)
     assert first.login == "user_001"
     assert (tmp_path / "cache" / f"{first.video_id}.parquet").is_file()

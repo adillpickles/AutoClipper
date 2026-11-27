@@ -107,6 +107,35 @@ def test_build_pins_lineage_features_labels_and_primary_split(pilot: Path) -> No
     assert all(c["mature"] for c in manifest["coverage"])
 
 
+def test_label_rules_v1_by_default_and_v0_still_builds(pilot: Path) -> None:
+    v1 = build(pilot, "rules-v1")
+    v0_path = build_dataset(
+        pilot, version="rules-v0", seed=42, lexicon_path=LEXICON, label_rules_version="v0"
+    )
+    v0 = json.loads(v0_path.read_text(encoding="utf-8"))
+
+    for manifest, rules, position in ((v1, "v1", "end"), (v0, "v0", "start")):
+        assert (manifest["label_rules_version"], manifest["clip_position"]) == (rules, position)
+        assert manifest["quality"]["label_rules_version"] == rules
+        assert manifest["quality"]["clip_position"] == position
+        assert manifest["quality"]["empty_interval_clips"] == 0
+    moments = {v: output(pilot, "moments", f"rules-{v}") for v in ("v0", "v1")}
+    assert moments["v1"]["clip_position"].unique().to_list() == ["end"]
+    assert moments["v0"]["clip_position"].unique().to_list() == ["start"]
+    # Synthetic clips report their ends: v1 places a clip before its reported position, v0 after.
+    clips = output(pilot, "clips", "rules-v1").filter(pl.col("vod_offset_s").is_not_null())
+    first = clips.sort("clip_id").row(0, named=True)
+    end, length = first["vod_offset_s"], first["duration_s"]
+    in_v1 = moments["v1"].filter(pl.col("clip_ids").list.contains(first["clip_id"]))
+    in_v0 = moments["v0"].filter(pl.col("clip_ids").list.contains(first["clip_id"]))
+    assert in_v1["start_s"][0] <= end - length < end <= in_v1["end_s"][0]
+    assert in_v0["start_s"][0] <= end < end + length <= in_v0["end_s"][0]
+    with pytest.raises(ValueError, match="unknown label rules version 'v9'"):
+        build_dataset(
+            pilot, version="rules-v9", seed=42, lexicon_path=LEXICON, label_rules_version="v9"
+        )
+
+
 def test_rebuild_never_overwrites_frozen_version(pilot: Path) -> None:
     before = build(pilot)
     with pytest.raises(ValueError, match="already exists"):
@@ -252,6 +281,14 @@ def test_cli_smoke_and_user_errors(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert '"positive_rates_by_fold"' in result.stdout
     assert '"status": "pending"' in result.stdout
+    assert "Label rules v1: viewer-clip positions read as clip ends" in result.stdout
+    v0 = ["--dataset-version", "v0-rules", "--label-rules-version", "v0"]
+    result = runner.invoke(app, [*args, *v0])
+    assert result.exit_code == 0, result.output
+    assert "Label rules v0: viewer-clip positions read as clip starts" in result.stdout
+    result = runner.invoke(app, [*args, "--dataset-version", "x", "--label-rules-version", "v9"])
+    assert result.exit_code == 1
+    assert "unknown label rules version" in result.stderr
     assert runner.invoke(app, args).exit_code == 1
     assert runner.invoke(app, [*args, "--dataset-version", "../bad"]).exit_code == 1
     standard = generate_dataset(tmp_path / "standard", seed=1)

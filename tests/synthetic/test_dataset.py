@@ -5,6 +5,7 @@ import json
 import re
 import sys
 import wave
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -117,6 +118,11 @@ def _vod(dataset: GeneratedDataset, video_id: str) -> dict[str, Any]:
     return next(vod for vod in _manifest(dataset)["vods"] if vod["video_id"] == video_id)
 
 
+def _vod_created_at(dataset: GeneratedDataset, video_id: str) -> datetime:
+    rows = _rows(dataset, "processed/vods.parquet")
+    return next(row["created_at"] for row in rows if row["video_id"] == video_id)
+
+
 def _file_bytes(root: Path) -> dict[str, bytes]:
     return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
@@ -187,8 +193,8 @@ def test_clips_include_overlapping_touching_near_touching_and_disjoint_pairs(
     clips = _rows(dataset, CLIPS)
     gaps: list[float] = []  # start of each clip minus the end of the previous one, per VOD
     for video_id in VIDEO_IDS:
-        spans = sorted(
-            (c["vod_offset_s"], c["vod_offset_s"] + c["duration_s"])
+        spans = sorted(  # vod_offset_s is the clip's end, as Helix reports it (#126)
+            (c["vod_offset_s"] - c["duration_s"], c["vod_offset_s"])
             for c in clips
             if c["video_id"] == video_id and c["vod_offset_s"] is not None
         )
@@ -198,6 +204,24 @@ def test_clips_include_overlapping_touching_near_touching_and_disjoint_pairs(
     assert 0.0 in gaps, "touching: one clip ends exactly where the next starts"
     assert any(0 < gap <= 5 for gap in gaps), "near-touching, within GAP_S"
     assert any(gap > 10 for gap in gaps), "disjoint"
+
+
+def test_clips_report_their_end_like_helix(dataset: GeneratedDataset) -> None:
+    # A planted clip covers [time_s + start, time_s + start + length); Helix reports the end.
+    scenario = build_scenario(SEED)
+    by_id = {c["clip_id"]: c for c in _rows(dataset, CLIPS)}
+    n_checked = 0
+    for vod in scenario.vods:
+        created_at = _vod_created_at(dataset, vod.plan.video_id)
+        for planned, event in zip(vod.plan.events, vod.events, strict=True):
+            for (start, length), clip_id in zip(planned.clips, event.clip_ids, strict=True):
+                clip = by_id[clip_id]
+                assert clip["vod_offset_s"] == pytest.approx(event.time_s + start + length)
+                assert clip["duration_s"] == pytest.approx(length)
+                # Clips are made after the stretch they cover ends.
+                assert (clip["created_at"] - created_at).total_seconds() > clip["vod_offset_s"]
+                n_checked += 1
+    assert n_checked >= 5
 
 
 def test_exactly_one_clip_lacks_an_offset_and_one_lacks_a_video(
@@ -227,9 +251,10 @@ def test_every_seed_keeps_the_scenario_apart(seed: int) -> None:
     for vod in scenario.vods:
         quiet_start, quiet_end = vod.plan.quiet
         for clip in scenario.clips:
-            offset_s = cast(float | None, clip["vod_offset_s"])
-            if clip["video_id"] == vod.plan.video_id and offset_s is not None:
-                assert offset_s + cast(float, clip["duration_s"]) <= vod.duration_s
+            end_s = cast(float | None, clip["vod_offset_s"])  # the clip's end, as Helix reports
+            if clip["video_id"] == vod.plan.video_id and end_s is not None:
+                assert end_s <= vod.duration_s
+                assert end_s - cast(float, clip["duration_s"]) >= 0
         for event in vod.events:
             start, end = event.chat_burst_s
             assert end <= vod.duration_s

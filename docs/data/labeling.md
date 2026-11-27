@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Adopted as the starting rules (`v0`). Tune the numbers (window size, lag, buffers) from the pilot data and bump the version when they change. |
-| **Last updated** | 2026-11-06 |
+| **Status** | Adopted. Current rules: `v1` (viewer-clip positions read as clip ends, #126); `v0` stays buildable for comparison (§ 9). Tune the numbers (window size, lag, buffers) from the pilot data and bump the version when they change. |
+| **Last updated** | 2026-11-27 |
 
 Viewer clips are **noisy, incomplete positive labels**: a clip says viewers cared about a stretch of the VOD; no clip doesn't mean nobody would. These rules turn clips into training and evaluation labels. Analyzing a new VOD never needs them.
 
@@ -20,7 +20,7 @@ Viewer clips are **noisy, incomplete positive labels**: a clip says viewers care
 
 Known biases to design around:
 
-- **Clip-start bias.** Clips are created *after* something happens, from a buffer of recent stream. By default the clip covers the seconds leading up to the click, so the payoff is often in the **later** part of the clip. ⚠️ Verify this empirically: plot chat-rate peaks relative to clip start and end across many clips. *Pilot result (#36): confirmed once clip positions are corrected. Helix `vod_offset` is the clip's end, not its start ([exp-002](../../experiments/exp-002-clip-offset-check/README.md)); read as the start, the payoff seems to come before the clip. See § 5.*
+- **Clip-start bias.** Clips are created *after* something happens, from a buffer of recent stream. By default the clip covers the seconds leading up to the click, so the payoff is often in the **later** part of the clip. ⚠️ Verify this empirically: plot chat-rate peaks relative to clip start and end across many clips. *Pilot result (#36): confirmed once clip positions are corrected. Helix `vod_offset` is the clip's end, not its start ([exp-002](../../experiments/exp-002-clip-offset-check/README.md)); read as the start, the payoff seems to come before the clip. Label rules `v1` read it as the end (§ 2). See § 5.*
 - **Duplicate clips.** Big moments get clipped many times with slightly different boundaries. That's a strength signal, but it's also duplication that must be merged.
 - **Popularity bias.** Bigger channels produce more clips and views. Normalize per broadcaster.
 - **Positive-unlabeled (PU) data.** Absence of a clip ≠ negative, especially in small streams.
@@ -31,7 +31,7 @@ Known biases to design around:
 **Moment merging** clusters a VOD's clips into distinct moments:
 
 1. Drop clips with null `vod_offset_s` or null `video_id` (count and log them).
-2. Represent each clip as the interval `[vod_offset_s, vod_offset_s + duration_s]`.
+2. Represent each clip as the interval `[max(vod_offset_s − duration_s, 0), vod_offset_s)`: Helix's `vod_offset` is where a clip **ends** ([exp-002](../../experiments/exp-002-clip-offset-check/README.md), [exp-003](../../experiments/exp-003-clip-end-confirmation/README.md)). A clip that would start before the VOD is cut at 0. A clip whose interval is empty (`vod_offset_s = 0`) is dropped and counted; a negative `vod_offset_s` is an error. Label rules `v0` read the position as the start, `[vod_offset_s, vod_offset_s + duration_s)` (§ 9).
 3. Sort by start. Merge clips whose intervals **overlap or are within `GAP_S` seconds** of the current cluster.
 4. **Long groups stay whole.** A long chain of overlapping clips is one moment for labeling. Clip length is handled separately: candidates are 20–45 s by default ([modeling plan § 3](../ml/modeling-plan.md#3-candidate-generation)) and exports can be trimmed up to 90 s.
 5. A moment's interval spans the earliest member start through the latest member end, including gaps up to `GAP_S`. Aggregate stats are defined in [data model § moments](../architecture/data-model.md#moments).
@@ -44,7 +44,7 @@ Known biases to design around:
 
 `n_clips` counts **distinct clip IDs**, not distinct creators. A moment's strength comes from its clips' relative views (§ 6). Build moments from one pinned snapshot (the clip snapshot taken at ingest, § 7), never a mixture of observations.
 
-Implemented in `autoclipper.labels.moments.merge_clips_into_moments` (`clip_ids` in start order, then end, then ID; a clip listed twice with the same position counts once). Use half-open intervals `[start_s, end_s)` for overlap; touching edges alone don't overlap (but they are within `GAP_S`, so they merge). `moment_id` is `{video_id}:m{index}`, with `index` 0-based in `start_s` order; merged moments never overlap, so starts are unique within a VOD. Synthetic tests cover gaps, touching edges, chains and ties.
+Clip positions become intervals in one place, `autoclipper.labels.moments.clip_interval`, with a `ClipPositionRule` (`CLIP_END`, the default, or `CLIP_START` for `v0`). Moments, window labels, candidate generation, the evaluation match and the pilot report all read clips through it; the rule's name is stored in each moment's `clip_position`. Implemented in `autoclipper.labels.moments.merge_clips_into_moments` (`clip_ids` in start order, then end, then ID; a clip listed twice with the same position counts once). Use half-open intervals `[start_s, end_s)` for overlap; touching edges alone don't overlap (but they are within `GAP_S`, so they merge). `moment_id` is `{video_id}:m{index}`, with `index` 0-based in `start_s` order; merged moments never overlap, so starts are unique within a VOD. Synthetic tests cover gaps, touching edges, chains and ties.
 
 ## 3. Windows
 
@@ -59,7 +59,7 @@ Implemented in `autoclipper.labels.moments.merge_clips_into_moments` (`clip_ids`
 | Label | Definition |
 |---|---|
 | `label_pos` | `True` if the window overlaps any moment interval |
-| `label_n_clips` | Number of clips whose interval overlaps the window |
+| `label_n_clips` | Number of clips whose interval (§ 2) overlaps the window |
 | `label_moment_id` | The overlapping moment with the most clips; ties go to the earlier `start_s` |
 
 Positive windows are weighted in training by the strength of their `label_moment_id` moment (§ 6).
@@ -84,7 +84,8 @@ channels or historical captures. For ingest's per-VOD snapshots this is a per-ca
 baseline; the combined synthetic snapshot includes all of its channel's clips.
 Buffer rows have null `sample_weight`. Immature captures retain binary annotations
 but have null strengths/weights and no training-eligible rows. This weighting fills
-in the previously configurable v0 default; binary label rules remain v0.
+in the previously configurable v0 default and is the same in `v1`, which changes only
+where clips are (§ 2).
 
 ## 5. Chat lag
 
@@ -94,13 +95,13 @@ Chat reacts **after** the event: viewers see the stream with a delay, then type.
 - **Live mode** (future work, not this semester) can't look ahead, so it must use only past chat. Keep lead features in a separate, clearly named group so they can be dropped.
 - **Source-time output:** viewer-clip boundaries and model predictions against these labels are already in VOD time. A heuristic locating a peak in chat time converts it once before creating candidates. **Export applies no chat-lag shift**; context padding and manual trimming are separate operations ([architecture § export](../architecture/overview.md#46-export)).
 
-> **Pilot measurement (#36, [exp-001](../../experiments/exp-001-chat-lag-alignment/README.md), [exp-002](../../experiments/exp-002-clip-offset-check/README.md)).** On the 25 pilot VODs, chat peaks **12 s (95 % CI 3–16 s)** after the streamer's loudest moments and stays above half its peak from −1 to +24 s. Matching 50 top clips' own audio against their VODs shows that **Helix `vod_offset` is the clip's end** (true end = `vod_offset` + 0.7 s, IQR 1.1 s), not its start, and a check on 50 new clips, top and low-view, with criteria committed locally before the run, passed ([exp-003](../../experiments/exp-003-clip-end-confirmation/README.md): median error 0.685 s, 80 % within 2 s). Read as the start, as § 2 does now, every clip interval sits one clip length after its content.
+> **Pilot measurement (#36, [exp-001](../../experiments/exp-001-chat-lag-alignment/README.md), [exp-002](../../experiments/exp-002-clip-offset-check/README.md)).** On the 25 pilot VODs, chat peaks **12 s (95 % CI 3–16 s)** after the streamer's loudest moments and stays above half its peak from −1 to +24 s. Matching 50 top clips' own audio against their VODs shows that **Helix `vod_offset` is the clip's end** (true end = `vod_offset` + 0.7 s, IQR 1.1 s), not its start, and a check on 50 new clips, top and low-view, with criteria committed locally before the run, passed ([exp-003](../../experiments/exp-003-clip-end-confirmation/README.md): median error 0.685 s, 80 % within 2 s). Read as the start, as `v0` does, every clip interval sits one clip length after its content.
 >
-> **Proposed, not adopted** (the rules above stay `v0` until a PR changes them; details in [pilot report § 16](pilot-report.md#16-exploration-findings-36)):
+> **What changed** (details in [pilot report § 16](pilot-report.md#16-exploration-findings-36)):
 >
-> 1. Keep `WINDOW_S = 10` and the chat lead features `lead{1..3}` (30 s), which cover the measured delay and spread.
-> 2. Read a clip's interval as `[vod_offset_s − duration_s, vod_offset_s]` (the 0.7 s residual is below the window size) in a new `label_rules_version`, and compare it with `v0` in dataset v1 (#40).
-> 3. Apply the same correction wherever viewer-clip positions are used: moments for candidates, the ±15 s evaluation match and viewer-clip exports.
+> 1. `WINDOW_S = 10` and the chat lead features `lead{1..3}` (30 s) stay; they cover the measured delay and spread.
+> 2. **Adopted in `v1` (#126):** a clip's interval is `[vod_offset_s − duration_s, vod_offset_s)` (§ 2; the 0.7 s residual is below the window size). Comparing it with `v0` on dataset v1 is tracked in #40.
+> 3. **Adopted (#126):** the same reading is used wherever viewer-clip positions are: moments for candidates, the ±15 s evaluation match and viewer-clip exports. The #36 study code keeps reading reported positions as starts, as the record of the measurement.
 
 ## 6. Normalization across channels
 
@@ -140,11 +141,19 @@ channels, not an additional assignment in these primary folds.
 
 ## 9. Label rules versioning
 
-All parameters above are bundled as `label_rules_version` (currently `v0`). When a change affects labels or existing results, increment the label and dataset versions and update this document with the implementation. Explain the change in the PR so earlier runs remain reproducible.
+All parameters above are bundled as `label_rules_version` (currently `v1`). When a change affects labels or existing results, increment the label and dataset versions and update this document with the implementation. Explain the change in the PR so earlier runs remain reproducible.
+
+| Version | Clip interval | Change |
+|---|---|---|
+| `v0` | `[vod_offset_s, vod_offset_s + duration_s)` | The starting rules |
+| `v1` (default) | `[max(vod_offset_s − duration_s, 0), vod_offset_s)` | Helix reports clip ends (#126); everything else as `v0` |
+
+`build-dataset --label-rules-version v0` still builds `v0` for comparison. The version is recorded in the dataset's `manifest.json`, `quality.json` and split file, in the moments' `clip_position` column, and in every evaluation report.
 
 ## 10. Quality checks (run on every dataset build)
 
-- % of clips dropped for null `vod_offset_s` (alert if > 20%)
+- The label rules version and clip reading used (`label_rules_version`, `clip_position`)
+- % of clips dropped for null `vod_offset_s` (alert if > 20%), and clips dropped for an empty interval
 - Moments per VOD-hour, per channel (look for outliers)
 - Distribution of moment lengths, including long connected groups
 - Chat coverage: % of windows with ≥ 1 message
@@ -158,6 +167,7 @@ From the repo root, after ingesting five streamers:
 ```bash
 uv run autoclipper build-dataset --dataset-version v1 --seed 42
 # Optional: --data-dir <root> --lexicon configs/lexicon.yaml
+# --label-rules-version v0 builds the old clip-start reading for comparison (default v1).
 # If a VOD has several captures, select one with repeated --snapshot <snapshot_id>.
 ```
 

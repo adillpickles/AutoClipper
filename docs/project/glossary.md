@@ -5,8 +5,8 @@ Terms are used with exactly these meanings across docs, code and issues.
 | Term | Meaning |
 |---|---|
 | **VOD** | A past broadcast saved by Twitch (Helix video `type=archive`). Identified by `video_id`. |
-| **Viewer clip** / **clip** | An excerpt created with Twitch's clip feature. Available `vod_offset` identifies its VOD start; `view_count` is observed popularity. Neither guarantees highlight quality. |
-| **`vod_offset`** | Seconds from VOD start to the clip's start. Can be null. Stored as `vod_offset_s`. |
+| **Viewer clip** / **clip** | An excerpt created with Twitch's clip feature. Available `vod_offset` places it in the VOD (as its end); `view_count` is observed popularity. Neither guarantees highlight quality. |
+| **`vod_offset`** | Seconds from VOD start to where the clip **ends** (measured in exp-002 and exp-003). Can be null. Stored unchanged as `vod_offset_s`; the clip covers `[vod_offset_s − duration_s, vod_offset_s)`. |
 | **Moment** | One or more overlapping viewer clips merged into a single interval. The unit of evaluation ground truth: candidates are matched against moments. See [labeling § 2](../data/labeling.md#2-from-clips-to-moments). |
 | **Window** | A fixed 10-second slice of a VOD. The unit the scorer scores. |
 | **Candidate** | A clip-length interval (20–45 s by default) built from window scores and viewer clips. Candidate generation keeps a shortlist of the top 50 per VOD; the top 10 become the vertical clips and the highlights video. |

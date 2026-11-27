@@ -33,12 +33,13 @@ Every number comes from the collection itself, never from a stored summary:
 rewrites only those blocks; ``--check`` exits 1 when one differs from a fresh computation, so a
 reader with the data directory can confirm that the report's numbers match the data.
 
-Definitions used in the tables: a VOD-hour is the Helix duration; a clip *starts after the end*
-when its VOD offset is at or past the Helix duration and *ends after the end* when offset plus
-length passes it; a chat message is *after the end* when its offset is past the duration; a clip
-is *made after the stream* when Twitch's ``created_at`` is later than the VOD's start plus its
-duration; the *densest 20 minutes* is the largest number of a VOD's clips whose offsets fall
-within any 1,200 s span.
+Definitions used in the tables: a VOD-hour is the Helix duration; a clip's interval is
+``[max(vod_offset_s - duration_s, 0), vod_offset_s)`` (`clip_interval`: Helix reports where a
+clip ends, #126); a clip *starts after the end* when its interval starts at or past the Helix
+duration and *ends after the end* when it ends past it; a chat message is *after the end* when
+its offset is past the duration; a clip is *made after the stream* when Twitch's ``created_at``
+is later than the VOD's start plus its duration; the *densest 20 minutes* is the largest number
+of a VOD's clips whose interval starts fall within any 1,200 s span.
 """
 
 import hashlib
@@ -70,7 +71,7 @@ from autoclipper.ingest.catalog import read_catalog
 from autoclipper.ingest.chat import redact_mentions
 from autoclipper.ingest.media import SAMPLE_RATE_HZ
 from autoclipper.ingest.vod import MEDIA_LENGTH_TOLERANCE_S, STEPS
-from autoclipper.labels.moments import merge_clips_into_moments
+from autoclipper.labels.moments import clip_interval, merge_clips_into_moments
 from autoclipper.labels.windows import make_windows
 
 MIB: Final = 1024**2
@@ -263,11 +264,14 @@ def clip_stats(
     vod_duration_s: float,
     listing: tuple[int, int] | None = None,
 ) -> ClipStats:
-    """Clip measurements of one snapshot (`clips` in the ``clips`` schema)."""
+    """Clip measurements of one snapshot (`clips` in the ``clips`` schema).
+
+    Clip intervals come from `clip_interval` (reported positions read as clip ends).
+    """
     stream_end = vod_created_at + timedelta(seconds=vod_duration_s)
-    with_offset = clips.filter(pl.col("vod_offset_s").is_not_null())
-    offsets = with_offset["vod_offset_s"].to_list()
-    ends = (with_offset["vod_offset_s"] + with_offset["duration_s"]).to_list()
+    with_offset = clip_interval(clips.filter(pl.col("vod_offset_s").is_not_null()))
+    starts = with_offset["start_s"].to_list()
+    ends = with_offset["end_s"].to_list()
     return ClipStats(
         snapshot_id=str(manifest["snapshot_id"]),
         n_clips=clips.height,
@@ -279,9 +283,9 @@ def clip_stats(
         vod_age_days=float(manifest["vod_age_days"]),
         views=tuple(int(v) for v in clips["view_count"].to_list()),
         n_made_after_stream=clips.filter(pl.col("created_at") > stream_end).height,
-        n_start_after_end=sum(1 for o in offsets if o >= vod_duration_s),
+        n_start_after_end=sum(1 for s in starts if s >= vod_duration_s),
         n_end_after_end=sum(1 for e in ends if e > vod_duration_s),
-        densest_window=densest_window(offsets),
+        densest_window=densest_window(starts),
         n_creators=clips["creator_hash"].n_unique(),
         n_other_videos=listing[0] if listing else None,
         n_duplicates=listing[1] if listing else None,

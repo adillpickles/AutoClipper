@@ -224,14 +224,17 @@ def _generate_chat_df(
 def _generate_clips_df(
     video_id: str, broadcaster_id: str, burst_times_s: list[float], seed: int
 ) -> pl.DataFrame:
-    """Build synthetic viewer clips around planted bursts."""
+    """Build synthetic viewer clips around planted bursts.
+
+    Each clip's ``vod_offset_s`` is its end, as Helix reports it (#126).
+    """
     py_rng = random.Random(seed)
     rows: list[dict[str, object]] = []
     idx = 0
     for burst_t in burst_times_s:
         for _ in range(py_rng.randint(1, 4)):
             idx += 1
-            offset = max(0.0, burst_t - py_rng.uniform(10.0, 25.0))
+            start = max(0.0, burst_t - py_rng.uniform(10.0, 25.0))
             dur = py_rng.uniform(20.0, 35.0)
             rows.append(
                 {
@@ -242,8 +245,8 @@ def _generate_clips_df(
                     "title": "clip",
                     "game_id": "9400000001",
                     "language": "en",
-                    "created_at": BASE_TIME + timedelta(seconds=offset + dur + 10),
-                    "vod_offset_s": offset,
+                    "created_at": BASE_TIME + timedelta(seconds=start + dur + 10),
+                    "vod_offset_s": start + dur,
                     "duration_s": dur,
                     "view_count": py_rng.randint(20, 500),
                     "is_featured": False,

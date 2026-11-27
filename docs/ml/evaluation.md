@@ -114,7 +114,7 @@ Template table:
 ## 9. Implementation notes
 
 - All metrics live in `autoclipper.eval` with unit tests on hand-computed toy examples.
-- The evaluation CLI writes `artifacts/reports/<run_id>/metrics.json` plus a Markdown summary (`summary.md`) with the dataset version, git commit (`-dirty` if tracked files changed) and seed; the summary `metrics.json` is copied into the experiment's folder ([experiments](experiments.md)). For now it takes the scorer's candidates directly, since candidate generation from window predictions is #27:
+- The evaluation CLI writes `artifacts/reports/<run_id>/metrics.json` plus a Markdown summary (`summary.md`) with the dataset version, the moments' label rules version and clip reading (`label_rules_version`, `clip_position`), git commit (`-dirty` if tracked files changed) and seed; the summary `metrics.json` is copied into the experiment's folder ([experiments](experiments.md)). For now it takes the scorer's candidates directly, since candidate generation from window predictions is #27:
 
   ```bash
   uv run autoclipper evaluate --candidates c.parquet --moments moments.parquet --clips clips.parquet \
@@ -124,5 +124,5 @@ Template table:
 
   `--vods` lists the VODs to evaluate (the test streamer's), one ID per line; by default every VOD with candidates is evaluated and other VODs' moments are ignored. `--flagged` lists VODs whose clip snapshot is flagged (left out of top-clip recall). `--split` is recorded in the report. The git commit is that of the installed code, wherever the command runs from.
 
-  Candidates have `video_id`, `candidate_id`, `start_s`, `end_s` and `score`; only each VOD's top 10 by score count. Moments and clips come from the same snapshot. Step 1 is implemented in `autoclipper.eval` (`metrics`, `bootstrap`, `harness`): hit rate@10 and top-clip recall@10 per VOD, averaged, with VOD-resampled 95% intervals. A VOD with moments but no candidates scores 0.
+  Candidates have `video_id`, `candidate_id`, `start_s`, `end_s` and `score`; only each VOD's top 10 by score count. Moments and clips come from the same snapshot. The moments must carry one `clip_position` (data model § moments): since #126 a viewer clip is matched where it really is, `[vod_offset_s − duration_s, vod_offset_s)`, and moments built without the column (before #126) or mixing `v0` and `v1` are rejected, so numbers from the two rule versions can't be mixed or compared unknowingly. Report schema version 2 added these fields. Step 1 is implemented in `autoclipper.eval` (`metrics`, `bootstrap`, `harness`): hit rate@10 and top-clip recall@10 per VOD, averaged, with VOD-resampled 95% intervals. A VOD with moments but no candidates scores 0.
 - Bootstrap: 1,000 resamples of VODs with a fixed seed.

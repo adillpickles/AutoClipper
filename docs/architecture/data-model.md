@@ -80,7 +80,7 @@ Source: Helix **Get Clips**. Immutable snapshot files: one row per `clip_id` **w
 | `game_id` | str | Category at clip time |
 | `language` | str | |
 | `created_at` | timestamp | When the clip was made |
-| `vod_offset_s` | float, *nullable* | Helix `vod_offset`, stored unchanged and used as the clip start. ⚠️ Measured to be the clip's *end* ([exp-002](../../experiments/exp-002-clip-offset-check/README.md), confirmed in [exp-003](../../experiments/exp-003-clip-end-confirmation/README.md)); see [data sources](../data/data-sources.md). **Null** happens (VOD deleted, processing delay). Such rows are excluded from labeling. |
+| `vod_offset_s` | float, *nullable* | Helix `vod_offset`, stored unchanged: where the clip **ends** ([exp-002](../../experiments/exp-002-clip-offset-check/README.md), confirmed in [exp-003](../../experiments/exp-003-clip-end-confirmation/README.md)). The clip covers `[max(vod_offset_s − duration_s, 0), vod_offset_s)`; read it only through `autoclipper.labels.moments.clip_interval` ([labeling § 2](../data/labeling.md#2-from-clips-to-moments)). **Null** happens (VOD deleted, processing delay). Such rows are excluded from labeling. |
 | `duration_s` | float | Source interval length; parse the API value, do not assume a universal 60 s maximum |
 | `view_count` | int | At `fetched_at`. Grows over time, so always store when it was observed. |
 | `is_featured` | bool, *nullable* | |
@@ -119,6 +119,7 @@ Derived from **one pinned clips snapshot** (the viewer-clip snapshot taken at in
 | `first_clip_created_at` | timestamp | Lets us measure how fast viewers clipped the moment |
 | `clip_ids` | list<str> | |
 | `views_observed_at` | timestamp | Latest member `fetched_at` in the selected snapshot; not an assertion that all counts were observed simultaneously |
+| `clip_position` | str | How clip positions were read: `end` (label rules `v1`, the default) or `start` (`v0`). One value per table; the evaluation records it and rejects a table that mixes them ([labeling § 9](../data/labeling.md#9-label-rules-versioning)) |
 
 ## `windows`
 

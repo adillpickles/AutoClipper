@@ -47,7 +47,7 @@ from autoclipper.eval.metrics import TOP_CLIPS, top_clip_moments
 from autoclipper.features.audio import AUDIO_FEATURE_VERSION
 from autoclipper.features.chat import CHAT_FEATURE_VERSION, Lexicon
 from autoclipper.labels import alignment as al
-from autoclipper.labels.moments import merge_clips_into_moments
+from autoclipper.labels.moments import CLIP_START, merge_clips_into_moments
 
 log = logging.getLogger(__name__)
 
@@ -397,7 +397,8 @@ def load_collection(
                 raise StudyError(f"VOD {video_id}: {path.name} is missing")
         snapshot = _snapshot_for(per_vod, combined, video_id)
         clips, n_without, n_dropped, n_cut = place_clips(snapshot, duration_s)
-        moments = merge_clips_into_moments(clips).moments
+        # The study reads reported positions as starts on purpose (#126 keeps it the record).
+        moments = merge_clips_into_moments(clips, rule=CLIP_START).moments
         series = _cached_series(cache_dir, video_id, duration_s, chat_path, wav_path, lexicon)
         n_after = (
             pl.scan_parquet(chat_path)

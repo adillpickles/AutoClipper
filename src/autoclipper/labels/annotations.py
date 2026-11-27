@@ -7,10 +7,21 @@ from typing import Final
 
 import polars as pl
 
+from autoclipper.labels.moments import (
+    CLIP_END,
+    CLIP_POSITION_RULE,
+    CLIP_START,
+    ClipPositionRule,
+    clip_interval,
+    valid_clip_interval,
+)
 from autoclipper.labels.splits import Split
 
 NEG_BUFFER_S: Final = 60.0
-LABEL_RULES_VERSION: Final = "v0"
+LABEL_RULES: Final[dict[str, ClipPositionRule]] = {"v0": CLIP_START, "v1": CLIP_END}
+"""Label rule versions and how each reads viewer-clip positions (docs/data/labeling.md § 9)."""
+LABEL_RULES_VERSION: Final = "v1"
+"""The default label rule version: viewer-clip positions are clip ends (#126)."""
 WEIGHT_VERSION: Final = "one-plus-log1p-relviews-v1"
 LABELS_SCHEMA: Final = pl.Schema(
     {
@@ -34,8 +45,13 @@ def label_windows(
     broadcaster_id: str,
     split: Split,
     mature: bool,
+    rule: ClipPositionRule = CLIP_POSITION_RULE,
 ) -> pl.DataFrame:
     """Annotate one covered VOD using its pinned snapshot's clips and moments.
+
+    `rule` turns clip positions into intervals for ``label_n_clips`` (`clip_interval`); moments
+    whose ``clip_position`` names another rule are rejected. Clips whose interval is empty are
+    not counted.
 
     Half-open intervals that only touch do not overlap. A negative is eligible for
     training at distance >= 60 s from the nearest moment (all windows if no moments).
@@ -64,6 +80,11 @@ def label_windows(
     video_id = ids[0]
     if moments.filter(pl.col("video_id") != video_id).height:
         raise ValueError("moments must belong to the windows' VOD")
+    if (
+        "clip_position" in moments.columns
+        and moments.filter(pl.col("clip_position") != rule.name).height
+    ):
+        raise ValueError(f"moments were merged with another clip position rule than {rule.name!r}")
     ordered = moments.sort(["start_s", "moment_id"])
     groups = ordered.to_dicts()
     starts = ordered["start_s"].to_list()
@@ -74,16 +95,15 @@ def label_windows(
     if channel.filter(pl.col("view_count") < 0).height:
         raise ValueError("view_count must be non-negative")
     typical = max(float(median(channel["view_count"].to_list())), 1.0) if channel.height else 1.0
-    placed = channel.filter((pl.col("video_id") == video_id) & pl.col("vod_offset_s").is_not_null())
-    if placed.filter(
-        ~pl.col("vod_offset_s").is_finite()
-        | (pl.col("vod_offset_s") < 0)
-        | ~pl.col("duration_s").is_finite()
-        | (pl.col("duration_s") <= 0)
-    ).height:
+    placed = clip_interval(
+        channel.filter((pl.col("video_id") == video_id) & pl.col("vod_offset_s").is_not_null()),
+        rule,
+    )
+    if placed.filter(~valid_clip_interval()).height:
         raise ValueError("invalid clip interval")
-    clip_starts = sorted(placed["vod_offset_s"].to_list())
-    clip_ends = sorted((placed["vod_offset_s"] + placed["duration_s"]).to_list())
+    placed = placed.filter(pl.col("end_s") > pl.col("start_s"))
+    clip_starts = sorted(placed["start_s"].to_list())
+    clip_ends = sorted(placed["end_s"].to_list())
     rows = []
     for window in windows.sort(["start_s", "window_id"]).iter_rows(named=True):
         start, end = window["start_s"], window["end_s"]

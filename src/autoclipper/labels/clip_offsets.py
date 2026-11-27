@@ -34,7 +34,7 @@ import polars as pl
 
 from autoclipper.labels import alignment as al
 from autoclipper.labels.alignment_study import VodData, place_clips, top_clips
-from autoclipper.labels.moments import merge_clips_into_moments
+from autoclipper.labels.moments import CLIP_START, merge_clips_into_moments
 
 SAMPLE_RATE_HZ: Final = 16_000
 HOP_S: Final = 0.01
@@ -400,7 +400,9 @@ def shift_vod(vod: VodData, shift_s: Mapping[str, float], *, per_duration: float
         vod_offset_s=pl.when(before).then(0.0).otherwise(pl.col("vod_offset_s")),
     ).filter(pl.col("duration_s") > 0)
     placed, _, _, _ = place_clips(moved, vod.duration_s)
-    return replace(vod, clips=placed, moments=merge_clips_into_moments(placed).moments)
+    # `placed` holds moved starts in vod_offset_s, so the merge reads them as starts.
+    moments = merge_clips_into_moments(placed, rule=CLIP_START).moments
+    return replace(vod, clips=placed, moments=moments)
 
 
 def _shift_stats(

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Pilot collection complete (#35). Exploration findings (#36) in § 16. |
-| **Last updated** | 2026-11-25 |
+| **Last updated** | 2026-11-27 |
 | **Data** | 25 active VODs in [`configs/pilot_vods.txt`](../../configs/pilot_vods.txt), collected 2026-11-06 |
 | **How to check** | `uv run python scripts/pilot_report.py --check docs/data/pilot-report.md` |
 
@@ -17,7 +17,7 @@ The pilot collected chat, audio and a viewer-clip snapshot for five VODs of each
 - **12,777 viewer clips**, all with a VOD offset, none in a clip-search range that hit Twitch's limit, every snapshot complete and taken at least 7 days after the stream.
 - **1,703,046 chat messages**, chat download success 25/25, authors pseudonymized, no unredacted @mentions.
 - **Cost:** about 2.1 minutes of ingest and 220 MB of disk per VOD-hour (104 MB if the WAVs aren't kept). The audio download takes two thirds of the time.
-- **For labeling (#38, #40):** under the `v0` label rules, **more than half of all windows would be positive** and some VODs would have no training negatives ([§ 10](#10-implications-for-36-and-38)). #38 (merged 2026-11-07) kept the binary rules at `v0` and added view-relative weights for positives (`one-plus-log1p-relviews-v1`, [labeling § 4](labeling.md#4-window-labels)). The weights make low-view moments count less in training, but they don't change which windows are positive, so the positive rule is still open. Dataset v1 (#40) pins the rule version, so the decision is needed before it is built.
+- **For labeling (#38, #40):** under the `v1` label rules (which, since #126, only correct `v0`'s clip positions), **more than half of all windows would be positive** (52.4 %) and some VODs would have no training negatives ([§ 10](#10-implications-for-36-and-38)). #38 (merged 2026-11-07) kept the binary rules at `v0` and added view-relative weights for positives (`one-plus-log1p-relviews-v1`, [labeling § 4](labeling.md#4-window-labels)). The weights make low-view moments count less in training, but they don't change which windows are positive, so the positive rule is still open. Dataset v1 (#40) pins the rule version, so the decision is needed before it is built.
 
 ## 2. Purpose and method
 
@@ -106,8 +106,8 @@ Unique chatters are counted per channel and across the pilot on the pseudonyms o
 | Clips with ≥ 100 views | 236 |
 | Made after the stream ended | 5,129 (40 %) |
 | Share of a VOD's clips in its densest 20 minutes | 11–41 % (median 21 %) |
-| Clips starting at or after the reported VOD end | 9 in 7 VODs |
-| Clips ending after the reported VOD end | 28 in 16 VODs |
+| Clips starting at or after the reported VOD end | 0 in 0 VODs |
+| Clips ending after the reported VOD end | 6 in 6 VODs |
 | Clip snapshots complete / mature | 25 / 25 of 25 |
 | VOD age at capture | 7.9–29.8 days |
 <!-- END pilot-report:clips -->
@@ -194,22 +194,22 @@ Phase times come from the ingest log lines of each run, and memory comes from th
 <!-- BEGIN pilot-report:labels-preview -->
 | Channel | 10 s windows | Moments | Positive | Negative (≥ 60 s away) | Buffer | Negative share per VOD | Positive / negative, clips ≥ 10 views only |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| caseoh_ | 7,297 | 536 | 56.4 % | 9.8 % | 33.8 % | 6–16 % | 10.2 % / 69.6 % |
-| ishowspeed | 5,724 | 347 | 71.9 % | 4.9 % | 23.1 % | 0–12 % | 22.9 % / 49.8 % |
-| kaicenat | 7,758 | 411 | 71.0 % | 6.3 % | 22.6 % | 2–14 % | 29.1 % / 46.3 % |
-| jynxzi | 9,333 | 712 | 58.6 % | 9.6 % | 31.8 % | 0–19 % | 7.0 % / 77.3 % |
-| loltyler1 | 7,128 | 164 | 11.7 % | 65.9 % | 22.4 % | 51–74 % | 1.5 % / 93.8 % |
-| **all** | 37,240 | 2,170 | 53.8 % | 19.0 % | 27.1 % | 0–74 % | 13.6 % / 68.3 % |
+| caseoh_ | 7,297 | 554 | 54.9 % | 9.9 % | 35.2 % | 6–15 % | 9.8 % / 69.9 % |
+| ishowspeed | 5,724 | 355 | 70.4 % | 4.9 % | 24.7 % | 0–11 % | 21.9 % / 50.1 % |
+| kaicenat | 7,758 | 430 | 68.8 % | 6.5 % | 24.7 % | 2–14 % | 28.4 % / 46.7 % |
+| jynxzi | 9,333 | 760 | 57.2 % | 9.5 % | 33.3 % | 0–19 % | 6.8 % / 77.3 % |
+| loltyler1 | 7,128 | 156 | 11.3 % | 66.3 % | 22.4 % | 52–74 % | 1.6 % / 93.8 % |
+| **all** | 37,240 | 2,255 | 52.4 % | 19.1 % | 28.5 % | 0–74 % | 13.2 % / 68.5 % |
 <!-- END pilot-report:labels-preview -->
 
-This is a **preview, not the labels**. It applies the documented defaults with the existing code: 10 s windows (`make_windows`), and clips merged into moments when they overlap or are at most 5 s apart (`merge_clips_into_moments`). A window counts as positive when it overlaps a moment and as a training negative when it is at least 60 s from every moment ([labeling § 4](labeling.md#4-window-labels)). It ignores view weights, which #38 adds.
+This is a **preview, not the labels**. It applies the documented defaults with the existing code: 10 s windows (`make_windows`), and clips, read as ending at their `vod_offset` (§ 16.2, #126), merged into moments when they overlap or are at most 5 s apart (`merge_clips_into_moments`). A window counts as positive when it overlaps a moment and as a training negative when it is at least 60 s from every moment ([labeling § 4](labeling.md#4-window-labels)). It ignores view weights, which #38 adds.
 
 What the pilot data means for the next issues:
 
-1. **Clips cover most of a dense VOD (#38).** Busy channels have so many overlapping clips that 70 %+ of KaiCenat and IShowSpeed windows overlap a clip, and some VODs have no negatives at all. Merging isn't the cause: the positive windows are the union of the clip intervals, so a smaller merge gap changes the number of moments, not which windows are positive. "Overlaps any moment" is too broad as the positive rule here. Counting only clips with ≥ 10 views brings positives down to 13.6 % of windows and negatives up to 68.3 %, but a fixed view threshold removes clips unevenly by channel and drops more clips made after the stream (they had less time to collect views). #38 kept `v0`, so choosing the rule, recording it as a new `label_rules_version` and comparing it with `v0` is still to do before dataset v1 (#40).
+1. **Clips cover most of a dense VOD (#38).** Busy channels have so many overlapping clips that about 70 % of KaiCenat and IShowSpeed windows overlap a clip (68.8 % and 70.4 %), and some VODs have no negatives at all. Merging isn't the cause: the positive windows are the union of the clip intervals, so a smaller merge gap changes the number of moments, not which windows are positive. "Overlaps any moment" is too broad as the positive rule here. Counting only clips with ≥ 10 views brings positives down to 13.2 % of windows and negatives up to 68.5 %, but a fixed view threshold removes clips unevenly by channel and drops more clips made after the stream (they had less time to collect views). #38 kept `v0`, and `v1` (#126) only corrects clip positions, so choosing the positive rule, recording it as a new `label_rules_version` and comparing it with `v1` is still to do before dataset v1 (#40).
 2. **Streamers differ by 20×.** From about 9 clips per VOD-hour (Tyler1) to over 200 (KaiCenat), and 6.6–338 per VOD. Normalize weights per streamer (as [labeling § 6](labeling.md#6-normalization-across-channels) plans), and expect the Tyler1 test fold to be small (186 clips) with wide intervals.
 3. **Most clips have 1 view.** 55 % of clips have a single view. With equal weights they would dominate the positives, so the view-relative weights of [labeling § 6](labeling.md#6-normalization-across-channels), or a view threshold, matter here.
-4. **Clip and chat times past the VOD end.** Helix reports whole seconds, and the audio runs up to a second longer. Nine clips start 0–1 s past the reported end, 28 run past it (by up to about a minute), and chat continues for up to 35 s. Clamp moments to the VOD and treat chat after the end as lead context only.
+4. **Clip and chat times past the VOD end.** Helix reports whole seconds, and the audio runs up to a second longer. Read as clip ends (§ 16.2), no clip starts past the reported end and 6 end 1 s past it; read as starts, 9 seemed to start past it and 28 to run past it by up to about a minute. Chat continues for up to 35 s. Clamp moments to the VOD and treat chat after the end as lead context only.
 5. **No muted segments reported.** Helix gave no muted segments for any of the 26 VODs, so `is_muted` will be false everywhere. Muted stretches can only show up in the audio (silence features).
 6. **For #36.** The chat delay and clip alignment questions can use all 25 VODs. Chat is dense enough (2,991–29,797 messages per VOD-hour) to estimate lag per channel. Clips made after the stream (40 %) were made from the VOD, not from the live stream. Whether they line up with chat and audio peaks differently from live clips is worth checking.
 
@@ -295,7 +295,7 @@ These findings come from three reproducible runs on the 25 active VODs: [exp-001
 **In brief:**
 
 - Chat reacts about 12 s after the streamer's loudest moments.
-- Helix `vod_offset` marks where a viewer clip **ends**, not where it starts. Everything that uses clip positions today reads them one clip length too late.
+- Helix `vod_offset` marks where a viewer clip **ends**, not where it starts. Until #126, everything that used clip positions read them one clip length too late.
 - Chat and audio spikes are rare and line up with clips only weakly, even with corrected positions.
 
 ### 16.1 Chat reacts about 12 s after something happens
@@ -310,7 +310,7 @@ These findings come from three reproducible runs on the 25 active VODs: [exp-001
 
 **Finding.** A viewer clip's content is `[vod_offset_s − duration_s, vod_offset_s]`: Twitch reports the clip's end, not its start.
 
-**What gave it away.** Read as the start, as the pipeline does today, the reported positions put the payoff *before* the clip: chat peaks 1 s before a moment's start (−7 to +1 s; 2,169 moments), loudness is raised over the 25 s before it, and 65 % of the 7,647 live clips were created before their reported end, which a live clip can't be.
+**What gave it away.** Read as the start, as the pipeline did before #126, the reported positions put the payoff *before* the clip: chat peaks 1 s before a moment's start (−7 to +1 s; 2,169 moments), loudness is raised over the 25 s before it, and 65 % of the 7,647 live clips were created before their reported end, which a live clip can't be.
 
 **Direct check (exp-002).** 50 of the most-viewed clips (10 per channel, half live and half post-stream) were downloaded and their own audio found in the VOD's audio near the reported position. All 50 matched strongly (10th-percentile correlation 0.98). Every clip's true start is 10–62 s before the reported one, and the gap is almost exactly the clip's own length (line fit: slope −0.93, r = −0.97). True end minus reported position is +0.73 s (0.43–0.96 s, IQR 1.2 s; +0.66 s with metadata lengths): +0.48 s for live clips and +1.00 s for post-stream ones, the same on every channel. With true positions, live clips are created after their content ends, as they must be.
 
@@ -333,7 +333,7 @@ These findings come from three reproducible runs on the 25 active VODs: [exp-001
 
 ### 16.4 Recommendations (proposals, not adopted)
 
-1. **Correct viewer-clip positions before dataset v1 (#40).** Read a clip's interval as `[vod_offset_s − duration_s, vod_offset_s]` (the 0.7 s residual is far below the 10 s window). This changes the labels, so it needs a new `label_rules_version` compared with `v0`. Apply the same correction wherever viewer-clip positions are used: moments merged into candidates, the ±15 s evaluation match and viewer-clip exports. Ingest can keep storing Helix's value unchanged. Tracked in #126.
+1. **Correct viewer-clip positions before dataset v1 (#40).** Read a clip's interval as `[vod_offset_s − duration_s, vod_offset_s]` (the 0.7 s residual is far below the 10 s window). This changes the labels, so it needs a new `label_rules_version` compared with `v0`. Apply the same correction wherever viewer-clip positions are used: moments merged into candidates, the ±15 s evaluation match and viewer-clip exports. Ingest can keep storing Helix's value unchanged. **Done in #126** (label rules `v1`, the default; `v0` still builds); comparing the two on dataset v1 is tracked in #40.
 2. **Window size: keep 10 s.** Chat's reaction lasts about 25 s, so a 10 s window holds a good part of it and the lead features hold the rest. Lift rises a little with 15 s windows (1.50 against 1.33, reported positions) but with fewer spikes; worth a modeling experiment, not a rule change.
 3. **How far ahead to look at chat: keep `lead{1..3}` (30 s).** It covers the 12 s delay and the reaction's +24 s tail. With corrected positions, chat around a moment peaks well after its start, which is where the lead features look.
 4. **Clip padding: no extra shift once positions are corrected.** With corrected positions the loudest second falls before or after a top clip no more often than chance (29 % each, against 34 %); the "pad 20–30 s before" pattern of the reported positions was the position error. Keep padding a small, symmetric editing choice. Model candidates are on the analysis timeline and need no correction.
