@@ -121,6 +121,14 @@ const HEALTH_WITH_CAPTIONS = {
   captions_available: true,
 };
 
+/**
+ * The trim controls stay locked until candidate media (the export limits) has loaded; the
+ * "Allowed range" line replaces the loading status at that point. Wait for it before editing.
+ */
+async function waitForMediaLimits(range: RegExp = /^Allowed range:/) {
+  await screen.findByText(range);
+}
+
 describe("ClipEditor", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -151,6 +159,7 @@ describe("ClipEditor", () => {
     const endInput = screen.getByLabelText("End (seconds)") as HTMLInputElement;
     expect(startInput.value).toBe("118");
     expect(endInput.value).toBe("148");
+    await waitForMediaLimits();
 
     fireEvent.click(screen.getByLabelText("Move start 5 seconds earlier"));
     fireEvent.click(screen.getByLabelText("Move end 1 second later"));
@@ -645,6 +654,9 @@ describe("ClipEditor", () => {
     const endInput2 = (await screen.findByLabelText(
       "End (seconds)",
     )) as HTMLInputElement;
+    // The input appears with the analysis result; the probed 159.96 s limit arrives with
+    // candidate media afterwards. Nudge only once that limit is on screen (#171).
+    await waitForMediaLimits(/^Allowed range: 1:20–2:39/);
     fireEvent.click(screen.getByLabelText("Move end 1 second later"));
     expect(endInput2.value).toBe("159.96");
     const resetBtn = screen.getByRole("button", {
@@ -653,6 +665,110 @@ describe("ClipEditor", () => {
     expect(resetBtn.disabled).toBe(false);
     fireEvent.click(resetBtn);
     expect(endInput2.value).toBe("159.94");
+  });
+
+  it("locks trim edits until candidate media loads, then clamps nudges to the probed limits", async () => {
+    const { rememberedTrim } = await import("@/lib/job-state");
+    const probedMedia: CandidateMedia = {
+      ...AVAILABLE_MEDIA,
+      export: { ...AVAILABLE_MEDIA.export, min_start_s: 80, max_end_s: 159.96 },
+    };
+    let resolveMedia: ((media: CandidateMedia) => void) | null = null;
+    api.getResult.mockResolvedValue({
+      ...RESULT,
+      candidates: [{ ...RESULT.candidates[0], start_s: 120, end_s: 159.94 }],
+    });
+    api.getCandidateMedia.mockImplementation(
+      () =>
+        new Promise<CandidateMedia>((resolve) => {
+          resolveMedia = resolve;
+        }),
+    );
+
+    render(<ClipEditor />);
+
+    const endInput = (await screen.findByLabelText(
+      "End (seconds)",
+    )) as HTMLInputElement;
+    await vi.waitFor(() => expect(resolveMedia).not.toBeNull());
+
+    // While media is pending, every trim control is disabled and points at the reason.
+    const status = screen.getByText(
+      "Loading media limits… Trimming unlocks when they arrive.",
+    );
+    const lockedControls = [
+      screen.getByLabelText("Start (seconds)"),
+      endInput,
+      ...[
+        "Move start 5 seconds earlier",
+        "Move start 1 second earlier",
+        "Move start 1 second later",
+        "Move start 5 seconds later",
+        "Move end 5 seconds earlier",
+        "Move end 1 second earlier",
+        "Move end 1 second later",
+        "Move end 5 seconds later",
+      ].map((label) => screen.getByLabelText(label)),
+    ] as (HTMLInputElement | HTMLButtonElement)[];
+    for (const control of lockedControls) {
+      expect(control.disabled).toBe(true);
+      expect(control.getAttribute("aria-describedby")).toBe(status.id);
+    }
+    // The whole-VOD fallback is never presented as the allowed range.
+    expect(screen.queryByText(/^Allowed range:/)).toBeNull();
+
+    // A locked nudge neither moves nor saves the trim past the real limit.
+    fireEvent.click(screen.getByLabelText("Move end 1 second later"));
+    expect(endInput.value).toBe("159.94");
+    expect(rememberedTrim("job_1", "c001")).toBeNull();
+
+    resolveMedia!(probedMedia);
+    await waitForMediaLimits(/^Allowed range: 1:20–2:39/);
+    for (const control of lockedControls) {
+      expect(control.disabled).toBe(false);
+      expect(control.getAttribute("aria-describedby")).toBeNull();
+    }
+    fireEvent.click(screen.getByLabelText("Move end 1 second later"));
+    expect(endInput.value).toBe("159.96");
+  });
+
+  it("explains why trimming is unavailable when the media request fails and unlocks after Retry preview", async () => {
+    const { ApiRequestError } = await import("@/lib/api/client");
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia
+      .mockRejectedValueOnce(
+        new ApiRequestError(500, {
+          code: "internal_error",
+          message: "Temporary server error loading media.",
+          details: null,
+        }),
+      )
+      .mockResolvedValue(AVAILABLE_MEDIA);
+
+    render(<ClipEditor />);
+
+    expect(
+      await screen.findByText("Temporary server error loading media."),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Trimming is unavailable because the media limits couldn't be loaded. Use Retry preview to try again.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Trimming and export are paused until the media limits load. Retry to load them.",
+      ),
+    ).toBeTruthy();
+    const startInput = screen.getByLabelText(
+      "Start (seconds)",
+    ) as HTMLInputElement;
+    expect(startInput.disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry preview" }));
+    await waitForMediaLimits(/^Allowed range: 1:28–2:58/);
+    expect(startInput.disabled).toBe(false);
+    expect(screen.queryByText(/Trimming is unavailable/)).toBeNull();
   });
 
   it("enforces the 0.5 s minimum for manual entries and short initial candidates", async () => {
@@ -670,6 +786,7 @@ describe("ClipEditor", () => {
       name: "Re-render clip",
     }) as HTMLButtonElement;
     expect(rerenderButton.disabled).toBe(true);
+    await waitForMediaLimits();
 
     // Manually entering a 0.1 s selection clamps to 0.5 s on blur and enables export.
     const endInput = screen.getByLabelText("End (seconds)") as HTMLInputElement;
@@ -705,6 +822,7 @@ describe("ClipEditor", () => {
       "Start (seconds)",
     )) as HTMLInputElement;
     expect(reopenedStart.value).toBe("113");
+    await waitForMediaLimits();
 
     // Resetting restores original candidate bounds and clears the saved trim.
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));

@@ -96,6 +96,7 @@ export function ClipEditor() {
   const [retryingPreview, setRetryingPreview] = useState(false);
   const [whyOpen, setWhyOpen] = useState(false);
   const whyPanelId = useId();
+  const trimStatusId = useId();
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const pollRunRef = useRef(0);
@@ -288,6 +289,15 @@ export function ClipEditor() {
     minStartS: exportInfo?.min_start_s ?? 0,
     maxEndS: exportInfo?.max_end_s ?? result.vod.duration_s,
     maxDurationS: exportInfo?.max_duration_s ?? 90,
+  };
+
+  // Until candidate media arrives, `bounds` is only the whole-VOD fallback, so an edit could
+  // leave (and save to job state) a trim outside the real export limits. Lock trim edits until
+  // the first media response; a failed request keeps them locked and says why.
+  const trimLocked = media === null;
+  const trimLockProps = {
+    disabled: trimLocked,
+    "aria-describedby": trimLocked ? trimStatusId : undefined,
   };
 
   const layouts = exportInfo ? supportedLayouts(exportInfo.layouts) : [];
@@ -716,6 +726,12 @@ export function ClipEditor() {
                         the preview or export directly.
                       </p>
                     )}
+                    {exportInfo === null && (
+                      <p className="max-w-md text-xs text-zinc-400">
+                        Trimming and export are paused until the media limits
+                        load. Retry to load them.
+                      </p>
+                    )}
                     <button
                       type="button"
                       onClick={retryPreview}
@@ -789,7 +805,8 @@ export function ClipEditor() {
             <button
               type="button"
               onClick={resetTrim}
-              disabled={!isModified}
+              disabled={!isModified || trimLocked}
+              aria-describedby={trimLockProps["aria-describedby"]}
               className="rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 ring-1 ring-zinc-300 hover:bg-zinc-50 disabled:opacity-45 dark:bg-zinc-900 dark:text-zinc-200 dark:ring-zinc-700 dark:hover:bg-zinc-800"
             >
               Reset
@@ -812,6 +829,7 @@ export function ClipEditor() {
                   aria-label="Move start 5 seconds earlier"
                   onClick={() => applyTrim(nudgeStart(trim, -5, bounds), true)}
                   className={NUDGE_BUTTON}
+                  {...trimLockProps}
                 >
                   -5s
                 </button>
@@ -820,6 +838,7 @@ export function ClipEditor() {
                   aria-label="Move start 1 second earlier"
                   onClick={() => applyTrim(nudgeStart(trim, -1, bounds), true)}
                   className={NUDGE_BUTTON}
+                  {...trimLockProps}
                 >
                   -1s
                 </button>
@@ -839,12 +858,14 @@ export function ClipEditor() {
                     if (event.key === "Enter") commitStartInput();
                   }}
                   className={TIME_INPUT}
+                  {...trimLockProps}
                 />
                 <button
                   type="button"
                   aria-label="Move start 1 second later"
                   onClick={() => applyTrim(nudgeStart(trim, 1, bounds), true)}
                   className={NUDGE_BUTTON}
+                  {...trimLockProps}
                 >
                   +1s
                 </button>
@@ -853,6 +874,7 @@ export function ClipEditor() {
                   aria-label="Move start 5 seconds later"
                   onClick={() => applyTrim(nudgeStart(trim, 5, bounds), true)}
                   className={NUDGE_BUTTON}
+                  {...trimLockProps}
                 >
                   +5s
                 </button>
@@ -874,6 +896,7 @@ export function ClipEditor() {
                   aria-label="Move end 5 seconds earlier"
                   onClick={() => applyTrim(nudgeEnd(trim, -5, bounds))}
                   className={NUDGE_BUTTON}
+                  {...trimLockProps}
                 >
                   -5s
                 </button>
@@ -882,6 +905,7 @@ export function ClipEditor() {
                   aria-label="Move end 1 second earlier"
                   onClick={() => applyTrim(nudgeEnd(trim, -1, bounds))}
                   className={NUDGE_BUTTON}
+                  {...trimLockProps}
                 >
                   -1s
                 </button>
@@ -901,12 +925,14 @@ export function ClipEditor() {
                     if (event.key === "Enter") commitEndInput();
                   }}
                   className={TIME_INPUT}
+                  {...trimLockProps}
                 />
                 <button
                   type="button"
                   aria-label="Move end 1 second later"
                   onClick={() => applyTrim(nudgeEnd(trim, 1, bounds))}
                   className={NUDGE_BUTTON}
+                  {...trimLockProps}
                 >
                   +1s
                 </button>
@@ -915,19 +941,32 @@ export function ClipEditor() {
                   aria-label="Move end 5 seconds later"
                   onClick={() => applyTrim(nudgeEnd(trim, 5, bounds))}
                   className={NUDGE_BUTTON}
+                  {...trimLockProps}
                 >
                   +5s
                 </button>
               </div>
             </div>
 
-            <p className="text-xs text-zinc-500 tabular-nums dark:text-zinc-400">
-              Allowed range: {formatTime(bounds.minStartS)}–
-              {formatTime(bounds.maxEndS)} · min {MIN_TRIM_DURATION_S}s
-              {bounds.maxDurationS !== null
-                ? ` · max ${bounds.maxDurationS}s`
-                : ""}
-            </p>
+            {trimLocked ? (
+              <p
+                id={trimStatusId}
+                role="status"
+                className="text-xs text-zinc-500 dark:text-zinc-400"
+              >
+                {mediaError !== null
+                  ? "Trimming is unavailable because the media limits couldn't be loaded. Use Retry preview to try again."
+                  : "Loading media limits… Trimming unlocks when they arrive."}
+              </p>
+            ) : (
+              <p className="text-xs text-zinc-500 tabular-nums dark:text-zinc-400">
+                Allowed range: {formatTime(bounds.minStartS)}–
+                {formatTime(bounds.maxEndS)} · min {MIN_TRIM_DURATION_S}s
+                {bounds.maxDurationS !== null
+                  ? ` · max ${bounds.maxDurationS}s`
+                  : ""}
+              </p>
+            )}
           </div>
 
           <fieldset className="flex flex-col gap-2">
@@ -1132,7 +1171,7 @@ function ExportProgressPanel({ exportRecord }: { exportRecord: Export }) {
 }
 
 const NUDGE_BUTTON =
-  "rounded-lg bg-zinc-100 px-2.5 py-2 text-xs font-semibold tabular-nums text-zinc-800 hover:bg-zinc-200 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700";
+  "rounded-lg bg-zinc-100 px-2.5 py-2 text-xs font-semibold tabular-nums text-zinc-800 hover:bg-zinc-200 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-45 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700";
 
 const TIME_INPUT =
-  "w-full min-w-0 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-center text-sm tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-zinc-700 dark:bg-zinc-950";
+  "w-full min-w-0 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-center text-sm tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-amber-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950";
