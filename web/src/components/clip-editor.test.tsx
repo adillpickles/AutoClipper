@@ -129,6 +129,36 @@ async function waitForMediaLimits(range: RegExp = /^Allowed range:/) {
   await screen.findByText(range);
 }
 
+/** Export availability for "unavailable": the contract sends null limits and no layouts. */
+const UNAVAILABLE_EXPORT: CandidateMedia["export"] = {
+  status: "unavailable",
+  reason: "fetch_failed",
+  message:
+    "Export isn't available: downloading the video failed. Trying again later may work.",
+  min_start_s: null,
+  max_end_s: null,
+  max_duration_s: null,
+  layouts: [],
+};
+
+/** Both time inputs and the eight nudge buttons. */
+function trimControls(): (HTMLInputElement | HTMLButtonElement)[] {
+  return [
+    screen.getByLabelText("Start (seconds)") as HTMLInputElement,
+    screen.getByLabelText("End (seconds)") as HTMLInputElement,
+    ...[
+      "Move start 5 seconds earlier",
+      "Move start 1 second earlier",
+      "Move start 1 second later",
+      "Move start 5 seconds later",
+      "Move end 5 seconds earlier",
+      "Move end 1 second earlier",
+      "Move end 1 second later",
+      "Move end 5 seconds later",
+    ].map((label) => screen.getByLabelText(label) as HTMLButtonElement),
+  ];
+}
+
 describe("ClipEditor", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -512,6 +542,16 @@ describe("ClipEditor", () => {
 
     expect(await screen.findByText("Source unavailable")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry preview" })).toBeNull();
+    // Export is unavailable with no retry to offer, so trimming is locked without one (#180).
+    expect(
+      screen.getByText(
+        "Trimming is unavailable while this clip can't be exported.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Retry to check again/)).toBeNull();
+    expect(
+      (screen.getByLabelText("Start (seconds)") as HTMLInputElement).disabled,
+    ).toBe(true);
     const localLink = screen.getByRole("link", {
       name: "Analyze with a local file",
     });
@@ -769,6 +809,113 @@ describe("ClipEditor", () => {
     await waitForMediaLimits(/^Allowed range: 1:28–2:58/);
     expect(startInput.disabled).toBe(false);
     expect(screen.queryByText(/Trimming is unavailable/)).toBeNull();
+  });
+
+  it("locks every trim control, playhead buttons included, while export is unavailable (#180)", async () => {
+    const { rememberedTrim } = await import("@/lib/job-state");
+    api.getResult.mockResolvedValue(RESULT);
+    // The preview plays, but export is unavailable, so the contract sends null limits.
+    api.getCandidateMedia.mockResolvedValue({
+      ...AVAILABLE_MEDIA,
+      export: UNAVAILABLE_EXPORT,
+    });
+
+    render(<ClipEditor />);
+
+    expect(await screen.findByLabelText("Preview of clip 1")).toBeTruthy();
+    const status = await screen.findByText(
+      "Trimming is unavailable while this clip can't be exported.",
+    );
+    // No Retry preview button here, so the status line doesn't mention one.
+    expect(screen.queryByRole("button", { name: "Retry preview" })).toBeNull();
+    const lockedControls = [
+      ...trimControls(),
+      ...["Set start to playhead", "Set end to playhead", "Reset"].map(
+        (name) => screen.getByRole("button", { name }) as HTMLButtonElement,
+      ),
+    ];
+    for (const control of lockedControls) {
+      expect(control.disabled).toBe(true);
+      expect(control.getAttribute("aria-describedby")).toBe(status.id);
+    }
+    // The whole-VOD fallback is never presented as the allowed range.
+    expect(screen.queryByText(/^Allowed range:/)).toBeNull();
+    // "Play selection" doesn't edit the trim, so it stays usable.
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Play selection",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+
+    const endInput = screen.getByLabelText("End (seconds)") as HTMLInputElement;
+    fireEvent.click(screen.getByLabelText("Move end 5 seconds later"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Set end to playhead" }),
+    );
+    expect(endInput.value).toBe("148");
+    expect(rememberedTrim("job_1", "c001")).toBeNull();
+  });
+
+  it("never saves a trim against made-up bounds while export is unavailable and unlocks once it's available (#180)", async () => {
+    const { rememberedTrim } = await import("@/lib/job-state");
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia
+      .mockResolvedValueOnce({
+        ...AVAILABLE_MEDIA,
+        preview: {
+          status: "unavailable",
+          kind: null,
+          url: null,
+          media_start_s: null,
+          media_end_s: null,
+          reason: "fetch_failed",
+          message:
+            "Preview isn't available: downloading the video failed. Trying again later may work.",
+        },
+        export: UNAVAILABLE_EXPORT,
+      })
+      .mockResolvedValue({
+        ...AVAILABLE_MEDIA,
+        export: { ...AVAILABLE_MEDIA.export, max_end_s: 148.5 },
+      });
+
+    render(<ClipEditor />);
+
+    const status = await screen.findByText(
+      "Trimming is unavailable while this clip can't be exported. Use Retry preview to check again.",
+    );
+    expect(
+      screen.getByText(
+        "Trimming and export are paused while this clip can't be exported. Retry to check again.",
+      ),
+    ).toBeTruthy();
+    for (const control of trimControls()) {
+      expect(control.disabled).toBe(true);
+      expect(control.getAttribute("aria-describedby")).toBe(status.id);
+    }
+
+    // The #180 repro: before the fix this nudge clamped only to the VOD's length (360 s) and
+    // saved 149 s, past the real 148.5 s limit that arrives after the retry.
+    const endInput = screen.getByLabelText("End (seconds)") as HTMLInputElement;
+    fireEvent.click(screen.getByLabelText("Move end 1 second later"));
+    expect(endInput.value).toBe("148");
+    expect(rememberedTrim("job_1", "c001")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry preview" }));
+    await waitForMediaLimits(/^Allowed range: 1:28–2:28/);
+    expect(screen.queryByText(/Trimming is unavailable/)).toBeNull();
+    for (const control of trimControls()) {
+      expect(control.disabled).toBe(false);
+      expect(control.getAttribute("aria-describedby")).toBeNull();
+    }
+    fireEvent.click(screen.getByLabelText("Move end 1 second later"));
+    expect(endInput.value).toBe("148.5");
+    expect(rememberedTrim("job_1", "c001")).toEqual({
+      start_s: 118,
+      end_s: 148.5,
+    });
   });
 
   it("enforces the 0.5 s minimum for manual entries and short initial candidates", async () => {
