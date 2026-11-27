@@ -29,7 +29,8 @@ channels:
   - login: jynxzi
     reason: Competitive FPS (Rainbow Six Siege), very large audience
     stacked_layout:
-      facecam: [0.02, 0.04, 0.22, 0.28]
+      # Measured 2026-11-27 on VOD 2941757172: bottom-left webcam overlay in gameplay scenes.
+      facecam: [0.0, 0.6, 0.3, 0.4]
       gameplay: [0.0, 0.0, 1.0, 1.0]
       facecam_fraction: 0.35
   # loltyler1 (broadcaster_id 51496027, Partner; Helix 2026-11-06) replaces FlightReacts
