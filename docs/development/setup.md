@@ -159,6 +159,8 @@ npm run dev
 
 Open <http://localhost:3000>. To switch back to browser mock mode without deleting `web/.env.local`, set `NEXT_PUBLIC_API_MODE=mock`. `AUTOCLIPPER_CORS_ORIGINS` already allows `http://localhost:3000` and `http://127.0.0.1:3000` by default.
 
+If you already have a downloaded copy of a VOD, the start page offers both **Upload or drop file** (which streams chunks to `<artifacts_dir>/uploads/` with progress and cancellation, validated by FFprobe) and **Use file path on this computer** (which reads an absolute path directly without copying). In both cases, the Twitch VOD link is still required for metadata, chat replay and viewer clips.
+
 Run the same checks as CI before you push:
 
 ```bash

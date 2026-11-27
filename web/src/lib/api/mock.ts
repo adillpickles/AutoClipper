@@ -31,10 +31,17 @@ import type {
   ListJobsParams,
   Progress,
   State,
+  UploadVideoOptions,
+  VideoUpload,
 } from "@/lib/api/types";
 import { INVALID_CHANNEL_MESSAGE, parseChannel } from "@/lib/api/channel";
 import { EXPORT_STAGES, HIGHLIGHTS_STAGES, JOB_STAGES } from "@/lib/api/stages";
-import { INVALID_VOD_MESSAGE, looksAbsolute, parseVod } from "@/lib/api/vod";
+import {
+  hasSupportedVideoExtension,
+  INVALID_VOD_MESSAGE,
+  looksAbsolute,
+  parseVod,
+} from "@/lib/api/vod";
 import {
   buildClipFilename,
   buildHighlightsFilename,
@@ -124,10 +131,18 @@ interface StoredJob {
   job_id: string;
   video_id: string;
   video_path: string | null;
+  upload_id?: string | null;
   created_ms: number;
   seq?: number;
   /** Fixed FIFO start time preserved across deletions of finished jobs (§ 9.3). */
   start_ms?: number;
+}
+
+interface StoredUpload {
+  upload_id: string;
+  filename: string;
+  size_bytes: number;
+  duration_s: number | null;
 }
 
 type StoredExportInner = Omit<
@@ -175,13 +190,20 @@ interface StoredHighlights {
 
 interface Store {
   jobs: Record<string, StoredJob>;
+  uploads: Record<string, StoredUpload>;
   exports: Record<string, StoredExport>;
   highlights: Record<string, StoredHighlights>;
   /** One enqueue counter across both render kinds, so equal timestamps stay first in, first out. */
   next_seq: number;
 }
 
-let memory: Store = { jobs: {}, exports: {}, highlights: {}, next_seq: 0 };
+let memory: Store = {
+  jobs: {},
+  uploads: {},
+  exports: {},
+  highlights: {},
+  next_seq: 0,
+};
 
 function load(): Store {
   try {
@@ -190,6 +212,7 @@ function load(): Store {
       const parsed = JSON.parse(text) as Partial<Store>;
       memory = {
         jobs: parsed.jobs ?? {},
+        uploads: parsed.uploads ?? {},
         exports: parsed.exports ?? {},
         highlights: parsed.highlights ?? {},
         next_seq: parsed.next_seq ?? 0,
@@ -400,7 +423,9 @@ function mediaFor(
       "This moment isn't part of the analysis.",
     );
   const duration = result.vod.duration_s;
-  if (stored.video_id === NO_MEDIA_VIDEO_ID && stored.video_path === null) {
+  const hasLocalSource =
+    stored.video_path !== null || (stored.upload_id ?? null) !== null;
+  if (stored.video_id === NO_MEDIA_VIDEO_ID && !hasLocalSource) {
     return {
       job_id: stored.job_id,
       candidate_id: candidateId,
@@ -805,7 +830,31 @@ function doneJobsByVideo(store: Store, at: number): Map<string, string> {
   return map;
 }
 
-export function createMockClient(now: () => number = Date.now): ApiClient {
+/** Length of one simulated upload step in browser mock mode. */
+export const MOCK_UPLOAD_STEP_MS = 100;
+
+function waitWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException("Upload cancelled.", "AbortError"));
+  }
+  if (ms <= 0) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Upload cancelled.", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+export function createMockClient(
+  now: () => number = Date.now,
+  uploadStepMs = MOCK_UPLOAD_STEP_MS,
+): ApiClient {
   const client = {
     async getHealth() {
       return {
@@ -1168,6 +1217,56 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       return (await client.listJobs(undefined, jobIds)).items;
     },
 
+    async uploadVideo(
+      file: File,
+      options?: UploadVideoOptions,
+    ): Promise<VideoUpload> {
+      if (options?.signal?.aborted) {
+        throw new DOMException("Upload cancelled.", "AbortError");
+      }
+      if (!hasSupportedVideoExtension(file.name)) {
+        throw new ApiRequestError(422, {
+          code: "invalid_video_upload",
+          message:
+            "Unsupported video file type. Use a video file such as .mp4, .mkv, .ts, .mov, .webm, .flv, or .avi.",
+          details: null,
+        });
+      }
+      if (file.size <= 0) {
+        throw new ApiRequestError(422, {
+          code: "invalid_video_upload",
+          message: "The uploaded video file is empty.",
+          details: null,
+        });
+      }
+      const fractions = [0, 0.25, 0.5, 0.75, 1];
+      for (const [index, fraction] of fractions.entries()) {
+        if (options?.signal?.aborted) {
+          throw new DOMException("Upload cancelled.", "AbortError");
+        }
+        options?.onProgress?.({
+          loaded: Math.round(file.size * fraction),
+          total: file.size,
+          fraction,
+        });
+        if (index < fractions.length - 1) {
+          await waitWithAbort(uploadStepMs, options?.signal);
+        }
+      }
+      const upload: StoredUpload = {
+        upload_id: randomId("upl"),
+        filename: file.name,
+        size_bytes: file.size,
+        duration_s: 360,
+      };
+      const store = load();
+      save({
+        ...store,
+        uploads: { ...store.uploads, [upload.upload_id]: upload },
+      });
+      return upload;
+    },
+
     async createJob(request: CreateJobRequest) {
       const videoId = parseVod(request.vod);
       if (videoId === null) {
@@ -1180,6 +1279,17 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       const videoPath = request.video_path?.trim()
         ? request.video_path.trim()
         : null;
+      const uploadId = request.upload_id?.trim()
+        ? request.upload_id.trim()
+        : null;
+      if (videoPath !== null && uploadId !== null) {
+        throw new ApiRequestError(422, {
+          code: "invalid_request",
+          message:
+            "The request is invalid: pass either video_path or upload_id, not both.",
+          details: { fields: ["video_path", "upload_id"] },
+        });
+      }
       if (videoPath !== null && !looksAbsolute(videoPath)) {
         throw new ApiRequestError(422, {
           code: "invalid_video_path",
@@ -1189,12 +1299,21 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
         });
       }
       const store = load();
+      if (uploadId !== null && !store.uploads[uploadId]) {
+        throw new ApiRequestError(422, {
+          code: "invalid_video_upload",
+          message:
+            "The uploaded video file is missing or can't be opened. Upload the video again.",
+          details: null,
+        });
+      }
       const at = now();
       for (const stored of Object.values(store.jobs)) {
         const job = jobNow(store, stored.job_id, at) as Job;
         if (
           stored.video_id === videoId &&
           stored.video_path === videoPath &&
+          (stored.upload_id ?? null) === uploadId &&
           (job.state === "queued" || job.state === "running")
         ) {
           return { job, created: false };
@@ -1205,6 +1324,7 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
         job_id: randomId("job"),
         video_id: videoId,
         video_path: videoPath,
+        upload_id: uploadId,
         created_ms: at,
         seq,
       };
@@ -1640,7 +1760,7 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
   return client;
 }
 
-/** Forget every mock job, export and highlights video (tests). */
+/** Forget every mock job, upload, export and highlights video (tests). */
 export function resetMockStore(): void {
-  save({ jobs: {}, exports: {}, highlights: {}, next_seq: 0 });
+  save({ jobs: {}, uploads: {}, exports: {}, highlights: {}, next_seq: 0 });
 }

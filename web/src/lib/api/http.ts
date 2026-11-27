@@ -24,6 +24,8 @@ import type {
   PreflightReport,
   ToolSetupRequest,
   ToolSetupStatus,
+  UploadVideoOptions,
+  VideoUpload,
 } from "@/lib/api/types";
 
 const API_PREFIX = "/api/v1";
@@ -53,6 +55,7 @@ export function normalizeOrigin(origin: string): string {
 export function createHttpClient(
   origin: string,
   fetchImpl: typeof fetch = globalThis.fetch,
+  xhrFactory: () => XMLHttpRequest = () => new XMLHttpRequest(),
 ): ApiClient {
   const baseOrigin = normalizeOrigin(origin);
 
@@ -171,6 +174,105 @@ export function createHttpClient(
       return data;
     },
 
+    async uploadVideo(
+      file: File,
+      options?: UploadVideoOptions,
+    ): Promise<VideoUpload> {
+      if (options?.signal?.aborted) {
+        throw new DOMException("Upload cancelled.", "AbortError");
+      }
+      const url = new URL(
+        `${API_PREFIX}/uploads?filename=${encodeURIComponent(file.name)}`,
+        baseOrigin,
+      ).toString();
+      const totalHint = file.size > 0 ? file.size : null;
+      options?.onProgress?.({
+        loaded: 0,
+        total: totalHint,
+        fraction: totalHint !== null ? 0 : null,
+      });
+
+      return new Promise<VideoUpload>((resolve, reject) => {
+        const xhr = xhrFactory();
+        let settled = false;
+
+        const cleanup = () => {
+          options?.signal?.removeEventListener("abort", onAbort);
+        };
+        const onAbort = () => {
+          xhr.abort();
+        };
+
+        options?.signal?.addEventListener("abort", onAbort, { once: true });
+
+        xhr.open("POST", url, true);
+        xhr.setRequestHeader("Content-Type", "application/octet-stream");
+
+        if (xhr.upload) {
+          xhr.upload.onprogress = (event) => {
+            const total = event.lengthComputable ? event.total : totalHint;
+            const fraction =
+              total !== null && total > 0
+                ? Math.min(1, event.loaded / total)
+                : null;
+            options?.onProgress?.({
+              loaded: event.loaded,
+              total,
+              fraction,
+            });
+          };
+        }
+
+        xhr.onload = () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          let parsed: unknown = null;
+          try {
+            parsed = JSON.parse(xhr.responseText);
+          } catch {
+            // Non-JSON error body handled below.
+          }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(parsed as VideoUpload);
+            return;
+          }
+          if (isErrorResponse(parsed)) {
+            reject(
+              new ApiRequestError(xhr.status, {
+                code: parsed.error.code,
+                message: parsed.error.message,
+                details: parsed.error.details ?? null,
+              }),
+            );
+            return;
+          }
+          reject(
+            new ApiRequestError(xhr.status || 500, {
+              code: "internal_error",
+              message: `Server returned HTTP ${xhr.status || 500}.`,
+              details: null,
+            }),
+          );
+        };
+
+        xhr.onerror = () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(new TypeError("Network error during upload."));
+        };
+
+        xhr.onabort = () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(new DOMException("Upload cancelled.", "AbortError"));
+        };
+
+        xhr.send(file);
+      });
+    },
     async createJob(
       body: CreateJobRequest,
     ): Promise<{ job: Job; created: boolean }> {

@@ -26,9 +26,28 @@ export interface AnalysisWarning {
   message: string;
 }
 
+export interface VideoUpload {
+  upload_id: string;
+  filename: string;
+  size_bytes: number;
+  duration_s: number | null;
+}
+
+export interface UploadProgress {
+  loaded: number;
+  total: number | null;
+  fraction: number | null;
+}
+
+export interface UploadVideoOptions {
+  onProgress?: (progress: UploadProgress) => void;
+  signal?: AbortSignal;
+}
+
 export interface CreateJobRequest {
   vod: string;
   video_path?: string | null;
+  upload_id?: string | null;
 }
 
 export interface Job {

@@ -5,7 +5,7 @@ import { StartForm } from "@/components/start-form";
 const STEPS = [
   {
     title: "Add the VOD",
-    body: "Paste a Twitch link or ID. If you already have the video, add its file path too.",
+    body: "Paste a Twitch link or ID. If you already have the video, drop it in or add its file path.",
   },
   {
     title: "Analyze",

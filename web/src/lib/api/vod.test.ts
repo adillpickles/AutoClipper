@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { looksAbsolute, parseVod, vodInputMessage } from "@/lib/api/vod";
+import {
+  hasSupportedVideoExtension,
+  looksAbsolute,
+  parseVod,
+  vodInputMessage,
+} from "@/lib/api/vod";
 
 describe("parseVod", () => {
   it.each([
@@ -88,5 +93,17 @@ describe("looksAbsolute", () => {
 
   it.each(["vod.mp4", "./vod.mp4", "Videos\\vod.mp4"])("rejects %s", (path) =>
     expect(looksAbsolute(path)).toBe(false),
+  );
+});
+
+describe("hasSupportedVideoExtension", () => {
+  it.each(["vod.mp4", "stream.MKV", "capture.ts", "clip.mov", "vod.webm"])(
+    "accepts %s",
+    (name) => expect(hasSupportedVideoExtension(name)).toBe(true),
+  );
+
+  it.each(["notes.txt", "audio.wav", "archive.zip", "noext", ".mp4"])(
+    "rejects %s",
+    (name) => expect(hasSupportedVideoExtension(name)).toBe(false),
   );
 });

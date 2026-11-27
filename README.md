@@ -108,9 +108,9 @@ cd web && npm run dev                 # open http://localhost:3000
 
 ### 6. Avoid segment downloads with a local VOD file
 
-If you already downloaded the full VOD (starting at the VOD's start), pass its file path directly so AutoClipper reads audio and cuts previews, clips and highlights locally instead of downloading audio or video segments from Twitch:
+If you already downloaded the full VOD (starting at the VOD's start), AutoClipper can read audio and cut previews, clips and highlights from that file instead of downloading audio or video segments from Twitch. The Twitch VOD link is still required for broadcast metadata, chat replay and viewer clips; your video file only replaces the media download.
 
-- **Web app:** paste the file's full (absolute) path into **VOD file on this computer (optional)** on the start page (sent as `video_path` to `POST /api/v1/jobs`).
+- **Web app:** on the start page, either **upload or drop the video file** (streams in chunks directly to the server with live progress and cancellation) or switch to **Use file path on this computer** and paste its absolute path (`video_path` on `POST /api/v1/jobs`) to skip copying multi-gigabyte files when the server runs on the same machine.
 - **CLI:**
 
   ```bash
