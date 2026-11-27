@@ -16,6 +16,8 @@ export default defineConfig({
         // Vitest's jsdom environment won't replace a global that already exists, so tests saw
         // `window.localStorage === undefined`. Turning Node's web storage off in the test workers
         // (already the default on Node 24) lets jsdom's storage through again. See #179.
+        // Vitest 4 removes poolOptions; move this to the new top-level setting when upgrading,
+        // or the #179 bug returns.
         execArgv: ["--no-experimental-webstorage"],
       },
     },
