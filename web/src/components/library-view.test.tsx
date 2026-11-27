@@ -402,4 +402,160 @@ describe("LibraryView", () => {
     ).toBeTruthy();
     expect(screen.getByText("Synthetic stream 1")).toBeTruthy();
   });
+
+  it("refreshes the active filter when filters change while deletion is pending", async () => {
+    let resolveDelete:
+      | ((val: {
+          job_id: string;
+          deleted: true;
+          deleted_files: number;
+        }) => void)
+      | undefined;
+    state.listJobs
+      .mockResolvedValueOnce(
+        page([
+          makeSummary({
+            job_id: "job_done",
+            title: "Completed stream",
+            state: "done",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        page([
+          makeSummary({
+            job_id: "job_fail",
+            title: "Failed stream",
+            state: "failed",
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        page([
+          makeSummary({
+            job_id: "job_fail",
+            title: "Failed stream",
+            state: "failed",
+          }),
+        ]),
+      );
+    state.deleteJob.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveDelete = resolve;
+        }),
+    );
+
+    render(<LibraryView />);
+    expect(await screen.findByText("Completed stream")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
+
+    // Switch filter to Failed while deleteJob is still pending.
+    fireEvent.click(screen.getByRole("button", { name: "Failed" }));
+    expect(await screen.findByText("Failed stream")).toBeTruthy();
+
+    await act(async () => {
+      resolveDelete?.({ job_id: "job_done", deleted: true, deleted_files: 0 });
+    });
+
+    expect(await screen.findByText("Failed stream")).toBeTruthy();
+    expect(screen.queryByText("Completed stream")).toBeNull();
+  });
+
+  it("polls active rows beyond 100 loaded items and re-fetches offset pages invalidated by a poll", async () => {
+    vi.useFakeTimers();
+    const first100 = Array.from({ length: 100 }, (_, i) =>
+      makeSummary({ job_id: `job_${i}`, title: `Stream ${i}` }),
+    );
+    const tailActive = makeSummary({
+      job_id: "job_100",
+      title: "Stream 100",
+      state: "done",
+      exports: [
+        {
+          render_id: "exp_active",
+          kind: "export",
+          candidate_id: "c001",
+          state: "running",
+          file_available: false,
+          download_url: null,
+          duration_s: 30,
+          created_at: "2026-11-26T15:01:00Z",
+          finished_at: null,
+        },
+      ],
+    });
+    const tailDone = makeSummary({
+      ...tailActive,
+      exports: [
+        {
+          ...tailActive.exports[0],
+          state: "done",
+          file_available: true,
+          download_url: "/api/v1/exports/exp_active/file",
+          finished_at: "2026-11-26T15:02:00Z",
+        },
+      ],
+    });
+
+    state.listJobs
+      .mockResolvedValueOnce({
+        items: first100,
+        total: 101,
+        limit: 20,
+        offset: 0,
+        has_more: true,
+      })
+      .mockResolvedValueOnce({
+        items: [tailActive],
+        total: 101,
+        limit: 20,
+        offset: 100,
+        has_more: false,
+      })
+      .mockResolvedValueOnce({
+        items: first100,
+        total: 101,
+        limit: 100,
+        offset: 0,
+        has_more: true,
+      })
+      .mockResolvedValueOnce({
+        items: [tailDone],
+        total: 101,
+        limit: 1,
+        offset: 100,
+        has_more: false,
+      });
+
+    render(<LibraryView />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    });
+    expect(screen.getByText("Stream 100")).toBeTruthy();
+
+    // Advance one poll interval: both pages (0..100 and 100..101) refresh, enabling Delete on job_100.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+    expect(state.listJobs).toHaveBeenNthCalledWith(3, {
+      limit: 100,
+      offset: 0,
+      q: undefined,
+      state: undefined,
+    });
+    expect(state.listJobs).toHaveBeenNthCalledWith(4, {
+      limit: 1,
+      offset: 100,
+      q: undefined,
+      state: undefined,
+    });
+    const deleteButtons = screen.getAllByRole("button", { name: "Delete" });
+    expect((deleteButtons[100] as HTMLButtonElement).disabled).toBe(false);
+  });
 });

@@ -158,6 +158,18 @@ export function LibraryView() {
   } | null>(null);
 
   const requestSeq = useRef(0);
+  const listVersion = useRef(0);
+  const itemsRef = useRef<JobSummary[]>(items);
+  const totalRef = useRef(total);
+  const appliedQueryRef = useRef(appliedQuery);
+  const stateFilterRef = useRef(stateFilter);
+
+  useEffect(() => {
+    itemsRef.current = items;
+    totalRef.current = total;
+    appliedQueryRef.current = appliedQuery;
+    stateFilterRef.current = stateFilter;
+  });
 
   const triggerReload = useCallback(
     (
@@ -190,6 +202,7 @@ export function LibraryView() {
       })
       .then((res) => {
         if (cancelled || requestSeq.current !== seq) return;
+        listVersion.current += 1;
         setItems(res.items);
         setTotal(res.total);
         setHasMore(res.has_more);
@@ -209,7 +222,6 @@ export function LibraryView() {
     };
   }, [appliedQuery, stateFilter, refreshNonce]);
 
-  const activeItemsCount = items.length;
   const hasActive = view.kind === "loaded" && items.some(isJobOrRenderActive);
 
   useEffect(() => {
@@ -218,45 +230,57 @@ export function LibraryView() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let failingSince: number | null = null;
     let backoff = FIRST_BACKOFF_MS;
-    const pollLimit = Math.min(
-      MAX_POLL_PAGE_SIZE,
-      Math.max(PAGE_SIZE, activeItemsCount),
-    );
 
     async function pollOnce() {
+      const seqAtStart = requestSeq.current;
       try {
-        const res = await getApiClient().listJobs({
-          limit: pollLimit,
-          offset: 0,
-          q: appliedQuery.trim() || undefined,
-          state: stateFilter === "all" ? undefined : stateFilter,
+        const targetCount = Math.max(PAGE_SIZE, itemsRef.current.length);
+        const collected: JobSummary[] = [];
+        let offset = 0;
+        let latestTotal = 0;
+        let latestHasMore = false;
+
+        while (offset < targetCount) {
+          const pageLimit = Math.min(MAX_POLL_PAGE_SIZE, targetCount - offset);
+          const res = await getApiClient().listJobs({
+            limit: pageLimit,
+            offset,
+            q: appliedQuery.trim() || undefined,
+            state: stateFilter === "all" ? undefined : stateFilter,
+          });
+          if (cancelled || requestSeq.current !== seqAtStart) return;
+          collected.push(...res.items);
+          latestTotal = res.total;
+          latestHasMore = res.has_more;
+          if (!res.has_more || res.items.length === 0) {
+            break;
+          }
+          offset += res.items.length;
+        }
+
+        const seen = new Set<string>();
+        const deduped = collected.filter((item) => {
+          if (seen.has(item.job_id)) return false;
+          seen.add(item.job_id);
+          return true;
         });
-        if (cancelled) return;
+
         failingSince = null;
         backoff = FIRST_BACKOFF_MS;
         setPollOffline(false);
-        setTotal(res.total);
-        setItems((prev) => {
-          if (prev.length <= pollLimit) {
-            setHasMore(res.has_more);
-            return res.items;
-          }
-          // Keep older pages already loaded beyond pollLimit while refreshing the newest window.
-          const freshIds = new Set(res.items.map((item) => item.job_id));
-          const tail = prev.filter((item) => !freshIds.has(item.job_id));
-          const merged = [...res.items, ...tail];
-          setHasMore(merged.length < res.total);
-          return merged;
-        });
+        listVersion.current += 1;
+        setItems(deduped);
+        setTotal(latestTotal);
+        setHasMore(latestHasMore);
 
-        const stillActive = res.items.some(isJobOrRenderActive);
+        const stillActive = deduped.some(isJobOrRenderActive);
         if (stillActive) {
           timer = setTimeout(() => {
             void pollOnce();
           }, POLL_INTERVAL_MS);
         }
       } catch {
-        if (cancelled) return;
+        if (cancelled || requestSeq.current !== seqAtStart) return;
         failingSince ??= Date.now();
         if (Date.now() - failingSince > GIVE_UP_AFTER_MS) {
           setPollOffline(true);
@@ -278,30 +302,44 @@ export function LibraryView() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [hasActive, activeItemsCount, appliedQuery, stateFilter, pollAttempt]);
+  }, [hasActive, appliedQuery, stateFilter, pollAttempt]);
 
   async function handleLoadMore() {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     setLoadMoreError(null);
-    const seq = requestSeq.current;
+    const seqAtStart = requestSeq.current;
+    const queryParams = {
+      q: appliedQuery.trim() || undefined,
+      state: stateFilter === "all" ? undefined : stateFilter,
+    };
     try {
-      const res = await getApiClient().listJobs({
-        limit: PAGE_SIZE,
-        offset: items.length,
-        q: appliedQuery.trim() || undefined,
-        state: stateFilter === "all" ? undefined : stateFilter,
-      });
-      if (requestSeq.current !== seq) return;
-      setItems((prev) => {
-        const seen = new Set(prev.map((item) => item.job_id));
-        const appended = res.items.filter((item) => !seen.has(item.job_id));
-        return [...prev, ...appended];
-      });
-      setTotal(res.total);
-      setHasMore(res.has_more);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const versionAtStart = listVersion.current;
+        const offset = itemsRef.current.length;
+        const res = await getApiClient().listJobs({
+          limit: PAGE_SIZE,
+          offset,
+          ...queryParams,
+        });
+        if (requestSeq.current !== seqAtStart) return;
+        if (listVersion.current !== versionAtStart) {
+          // A poll updated the list while this offset page was in flight; re-fetch from the
+          // updated offset instead of skipping displaced boundary rows or applying stale has_more.
+          continue;
+        }
+        listVersion.current += 1;
+        setItems((prev) => {
+          const seen = new Set(prev.map((item) => item.job_id));
+          const appended = res.items.filter((item) => !seen.has(item.job_id));
+          return [...prev, ...appended];
+        });
+        setTotal(res.total);
+        setHasMore(res.has_more);
+        return;
+      }
     } catch (error) {
-      if (requestSeq.current !== seq) return;
+      if (requestSeq.current !== seqAtStart) return;
       setLoadMoreError(
         error instanceof ApiRequestError
           ? error.error.message
@@ -337,18 +375,30 @@ export function LibraryView() {
   async function confirmDelete(job: JobSummary) {
     setDeletingId(job.job_id);
     setDeleteError(null);
+    const seqAtStart = requestSeq.current;
     try {
       await getApiClient().deleteJob(job.job_id, {
         deleteExports: deleteExportsChecked,
       });
       setConfirmDeleteId(null);
       setDeleteExportsChecked(false);
-      const nextRemaining = items.filter((item) => item.job_id !== job.job_id);
-      const nextTotal = Math.max(0, total - 1);
-      setItems(nextRemaining);
+      if (seqAtStart !== requestSeq.current) {
+        triggerReload(appliedQueryRef.current, stateFilterRef.current, {
+          showSkeleton: false,
+        });
+        return;
+      }
+      listVersion.current += 1;
+      const remaining = itemsRef.current.filter(
+        (item) => item.job_id !== job.job_id,
+      );
+      const nextTotal = Math.max(0, totalRef.current - 1);
+      setItems(remaining);
       setTotal(nextTotal);
-      if (nextRemaining.length === 0 && nextTotal > 0) {
-        triggerReload(appliedQuery, stateFilter, { showSkeleton: false });
+      if (remaining.length === 0 && nextTotal > 0) {
+        triggerReload(appliedQueryRef.current, stateFilterRef.current, {
+          showSkeleton: false,
+        });
       }
     } catch (error) {
       const message =

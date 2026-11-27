@@ -121,6 +121,8 @@ interface StoredJob {
   video_path: string | null;
   created_ms: number;
   seq?: number;
+  /** Fixed FIFO start time preserved across deletions of finished jobs (§ 9.3). */
+  start_ms?: number;
 }
 
 interface StoredExport {
@@ -137,6 +139,8 @@ interface StoredExport {
   created_ms: number;
   /** Creation order; exports made in the same millisecond still render first in, first out. */
   seq?: number;
+  /** Fixed FIFO start time preserved across deletions of finished jobs (§ 9.3). */
+  start_ms?: number;
 }
 
 interface StoredHighlights {
@@ -154,6 +158,8 @@ interface StoredHighlights {
   created_ms: number;
   /** Creation order within highlights videos; renders interleave with exports by time (§ 9.3). */
   seq?: number;
+  /** Fixed FIFO start time preserved across deletions of finished jobs (§ 9.3). */
+  start_ms?: number;
 }
 
 interface Store {
@@ -241,9 +247,9 @@ export function schedule(
       a.job_id.localeCompare(b.job_id),
   );
   for (const job of ordered) {
-    const start = Math.max(job.created_ms + stepMs, free);
+    const start = job.start_ms ?? Math.max(job.created_ms + stepMs, free);
     starts.set(job.job_id, start);
-    free = start + runSteps(job.video_id) * stepMs;
+    free = Math.max(free, start + runSteps(job.video_id) * stepMs);
   }
   return starts;
 }
@@ -457,6 +463,7 @@ interface RenderSlot {
   created_ms: number;
   seq: number;
   steps: number;
+  start_ms?: number;
 }
 
 function renderSlots(
@@ -469,12 +476,14 @@ function renderSlots(
       created_ms: item.created_ms,
       seq: item.seq ?? 0,
       steps: renderStages(item.export.captions).length,
+      start_ms: item.start_ms,
     })),
     ...Object.values(highlights).map((item) => ({
       id: item.highlights.highlights_id,
       created_ms: item.created_ms,
       seq: item.seq ?? 0,
       steps: highlightsStages(item.highlights.captions).length,
+      start_ms: item.start_ms,
     })),
   ];
 }
@@ -495,9 +504,9 @@ export function renderSchedule(
       a.created_ms - b.created_ms || a.seq - b.seq || a.id.localeCompare(b.id),
   );
   for (const slot of ordered) {
-    const start = Math.max(slot.created_ms + stepMs, free);
+    const start = slot.start_ms ?? Math.max(slot.created_ms + stepMs, free);
     starts.set(slot.id, start);
-    free = start + slot.steps * stepMs;
+    free = Math.max(free, start + slot.steps * stepMs);
   }
   return starts;
 }
@@ -1053,7 +1062,8 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       const stored = store.jobs[jobId];
       if (!stored) throw JOB_NOT_FOUND();
       const at = now();
-      const job = jobAt(stored, at, schedule(store.jobs).get(jobId));
+      const jobStarts = schedule(store.jobs);
+      const job = jobAt(stored, at, jobStarts.get(jobId));
       const renderStarts = renderSchedule(store.exports, store.highlights);
       const childExports = Object.values(store.exports)
         .filter((entry) => entry.export.job_id === jobId)
@@ -1090,18 +1100,30 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
         ? childExports.filter((e) => e.state === "done").length +
           childHighlights.filter((h) => h.state === "done").length
         : 0;
-      const nextJobs = { ...store.jobs };
-      delete nextJobs[jobId];
-      const nextExports = Object.fromEntries(
-        Object.entries(store.exports).filter(
-          ([, entry]) => entry.export.job_id !== jobId,
-        ),
-      );
-      const nextHighlights = Object.fromEntries(
-        Object.entries(store.highlights).filter(
-          ([, entry]) => entry.highlights.job_id !== jobId,
-        ),
-      );
+      const nextJobs: Record<string, StoredJob> = {};
+      for (const [id, entry] of Object.entries(store.jobs)) {
+        if (id === jobId) continue;
+        nextJobs[id] =
+          entry.start_ms !== undefined
+            ? entry
+            : { ...entry, start_ms: jobStarts.get(id) };
+      }
+      const nextExports: Record<string, StoredExport> = {};
+      for (const [id, entry] of Object.entries(store.exports)) {
+        if (entry.export.job_id === jobId) continue;
+        nextExports[id] =
+          entry.start_ms !== undefined
+            ? entry
+            : { ...entry, start_ms: renderStarts.get(id) };
+      }
+      const nextHighlights: Record<string, StoredHighlights> = {};
+      for (const [id, entry] of Object.entries(store.highlights)) {
+        if (entry.highlights.job_id === jobId) continue;
+        nextHighlights[id] =
+          entry.start_ms !== undefined
+            ? entry
+            : { ...entry, start_ms: renderStarts.get(id) };
+      }
       save({
         ...store,
         jobs: nextJobs,

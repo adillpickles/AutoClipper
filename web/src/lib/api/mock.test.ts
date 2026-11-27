@@ -828,4 +828,25 @@ describe("createMockClient library (listJobs and deleteJob)", () => {
       deleted_files: 1,
     });
   });
+
+  it("preserves FIFO schedule start times for surviving jobs and renders after deletion", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const first = (await client.createJob({ vod: "9000000001" })).job;
+    const second = (await client.createJob({ vod: "9000000002" })).job;
+
+    // Advance until `first` finishes (10 steps) and `second` is in stage 4 (downloading_audio).
+    now = T0 + 15 * MOCK_STEP_MS;
+    const beforeDelete = await client.getJob(second.job_id);
+    expect(beforeDelete.state).toBe("running");
+    expect(beforeDelete.progress?.stage).toBe("downloading_audio");
+    expect(beforeDelete.started_at).toBe("2026-11-04T12:00:20Z");
+
+    await client.deleteJob(first.job_id);
+
+    const afterDelete = await client.getJob(second.job_id);
+    expect(afterDelete.state).toBe("running");
+    expect(afterDelete.progress?.stage).toBe("downloading_audio");
+    expect(afterDelete.started_at).toBe("2026-11-04T12:00:20Z");
+  });
 });
