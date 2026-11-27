@@ -80,6 +80,7 @@ COMMAND_SUMMARY_CHARS = 1000
 _PROBE_ENTRIES = (
     "format=format_name,duration"
     ":stream=index,codec_type,codec_name,width,height,pix_fmt,sample_rate,channels"
+    ":stream_disposition=attached_pic"
 )
 
 # The first line of `ffmpeg -version` / `ffprobe -version`: "<name> version <version> Copyright…".
@@ -486,6 +487,7 @@ class VideoStream:
         height: Frame height in pixels, as stored.
         pix_fmt: The pixel format FFmpeg reports (e.g. ``"yuv420p"``), or None if absent.
             Browsers play 8-bit ``yuv420p`` H.264, not 4:4:4 or 10-bit.
+        attached_pic: True for a still image attached to the container as cover art.
     """
 
     codec_type: ClassVar[Literal["video"]] = "video"
@@ -495,6 +497,7 @@ class VideoStream:
     width: int
     height: int
     pix_fmt: str | None = None
+    attached_pic: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -553,8 +556,8 @@ class MediaInfo:
 
     @property
     def video_streams(self) -> tuple[VideoStream, ...]:
-        """The video streams, in file order."""
-        return tuple(s for s in self.streams if isinstance(s, VideoStream))
+        """The video streams usable as footage, in file order."""
+        return tuple(s for s in self.streams if isinstance(s, VideoStream) and not s.attached_pic)
 
     @property
     def audio_streams(self) -> tuple[AudioStream, ...]:
@@ -634,6 +637,7 @@ def _parse_probe_json(stdout: bytes, path: Path) -> MediaInfo:
         where = f"stream {index}"
         codec_type = _get_str(stream, "codec_type", where)
         if codec_type == "video":
+            disposition = _as_object(stream.get("disposition", {}), f"{where} disposition")
             pix_fmt = None
             if _is_present(stream.get("pix_fmt")):
                 pix_fmt = _get_str(stream, "pix_fmt", where)
@@ -644,6 +648,7 @@ def _parse_probe_json(stdout: bytes, path: Path) -> MediaInfo:
                     width=_get_int(stream, "width", where, minimum=1),
                     height=_get_int(stream, "height", where, minimum=1),
                     pix_fmt=pix_fmt,
+                    attached_pic=disposition.get("attached_pic") == 1,
                 )
             )
         elif codec_type == "audio":

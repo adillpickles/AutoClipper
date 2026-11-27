@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  useEffect,
   useId,
   useRef,
   useState,
@@ -67,7 +68,8 @@ export function StartForm() {
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(
     null,
   );
-  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [selectionError, setSelectionError] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
 
   const [videoPath, setVideoPath] = useState("");
@@ -80,20 +82,30 @@ export function StartForm() {
   const parsedChannelLogin = parsedId === null ? parseChannel(vod) : null;
   const exampleOnly =
     filledFromExample && isVodFormatExample(vod) && !isMockMode();
+  const uploadError = selectionError ?? requestError;
+
+  useEffect(() => {
+    return () => {
+      const controller = abortControllerRef.current;
+      abortControllerRef.current = null;
+      controller?.abort();
+    };
+  }, []);
 
   function selectFile(file: File) {
-    setUploadError(null);
+    setSelectionError(null);
+    setRequestError(null);
     setUploadNotice(null);
     setFormError(null);
     setUploadedRef(null);
     if (file.size <= 0) {
       setSelectedFile(null);
-      setUploadError(EMPTY_FILE_MESSAGE);
+      setSelectionError(EMPTY_FILE_MESSAGE);
       return;
     }
     if (!hasSupportedVideoExtension(file.name)) {
       setSelectedFile(null);
-      setUploadError(UNSUPPORTED_FILE_MESSAGE);
+      setSelectionError(UNSUPPORTED_FILE_MESSAGE);
       return;
     }
     setSelectedFile(file);
@@ -110,7 +122,8 @@ export function StartForm() {
   function clearSelectedFile() {
     setSelectedFile(null);
     setUploadedRef(null);
-    setUploadError(null);
+    setSelectionError(null);
+    setRequestError(null);
     setUploadNotice(null);
     setUploadProgress(null);
   }
@@ -157,6 +170,7 @@ export function StartForm() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submitting || abortControllerRef.current !== null) return;
     setFormError(null);
     setUploadNotice(null);
 
@@ -170,9 +184,12 @@ export function StartForm() {
 
     setVodError(nextVodError);
     setPathError(badPath ? PATH_MESSAGE : null);
-    if (nextVodError || badPath) return;
-    if (sourceMode === "upload" && uploadError !== null) return;
+    if (nextVodError || badPath || (sourceMode === "upload" && selectionError))
+      return;
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    setRequestError(null);
     setSubmitting(true);
     let wasUploading = false;
     try {
@@ -184,8 +201,6 @@ export function StartForm() {
           uploadId = uploadedRef.upload.upload_id;
         } else {
           wasUploading = true;
-          const controller = new AbortController();
-          abortControllerRef.current = controller;
           setUploading(true);
           setUploadProgress({
             loaded: 0,
@@ -193,10 +208,12 @@ export function StartForm() {
             fraction: selectedFile.size > 0 ? 0 : null,
           });
           const uploaded = await api.uploadVideo(selectedFile, {
-            onProgress: setUploadProgress,
+            onProgress: (progress) => {
+              if (!controller.signal.aborted) setUploadProgress(progress);
+            },
             signal: controller.signal,
           });
-          abortControllerRef.current = null;
+          controller.signal.throwIfAborted();
           setUploadedRef({ file: selectedFile, upload: uploaded });
           uploadId = uploaded.upload_id;
           setUploading(false);
@@ -213,9 +230,9 @@ export function StartForm() {
                 sourceMode === "path" ? videoPath.trim() || null : null,
             },
       );
-      router.push(`/jobs/${job.job_id}`);
+      if (!controller.signal.aborted) router.push(`/jobs/${job.job_id}`);
     } catch (error) {
-      abortControllerRef.current = null;
+      if (abortControllerRef.current !== controller) return;
       setUploading(false);
       setSubmitting(false);
       setUploadProgress(null);
@@ -238,18 +255,22 @@ export function StartForm() {
           setPathError(error.error.message);
         } else if (error.error.code === "invalid_video_upload") {
           setUploadedRef(null);
-          setUploadError(error.error.message);
+          setRequestError(error.error.message);
         } else {
           setFormError(error.error.message);
         }
       } else if (wasUploading) {
-        setUploadError(
+        setRequestError(
           "Upload failed before finishing. Check that the server is running and try again.",
         );
       } else {
         setFormError(
           "Can't reach the server. Check that it's running and try again.",
         );
+      }
+    } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
       }
     }
   }
@@ -416,7 +437,8 @@ export function StartForm() {
             aria-pressed={sourceMode === "path"}
             onClick={() => {
               setSourceMode("path");
-              setUploadError(null);
+              setSelectionError(null);
+              setRequestError(null);
               setUploadNotice(null);
             }}
             className={`min-h-9 rounded-pill border px-3.5 py-1.5 text-xs font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
@@ -436,6 +458,7 @@ export function StartForm() {
               id={fileId}
               name="video_file"
               type="file"
+              tabIndex={-1}
               accept={VIDEO_FILE_ACCEPT}
               disabled={submitting}
               aria-label="Choose a VOD video file"
@@ -476,6 +499,9 @@ export function StartForm() {
                   variant="secondary"
                   size="sm"
                   disabled={submitting}
+                  aria-describedby={
+                    uploadError ? `${fileId}-error` : `${fileId}-hint`
+                  }
                   onClick={() => fileInputRef.current?.click()}
                 >
                   Choose video file
@@ -511,6 +537,9 @@ export function StartForm() {
                         variant="subtle"
                         size="sm"
                         disabled={submitting}
+                        aria-describedby={
+                          uploadError ? `${fileId}-error` : undefined
+                        }
                         onClick={() => fileInputRef.current?.click()}
                       >
                         Change
@@ -641,7 +670,9 @@ export function StartForm() {
 
       <button
         type="submit"
-        disabled={submitting}
+        disabled={
+          submitting || (sourceMode === "upload" && selectionError !== null)
+        }
         className="self-start rounded-control bg-accent px-5 py-3 text-sm font-semibold text-accent-ink shadow-card transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-panel focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
       >
         {uploading

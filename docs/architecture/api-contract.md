@@ -100,7 +100,7 @@ The digits become `video_id`. Not accepted in v1: clip links, channel pages, oth
 `POST /api/v1/uploads?filename=<basename>` streams a raw video file body (typically 5–20 GB for a 4–6 hour VOD) in chunks directly to disk under `<artifacts_dir>/uploads/` without buffering the whole request in memory.
 
 - **Origin check:** when `AUTOCLIPPER_CORS_ORIGINS` is configured and a browser `Origin` header is present outside the allowlist, the server rejects the request with `403 origin_not_allowed` before reading the body.
-- **Early validation & cleanup:** the query parameter `filename` is required (`422 invalid_request` if missing) and sanitized to its basename; unsupported video extensions and zero-byte `Content-Length` values are rejected with `422 invalid_video_upload` before streaming. Partial `.part` files are removed automatically if the client disconnects/cancels, if fewer bytes arrive than `Content-Length`, or if FFprobe rejects the finished file (`422 invalid_video_upload`).
+- **Early validation and cleanup.** The only query parameter is `filename`. Missing or unknown parameters return `422 invalid_request` before streaming. The server keeps only the basename and rejects unsupported extensions or a zero `Content-Length` with `422 invalid_video_upload`. FFprobe checks that the completed file has a video stream usable as footage and a known duration. An audio file with cover art alone fails with `422 invalid_video_upload`. The server removes partial uploads after cancellation, including during validation, and after truncated uploads, invalid video or disk I/O failures.
 - **Response (`201 Created`, `Cache-Control: no-store`):** `VideoUpload`:
 
 | Field | Type | Notes |
@@ -116,7 +116,7 @@ The digits become `video_id`. Not accepted in v1: clip links, channel pages, oth
 |---|---|---|
 | `job_id` | str | Server-generated, opaque, random, never reused (§ 1) |
 | `video_id` | str | Normalized from the request |
-| `video_path` | str \| null | As requested; `null` when video is downloaded |
+| `video_path` | str \| null | As requested. `null` when the server uses a stored upload or downloads video. |
 | `state` | `queued` \| `running` \| `done` \| `failed` | § 3.3 |
 | `progress` | `Progress` \| null | § 3.4 |
 | `warnings` | list<`AnalysisWarning`> | Degradations found so far (§ 3.5); `[]` if none |
@@ -188,7 +188,7 @@ A job **fails** only when it can't produce a meaningful result. `Job.error.code`
 |---|---|---|
 | `vod_unavailable` | Twitch has no accessible video with this ID: not found, deleted or expired, or not publicly viewable (e.g. subscriber-only) | `resolving_vod` |
 | `vod_unsupported` | The video exists but isn't a past broadcast (Helix `type` other than `archive`, e.g. a highlight or upload) | `resolving_vod` |
-| `video_mismatch` | `video_path` was given and the file's duration differs from the VOD's by more than 2 s, so it isn't this VOD (or is incomplete) | `resolving_vod` |
+| `video_mismatch` | A file supplied via `upload_id` or `video_path` differs from the VOD's duration by more than 2 s | `resolving_vod` |
 | `no_usable_signals` | Nothing to rank (chat and audio both missing, no viewer clips with VOD offsets) and none of those inputs failed transiently, so trying again won't help | `downloading_audio` (after the last input) |
 | `upstream_unavailable` | Twitch or a download tool kept failing after retries (network, rate limit, tool breakage) while resolving the VOD, or while fetching inputs that left nothing to rank. Trying again later may work. | `resolving_vod` or `downloading_audio` |
 | `interrupted` | The server stopped while the job was queued or running (§ 9.3) | any |
@@ -665,7 +665,7 @@ A VOD with no viewer clips has the same shape with `"n_viewer_clips_total": 0` a
 
 ## 5. Media (preview)
 
-Preview, export and highlights all use the VOD's video. If the job was created with a `video_path` (§ 3.1), the server reads that file and downloads no video. Otherwise it downloads what it needs with TwitchDownloader or yt-dlp ([data sources](../data/data-sources.md), #46), either the whole VOD or a segment around a candidate. Media is unavailable only for technical reasons (the reasons below), and analysis never depends on it: a job is `done` even if nothing can be previewed.
+Preview, export and highlights all use the VOD's video. If the job was created with an `upload_id` or a `video_path` (§ 3.1), the server uses that file. Otherwise it downloads what it needs with TwitchDownloader or yt-dlp ([data sources](../data/data-sources.md), #46), either the whole VOD or a segment around a candidate. Media is unavailable only for technical reasons (the reasons below), and analysis never depends on it: a job is `done` even if nothing can be previewed.
 
 When the user selects a candidate, the client calls `GET /api/v1/jobs/{job_id}/candidates/{candidate_id}/media` and gets a `CandidateMedia`. It says separately whether the candidate can be **previewed** and whether it can be **exported**, because the two can differ: preview may still be `preparing` while export is already `available` (an export obtains its own media in its first stage, § 6.3). Errors: `404 job_not_found`/`candidate_not_found`, `409 job_not_done`.
 
@@ -710,7 +710,7 @@ When the user selects a candidate, the client calls `GET /api/v1/jobs/{job_id}/c
 | `reason` | Meaning |
 |---|---|
 | `source_unavailable` | Twitch doesn't serve this VOD's video for download: it was deleted or expired, or it's restricted (e.g. subscriber-only). Trying again won't help; analyzing again with a `video_path` will. |
-| `local_file_missing` | The job's `video_path` file is missing or can no longer be read (moved, deleted or on a disconnected drive). |
+| `local_file_missing` | The job's uploaded or local VOD file is missing or can no longer be read (moved, deleted or on a disconnected drive). |
 | `fetch_failed` | The video download failed or the preview could not be prepared; trying again later may work. Also reported when the prepared file doesn't cover the requested moment (a local file a little shorter than `vod.duration_s`, or a downloaded segment whose measured span misses the candidate); retrying won't help then, and `message` says so. Export availability is reported separately. |
 
 **Guarantees.** `0 ≤ media_start_s < media_end_s ≤ vod.duration_s` and `0 ≤ min_start_s < max_end_s ≤ vod.duration_s`. When available, preview coverage and export bounds both contain the candidate's own `[start_s, end_s)`.

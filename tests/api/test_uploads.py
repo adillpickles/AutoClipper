@@ -1,15 +1,18 @@
 """Tests for streaming VOD video uploads (``POST /api/v1/uploads``) and local file checks."""
 
 import asyncio
+import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.types import Message, Scope
+from starlette.types import Message, Receive, Scope, Send
 
 from autoclipper.api.app import API_PREFIX, create_app
 from autoclipper.api.service import MockService, SampleMedia
+from autoclipper.ffmpeg import ffmpeg_command, run_command
 
 API = API_PREFIX
 
@@ -37,12 +40,32 @@ def make_upload_client(
             "probe_video": lambda path: path.suffix == ".mp4",
         }
         cors_origins = kwargs.pop("cors_origins", ("http://localhost:3000",))
+        chunk_size = kwargs.pop("chunk_size", None)
         options.update(kwargs)
         service = MockService(**options)  # type: ignore[arg-type]
-        client = TestClient(
-            create_app(service, cors_origins=cors_origins),  # type: ignore[arg-type]
-            raise_server_exceptions=False,
-        )
+        app = create_app(service, cors_origins=cors_origins)  # type: ignore[arg-type]
+
+        async def dispatch(scope: Scope, receive: Receive, send: Send) -> None:
+            if not isinstance(chunk_size, int) or scope.get("path") != f"{API}/uploads":
+                await app(scope, receive, send)
+                return
+            # TestClient joins HTTP request iterators. Deliver their data as successive ASGI
+            # events so the endpoint exercises its streaming loop with the real video.
+            body = (await receive())["body"]
+            chunks = _iter_chunks(body, chunk_size=chunk_size)
+            finished = False
+
+            async def chunked_receive() -> Message:
+                nonlocal finished
+                if finished:
+                    return await receive()
+                chunk = next(chunks, b"")
+                finished = not chunk
+                return {"type": "http.request", "body": chunk, "more_body": not finished}
+
+            await app(scope, chunked_receive, send)
+
+        client = TestClient(dispatch, raise_server_exceptions=False)
         client.__enter__()
         clients.append(client)
         return client, service
@@ -62,8 +85,9 @@ def test_streaming_chunked_upload_creates_job_and_serves_media(
     make_upload_client: Callable[..., tuple[TestClient, MockService]],
     make_test_media: Callable[..., Path],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, service = make_upload_client(probe_video=None)
+    client, service = make_upload_client(probe_video=None, chunk_size=2048)
     video = make_test_media("stream_vod.mp4", duration_s=3.0)
     raw = video.read_bytes()
 
@@ -81,7 +105,7 @@ def test_streaming_chunked_upload_creates_job_and_serves_media(
     assert body["size_bytes"] == len(raw)
     assert body["duration_s"] == pytest.approx(3.0, abs=0.25)
     assert str(tmp_path) not in response.text
-    assert list(service.uploads_dir.glob("*.part")) == []
+    assert sorted(path.suffix for path in service.uploads_dir.iterdir()) == [".json", ".mp4"]
 
     # Attaching upload_id to a job works even for 9000000007 and never leaks server paths.
     created = client.post(
@@ -92,8 +116,24 @@ def test_streaming_chunked_upload_creates_job_and_serves_media(
     job = created.json()
     assert job["video_path"] is None
     assert str(tmp_path) not in created.text
+    listed = client.get(f"{API}/jobs").json()["items"]
+    assert [summary["video_path"] for summary in listed] == [None]
 
-    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media")
+    media_url = f"{API}/jobs/{job['job_id']}/candidates/c001/media"
+    stored = service.uploads_dir / f"{body['upload_id']}.mp4"
+    moved = tmp_path / "moved.mp4"
+    prepare = MockService._prepare_file_media
+
+    def prepare_while_missing(service: MockService, job_id: str) -> None:
+        stored.rename(moved)
+        prepare(service, job_id)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(MockService, "_prepare_file_media", prepare_while_missing)
+        assert client.get(media_url).json()["preview"]["reason"] == "local_file_missing"
+    moved.rename(stored)
+
+    media = client.get(media_url)
     assert media.status_code == 200
     assert media.json()["preview"]["status"] == "available"
     assert media.json()["export"]["status"] == "available"
@@ -116,8 +156,35 @@ def test_streaming_upload_rejects_corrupt_video_and_cleans_up_files(
         f"{API}/uploads?filename=broken.mp4",
         content=_iter_chunks(b"not-a-valid-mp4-stream" * 200, chunk_size=512),
     )
+    cover_art = tmp_path / "cover.jpg"
+    run_command(
+        ffmpeg_command("-f", "lavfi", "-i", "color=size=32x32", "-frames:v", "1", cover_art),
+        timeout_s=30.0,
+    )
+    cover_only = tmp_path / "cover-only.mp4"
+    run_command(
+        ffmpeg_command(
+            "-i",
+            audio_only,
+            "-i",
+            cover_art,
+            "-map",
+            "0:a",
+            "-map",
+            "1:v",
+            "-c:v",
+            "copy",
+            "-disposition:v",
+            "attached_pic",
+            cover_only,
+        ),
+        timeout_s=30.0,
+    )
+    cover_response = client.post(
+        f"{API}/uploads?filename=cover.mp4", content=cover_only.read_bytes()
+    )
 
-    for resp in (bad_ext, bad_bytes):
+    for resp in (bad_ext, bad_bytes, cover_response):
         assert resp.status_code == 422
         assert resp.json()["error"]["code"] == "invalid_video_upload"
         assert str(tmp_path) not in resp.text
@@ -153,6 +220,11 @@ def test_upload_sanitizes_filename_and_rejects_bad_inputs(
     client, service = make_upload_client()
 
     missing_name = client.post(f"{API}/uploads", content=b"abc")
+    unknown_query = client.post(f"{API}/uploads?filename=vod.mp4&typo=1", content=b"abc")
+    assert unknown_query.status_code == 422
+    assert unknown_query.json()["error"]["code"] == "invalid_request"
+    assert unknown_query.json()["error"]["details"] == {"fields": ["typo"]}
+    assert list(service.uploads_dir.glob("*")) == []
     bad_ext = client.post(f"{API}/uploads?filename=notes.txt", content=b"abc")
     empty_body = client.post(f"{API}/uploads?filename=vod.mp4", content=b"")
     win_path_name = client.post(
@@ -193,29 +265,45 @@ def test_upload_cleans_up_partial_file_on_truncated_content_length(
     assert list(service.uploads_dir.glob("*")) == []
 
 
+@pytest.mark.parametrize("during_probe", [False, True])
 def test_upload_cleans_up_partial_file_on_client_disconnect(
-    tmp_path: Path, samples: SampleMedia
+    tmp_path: Path, samples: SampleMedia, during_probe: bool
 ) -> None:
-    service = MockService(
-        samples=samples,
-        output_dir=tmp_path / "artifacts",
-        step_s=0.0,
-        synchronous=True,
-        probe_video=lambda path: path.suffix == ".mp4",
-    )
-    app = create_app(service)
-
     async def simulate_disconnect() -> list[Message]:
-        events = iter(
-            [
-                {"type": "http.request", "body": b"first-chunk-", "more_body": True},
-                {"type": "http.disconnect"},
-            ]
+        loop = asyncio.get_running_loop()
+        probe_started = asyncio.Event()
+        disconnected = threading.Event()
+
+        def probe_video(path: Path) -> bool:
+            assert during_probe
+            assert path.read_bytes() == b"first-chunk-"
+            loop.call_soon_threadsafe(probe_started.set)
+            assert disconnected.wait(timeout=5.0)
+            return True
+
+        service = MockService(
+            samples=samples,
+            output_dir=tmp_path / "artifacts",
+            step_s=0.0,
+            synchronous=True,
+            probe_video=probe_video,
         )
+        sent_body = False
         sent: list[Message] = []
 
         async def receive() -> Message:
-            return next(events)
+            nonlocal sent_body
+            if not sent_body:
+                sent_body = True
+                return {
+                    "type": "http.request",
+                    "body": b"first-chunk-",
+                    "more_body": not during_probe,
+                }
+            if during_probe:
+                await probe_started.wait()
+                disconnected.set()
+            return {"type": "http.disconnect"}
 
         async def send(message: Message) -> None:
             sent.append(message)
@@ -233,12 +321,51 @@ def test_upload_cleans_up_partial_file_on_client_disconnect(
             "client": ("127.0.0.1", 12345),
             "server": ("127.0.0.1", 8000),
         }
-        await app(scope, receive, send)
+        try:
+            await create_app(service)(scope, receive, send)
+            assert probe_started.is_set() == during_probe
+            assert list(service.uploads_dir.iterdir()) == []
+        finally:
+            service.close()
         return sent
 
     sent = asyncio.run(simulate_disconnect())
     assert sent[0]["status"] == 499
-    assert list(service.uploads_dir.glob("*")) == []
+
+
+@pytest.mark.parametrize("fail_open", [False, True])
+def test_upload_reports_disk_io_failure_and_cleans_up(
+    make_upload_client: Callable[..., tuple[TestClient, MockService]],
+    monkeypatch: pytest.MonkeyPatch,
+    fail_open: bool,
+) -> None:
+    client, service = make_upload_client()
+    real_open = Path.open
+
+    class FailingClose:
+        def __init__(self, handle: BinaryIO) -> None:
+            self.handle = handle
+            self.closed = False
+
+        def write(self, chunk: bytes) -> int:
+            return self.handle.write(chunk)
+
+        def close(self) -> None:
+            self.handle.close()
+            raise OSError("simulated close failure")
+
+    def open_file(path: Path, mode: str = "r", *args: object, **kwargs: object) -> object:
+        if path.parent == service.uploads_dir and mode == "xb":
+            if fail_open:
+                raise OSError("simulated open failure")
+            return FailingClose(real_open(path, "xb"))
+        return real_open(path, mode, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "open", open_file)
+    response = client.post(f"{API}/uploads?filename=vod.mp4", content=b"video-bytes")
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "upload_failed"
+    assert list(service.uploads_dir.iterdir()) == []
 
 
 def test_job_upload_id_validation_dedup_and_restart_persistence(

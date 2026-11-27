@@ -161,6 +161,8 @@ Open <http://localhost:3000>. To switch back to browser mock mode without deleti
 
 If you already have a downloaded copy of a VOD, the start page offers both **Upload or drop file** (which streams chunks to `<artifacts_dir>/uploads/` with progress and cancellation, validated by FFprobe) and **Use file path on this computer** (which reads an absolute path directly without copying). In both cases, the Twitch VOD link is still required for metadata, chat replay and viewer clips.
 
+Completed uploads stay in `<artifacts_dir>/uploads/` for later previews and exports, even after deleting a job.
+
 Run the same checks as CI before you push:
 
 ```bash

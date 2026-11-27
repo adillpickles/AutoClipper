@@ -6,11 +6,13 @@ to an OS temp directory. Partial files are deleted on client disconnect, truncat
 FFprobe validation, and local filesystem paths are never included in HTTP error responses.
 """
 
+import asyncio
 import logging
 import math
 import re
 import secrets
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import Final, Protocol
 
@@ -198,6 +200,15 @@ def create_uploads_router(
                 {"fields": ["filename"]},
             )
 
+        unknown_fields = sorted(request.query_params.keys() - {"filename"})
+        if unknown_fields:
+            return _error_response(
+                422,
+                "invalid_request",
+                "The request is invalid: unexpected upload query parameters.",
+                {"fields": unknown_fields},
+            )
+
         clean_name = sanitize_upload_filename(filename)
         if clean_name is None:
             return _error_response(
@@ -223,7 +234,6 @@ def create_uploads_router(
             return _error_response(422, "invalid_video_upload", _EMPTY_UPLOAD_MESSAGE)
 
         uploads_dir = service.uploads_dir
-        uploads_dir.mkdir(parents=True, exist_ok=True)
         upload_id = f"upl_{secrets.token_hex(8)}"
         ext = Path(clean_name).suffix.lower()
         final_path = uploads_dir / f"{upload_id}{ext}"
@@ -231,21 +241,24 @@ def create_uploads_router(
 
         bytes_written = 0
         registered = False
-        handle = part_path.open("wb")
         try:
-            async for chunk in request.stream():
-                if not chunk:
-                    continue
-                await run_in_threadpool(handle.write, chunk)
-                bytes_written += len(chunk)
-            await run_in_threadpool(handle.flush)
-            await run_in_threadpool(handle.close)
-
-            if await request.is_disconnected():
-                log.info(
-                    "video upload disconnected upload_id=%s bytes=%d", upload_id, bytes_written
-                )
-                return Response(status_code=499)
+            uploads_dir.mkdir(parents=True, exist_ok=True)
+            handle = part_path.open("xb")
+            try:
+                async for chunk in request.stream():
+                    if not chunk:
+                        continue
+                    await run_in_threadpool(handle.write, chunk)
+                    bytes_written += len(chunk)
+                await run_in_threadpool(handle.close)
+            finally:
+                if not handle.closed:
+                    try:
+                        handle.close()
+                    except OSError:
+                        log.exception(
+                            "could not close partial video upload upload_id=%s", upload_id
+                        )
 
             if bytes_written == 0:
                 return _error_response(422, "invalid_video_upload", _EMPTY_UPLOAD_MESSAGE)
@@ -259,9 +272,22 @@ def create_uploads_router(
                 )
                 return _error_response(422, "invalid_video_upload", _TRUNCATED_UPLOAD_MESSAGE)
 
-            valid, duration_s = await run_in_threadpool(
-                validate_video_file, part_path, probe_video=service.probe_video
-            )
+            # After the body is consumed, the next ASGI event can only be a disconnect.
+            # Listen while FFprobe is running so middleware has time to deliver that event.
+            disconnect = asyncio.ensure_future(request.receive())
+            try:
+                valid, duration_s = await run_in_threadpool(
+                    validate_video_file, part_path, probe_video=service.probe_video
+                )
+                # Let a disconnect already passing through middleware reach the waiter.
+                done, _ = await asyncio.wait((disconnect,), timeout=0.01)
+                if done and disconnect.result()["type"] == "http.disconnect":
+                    raise ClientDisconnect
+            finally:
+                if not disconnect.done():
+                    disconnect.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await disconnect
             if not valid:
                 log.warning(
                     "uploaded video failed validation upload_id=%s path=%s size_bytes=%d",
@@ -299,10 +325,12 @@ def create_uploads_router(
                 "Could not save the uploaded video file. Check available disk space and try again.",
             )
         finally:
-            if not handle.closed:
-                handle.close()
-            part_path.unlink(missing_ok=True)
-            if not registered:
-                final_path.unlink(missing_ok=True)
+            for path in (part_path,) if registered else (part_path, final_path):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    log.exception(
+                        "could not remove upload file upload_id=%s path=%s", upload_id, path
+                    )
 
     return router

@@ -277,6 +277,12 @@ def analyze_vod(
 
     def add_warning(code: str, message: str) -> None:
         if all(warning.code != code for warning in warnings):
+            if code == "audio_missing" and video_file is not None:
+                # Ingest logs the original failure, which can contain a filesystem path.
+                message = (
+                    "Audio couldn't be read from the supplied video file. Check that the file "
+                    "has a playable audio track before trying again."
+                )
             warnings.append(AnalysisWarning(code=code, message=message))
             publish_warnings()
 

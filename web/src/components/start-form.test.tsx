@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -11,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StartForm } from "@/components/start-form";
 import { ApiRequestError } from "@/lib/api/errors";
+import type { UploadVideoOptions } from "@/lib/api/types";
 
 const state = vi.hoisted(() => ({
   push: vi.fn(),
@@ -37,6 +39,30 @@ vi.mock("@/lib/api/client", async () => {
     }),
   };
 });
+
+const uploaded = {
+  upload_id: "upl_abc123",
+  filename: "vod.mp4",
+  size_bytes: 12,
+  duration_s: 3,
+};
+
+function selectVideo() {
+  const file = new File(["0123456789ab"], "vod.mp4", { type: "video/mp4" });
+  const picker = screen.getByLabelText("Choose a VOD video file");
+  expect(picker.tabIndex).toBe(-1);
+  fireEvent.change(picker, { target: { files: [file] } });
+  fireEvent.change(screen.getByLabelText("Twitch VOD link"), {
+    target: { value: "9000000001" },
+  });
+  return file;
+}
+
+function submit() {
+  fireEvent.click(
+    screen.getByRole("button", { name: "Find the best moments" }),
+  );
+}
 
 describe("StartForm", () => {
   afterEach(() => {
@@ -291,5 +317,80 @@ describe("StartForm", () => {
       );
     });
     expect(state.createJob).not.toHaveBeenCalled();
+  });
+
+  it.each(["network failure", "expired upload ID"])(
+    "retries with the selected file after a %s",
+    async (failure) => {
+      state.uploadVideo.mockResolvedValue(uploaded);
+      state.createJob.mockResolvedValue({ job: { job_id: "job_retried" } });
+      if (failure === "network failure") {
+        state.uploadVideo.mockRejectedValueOnce(new Error("Network error"));
+      } else {
+        state.createJob.mockRejectedValueOnce(
+          new ApiRequestError(422, {
+            code: "invalid_video_upload",
+            message: "That upload is missing. Upload the video again.",
+            details: null,
+          }),
+        );
+      }
+
+      render(<StartForm />);
+      const file = selectVideo();
+      submit();
+      expect((await screen.findByRole("alert")).textContent).toMatch(/upload/i);
+      expect(screen.getByText(file.name)).toBeTruthy();
+      submit();
+      await waitFor(() =>
+        expect(state.push).toHaveBeenCalledWith("/jobs/job_retried"),
+      );
+      expect(state.uploadVideo).toHaveBeenCalledTimes(2);
+      expect(state.uploadVideo.mock.calls[1][0]).toBe(file);
+    },
+  );
+
+  it("aborts an upload on unmount and ignores a late success", async () => {
+    let signal: AbortSignal | undefined;
+    let complete!: (result: typeof uploaded) => void;
+    state.uploadVideo.mockImplementationOnce(
+      (_file: File, options: UploadVideoOptions) => {
+        signal = options.signal;
+        return new Promise((resolve) => {
+          complete = resolve;
+        });
+      },
+    );
+
+    const { unmount } = render(<StartForm />);
+    selectVideo();
+    submit();
+    expect(signal?.aborted).toBe(false);
+    unmount();
+    expect(signal?.aborted).toBe(true);
+
+    await act(async () => complete(uploaded));
+    expect(state.createJob).not.toHaveBeenCalled();
+    expect(state.push).not.toHaveBeenCalled();
+  });
+
+  it("ignores a job response after leaving the page", async () => {
+    let complete!: (result: { job: { job_id: string } }) => void;
+    state.createJob.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const { unmount } = render(<StartForm />);
+    fireEvent.change(screen.getByLabelText("Twitch VOD link"), {
+      target: { value: "9000000001" },
+    });
+    submit();
+    expect(state.createJob).toHaveBeenCalledOnce();
+    unmount();
+
+    await act(async () => complete({ job: { job_id: "job_abandoned" } }));
+    expect(state.push).not.toHaveBeenCalled();
   });
 });

@@ -1330,9 +1330,7 @@ class MockService:
         with self._lock:
             job = self._jobs.get(job_id)
             source = None if job is None else self._source_video_path_locked(job)
-        if source is None:
-            return
-        if not source.is_file():
+        if source is None or not source.is_file():
             with self._lock:
                 self._file_media.pop(job_id, None)
             return  # _media_for reports local_file_missing

@@ -2177,10 +2177,13 @@ class FakeSegmentFetcher:
 
 
 @pytest.mark.ffmpeg
+@pytest.mark.parametrize("silent_upload", [False, True])
 def test_a_real_pipeline_job_from_the_api(
     make_client: Callable[..., tuple[TestClient, MockService]],
     make_test_media: Callable[..., Path],
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    silent_upload: bool,
 ) -> None:
     """The worker runs the real `analyze_vod` against fake Twitch and chat tools, end to
     end: one POST produces a genuinely computed result with the § 3.5 warnings."""
@@ -2202,23 +2205,67 @@ def test_a_real_pipeline_job_from_the_api(
             downloader=FakeFileDownloader(audio),
         )
 
-    client, _ = make_client(
+    client, service = make_client(
         job_runner="pipeline",
         data_dir=tmp_path / "data",
         artifacts_dir=tmp_path / "artifacts",
         lexicon=load_lexicon(LEXICON_PATH),
         tools_for=tools_for,
         segment_fetcher=unused_fetcher,
+        probe_video=None,
     )  # analyze: the real `analyze_vod`
 
-    job = done_job(client, PIPELINE_VIDEO_ID)
+    upload_id = None
+    if silent_upload:
+        video = tmp_path / "silent.mp4"
+        run_command(
+            ffmpeg_command(
+                "-f",
+                "lavfi",
+                "-i",
+                "color=size=32x32:rate=1:duration=3600",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                video,
+            ),
+            timeout_s=30.0,
+        )
+        upload = client.post(f"{API}/uploads?filename=silent.mp4", content=video.read_bytes())
+        assert upload.status_code == 201, upload.text
+        upload_id = upload.json()["upload_id"]
+        created = client.post(
+            f"{API}/jobs", json={"vod": PIPELINE_VIDEO_ID, "upload_id": upload_id}
+        )
+        assert created.status_code == 201, created.text
+        job = client.get(f"{API}/jobs/{created.json()['job_id']}").json()
+    else:
+        job = done_job(client, PIPELINE_VIDEO_ID)
 
     assert job["state"] == "done", job["error"]
-    assert [warning["code"] for warning in job["warnings"]] == ["audio_partly_muted"]
-    served = client.get(f"{API}/jobs/{job['job_id']}/result").json()
+    result_response = client.get(f"{API}/jobs/{job['job_id']}/result")
+    assert result_response.status_code == 200, result_response.text
+    served = result_response.json()
+    if upload_id is not None:
+        assert [warning["code"] for warning in job["warnings"]] == [
+            "audio_missing",
+            "audio_partly_muted",
+        ]
+        assert f"{service.uploads_dir / f'{upload_id}.mp4'} has no audio stream" in caplog.text
+        assert upload_id not in json.dumps(job["warnings"])
+        assert upload_id not in result_response.text
+    else:
+        assert [warning["code"] for warning in job["warnings"]] == ["audio_partly_muted"]
+    assert served["warnings"] == job["warnings"]
     assert served["vod"]["video_id"] == PIPELINE_VIDEO_ID
     assert served["vod"]["broadcaster_display_name"] == "Streamer_000"
-    assert served["scorer"] == {"kind": "heuristic", "name": "chat_loudness", "run_id": None}
+    assert served["scorer"] == {
+        "kind": "heuristic",
+        "name": "chat_spike" if silent_upload else "chat_loudness",
+        "run_id": None,
+    }
     assert served["n_viewer_clips_total"] == 2
     assert served["candidates"], "the planted signals should rank"
     # The pipeline also wrote the result file the highlights command reads (#71).

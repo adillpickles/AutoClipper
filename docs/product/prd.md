@@ -57,7 +57,7 @@ All three use the same app and the same analysis; only the export differs.
 
 Inspired by tools like Opus Clip: the analysis is a black box to the user; the output is finished video.
 
-1. **Start.** Paste a Twitch VOD link. If you already downloaded the VOD, also paste the file's path on your computer (browsers don't expose dropped files' paths to a local server), so it isn't downloaded again; the link is still needed for chat and viewer clips.
+1. **Start.** Paste a Twitch VOD link for metadata, chat and viewer clips. If you already downloaded the VOD, upload or drop the video file, or paste its absolute path when the server runs on the same computer.
 2. **Wait.** A progress screen: "Downloading chat… Listening to audio… Finding moments… Rendering clips (4 of 10)".
 3. **Results.** A grid of 10 clip cards, ranked 1–10. Each card shows the vertical clip (playable), its rank and score bar, the time in the stream, and a one-line reason, e.g. "Chat exploded to 9× normal and the streamer screamed".
 4. **Adjust.** Open a card to nudge start/end and re-render, or toggle captions.
