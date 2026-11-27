@@ -668,7 +668,7 @@ When the user selects a candidate, the client calls `GET /api/v1/jobs/{job_id}/c
 | `kind` | `video_file` \| null | Non-null iff `available`. Open enum: treat an unknown kind as unavailable. |
 | `url` | str \| null | Root-relative URL (§ 1) of an MP4 (H.264/AAC) that an HTML `<video>` element can play, with range support for seeking (§ 5.1). Non-null iff `kind` is `video_file`. |
 | `media_start_s` | float \| null | VOD time at media time 0. Non-null iff `available`. |
-| `media_end_s` | float \| null | VOD time at the end of the media. Non-null iff `available`. |
+| `media_end_s` | float \| null | End of the preview's usable video and audio coverage in VOD time, capped by the VOD duration. Non-null iff `available`. |
 | `reason` | str \| null | `MediaUnavailableReason`; non-null iff `unavailable` |
 | `message` | str \| null | Explanation for the user. Non-null when `unavailable`; optional while `preparing`. |
 
@@ -692,7 +692,7 @@ When the user selects a candidate, the client calls `GET /api/v1/jobs/{job_id}/c
 |---|---|
 | `source_unavailable` | Twitch doesn't serve this VOD's video for download: it was deleted or expired, or it's restricted (e.g. subscriber-only). Trying again won't help; analyzing again with a `video_path` will. |
 | `local_file_missing` | The job's `video_path` file is missing or can no longer be read (moved, deleted or on a disconnected drive). |
-| `fetch_failed` | Downloading the video failed after retries (network or tool error). Trying again later may work. |
+| `fetch_failed` | The video download failed, the preview could not be prepared, or the resulting file lacks coverage for the requested moment. Trying again later may work. |
 
 **Guarantees.** `0 ≤ media_start_s < media_end_s ≤ vod.duration_s` and `0 ≤ min_start_s < max_end_s ≤ vod.duration_s`. When available, preview coverage and export bounds both contain the candidate's own `[start_s, end_s)`.
 
