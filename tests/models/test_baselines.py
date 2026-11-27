@@ -282,6 +282,7 @@ def test_evaluate_mean_averages_per_vod_over_runs() -> None:
             "start_s": [0.0],
             "end_s": [30.0],
             "clip_ids": [["x"]],
+            "clip_position": ["end"],
         }
     )
     clips = pl.DataFrame({"clip_id": ["x"], "video_id": ["a"], "view_count": [5]})

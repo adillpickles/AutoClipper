@@ -11,6 +11,8 @@ Inputs are Polars frames:
   candidate the scorer produced for each VOD, made without access to clips. Only the top 10 per
   VOD by score count.
 - **moments:** the ``moments`` table (`autoclipper.labels.moments`) from the same clips snapshot.
+  Its ``clip_position`` column names how clip positions were read; every row must use the same
+  rule, and the report records it with its label rules version so v0 and v1 numbers don't mix.
 - **clips:** the ``clips`` table rows of that snapshot (``clip_id``, ``video_id``,
   ``view_count``), for the 5 most-viewed clips per VOD. A clip listed twice counts once, with
   its higher view count.
@@ -42,10 +44,12 @@ from autoclipper.eval.metrics import (
     top_clip_moments,
     top_clip_recall_at_k,
 )
+from autoclipper.labels.annotations import LABEL_RULES
 
-REPORT_SCHEMA_VERSION: Final = 1
+# 2: adds ``clip_position`` and ``label_rules_version`` (#126).
+REPORT_SCHEMA_VERSION: Final = 2
 CANDIDATE_COLUMNS: Final = ("video_id", "candidate_id", "start_s", "end_s", "score")
-MOMENT_COLUMNS: Final = ("video_id", "moment_id", "start_s", "end_s", "clip_ids")
+MOMENT_COLUMNS: Final = ("video_id", "moment_id", "start_s", "end_s", "clip_ids", "clip_position")
 CLIP_COLUMNS: Final = ("clip_id", "video_id", "view_count")
 METRICS: Final = ("hit_rate_at_10", "top_clip_recall_at_10")
 
@@ -60,12 +64,20 @@ class EvalResult:
         summary: For each metric, its `Interval` over the VODs that have it (None if none do).
         n_vods: VODs in the population.
         excluded: ``{video_id: reason}`` for VODs left out of at least one metric.
+        clip_position: The moments' ``clip_position`` (None when there are no moments).
     """
 
     per_vod: pl.DataFrame
     summary: dict[str, Interval | None]
     n_vods: int
     excluded: dict[str, str]
+    clip_position: str | None = None
+
+    @property
+    def label_rules_version(self) -> str | None:
+        """The label rules version that reads clip positions as `clip_position`, if any."""
+        versions = [v for v, rule in LABEL_RULES.items() if rule.name == self.clip_position]
+        return versions[0] if len(versions) == 1 else None
 
 
 def evaluate(
@@ -82,10 +94,23 @@ def evaluate(
 
     Raises:
         ValueError: A column is missing or null, a ``candidate_id`` or ``moment_id`` repeats,
-            a score or bound isn't finite, or an interval ends before it starts.
+            a score or bound isn't finite, an interval ends before it starts, or the moments
+            mix ``clip_position`` rules or use one no label rules version has.
     """
     _check(candidates, CANDIDATE_COLUMNS, "candidates", unique="candidate_id")
+    if "clip_position" not in moments.columns:
+        raise ValueError(
+            "moments has no clip_position column: it was built before #126 and may read clip "
+            "positions as starts; rebuild the dataset"
+        )
     _check(moments, MOMENT_COLUMNS, "moments", unique="moment_id")
+    positions = sorted(moments["clip_position"].unique().to_list())
+    if len(positions) > 1:
+        raise ValueError(f"moments mix clip_position rules: {', '.join(positions)}")
+    known = {rule.name for rule in LABEL_RULES.values()}
+    if positions and positions[0] not in known:
+        raise ValueError(f"moments have an unknown clip_position {positions[0]!r}")
+    clip_position = positions[0] if positions else None
     _check(clips, ("clip_id", "view_count"), "clips")
     if "video_id" not in clips.columns:
         raise ValueError("clips is missing columns: video_id")
@@ -170,7 +195,7 @@ def evaluate(
         metric: bootstrap_mean(per_vod[metric].drop_nulls().to_list(), seed=seed)
         for metric in METRICS
     }
-    return EvalResult(per_vod, summary, len(population), excluded)
+    return EvalResult(per_vod, summary, len(population), excluded, clip_position)
 
 
 def evaluate_mean(
@@ -222,7 +247,8 @@ def evaluate_mean(
         metric: bootstrap_mean(per_vod[metric].drop_nulls().to_list(), seed=seed)
         for metric in METRICS
     }
-    return EvalResult(per_vod, summary, results[0].n_vods, results[0].excluded)
+    first = results[0]
+    return EvalResult(per_vod, summary, first.n_vods, first.excluded, first.clip_position)
 
 
 def write_report(
@@ -251,6 +277,8 @@ def write_report(
         "created_at": created.isoformat().replace("+00:00", "Z"),
         "scorer": scorer,
         "dataset_version": dataset_version,
+        "label_rules_version": result.label_rules_version,
+        "clip_position": result.clip_position,
         "split": split,
         "git_sha": git_sha,
         "seed": seed,
@@ -288,6 +316,13 @@ def _summary_markdown(metrics: dict[str, object]) -> str:
         "",
         f"- Scorer: `{metrics['scorer']}`",
         f"- Dataset version: `{metrics['dataset_version']}`",
+        "- Label rules: "
+        + (
+            f"`{metrics['label_rules_version']}` (viewer-clip positions read as clip "
+            f"{metrics['clip_position']}s)"
+            if metrics["clip_position"]
+            else "n/a (no moments)"
+        ),
         f"- Split: {metrics['split'] or 'not given'}",
         f"- Git commit: `{metrics['git_sha']}`",
         f"- Seed: {metrics['seed']}",

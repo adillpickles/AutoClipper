@@ -19,7 +19,7 @@ from autoclipper.eval.harness import (
     evaluate_mean,
     write_report,
 )
-from autoclipper.labels.moments import merge_clips_into_moments
+from autoclipper.labels.moments import CLIP_START, merge_clips_into_moments
 from autoclipper.synthetic import generate_dataset
 
 runner = CliRunner()
@@ -39,7 +39,9 @@ def candidates_frame(rows: list[tuple[str, str, float, float, float]]) -> pl.Dat
     )
 
 
-def moments_frame(rows: list[tuple[str, str, float, float, list[str]]]) -> pl.DataFrame:
+def moments_frame(
+    rows: list[tuple[str, str, float, float, list[str]]], clip_position: str = "end"
+) -> pl.DataFrame:
     return pl.DataFrame(
         rows,
         schema={
@@ -50,7 +52,7 @@ def moments_frame(rows: list[tuple[str, str, float, float, list[str]]]) -> pl.Da
             "clip_ids": pl.List(pl.String),
         },
         orient="row",
-    )
+    ).with_columns(clip_position=pl.lit(clip_position))
 
 
 def clips_frame(views: dict[str, tuple[str, int]]) -> pl.DataFrame:
@@ -198,6 +200,8 @@ def test_report_records_dataset_commit_and_seed(
 
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     assert metrics["dataset_version"] == "v-synthetic"
+    assert (metrics["label_rules_version"], metrics["clip_position"]) == ("v1", "end")
+    assert metrics["schema_version"] == 2
     assert metrics["git_sha"] == "abc123"
     assert metrics["seed"] == 3
     assert metrics["split"] == "splits/v1.json fold 0"
@@ -208,6 +212,55 @@ def test_report_records_dataset_commit_and_seed(
     summary = summary_path.read_text(encoding="utf-8")
     for text in ("v-synthetic", "abc123", "Seed: 3", "hit_rate_at_10 | 0.750", "`c`: no observed"):
         assert text in summary
+    assert "Label rules: `v1` (viewer-clip positions read as clip ends)" in summary
+
+
+# Clip positions (#126): the match runs against moments read with one recorded rule.
+
+
+def test_evaluation_matches_a_clip_where_it_ends() -> None:
+    # A clip reported at 100 s, 30 s long, covers [70, 100); one reported at 10 s covers [0, 10).
+    # The late candidates are within 15 s of where the old reading put the clips ([100, 130)
+    # and [10, 40)) but 16 s past where they are.
+    clips = pl.DataFrame(
+        {
+            "clip_id": ["x", "y"],
+            "video_id": ["a", "b"],
+            "vod_offset_s": [100.0, 10.0],
+            "duration_s": [30.0, 30.0],
+            "view_count": [5, 5],
+            "created_at": [datetime(2026, 1, 1, tzinfo=UTC)] * 2,
+            "fetched_at": [datetime(2026, 1, 9, tzinfo=UTC)] * 2,
+        }
+    )
+    moments = merge_clips_into_moments(clips).moments
+    assert moments.select("video_id", "start_s", "end_s").rows() == [
+        ("a", 70.0, 100.0),
+        ("b", 0.0, 10.0),
+    ]
+    late = candidates_frame([("a", "a:late", 116.0, 146.0, 1.0), ("b", "b:c", 26.0, 56.0, 1.0)])
+    on_clip = candidates_frame([("a", "a:on", 70.0, 100.0, 1.0), ("b", "b:c", 20.0, 50.0, 1.0)])
+    old = merge_clips_into_moments(clips, rule=CLIP_START).moments
+
+    assert evaluate(late, moments, clips, seed=0).per_vod["hit_rate_at_10"].to_list() == [0, 0]
+    assert evaluate(on_clip, moments, clips, seed=0).per_vod["hit_rate_at_10"].to_list() == [1, 1]
+    result = evaluate(late, old, clips, seed=0)
+    assert result.per_vod["hit_rate_at_10"].to_list() == [1, 1]
+    assert (result.label_rules_version, result.clip_position) == ("v0", "start")
+
+
+def test_moments_without_one_known_clip_position_are_rejected() -> None:
+    candidates = candidates_frame([("a", "a:c", 0.0, 30.0, 1.0)])
+    clips = clips_frame({"x": ("a", 5)})
+    end = moments_frame([("a", "a:m0", 0.0, 30.0, ["x"])])
+    start = moments_frame([("a", "a:m1", 100.0, 130.0, ["x"])], clip_position="start")
+
+    with pytest.raises(ValueError, match=r"no clip_position column.*rebuild"):
+        evaluate(candidates, end.drop("clip_position"), clips, seed=0)
+    with pytest.raises(ValueError, match="mix clip_position rules: end, start"):
+        evaluate(candidates, pl.concat([end, start]), clips, seed=0)
+    with pytest.raises(ValueError, match="unknown clip_position 'middle'"):
+        evaluate(candidates, end.with_columns(clip_position=pl.lit("middle")), clips, seed=0)
 
 
 def test_evaluate_files_refuses_to_overwrite_a_report(
