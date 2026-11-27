@@ -45,6 +45,7 @@ ALLOWED_VIDEO_EXTENSIONS: Final[frozenset[str]] = frozenset(
 )
 UPLOAD_ID_PATTERN: Final = re.compile(r"^upl_[0-9a-f]{16}$")
 
+_WRITE_BUFFER_BYTES: Final = 1024 * 1024
 _NO_STORE: Final = {"Cache-Control": "no-store"}
 _JSON_TYPE: Final = "application/json; charset=utf-8"
 
@@ -245,11 +246,20 @@ def create_uploads_router(
             uploads_dir.mkdir(parents=True, exist_ok=True)
             handle = part_path.open("xb")
             try:
+                # ASGI servers deliver ~64 KiB chunks; batching them bounds memory to one
+                # buffer while keeping a multi-GB upload to a few thousand threadpool writes.
+                buffer = bytearray()
                 async for chunk in request.stream():
                     if not chunk:
                         continue
-                    await run_in_threadpool(handle.write, chunk)
+                    buffer += chunk
                     bytes_written += len(chunk)
+                    if len(buffer) >= _WRITE_BUFFER_BYTES:
+                        await run_in_threadpool(handle.write, bytes(buffer))
+                        buffer.clear()
+                if buffer:
+                    await run_in_threadpool(handle.write, bytes(buffer))
+                    buffer.clear()
                 await run_in_threadpool(handle.close)
             finally:
                 if not handle.closed:

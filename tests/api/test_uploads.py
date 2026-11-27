@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import BinaryIO
@@ -88,6 +89,8 @@ def test_streaming_chunked_upload_creates_job_and_serves_media(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, service = make_upload_client(probe_video=None, chunk_size=2048)
+    # A buffer that isn't a multiple of the chunk size covers flushes mid-stream and at the end.
+    monkeypatch.setattr("autoclipper.api.uploads._WRITE_BUFFER_BYTES", 5000)
     video = make_test_media("stream_vod.mp4", duration_s=3.0)
     raw = video.read_bytes()
 
@@ -106,6 +109,7 @@ def test_streaming_chunked_upload_creates_job_and_serves_media(
     assert body["duration_s"] == pytest.approx(3.0, abs=0.25)
     assert str(tmp_path) not in response.text
     assert sorted(path.suffix for path in service.uploads_dir.iterdir()) == [".json", ".mp4"]
+    assert (service.uploads_dir / f"{body['upload_id']}.mp4").read_bytes() == raw
 
     # Attaching upload_id to a job works even for 9000000007 and never leaks server paths.
     created = client.post(
@@ -409,9 +413,7 @@ def test_job_upload_id_validation_dedup_and_restart_persistence(
     assert second.json()["job_id"] == first.json()["job_id"]
     job_id = first.json()["job_id"]
 
-    # Wait for synchronous-equivalent completion before testing restart persistence.
-    import time
-
+    # Wait for the background job to finish before testing restart persistence.
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         if client.get(f"{API}/jobs/{job_id}").json()["state"] == "done":
