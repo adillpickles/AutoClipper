@@ -398,7 +398,7 @@ export function StartForm() {
         </div>
       </div>
 
-      <fieldset className="flex flex-col gap-3 rounded-card border border-border-subtle bg-surface-elevated/50 p-4">
+      <fieldset className="flex min-w-0 flex-col gap-3 rounded-card border border-border-subtle bg-surface-elevated/50 p-4">
         <div className="flex flex-col gap-1">
           <legend className="text-sm font-semibold text-ink-primary">
             Already have the VOD video?{" "}
@@ -511,7 +511,10 @@ export function StartForm() {
               <div className="flex flex-col gap-3 rounded-control border border-border-strong bg-surface-panel p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-mono text-sm font-medium text-ink-primary">
+                    <p
+                      title={selectedFile.name}
+                      className="truncate font-mono text-sm font-medium text-ink-primary"
+                    >
                       {selectedFile.name}
                     </p>
                     <p className="text-xs text-ink-secondary">
