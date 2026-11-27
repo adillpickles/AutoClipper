@@ -3683,3 +3683,174 @@ def test_stacked_layout_resolves_on_fresh_data_dir_when_display_name_differs_fro
     assert made.status_code == 201, made.text
     assert client.get(f"{API}/exports/{made.json()['export_id']}").json()["state"] == "done"
     assert renderer.specs[0].stacked_layout == preset
+
+
+def _make_forward_jump_ts(tmp_path: Path, *, audio_codec: str = "aac") -> Path:
+    """Two 2 s MPEG-TS segments with an 11 s forward jump (17 s total on the analysis timeline)."""
+    part0 = tmp_path / f"part0-{audio_codec}.ts"
+    part1 = tmp_path / f"part1-{audio_codec}.ts"
+    for path, color, hz, offset in ((part0, "black", 440, 0.0), (part1, "white", 880, 15.0)):
+        run_command(
+            ffmpeg_command(
+                "-y",
+                *("-f", "lavfi", "-i", f"color={color}:size=320x180:rate=25:duration=2"),
+                *("-f", "lavfi", "-i", f"sine=frequency={hz}:sample_rate=48000:duration=2"),
+                *("-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-pix_fmt", "yuv420p"),
+                *("-c:a", audio_codec, "-output_ts_offset", f"{offset}", "-f", "mpegts", path),
+            ),
+            timeout_s=60,
+        )
+    joined = tmp_path / f"forward-jump-{audio_codec}.ts"
+    joined.write_bytes(part0.read_bytes() + part1.read_bytes())
+    return joined
+
+
+def _frame_mean_gray(video: Path, at_s: float, tmp_path: Path) -> float:
+    import numpy as np
+
+    raw = tmp_path / f"{video.stem}-gray-{at_s}.raw"
+    run_command(
+        ffmpeg_command(
+            "-y",
+            *("-ss", f"{at_s}", "-i", video, "-frames:v", "1"),
+            *("-vf", "format=gray", "-f", "rawvideo", raw),
+        ),
+        timeout_s=60,
+    )
+    return float(np.frombuffer(raw.read_bytes(), dtype=np.uint8).mean())
+
+
+def _audio_slice_dominant_hz(
+    video: Path, start_s: float, duration_s: float, tmp_path: Path
+) -> tuple[float, float]:
+    import wave
+
+    import numpy as np
+
+    wav = tmp_path / f"{video.stem}-{start_s}.wav"
+    run_command(
+        ffmpeg_command(
+            "-y",
+            *("-ss", f"{start_s}", "-i", video, "-t", f"{duration_s}"),
+            *("-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav),
+        ),
+        timeout_s=60,
+    )
+    with wave.open(str(wav), "rb") as audio:
+        pcm = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
+    samples = pcm.astype(np.float64) / 32768.0
+    peak = float(np.abs(samples).max()) if len(samples) else 0.0
+    spectrum = np.abs(np.fft.rfft(samples * np.hanning(len(samples))))
+    hz = float(np.fft.rfftfreq(len(samples), 1 / 16_000)[int(spectrum.argmax())])
+    return hz, peak
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.parametrize("audio_codec", ["aac", "mp2"])
+def test_local_mpegts_preview_matches_export_timeline_across_forward_jump(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+    audio_codec: str,
+) -> None:
+    """Remuxed (aac) and transcoded (mp2) previews preserve >10 s forward timestamp jumps like
+    exports and report the probed timeline duration instead of collapsing or guessing."""
+    from autoclipper.export.clip import ClipSpec, render_clip
+    from autoclipper.export.cut import Interval
+    from autoclipper.export.encode import EncodeSettings
+
+    source = _make_forward_jump_ts(tmp_path, audio_codec=audio_codec)
+    client, _ = make_client(
+        render=render_clip,
+        probe_video=lambda path: path.suffix in {".mp4", ".ts"},
+    )
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(source)}).json()
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["status"] == "available"
+    assert media["preview"]["media_start_s"] == 0.0
+    assert media["preview"]["media_end_s"] == pytest.approx(17.0, abs=0.25)
+
+    served = client.get(str(media["preview"]["url"]))
+    assert served.status_code == 200
+    preview = tmp_path / f"preview-{audio_codec}.mp4"
+    preview.write_bytes(served.content)
+    assert probe(preview).duration_s == pytest.approx(17.0, abs=0.25)
+
+    # Preview footage before and after the 11 s jump matches a real export of [15.5, 16.5).
+    assert _frame_mean_gray(preview, 1.0, tmp_path) < 50
+    assert _audio_slice_dominant_hz(preview, 0.5, 1.0, tmp_path)[0] == pytest.approx(440, abs=20)
+    assert _frame_mean_gray(preview, 16.0, tmp_path) > 200
+    assert _audio_slice_dominant_hz(preview, 15.5, 1.0, tmp_path)[0] == pytest.approx(880, abs=20)
+    if audio_codec == "mp2":
+        # Transcoded audio fills the forward jump with silence instead of pulling 880 Hz earlier.
+        assert _audio_slice_dominant_hz(preview, 5.0, 4.0, tmp_path)[1] < 0.01
+
+    exported = render_clip(
+        ClipSpec(source, Interval(15.5, 16.5), tmp_path / f"export-{audio_codec}.mp4"),
+        settings=EncodeSettings(preset="ultrafast"),
+    )
+    assert _frame_mean_gray(exported.output, 0.5, tmp_path) > 200
+    assert _audio_slice_dominant_hz(exported.output, 0.0, 1.0, tmp_path)[0] == pytest.approx(
+        880, abs=20
+    )
+
+
+@pytest.mark.ffmpeg
+def test_local_video_preview_reports_probed_usable_coverage_instead_of_vod_duration(
+    client: TestClient, make_test_media: Callable[..., Path]
+) -> None:
+    """When a local video file covers less than `vod.duration_s`, preview coverage reports the
+    file's probed usable span rather than blindly advertising `vod.duration_s`."""
+    video = make_test_media("short-local.mp4", duration_s=3.0)
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(video)}).json()
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["status"] == "available"
+    assert media["preview"]["media_start_s"] == 0.0
+    assert media["preview"]["media_end_s"] == pytest.approx(3.0, abs=0.1)
+
+
+@pytest.mark.ffmpeg
+def test_segment_preview_preserves_forward_jump_timeline_and_probed_coverage(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+) -> None:
+    """A downloaded segment remuxed for preview keeps >10 s forward jumps on the same timeline
+    as cuts and reports probed usable coverage."""
+    source = _make_forward_jump_ts(tmp_path, audio_codec="aac")
+    base = _scenario_result("9000000001")
+    result = base.model_copy(
+        update={
+            "vod": base.vod.model_copy(update={"duration_s": 100.0}),
+            "candidates": (base.candidates[0].model_copy(update={"start_s": 5.0, "end_s": 16.5}),),
+        }
+    )
+
+    def ts_fetcher(video_id: str, begin_s: float, end_s: float, /) -> VideoSegment:
+        del video_id, end_s
+        return VideoSegment(source, float(round(begin_s)), float(round(begin_s)) + 17.0)
+
+    probe_runner = PipelineProbe(result)
+    client, service = make_client(
+        job_runner="pipeline",
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=IngestTools,
+        analyze=probe_runner,
+        segment_fetcher=ts_fetcher,
+    )
+    probe_runner.service = service
+    job = done_job(client)
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["status"] == "available"
+    assert media["preview"]["media_start_s"] == 0.0
+    assert media["preview"]["media_end_s"] == pytest.approx(17.0, abs=0.25)
+
+    served = client.get(str(media["preview"]["url"]))
+    assert served.status_code == 200
+    preview = tmp_path / "segment-preview.mp4"
+    preview.write_bytes(served.content)
+    assert _frame_mean_gray(preview, 16.0, tmp_path) > 200
+    assert _audio_slice_dominant_hz(preview, 15.5, 1.0, tmp_path)[0] == pytest.approx(880, abs=20)

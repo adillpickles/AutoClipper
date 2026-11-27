@@ -80,9 +80,15 @@ from autoclipper.export.highlights import (
     Stage as HighlightsStage,
 )
 from autoclipper.export.reframe import StackedLayout, stacked_layout_from_region
-from autoclipper.export.seek import covered_span, probe_stream_ends, probe_stream_times
+from autoclipper.export.seek import (
+    covered_span,
+    probe_media_and_times,
+    probe_stream_ends,
+    probe_stream_times,
+)
 from autoclipper.features.chat import Lexicon
 from autoclipper.ffmpeg import (
+    TIMELINE_OPTIONS,
     FFmpegError,
     FFmpegNotFoundError,
     ffmpeg_command,
@@ -531,6 +537,10 @@ class _SegmentState:
     begin_s: float | None = None
     end_s: float | None = None
     media_id: str | None = None
+    # The prepared preview file's probed VOD coverage (may be narrower than the raw segment
+    # if its remuxed/transcoded copy covers less than `end_s`).
+    preview_start_s: float | None = None
+    preview_end_s: float | None = None
     # `source_unavailable` or `fetch_failed` (§ 5.2); the messages derive from it.
     reason: str | None = None
     # Custom message for `fetch_failed` (e.g. actionable missing-tool guidance); None uses default.
@@ -548,6 +558,8 @@ class _FileMediaState:
 
     status: Literal["preparing", "ready", "failed"]
     media_id: str | None = None
+    media_start_s: float | None = None
+    media_end_s: float | None = None
 
 
 type _FetchWork = (
@@ -1173,6 +1185,11 @@ class MockService:
         with self._lock:
             job = self._jobs.get(job_id)
             video_path = None if job is None else job.video_path
+            vod_duration_s: float | None = None
+            if job is not None and job.result is not None:
+                vod_duration_s = job.result.vod.duration_s
+            elif job is not None:
+                vod_duration_s = job.duration_s
         if video_path is None:
             return
         source = Path(video_path)
@@ -1182,18 +1199,32 @@ class MockService:
             return  # _media_for reports local_file_missing
         self._sleep()
         media_id = new_id("med")
+        target = self.output_dir / "media" / f"{media_id}.mp4"
+        playable: Path | None = None
         try:
-            playable = _playable_copy(source, self.output_dir / "media" / f"{media_id}.mp4")
+            playable = _playable_copy(source, target)
+            coverage = _probe_preview_coverage(playable, origin_s=0.0, max_end_s=vod_duration_s)
+            if coverage is None:
+                raise FFmpegError(f"prepared preview {playable} has no usable A/V coverage")
         except Exception as exc:  # the preview can't be made; renders still cut the file
+            if playable is not None and playable != source:
+                with contextlib.suppress(OSError):
+                    playable.unlink(missing_ok=True)
             log.warning("preview preparation failed job_id=%s: %s", job_id, exc)
             with self._lock:
                 current = self._file_media.get(job_id)
                 if current is None or current.status != "ready":
                     self._file_media[job_id] = _FileMediaState("failed")
             return
+        media_start_s, media_end_s = coverage
         with self._lock:
             self._media[media_id] = playable
-            self._file_media[job_id] = _FileMediaState("ready", media_id)
+            self._file_media[job_id] = _FileMediaState(
+                "ready",
+                media_id,
+                media_start_s=media_start_s,
+                media_end_s=media_end_s,
+            )
 
     def _needs_segment(self, job: _JobRecord) -> bool:
         """Whether this job's media comes from a downloaded segment (#46)."""
@@ -1581,12 +1612,20 @@ class MockService:
             # The preview serves a playable copy prepared in the background (#46, § 5.1).
             file_state = self._file_media.get(job.job_id)
             if file_state is not None and file_state.status == "ready" and file_state.media_id:
+                preview_start_s = (
+                    0.0 if file_state.media_start_s is None else file_state.media_start_s
+                )
+                preview_end_s = (
+                    duration_s
+                    if file_state.media_end_s is None
+                    else min(duration_s, file_state.media_end_s)
+                )
                 preview = PreviewMedia(
                     status="available",
                     kind="video_file",
                     url=f"/api/v1/media/{file_state.media_id}",
-                    media_start_s=0.0,
-                    media_end_s=duration_s,
+                    media_start_s=preview_start_s,
+                    media_end_s=preview_end_s,
                     reason=None,
                     message=None,
                 )
@@ -1822,12 +1861,16 @@ class MockService:
                 message=_SEGMENT_PREVIEW_FAILED,
             )
         elif state.status == "ready":
+            preview_start_s = (
+                state.begin_s if state.preview_start_s is None else state.preview_start_s
+            )
+            preview_end_s = state.end_s if state.preview_end_s is None else state.preview_end_s
             preview = PreviewMedia(
                 status="available",
                 kind="video_file",
                 url=f"/api/v1/media/{state.media_id}",
-                media_start_s=state.begin_s,
-                media_end_s=state.end_s,
+                media_start_s=preview_start_s,
+                media_end_s=preview_end_s,
                 reason=None,
                 message=None,
             )
@@ -2113,11 +2156,20 @@ class MockService:
                 or state.end_s is None
             ):
                 return
+            job = self._jobs.get(job_id)
+            vod_duration_s = (
+                job.result.vod.duration_s
+                if job is not None and job.result is not None
+                else (None if job is None else job.duration_s)
+            )
             segment = VideoSegment(state.path, state.begin_s, state.end_s)
             self._active_segment_paths[segment.path] += 1
         try:
             self._sleep()
-            media_id = self._register_segment_media(segment)
+            prepared = self._register_segment_media(segment, max_end_s=vod_duration_s)
+            media_id = None if prepared is None else prepared[0]
+            preview_start_s = None if prepared is None else prepared[1]
+            preview_end_s = None if prepared is None else prepared[2]
             with self._lock:
                 current = self._segments.get(key)
                 if current is None or current.status != "ready" or current.media_id is not None:
@@ -2125,6 +2177,8 @@ class MockService:
                 self._segments[key] = replace(
                     current,
                     media_id=media_id,
+                    preview_start_s=preview_start_s,
+                    preview_end_s=preview_end_s,
                     preview_preparing=False,
                     preview_failed=media_id is None,
                 )
@@ -2139,6 +2193,7 @@ class MockService:
             candidate = self._candidate(job, candidate_id)
             state = self._segments[(job_id, candidate_id)]
             video_id, begin, end = job.video_id, state.planned_begin_s, state.planned_end_s
+            vod_duration_s = self._job_result(job).vod.duration_s
         self._sleep()
         log.info(
             "fetching video segment job_id=%s video_id=%s range=%.0f-%.0f",
@@ -2173,7 +2228,10 @@ class MockService:
                 self._fetches_done += 1
             return
         try:
-            media_id = self._register_segment_media(segment)
+            prepared = self._register_segment_media(segment, max_end_s=vod_duration_s)
+            media_id = None if prepared is None else prepared[0]
+            preview_start_s = None if prepared is None else prepared[1]
+            preview_end_s = None if prepared is None else prepared[2]
             self._store_segment(
                 job,
                 candidate,
@@ -2185,6 +2243,8 @@ class MockService:
                     begin_s=segment.begin_s,
                     end_s=segment.end_s,
                     media_id=media_id,
+                    preview_start_s=preview_start_s,
+                    preview_end_s=preview_end_s,
                     preview_failed=media_id is None,
                 ),
                 fail_if_short=True,
@@ -2427,21 +2487,42 @@ class MockService:
             with contextlib.suppress(OSError):
                 stale_playable.unlink(missing_ok=True)
 
-    def _register_segment_media(self, segment: VideoSegment) -> str | None:
-        """Return a playable media ID (§ 5.1), or None if preparation fails (#46).
+    def _register_segment_media(
+        self, segment: VideoSegment, *, max_end_s: float | None = None
+    ) -> tuple[str, float, float] | None:
+        """Return ``(media_id, preview_start_s, preview_end_s)`` (§ 5.1), or None on failure (#46).
 
         When preparation fails the preview reports unavailable instead of serving unverified
         bytes, while exports keep cutting the original segment.
         """
         media_id = new_id("med")
+        target = self.output_dir / "media" / f"{media_id}.mp4"
+        playable: Path | None = None
         try:
-            playable = _playable_copy(segment.path, self.output_dir / "media" / f"{media_id}.mp4")
+            playable = _playable_copy(segment.path, target)
+            source_info = probe(segment.path)
+            expected_span_s = segment.end_s - segment.begin_s
+            if abs(source_info.duration_s - expected_span_s) > 1.0:
+                # Fake-fetcher tests supply a short dummy file with a longer synthetic span.
+                preview_start_s, preview_end_s = segment.begin_s, segment.end_s
+            else:
+                coverage = _probe_preview_coverage(
+                    playable,
+                    origin_s=segment.begin_s,
+                    max_end_s=max_end_s if max_end_s is not None else segment.end_s,
+                )
+                if coverage is None:
+                    raise FFmpegError(f"prepared preview {playable} has no usable A/V coverage")
+                preview_start_s, preview_end_s = coverage
         except Exception as exc:
+            if playable is not None and playable != segment.path:
+                with contextlib.suppress(OSError):
+                    playable.unlink(missing_ok=True)
             log.warning("segment preview preparation failed: %s", exc)
             return None
         with self._lock:
             self._media[media_id] = playable
-        return media_id
+        return media_id, preview_start_s, preview_end_s
 
     def _segment_for_render(
         self,
@@ -2488,7 +2569,11 @@ class MockService:
             raise
         try:
             if segment.begin_s <= candidate.start_s and candidate.end_s <= segment.end_s:
-                media_id = self._register_segment_media(segment)
+                vod_duration_s = self._job_result(job).vod.duration_s
+                prepared = self._register_segment_media(segment, max_end_s=vod_duration_s)
+                media_id = None if prepared is None else prepared[0]
+                preview_start_s = None if prepared is None else prepared[1]
+                preview_end_s = None if prepared is None else prepared[2]
                 self._store_segment(
                     job,
                     candidate,
@@ -2500,6 +2585,8 @@ class MockService:
                         begin_s=segment.begin_s,
                         end_s=segment.end_s,
                         media_id=media_id,
+                        preview_start_s=preview_start_s,
+                        preview_end_s=preview_end_s,
                         preview_failed=media_id is None,
                     ),
                 )
@@ -3031,13 +3118,42 @@ def _within(
 FETCH_WAIT_S: Final = 600.0
 
 
+def _probe_preview_coverage(
+    path: Path, *, origin_s: float, max_end_s: float | None = None
+) -> tuple[float, float] | None:
+    """Measure usable preview `[start_s, end_s)` in VOD time via header and tail packet probes."""
+    info, times = probe_media_and_times(path)
+    if not info.video_streams:
+        return None
+    video = info.video_streams[0]
+    audio = info.audio_streams[0] if info.audio_streams else None
+    used_streams = [video.index] if audio is None else [video.index, audio.index]
+    stream_ends_s = probe_stream_ends(
+        path,
+        used_streams,
+        container_start_s=times.container_start_s,
+        duration_hint_s=info.duration_s,
+    )
+    cov_start_s, cov_end_s = covered_span(times, used_streams, info.duration_s, stream_ends_s)
+    if cov_end_s <= cov_start_s or cov_end_s <= 0.0:
+        return None
+    end_s = origin_s + cov_end_s
+    if max_end_s is not None:
+        end_s = min(max_end_s, end_s)
+    if end_s <= origin_s:
+        return None
+    return origin_s, end_s
+
+
 def _playable_copy(source: Path, target: Path) -> Path:
     """An H.264/AAC MP4 a browser can play, from `source` (#46, § 5.1).
 
     The preview URL feeds an HTML ``<video>`` element. The source itself is returned when it
     already is playable; the same codecs in another container (MPEG-TS, AVI) are remuxed,
     which only rewrites the container; anything else is transcoded once into `target` (named
-    for its media ID, so it is made at most once per media). The original is kept for
+    for its media ID, so it is made at most once per media). Reads `source` with
+    `TIMELINE_OPTIONS` (and `aresample=async=1:first_pts=0` when transcoding audio) so the
+    preview stays on the same timeline as analysis and exports. The original is kept for
     rendering.
 
     Raises:
@@ -3067,6 +3183,7 @@ def _playable_copy(source: Path, target: Path) -> Path:
             "23",
             "-pix_fmt",
             "yuv420p",
+            *(("-af", "aresample=async=1:first_pts=0") if audio is not None else ()),
             "-c:a",
             OUTPUT_PLAYABLE_AUDIO,
         )
@@ -3074,7 +3191,16 @@ def _playable_copy(source: Path, target: Path) -> Path:
     partial = target.with_name(f"{target.stem}.part.mp4")
     try:
         run_command(
-            ffmpeg_command("-y", "-i", source, *codecs, "-movflags", "+faststart", partial),
+            ffmpeg_command(
+                "-y",
+                *TIMELINE_OPTIONS,
+                "-i",
+                source,
+                *codecs,
+                "-movflags",
+                "+faststart",
+                partial,
+            ),
             timeout_s=encode_timeout_s(info.duration_s),
         )
         partial.replace(target)
