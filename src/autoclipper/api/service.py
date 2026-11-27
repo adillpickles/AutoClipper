@@ -173,6 +173,18 @@ _SEGMENT_PREVIEW_FAILED: Final = (
     "Preview isn't available: this moment's video couldn't be prepared for playback. "
     "Exporting it still works."
 )
+_SEGMENT_PREVIEW_UNCOVERED: Final = (
+    "Preview isn't available: the downloaded video doesn't cover this whole moment. "
+    "Exports still cut from the downloaded file."
+)
+_LOCAL_PREVIEW_FAILED: Final = (
+    "Preview isn't available: this file couldn't be prepared for playback. "
+    "Exports still cut it directly."
+)
+_LOCAL_PREVIEW_UNCOVERED: Final = (
+    "Preview isn't available: the playable copy of this file doesn't cover this moment. "
+    "Exports still cut it directly."
+)
 OUTPUT_PLAYABLE_VIDEO: Final = "h264"
 OUTPUT_PLAYABLE_AUDIO: Final = "aac"
 """What a browser's ``<video>`` element reliably plays (§ 5.1: the preview must be playable)."""
@@ -1590,19 +1602,18 @@ class MockService:
             # VOD (checked against the VOD's length at ingest), so its time 0 is VOD time 0.
             # The preview serves a playable copy prepared in the background (#46, § 5.1).
             file_state = self._file_media.get(job.job_id)
-            coverage = None if file_state is None else file_state.coverage
-            if (
-                file_state is not None
-                and coverage is not None
-                and coverage.start_s <= candidate.start_s
-                and candidate.end_s <= min(coverage.end_s, duration_s)
-            ):
+            preview_end_s = (
+                None
+                if file_state is None
+                else _covered_preview_end(file_state.coverage, candidate, duration_s)
+            )
+            if file_state is not None and preview_end_s is not None:
                 preview = PreviewMedia(
                     status="available",
                     kind="video_file",
                     url=f"/api/v1/media/{file_state.media_id}",
                     media_start_s=0.0,
-                    media_end_s=min(coverage.end_s, duration_s),
+                    media_end_s=preview_end_s,
                     reason=None,
                     message=None,
                 )
@@ -1615,11 +1626,9 @@ class MockService:
                     media_end_s=None,
                     reason="fetch_failed",
                     message=(
-                        "Preview isn't available: this file couldn't be prepared for playback. "
-                        "Exports still cut it directly."
+                        _LOCAL_PREVIEW_FAILED
                         if file_state.status == "failed"
-                        else "Preview isn't available: the playable copy of this file doesn't "
-                        "cover this moment. Exports still cut it directly."
+                        else _LOCAL_PREVIEW_UNCOVERED
                     ),
                 )
             else:
@@ -1818,9 +1827,8 @@ class MockService:
                 preview=preview,
                 export=export,
             )
-        coverage = state.preview_coverage
-        preview_end_s = (
-            None if coverage is None else min(coverage.end_s, self._job_result(job).vod.duration_s)
+        preview_end_s = _covered_preview_end(
+            state.preview_coverage, candidate, self._job_result(job).vod.duration_s
         )
         if state.status == "ready" and state.media_id is None and state.preview_preparing:
             preview = PreviewMedia(
@@ -1832,15 +1840,10 @@ class MockService:
                 reason=None,
                 message=_PREPARING_LOCAL_MESSAGE,
             )
-        elif state.status == "ready" and (
-            state.media_id is None
-            or coverage is None
-            or preview_end_s is None
-            or candidate.start_s < coverage.start_s
-            or preview_end_s < candidate.end_s
-        ):
+        elif state.status == "ready" and (state.media_id is None or preview_end_s is None):
             # The segment exists for cuts, but no playable preview could be prepared from it
-            # (#46): report that instead of serving unverified bytes (§ 5.1).
+            # (#46), or the prepared file's measured coverage misses the candidate: report that
+            # instead of serving unverified bytes (§ 5.1). Only a failed preparation is retried.
             preview = PreviewMedia(
                 status="unavailable",
                 kind=None,
@@ -1848,7 +1851,11 @@ class MockService:
                 media_start_s=None,
                 media_end_s=None,
                 reason="fetch_failed",
-                message=_SEGMENT_PREVIEW_FAILED,
+                message=(
+                    _SEGMENT_PREVIEW_FAILED
+                    if state.media_id is None
+                    else _SEGMENT_PREVIEW_UNCOVERED
+                ),
             )
         elif state.status == "ready":
             preview = PreviewMedia(
@@ -3064,6 +3071,23 @@ def _within(
 # How long a render waits for a fetch of the same range that is already running (#46):
 # far more than a segment download needs, bounded so a render never hangs forever.
 FETCH_WAIT_S: Final = 600.0
+
+
+def _covered_preview_end(
+    coverage: Interval | None, candidate: Candidate, duration_s: float
+) -> float | None:
+    """The `media_end_s` to advertise, or None when the preview doesn't cover the candidate.
+
+    `coverage` is the prepared file's measured usable span in VOD time (`_prepare_preview`); its
+    end is capped by the VOD duration, and the capped span must contain the candidate's own
+    ``[start_s, end_s)`` (§ 5.3 guarantee).
+    """
+    if coverage is None:
+        return None
+    end_s = min(coverage.end_s, duration_s)
+    if candidate.start_s < coverage.start_s or end_s < candidate.end_s:
+        return None
+    return end_s
 
 
 def _prepare_preview(
