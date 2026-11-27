@@ -15,11 +15,34 @@ const UTC_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
 });
 
+const UTC_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  timeZone: "UTC",
+});
+
 /** Format a UTC ISO-8601 timestamp as a short date like `Oct 13, 2026`. */
 export function formatBroadcastDate(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
   return UTC_DATE_FORMATTER.format(date);
+}
+
+/** Format a UTC ISO-8601 timestamp with date and time, e.g. `Oct 13, 2026 · 15:00 UTC`. */
+export function formatDateTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return `${UTC_DATE_FORMATTER.format(date)} · ${UTC_TIME_FORMATTER.format(date)} UTC`;
+}
+
+/** Extract the file basename from a local Windows or POSIX path, or null when unset. */
+export function localFileName(path: string | null): string | null {
+  if (!path) return null;
+  const trimmed = path.trim();
+  if (!trimmed) return null;
+  const parts = trimmed.split(/[\\/]+/).filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : trimmed;
 }
 
 /** Format a Twitch view count compactly (e.g. `4,820 views` or `12.4K views`). */

@@ -663,6 +663,50 @@ def test_list_jobs_paginates_newest_first_and_filters_by_query_and_state(tmp_pat
         assert bad_param.json()["error"]["code"] == "invalid_request"
 
 
+def test_list_jobs_includes_progress_while_running_and_clears_when_done(tmp_path: Path) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def pause_sleep(self: MockService) -> None:
+        del self
+        started.set()
+        release.wait(timeout=5)
+
+    service = _make_service(tmp_path, synchronous=False, step_s=0.01)
+    original_sleep = MockService._sleep
+    MockService._sleep = pause_sleep  # type: ignore[method-assign]
+    try:
+        with TestClient(create_app(service)) as client:
+            job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+            assert started.wait(timeout=5)
+
+            running = client.get(f"{API}/jobs").json()["items"][0]
+            assert running["job_id"] == job_id
+            assert running["state"] == "running"
+            assert running["progress"] == {
+                "stage": "resolving_vod",
+                "stage_index": 1,
+                "stage_count": 6,
+                "stage_fraction": None,
+                "message": "Looking up the VOD",
+            }
+
+            MockService._sleep = original_sleep  # type: ignore[method-assign]
+            release.set()
+            for _ in range(100):
+                item = client.get(f"{API}/jobs").json()["items"][0]
+                if item["state"] == "done":
+                    assert item["progress"] is None
+                    assert item["candidate_count"] == 3
+                    break
+                threading.Event().wait(0.02)
+            else:
+                raise AssertionError("job did not finish")
+    finally:
+        MockService._sleep = original_sleep  # type: ignore[method-assign]
+        release.set()
+
+
 def test_delete_job_removes_record_and_optionally_deletes_exports(tmp_path: Path) -> None:
     service1 = _make_service(tmp_path)
     with TestClient(create_app(service1)) as client1:

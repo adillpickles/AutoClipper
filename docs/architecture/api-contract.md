@@ -355,6 +355,7 @@ Query parameters (unknown or out-of-range values return `422 invalid_request`):
 | `video_id` | str | |
 | `video_path` | str \| null | As requested |
 | `state` | `queued` \| `running` \| `done` \| `failed` | |
+| `progress` | `Progress` \| null | Current stage while `running`, last stage on `failed` (if started), `null` otherwise (§ 3.4) |
 | `title` | str \| null | VOD title once known; `null` before completion |
 | `broadcaster_id` | str \| null | Channel ID once known |
 | `broadcaster_display_name` | str \| null | Channel display name once known |

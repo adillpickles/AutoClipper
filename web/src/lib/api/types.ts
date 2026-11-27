@@ -46,6 +46,66 @@ export interface Job {
   finished_at: string | null;
 }
 
+export interface JobRenderSummary {
+  render_id: string;
+  kind: "export" | "highlights";
+  candidate_id: string | null;
+  state: State;
+  file_available: boolean;
+  download_url: string | null;
+  duration_s: number | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface JobSummary {
+  job_id: string;
+  video_id: string;
+  video_path: string | null;
+  state: State;
+  progress: Progress | null;
+  title: string | null;
+  broadcaster_id: string | null;
+  broadcaster_display_name: string | null;
+  duration_s: number | null;
+  thumbnail_url: string | null;
+  candidate_count: number | null;
+  result_available: boolean;
+  export_count: number;
+  missing_export_count: number;
+  highlights_count: number;
+  missing_highlights_count: number;
+  exports: JobRenderSummary[];
+  highlights: JobRenderSummary[];
+  warning_count: number;
+  error: ApiError | null;
+  created_at: string;
+  started_at: string | null;
+  updated_at: string;
+  finished_at: string | null;
+}
+
+export interface ListJobsParams {
+  limit?: number;
+  offset?: number;
+  q?: string;
+  state?: State;
+}
+
+export interface JobListResponse {
+  items: JobSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export interface DeleteJobResponse {
+  job_id: string;
+  deleted: true;
+  deleted_files: number;
+}
+
 export interface VodSummary {
   video_id: string;
   title: string;

@@ -1005,6 +1005,7 @@ class MockService:
             video_id=record.video_id,
             video_path=record.video_path,
             state=record.state,
+            progress=record.progress,
             title=record.title,
             broadcaster_id=record.broadcaster_id,
             broadcaster_display_name=record.broadcaster_display_name,

@@ -717,3 +717,115 @@ describe("createMockClient channels", () => {
     });
   });
 });
+
+describe("createMockClient library (listJobs and deleteJob)", () => {
+  beforeEach(() => resetMockStore());
+
+  it("lists jobs newest first with metadata, progress, renders, filters, and pagination", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+
+    const empty = await client.listJobs();
+    expect(empty).toEqual({
+      items: [],
+      total: 0,
+      limit: 20,
+      offset: 0,
+      has_more: false,
+    });
+
+    const first = (await client.createJob({ vod: "9000000001" })).job;
+    now += 15 * MOCK_STEP_MS;
+    await client.createExport({
+      job_id: first.job_id,
+      candidate_id: "c001",
+      start_s: 118,
+      end_s: 148,
+      layout: "center_crop",
+      captions: false,
+    });
+    now += 5 * MOCK_RENDER_STEP_MS;
+
+    const failed = (await client.createJob({ vod: "9000000004" })).job;
+    now += 5 * MOCK_STEP_MS;
+    const running = (await client.createJob({ vod: "9000000003" })).job;
+    now += 2 * MOCK_STEP_MS; // running stage 2
+
+    const page1 = await client.listJobs({ limit: 2, offset: 0 });
+    expect(page1.total).toBe(3);
+    expect(page1.has_more).toBe(true);
+    expect(page1.items.map((i) => i.job_id)).toEqual([
+      running.job_id,
+      failed.job_id,
+    ]);
+    expect(page1.items[0].state).toBe("running");
+    expect(page1.items[0].progress?.stage).toBe("fetching_clips");
+    expect(page1.items[1].state).toBe("failed");
+    expect(page1.items[1].error?.code).toBe("vod_unavailable");
+
+    const page2 = await client.listJobs({ limit: 2, offset: 2 });
+    expect(page2.has_more).toBe(false);
+    expect(page2.items).toHaveLength(1);
+    expect(page2.items[0]).toMatchObject({
+      job_id: first.job_id,
+      state: "done",
+      progress: null,
+      title: "Synthetic stream 1",
+      broadcaster_display_name: "user_001",
+      candidate_count: 3,
+      result_available: true,
+      export_count: 1,
+      highlights_count: 0,
+    });
+
+    const filtered = await client.listJobs({ q: "user_001", state: "done" });
+    expect(filtered.items.map((i) => i.job_id)).toEqual([first.job_id]);
+  });
+
+  it("deletes finished jobs with optional export removal and rejects in-progress jobs", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const active = (await client.createJob({ vod: "9000000001" })).job;
+
+    await expect(client.deleteJob(active.job_id)).rejects.toMatchObject({
+      status: 409,
+      error: { code: "job_in_progress" },
+    });
+
+    now += 12 * MOCK_STEP_MS;
+    await client.createExport({
+      job_id: active.job_id,
+      candidate_id: "c001",
+      start_s: 118,
+      end_s: 148,
+      layout: "center_crop",
+      captions: false,
+    });
+    now += 4 * MOCK_RENDER_STEP_MS;
+
+    const kept = await client.deleteJob(active.job_id);
+    expect(kept).toEqual({
+      job_id: active.job_id,
+      deleted: true,
+      deleted_files: 0,
+    });
+    await expect(client.getJob(active.job_id)).rejects.toMatchObject({
+      status: 404,
+      error: { code: "job_not_found" },
+    });
+
+    const second = (await client.createJob({ vod: "9000000002" })).job;
+    now += 12 * MOCK_STEP_MS;
+    await client.createHighlights({ job_id: second.job_id });
+    now += 4 * MOCK_RENDER_STEP_MS;
+
+    const wiped = await client.deleteJob(second.job_id, {
+      deleteExports: true,
+    });
+    expect(wiped).toEqual({
+      job_id: second.job_id,
+      deleted: true,
+      deleted_files: 1,
+    });
+  });
+});

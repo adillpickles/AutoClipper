@@ -220,6 +220,7 @@ class JobSummary(_Response):
     video_id: str
     video_path: str | None
     state: State
+    progress: Progress | None = None
     title: str | None
     broadcaster_id: str | None
     broadcaster_display_name: str | None
