@@ -36,6 +36,8 @@ from autoclipper.schemas import (
     HighlightsVideo,
     Job,
     JobListResponse,
+    JobStatusRequest,
+    JobSummary,
     PreflightReport,
     State,
 )
@@ -56,6 +58,7 @@ class _ListJobsQuery(BaseModel):
 
     limit: int = Field(default=DEFAULT_JOBS_LIMIT, ge=1, le=MAX_JOBS_LIMIT)
     offset: int = Field(default=0, ge=0)
+    before: str | None = Field(default=None, max_length=128)
     q: str | None = None
     state: State | None = None
 
@@ -216,10 +219,19 @@ def create_app(
             service.list_jobs(
                 limit=query.limit,
                 offset=query.offset,
+                before=query.before,
                 q=query.q,
                 state=query.state,
             ),
             headers=_NO_STORE,
+        )
+
+    @app.post(f"{API_PREFIX}/jobs/status", response_model=tuple[JobSummary, ...])
+    def job_status(request: JobStatusRequest) -> Response:
+        return JSONResponse(
+            [job.model_dump(mode="json") for job in service.job_status(request.job_ids)],
+            headers=_NO_STORE,
+            media_type=_JSON_TYPE,
         )
 
     @app.post(f"{API_PREFIX}/jobs", response_model=Job, status_code=201)

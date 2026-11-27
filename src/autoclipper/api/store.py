@@ -14,8 +14,10 @@ import math
 import secrets
 import sqlite3
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import batched
 from pathlib import Path
 from typing import Final, Literal, cast
 
@@ -443,6 +445,20 @@ class JobStore:
             renders.append(render)
 
         return jobs, renders
+
+    def render_ids_for_jobs(self, job_ids: Sequence[str]) -> list[str]:
+        """Look up child renders through the job index, in bounded SQL batches."""
+        with self._lock:
+            return [
+                row["render_id"]
+                for batch in batched(job_ids, 100)
+                for row in self._conn.execute(
+                    "SELECT render_id FROM renders WHERE job_id IN ("
+                    + ", ".join("?" for _ in batch)
+                    + ")",
+                    batch,
+                )
+            ]
 
     def upsert_job(self, record: StoredJobRecord) -> None:
         """Insert or update one job record atomically."""

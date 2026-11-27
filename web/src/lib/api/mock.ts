@@ -20,11 +20,17 @@ import type {
   CreateExportRequest,
   CreateHighlightsRequest,
   CreateJobRequest,
+  DeleteJobResponse,
   Export,
   HighlightsSegment,
   HighlightsVideo,
   Job,
+  JobListResponse,
+  JobRenderSummary,
+  JobSummary,
+  ListJobsParams,
   Progress,
+  State,
 } from "@/lib/api/types";
 import { INVALID_CHANNEL_MESSAGE, parseChannel } from "@/lib/api/channel";
 import { EXPORT_STAGES, HIGHLIGHTS_STAGES, JOB_STAGES } from "@/lib/api/stages";
@@ -119,6 +125,9 @@ interface StoredJob {
   video_id: string;
   video_path: string | null;
   created_ms: number;
+  seq?: number;
+  /** Fixed FIFO start time preserved across deletions of finished jobs (§ 9.3). */
+  start_ms?: number;
 }
 
 type StoredExportInner = Omit<
@@ -138,6 +147,8 @@ interface StoredExport {
   created_ms: number;
   /** Creation order; exports made in the same millisecond still render first in, first out. */
   seq?: number;
+  /** Fixed FIFO start time preserved across deletions of finished jobs (§ 9.3). */
+  start_ms?: number;
 }
 
 type StoredHighlightsInner = Omit<
@@ -158,6 +169,8 @@ interface StoredHighlights {
   created_ms: number;
   /** Creation order within highlights videos; renders interleave with exports by time (§ 9.3). */
   seq?: number;
+  /** Fixed FIFO start time preserved across deletions of finished jobs (§ 9.3). */
+  start_ms?: number;
 }
 
 interface Store {
@@ -239,12 +252,15 @@ export function schedule(
   const starts = new Map<string, number>();
   let free = -Infinity;
   const ordered = Object.values(jobs).sort(
-    (a, b) => a.created_ms - b.created_ms || a.job_id.localeCompare(b.job_id),
+    (a, b) =>
+      a.created_ms - b.created_ms ||
+      (a.seq ?? 0) - (b.seq ?? 0) ||
+      a.job_id.localeCompare(b.job_id),
   );
   for (const job of ordered) {
-    const start = Math.max(job.created_ms + stepMs, free);
+    const start = job.start_ms ?? Math.max(job.created_ms + stepMs, free);
     starts.set(job.job_id, start);
-    free = start + runSteps(job.video_id) * stepMs;
+    free = Math.max(free, start + runSteps(job.video_id) * stepMs);
   }
   return starts;
 }
@@ -458,6 +474,7 @@ interface RenderSlot {
   created_ms: number;
   seq: number;
   steps: number;
+  start_ms?: number;
 }
 
 function renderSlots(
@@ -470,12 +487,14 @@ function renderSlots(
       created_ms: item.created_ms,
       seq: item.seq ?? 0,
       steps: renderStages(item.export.captions).length,
+      start_ms: item.start_ms,
     })),
     ...Object.values(highlights).map((item) => ({
       id: item.highlights.highlights_id,
       created_ms: item.created_ms,
       seq: item.seq ?? 0,
       steps: highlightsStages(item.highlights.captions).length,
+      start_ms: item.start_ms,
     })),
   ];
 }
@@ -496,9 +515,9 @@ export function renderSchedule(
       a.created_ms - b.created_ms || a.seq - b.seq || a.id.localeCompare(b.id),
   );
   for (const slot of ordered) {
-    const start = Math.max(slot.created_ms + stepMs, free);
+    const start = slot.start_ms ?? Math.max(slot.created_ms + stepMs, free);
     starts.set(slot.id, start);
-    free = start + slot.steps * stepMs;
+    free = Math.max(free, start + slot.steps * stepMs);
   }
   return starts;
 }
@@ -787,7 +806,7 @@ function doneJobsByVideo(store: Store, at: number): Map<string, string> {
 }
 
 export function createMockClient(now: () => number = Date.now): ApiClient {
-  return {
+  const client = {
     async getHealth() {
       return {
         status: "ok" as const,
@@ -922,6 +941,233 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       };
     },
 
+    async listJobs(
+      params?: ListJobsParams,
+      jobIds?: string[],
+    ): Promise<JobListResponse> {
+      const limit = params?.limit ?? 20;
+      const offset = params?.offset ?? 0;
+      const stateFilter = params?.state;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        throw new ApiRequestError(422, {
+          code: "invalid_request",
+          message:
+            "The request is invalid: query.limit must be between 1 and 100.",
+          details: { fields: ["query.limit"] },
+        });
+      }
+      if (!Number.isInteger(offset) || offset < 0) {
+        throw new ApiRequestError(422, {
+          code: "invalid_request",
+          message: "The request is invalid: query.offset must be at least 0.",
+          details: { fields: ["query.offset"] },
+        });
+      }
+      if (
+        stateFilter !== undefined &&
+        !(["queued", "running", "done", "failed"] as readonly State[]).includes(
+          stateFilter,
+        )
+      ) {
+        throw new ApiRequestError(422, {
+          code: "invalid_request",
+          message: "The request is invalid: query.state has an invalid value.",
+          details: { fields: ["query.state"] },
+        });
+      }
+
+      const before = params?.before;
+      let boundary:
+        Pick<StoredJob, "created_ms" | "seq" | "job_id"> | undefined;
+      if (before !== undefined) {
+        const [timestamp, sequence, jobId, extra] = before.split("|");
+        const createdMs = Date.parse(timestamp);
+        const seq = Number(sequence);
+        if (
+          offset !== 0 ||
+          !Number.isFinite(createdMs) ||
+          !/^-?[0-9]+$/.test(sequence ?? "") ||
+          !Number.isSafeInteger(seq) ||
+          !/^[A-Za-z0-9_-]{1,64}$/.test(jobId ?? "") ||
+          extra !== undefined
+        ) {
+          throw new ApiRequestError(422, {
+            code: "invalid_request",
+            message: "Use a valid job cursor without a nonzero offset.",
+            details: { fields: ["query.before"] },
+          });
+        }
+        boundary = { created_ms: createdMs, seq, job_id: jobId };
+      }
+
+      const store = load();
+      const at = now();
+      const jobStarts = schedule(store.jobs);
+      const needle = params?.q?.trim().toLowerCase() ?? "";
+
+      const matched: Array<{
+        stored: StoredJob;
+        job: Job;
+        result: AnalysisResult | null;
+      }> = [];
+      const jobs = jobIds
+        ? [...new Set(jobIds)]
+            .filter((id) => Object.hasOwn(store.jobs, id))
+            .map((id) => store.jobs[id])
+        : Object.values(store.jobs);
+      for (const stored of jobs) {
+        const job = jobAt(stored, at, jobStarts.get(stored.job_id));
+        if (stateFilter !== undefined && job.state !== stateFilter) continue;
+        const result =
+          job.state === "done"
+            ? (scenarioFor(stored.video_id).result ?? null)
+            : null;
+        if (needle) {
+          const haystack = [
+            result?.vod.title ?? "",
+            result?.vod.broadcaster_display_name ?? "",
+            stored.video_id,
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          if (!haystack.includes(needle)) continue;
+        }
+        matched.push({ stored, job, result });
+      }
+
+      type JobSortKey = Pick<StoredJob, "created_ms" | "seq" | "job_id">;
+      const compareJobs = (a: JobSortKey, b: JobSortKey) =>
+        b.created_ms - a.created_ms ||
+        (b.seq ?? 0) - (a.seq ?? 0) ||
+        b.job_id.localeCompare(a.job_id);
+
+      const total = matched.length;
+      const eligible = boundary
+        ? matched.filter(({ stored }) => compareJobs(stored, boundary) > 0)
+        : matched;
+      if (!jobIds) eligible.sort((a, b) => compareJobs(a.stored, b.stored));
+      const page = jobIds ? eligible : eligible.slice(offset, offset + limit);
+      const pageIds = new Set(page.map((entry) => entry.stored.job_id));
+      const hasAnyRender =
+        Object.values(store.exports).some((e) =>
+          pageIds.has(e.export.job_id),
+        ) ||
+        Object.values(store.highlights).some((h) =>
+          pageIds.has(h.highlights.job_id),
+        );
+      const renderStarts = hasAnyRender
+        ? renderSchedule(store.exports, store.highlights)
+        : new Map<string, number>();
+
+      const items: JobSummary[] = page.map(({ stored, job, result }) => {
+        const jobExports = Object.values(store.exports)
+          .filter((entry) => entry.export.job_id === stored.job_id)
+          .sort(
+            (a, b) =>
+              b.created_ms - a.created_ms ||
+              (b.seq ?? 0) - (a.seq ?? 0) ||
+              b.export.export_id.localeCompare(a.export.export_id),
+          )
+          .map((entry): JobRenderSummary => {
+            const evaluated = exportAt(
+              entry,
+              at,
+              renderStarts.get(entry.export.export_id),
+            );
+            const available = evaluated.state === "done";
+            return {
+              render_id: evaluated.export_id,
+              kind: "export",
+              candidate_id: evaluated.candidate_id,
+              state: evaluated.state,
+              file_available: available,
+              download_url: available ? evaluated.download_url : null,
+              duration_s: evaluated.end_s - evaluated.start_s,
+              created_at: evaluated.created_at,
+              finished_at: evaluated.finished_at,
+            };
+          });
+
+        const jobHighlights = Object.values(store.highlights)
+          .filter((entry) => entry.highlights.job_id === stored.job_id)
+          .sort(
+            (a, b) =>
+              b.created_ms - a.created_ms ||
+              (b.seq ?? 0) - (a.seq ?? 0) ||
+              b.highlights.highlights_id.localeCompare(
+                a.highlights.highlights_id,
+              ),
+          )
+          .map((entry): JobRenderSummary => {
+            const evaluated = highlightsAt(
+              entry,
+              at,
+              renderStarts.get(entry.highlights.highlights_id),
+            );
+            const available = evaluated.state === "done";
+            return {
+              render_id: evaluated.highlights_id,
+              kind: "highlights",
+              candidate_id: null,
+              state: evaluated.state,
+              file_available: available,
+              download_url: available ? evaluated.download_url : null,
+              duration_s: evaluated.duration_s,
+              created_at: evaluated.created_at,
+              finished_at: evaluated.finished_at,
+            };
+          });
+
+        return {
+          job_id: job.job_id,
+          video_id: job.video_id,
+          video_path: job.video_path,
+          state: job.state,
+          progress: job.progress,
+          title: result?.vod.title ?? null,
+          broadcaster_id: result?.vod.broadcaster_id ?? null,
+          broadcaster_display_name:
+            result?.vod.broadcaster_display_name ?? null,
+          duration_s: result?.vod.duration_s ?? null,
+          thumbnail_url: null,
+          candidate_count: result ? result.candidates.length : null,
+          result_available: job.state === "done",
+          export_count: jobExports.filter((e) => e.file_available).length,
+          missing_export_count: 0,
+          highlights_count: jobHighlights.filter((h) => h.file_available)
+            .length,
+          missing_highlights_count: 0,
+          exports: jobExports,
+          highlights: jobHighlights,
+          warning_count: job.warnings.length,
+          error: job.error,
+          created_at: job.created_at,
+          started_at: job.started_at,
+          updated_at: job.updated_at,
+          finished_at: job.finished_at,
+        };
+      });
+
+      const hasMore = !jobIds && offset + items.length < eligible.length;
+      const tail = page.at(-1)?.stored;
+      return {
+        items,
+        total,
+        limit,
+        offset,
+        has_more: hasMore,
+        next_cursor:
+          hasMore && tail
+            ? `${iso(tail.created_ms)}|${tail.seq ?? 0}|${tail.job_id}`
+            : null,
+      };
+    },
+
+    async getJobStatuses(jobIds: string[]): Promise<JobSummary[]> {
+      return (await client.listJobs(undefined, jobIds)).items;
+    },
+
     async createJob(request: CreateJobRequest) {
       const videoId = parseVod(request.vod);
       if (videoId === null) {
@@ -954,14 +1200,17 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
           return { job, created: false };
         }
       }
+      const seq = (store.next_seq ?? 0) + 1;
       const stored: StoredJob = {
         job_id: randomId("job"),
         video_id: videoId,
         video_path: videoPath,
         created_ms: at,
+        seq,
       };
       const next = {
         ...store,
+        next_seq: seq,
         jobs: { ...store.jobs, [stored.job_id]: stored },
       };
       save(next);
@@ -972,6 +1221,89 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       const job = jobNow(load(), jobId, now());
       if (!job) throw JOB_NOT_FOUND();
       return job;
+    },
+
+    async deleteJob(
+      jobId: string,
+      options?: { deleteExports?: boolean },
+    ): Promise<DeleteJobResponse> {
+      const store = load();
+      const stored = store.jobs[jobId];
+      if (!stored) throw JOB_NOT_FOUND();
+      const at = now();
+      const jobStarts = schedule(store.jobs);
+      const job = jobAt(stored, at, jobStarts.get(jobId));
+      const renderStarts = renderSchedule(store.exports, store.highlights);
+      const childExports = Object.values(store.exports)
+        .filter((entry) => entry.export.job_id === jobId)
+        .map((entry) =>
+          exportAt(entry, at, renderStarts.get(entry.export.export_id)),
+        );
+      const childHighlights = Object.values(store.highlights)
+        .filter((entry) => entry.highlights.job_id === jobId)
+        .map((entry) =>
+          highlightsAt(
+            entry,
+            at,
+            renderStarts.get(entry.highlights.highlights_id),
+          ),
+        );
+      if (
+        job.state === "queued" ||
+        job.state === "running" ||
+        childExports.some(
+          (e) => e.state === "queued" || e.state === "running",
+        ) ||
+        childHighlights.some(
+          (h) => h.state === "queued" || h.state === "running",
+        )
+      ) {
+        throw new ApiRequestError(409, {
+          code: "job_in_progress",
+          message:
+            "This analysis or one of its renders is still running. Wait for it to finish before deleting it.",
+          details: null,
+        });
+      }
+      const deletedFiles = options?.deleteExports
+        ? childExports.filter((e) => e.state === "done").length +
+          childHighlights.filter((h) => h.state === "done").length
+        : 0;
+      const nextJobs: Record<string, StoredJob> = {};
+      for (const [id, entry] of Object.entries(store.jobs)) {
+        if (id === jobId) continue;
+        nextJobs[id] =
+          entry.start_ms !== undefined
+            ? entry
+            : { ...entry, start_ms: jobStarts.get(id) };
+      }
+      const nextExports: Record<string, StoredExport> = {};
+      for (const [id, entry] of Object.entries(store.exports)) {
+        if (entry.export.job_id === jobId) continue;
+        nextExports[id] =
+          entry.start_ms !== undefined
+            ? entry
+            : { ...entry, start_ms: renderStarts.get(id) };
+      }
+      const nextHighlights: Record<string, StoredHighlights> = {};
+      for (const [id, entry] of Object.entries(store.highlights)) {
+        if (entry.highlights.job_id === jobId) continue;
+        nextHighlights[id] =
+          entry.start_ms !== undefined
+            ? entry
+            : { ...entry, start_ms: renderStarts.get(id) };
+      }
+      save({
+        ...store,
+        jobs: nextJobs,
+        exports: nextExports,
+        highlights: nextHighlights,
+      });
+      return {
+        job_id: jobId,
+        deleted: true,
+        deleted_files: deletedFiles,
+      };
     },
 
     async getResult(jobId: string) {
@@ -1296,7 +1628,8 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
     resolveUrl(url: string) {
       return url; // the mock's files are served by the app itself
     },
-  };
+  } satisfies ApiClient;
+  return client;
 }
 
 /** Forget every mock job, export and highlights video (tests). */

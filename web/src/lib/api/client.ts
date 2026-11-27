@@ -12,10 +12,14 @@ import type {
   CreateExportRequest,
   CreateHighlightsRequest,
   CreateJobRequest,
+  DeleteJobResponse,
   Export,
   Health,
   HighlightsVideo,
   Job,
+  JobListResponse,
+  JobSummary,
+  ListJobsParams,
   PreflightReport,
   ToolSetupRequest,
   ToolSetupStatus,
@@ -34,10 +38,19 @@ export interface ApiClient {
   ): Promise<{ setup: ToolSetupStatus; started: boolean }>;
   /** `GET /channels/vods`: resolve a channel URL or login and list recent archive VODs (§ 9.7). */
   getChannelVods(channel: string, limit?: number): Promise<ChannelVodsResponse>;
+  /** `GET /jobs`: list persisted analysis jobs newest first (§ 3.7). */
+  listJobs(params?: ListJobsParams): Promise<JobListResponse>;
+  /** `POST /jobs/status`: look up the current summaries of specific jobs (§ 3.7). */
+  getJobStatuses(jobIds: string[]): Promise<JobSummary[]>;
   /** `POST /jobs`: `created` is false when a queued or running job for the same input came back. */
   createJob(request: CreateJobRequest): Promise<{ job: Job; created: boolean }>;
   /** `GET /jobs/{job_id}`. */
   getJob(jobId: string): Promise<Job>;
+  /** `DELETE /jobs/{job_id}`: remove a finished job and optionally delete rendered MP4s (§ 3.8). */
+  deleteJob(
+    jobId: string,
+    options?: { deleteExports?: boolean },
+  ): Promise<DeleteJobResponse>;
   /** `GET /jobs/{job_id}/result` (409 `job_not_done` before it's done). */
   getResult(jobId: string): Promise<AnalysisResult>;
   /** `GET /jobs/{job_id}/candidates/{candidate_id}/media`. */

@@ -11,11 +11,15 @@ import type {
   CreateExportRequest,
   CreateHighlightsRequest,
   CreateJobRequest,
+  DeleteJobResponse,
   ErrorResponse,
   Export,
   Health,
   HighlightsVideo,
   Job,
+  JobListResponse,
+  JobSummary,
+  ListJobsParams,
   PreflightReport,
   ToolSetupRequest,
   ToolSetupStatus,
@@ -134,6 +138,38 @@ export function createHttpClient(
       );
       return data;
     },
+    async listJobs(params?: ListJobsParams): Promise<JobListResponse> {
+      const query = new URLSearchParams();
+      if (params?.limit !== undefined) {
+        query.set("limit", String(params.limit));
+      }
+      if (params?.offset !== undefined) {
+        query.set("offset", String(params.offset));
+      }
+      if (params?.before !== undefined) {
+        query.set("before", params.before);
+      }
+      if (params?.q !== undefined && params.q.trim() !== "") {
+        query.set("q", params.q.trim());
+      }
+      if (params?.state !== undefined) {
+        query.set("state", params.state);
+      }
+      const qs = query.toString();
+      const { data } = await request<JobListResponse>(
+        qs ? `/jobs?${qs}` : "/jobs",
+      );
+      return data;
+    },
+
+    async getJobStatuses(jobIds) {
+      const { data } = await request<JobSummary[]>("/jobs/status", {
+        method: "POST",
+        body: JSON.stringify({ job_ids: jobIds }),
+      });
+      return data;
+    },
+
     async createJob(
       body: CreateJobRequest,
     ): Promise<{ job: Job; created: boolean }> {
@@ -146,6 +182,18 @@ export function createHttpClient(
 
     async getJob(jobId: string): Promise<Job> {
       const { data } = await request<Job>(`/jobs/${encodeURIComponent(jobId)}`);
+      return data;
+    },
+
+    async deleteJob(
+      jobId: string,
+      options?: { deleteExports?: boolean },
+    ): Promise<DeleteJobResponse> {
+      const qs = options?.deleteExports ? "?delete_exports=true" : "";
+      const { data } = await request<DeleteJobResponse>(
+        `/jobs/${encodeURIComponent(jobId)}${qs}`,
+        { method: "DELETE" },
+      );
       return data;
     },
 

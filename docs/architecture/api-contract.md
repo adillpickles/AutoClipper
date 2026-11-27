@@ -22,7 +22,7 @@ The initial setup uses `autoclipper serve` on a development machine and the app 
 - **Every field is always present.** An optional value is `null`, never omitted; an empty list is `[]`. Numbers are finite (no `NaN` or `Infinity`).
 - **Requests are strict, responses are tolerant.** The server rejects unknown request fields and invalid values (`422 invalid_request`). Request models use Pydantic strict mode with unknown fields forbidden (`ConfigDict(strict=True, extra="forbid")`): default (lax) mode would accept `"yes"` or `1` for a boolean and `"115.5"` for a number. Strict mode still accepts a JSON integer for a float field, so `115` is a valid `start_s`. Request enums are `Literal[...]`: FastAPI validates the parsed body as Python data, where strict mode rejects a plain string for a `StrEnum` field, so `"center_crop"` would fail. A request field with a default (e.g. `CreateJobRequest.video_path`, `CreateHighlightsRequest.count`) may be omitted. Clients ignore unknown response fields and give *open* enums a default branch (§ 10).
 - **Messages are for people.** `message` fields are short English sentences that are safe to show in the UI: no secrets, tokens or file paths. Clients branch on `code`, never on `message`.
-- **Initial API scope:** single-user operation, polling (§ 9), no authentication or pagination. Deployment work can extend this setup ([PRD § Delivery](../product/prd.md#5-delivery)).
+- **Initial API scope:** single-user operation with polling (§ 9) and no authentication. Deployment work can extend this setup ([PRD § Delivery](../product/prd.md#5-delivery)).
 
 **Model mapping.** Response models live in one FastAPI-free module (e.g. `autoclipper.schemas`) so the CLI can use them too ([app stack](../decisions/0007-web-application-stack.md): Pydantic models are shared with the CLI output schema). TypeScript types are hand-written from this page, in one module the screens share (e.g. `web/src/lib/api/types.ts`), so #29–#31 don't wait for a backend. Generating them from FastAPI's OpenAPI document is an option once #28 exists; the hand-written types must then match it.
 
@@ -47,6 +47,7 @@ Model names used below: `CreateJobRequest`, `Job`, `JobRenderSummary`, `JobSumma
 | `POST` | `/api/v1/tools/setup` | Start downloading pinned managed tools (`ffmpeg`, `twitch_downloader`) in the background (§ 9.8) | `202` (or `200` if already running/up to date) `ToolSetupStatus` |
 | `GET` | `/api/v1/tools/setup` | Current progress and result of managed tool setup (§ 9.8) | `200` `ToolSetupStatus` |
 | `GET` | `/api/v1/jobs` | List analysis jobs (newest first, paginated, optional `q` and `state` filters, § 3.7) | `200` `JobListResponse` |
+| `POST` | `/api/v1/jobs/status` | Look up current library summaries for a batch of job IDs (§ 3.7) | `200` list of `JobSummary` |
 | `POST` | `/api/v1/jobs` | Start analyzing a VOD | `201` new `Job`; `200` if the same VOD is already queued/running |
 | `GET` | `/api/v1/jobs/{job_id}` | Job status and progress (poll this) | `200` `Job` |
 | `DELETE` | `/api/v1/jobs/{job_id}` | Remove a finished job from the library index and optionally delete its rendered files (§ 3.8) | `200` `DeleteJobResponse` |
@@ -326,7 +327,7 @@ HTTP errors for jobs use the envelope from § 8:
 
 ### 3.7 List jobs (Library)
 
-`GET /api/v1/jobs` returns a paginated `JobListResponse` with `Cache-Control: no-store`, ordered newest first (`created_at` descending, then creation sequence).
+`GET /api/v1/jobs` returns a paginated `JobListResponse` with `Cache-Control: no-store`, ordered by `created_at`, creation sequence, and `job_id`, all descending.
 
 Query parameters (unknown or out-of-range values return `422 invalid_request`):
 
@@ -334,6 +335,7 @@ Query parameters (unknown or out-of-range values return `422 invalid_request`):
 |---|---|---|---|
 | `limit` | int | `20` | Page size, `1..100` |
 | `offset` | int | `0` | Non-negative number of matching jobs to skip |
+| `before` | str \| null | `null` | Opaque `next_cursor` from a previous page with the same filters. Requires `offset=0`. |
 | `q` | str \| null | `null` | Case-insensitive substring filter across `title`, `broadcaster_display_name`, and `video_id` |
 | `state` | `queued` \| `running` \| `done` \| `failed` \| null | `null` | Optional job-state filter |
 
@@ -346,6 +348,11 @@ Query parameters (unknown or out-of-range values return `422 invalid_request`):
 | `limit` | int | Echoed page size |
 | `offset` | int | Echoed offset |
 | `has_more` | bool | True when more matching items follow this page |
+| `next_cursor` | str \| null | Cursor for the next page, or `null` when there are no more matching jobs |
+
+To continue browsing, pass the last page's `next_cursor` as `before`. The cursor marks an exclusive sort boundary and remains valid if the boundary job is deleted. Newer insertions and deletions leave the continuation point in place. `total` counts all jobs matching the filters, including jobs ahead of the cursor. The Library reloads its loaded range when pagination reveals a change in that count.
+
+`POST /api/v1/jobs/status` accepts `{ "job_ids": ["job_…", "job_…"] }` and returns a JSON array of current `JobSummary` objects with `Cache-Control: no-store`. It returns each existing requested job once, in request order, and omits missing jobs. Summaries include terminal state and final render counts when work has just finished. The operation is read-only. A JSON request body keeps large batches within the same request without a long URL.
 
 `JobSummary`:
 
@@ -355,6 +362,7 @@ Query parameters (unknown or out-of-range values return `422 invalid_request`):
 | `video_id` | str | |
 | `video_path` | str \| null | As requested |
 | `state` | `queued` \| `running` \| `done` \| `failed` | |
+| `progress` | `Progress` \| null | Current stage while `running`, last stage on `failed` (if started), `null` otherwise (§ 3.4) |
 | `title` | str \| null | VOD title once known; `null` before completion |
 | `broadcaster_id` | str \| null | Channel ID once known |
 | `broadcaster_display_name` | str \| null | Channel display name once known |
@@ -1147,6 +1155,7 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 ### 9.1 Polling
 
 - Poll `GET /jobs/{job_id}`, `GET /exports/{export_id}` and `GET /highlights/{highlights_id}` every 2 s while `queued` or `running`, and stop at `done` or `failed`. Then fetch the result (jobs) or offer the download (exports and highlights).
+- The Library polls `POST /jobs/status` every 2 s with the IDs of loaded jobs that have a queued or running analysis or render. It updates those rows in place and reloads the loaded range if a tracked job disappears or leaves the current filter. Polling stops when the loaded list is idle.
 - Poll the media endpoint every 2 s while `preview.status` is `preparing`.
 - On network errors, back off (e.g. 2, 4, 8 s, capped at 10 s). After about a minute of failures, show "Can't reach the server" with a retry button.
 - Status responses send `Cache-Control: no-store`.

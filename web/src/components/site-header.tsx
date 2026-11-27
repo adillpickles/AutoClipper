@@ -16,6 +16,12 @@ const NAV_ITEMS = [
     match: (path: string) =>
       path === "/channels" || path.startsWith("/channels/"),
   },
+  {
+    href: "/library",
+    label: "Library",
+    match: (path: string) =>
+      path === "/library" || path.startsWith("/library/"),
+  },
 ] as const;
 
 function NavLinks({

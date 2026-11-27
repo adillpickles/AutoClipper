@@ -316,4 +316,79 @@ describe("HTTP API client", () => {
       },
     });
   });
+
+  it("lists jobs with pagination and filters via GET /jobs and deletes via DELETE /jobs/{id}", async () => {
+    const listBody = {
+      items: [],
+      total: 0,
+      limit: 20,
+      offset: 40,
+      has_more: false,
+      next_cursor: null,
+    };
+    const deleteBody = {
+      job_id: "job_1",
+      deleted: true,
+      deleted_files: 2,
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(listBody))
+      .mockResolvedValueOnce(jsonResponse(listBody))
+      .mockResolvedValueOnce(jsonResponse(deleteBody))
+      .mockResolvedValueOnce(jsonResponse({ ...deleteBody, deleted_files: 0 }));
+    const client = createHttpClient("http://127.0.0.1:8000", fetchMock);
+
+    await expect(client.listJobs()).resolves.toEqual(listBody);
+    await client.listJobs({
+      limit: 20,
+      offset: 40,
+      q: "stream",
+      state: "done",
+    });
+    await expect(
+      client.deleteJob("job_1", { deleteExports: true }),
+    ).resolves.toEqual(deleteBody);
+    await client.deleteJob("job_1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://127.0.0.1:8000/api/v1/jobs",
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "http://127.0.0.1:8000/api/v1/jobs?limit=20&offset=40&q=stream&state=done",
+    );
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      "http://127.0.0.1:8000/api/v1/jobs/job_1?delete_exports=true",
+    );
+    expect(fetchMock.mock.calls[2][1]?.method).toBe("DELETE");
+    expect(fetchMock.mock.calls[3][0]).toBe(
+      "http://127.0.0.1:8000/api/v1/jobs/job_1",
+    );
+    expect(fetchMock.mock.calls[3][1]?.method).toBe("DELETE");
+  });
+
+  it("encodes the job cursor and sends one status request with the selected IDs", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ items: [], next_cursor: null }))
+      .mockResolvedValueOnce(jsonResponse([]));
+    const client = createHttpClient("http://127.0.0.1:8000", fetchMock);
+    const before = "2026-11-26T15:00:00+00:00|20|job_20";
+
+    await client.listJobs({ before });
+    await expect(client.getJobStatuses(["job_a", "job_b"])).resolves.toEqual(
+      [],
+    );
+
+    expect(
+      new URL(String(fetchMock.mock.calls[0][0])).searchParams.get("before"),
+    ).toBe(before);
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "http://127.0.0.1:8000/api/v1/jobs/status",
+    );
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ job_ids: ["job_a", "job_b"] }),
+    });
+  });
 });

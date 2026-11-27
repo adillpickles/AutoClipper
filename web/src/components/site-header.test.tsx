@@ -63,13 +63,18 @@ describe("SiteHeader", () => {
     expect(screen.queryByText("Mock data")).toBeNull();
   });
 
-  it("links to Single VOD and Channels and marks the active route", () => {
-    state.pathname = "/channels";
+  it("links to Single VOD, Channels, and Library and marks the active route", () => {
+    state.pathname = "/library";
     render(<SiteHeader />);
 
     const channelLinks = screen.getAllByRole("link", { name: "Channels" });
     expect(channelLinks.length).toBeGreaterThan(0);
     expect(channelLinks[0].getAttribute("href")).toBe("/channels");
-    expect(channelLinks[0].getAttribute("aria-current")).toBe("page");
+    expect(channelLinks[0].getAttribute("aria-current")).toBeNull();
+
+    const libraryLinks = screen.getAllByRole("link", { name: "Library" });
+    expect(libraryLinks.length).toBeGreaterThan(0);
+    expect(libraryLinks[0].getAttribute("href")).toBe("/library");
+    expect(libraryLinks[0].getAttribute("aria-current")).toBe("page");
   });
 });
