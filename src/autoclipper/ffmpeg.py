@@ -61,6 +61,11 @@ FFPROBE_GLOBAL_OPTIONS: tuple[str, ...] = ("-hide_banner", "-loglevel", "error")
 # gaps as silence. The price: a timestamp reset that jumps forward is also kept as silence.
 TIMELINE_OPTIONS: tuple[str, ...] = ("-dts_delta_threshold", "86400")
 
+# The audio filter that keeps decoded audio on that timeline wherever audio is encoded: gaps in
+# the timestamps become silence and overlaps are dropped, starting at 0. Without it FFmpeg joins
+# the samples, and everything after a gap moves earlier.
+TIMELINE_AUDIO_FILTER = "aresample=async=1:first_pts=0"
+
 # Default timeouts. Both read only file headers, so they finish in well under a second normally;
 # the margin covers slow disks and antivirus scans on first launch (Windows).
 PROBE_TIMEOUT_S = 60.0

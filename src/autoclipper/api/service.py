@@ -88,6 +88,7 @@ from autoclipper.export.seek import (
 )
 from autoclipper.features.chat import Lexicon
 from autoclipper.ffmpeg import (
+    TIMELINE_AUDIO_FILTER,
     TIMELINE_OPTIONS,
     FFmpegError,
     FFmpegNotFoundError,
@@ -1614,8 +1615,11 @@ class MockService:
                     media_end_s=None,
                     reason="fetch_failed",
                     message=(
-                        "Preview isn't available for this moment in the local file. "
+                        "Preview isn't available: this file couldn't be prepared for playback. "
                         "Exports still cut it directly."
+                        if file_state.status == "failed"
+                        else "Preview isn't available: the playable copy of this file doesn't "
+                        "cover this moment. Exports still cut it directly."
                     ),
                 )
             else:
@@ -3097,7 +3101,7 @@ def _playable_copy(source: Path, target: Path) -> Path:
     already is playable; the same codecs in another container (MPEG-TS, AVI) are remuxed,
     which only rewrites the container; anything else is transcoded once into `target` (named
     for its media ID, so it is made at most once per media). Reads `source` with
-    `TIMELINE_OPTIONS` (and `aresample=async=1:first_pts=0` when transcoding audio) so the
+    `TIMELINE_OPTIONS` (and `TIMELINE_AUDIO_FILTER` when transcoding audio) so the
     preview stays on the same timeline as analysis and exports. The original is kept for
     rendering.
 
@@ -3144,7 +3148,7 @@ def _playable_copy(source: Path, target: Path) -> Path:
                 "-c:a",
                 OUTPUT_PLAYABLE_AUDIO,
                 "-af",
-                "aresample=async=1:first_pts=0",
+                TIMELINE_AUDIO_FILTER,
             )
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_name(f"{target.stem}.part.mp4")

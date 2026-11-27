@@ -3844,6 +3844,8 @@ def test_local_video_preview_reports_probed_usable_coverage_instead_of_vod_durat
     assert media["preview"]["media_end_s"] == pytest.approx(3.0, abs=0.1)
     uncovered = client.get(f"{API}/jobs/{job['job_id']}/candidates/c002/media").json()
     assert uncovered["preview"]["status"] == "unavailable"
+    assert uncovered["preview"]["reason"] == "fetch_failed"
+    assert "doesn't cover this moment" in uncovered["preview"]["message"]
     assert uncovered["export"]["status"] == "available"
 
 
