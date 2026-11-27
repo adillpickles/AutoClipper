@@ -87,6 +87,7 @@ def test_streaming_chunked_upload_creates_job_and_serves_media(
     make_test_media: Callable[..., Path],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    short_preview_scenario: None,
 ) -> None:
     client, service = make_upload_client(probe_video=None, chunk_size=2048)
     # A buffer that isn't a multiple of the chunk size covers flushes mid-stream and at the end.

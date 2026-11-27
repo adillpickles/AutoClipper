@@ -11,7 +11,6 @@ import threading
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -186,22 +185,6 @@ def make_client(
 @pytest.fixture
 def client(make_client: Callable[..., tuple[TestClient, MockService]]) -> TestClient:
     return make_client()[0]
-
-
-@pytest.fixture
-def short_preview_scenario(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Put the first candidate inside the small local media fixtures."""
-    scenario_for = mock.scenario_for
-
-    def with_short_candidate(video_id: str) -> mock.Scenario:
-        scenario = scenario_for(video_id)
-        assert scenario.result is not None
-        first, *others = scenario.result.candidates
-        first = first.model_copy(update={"start_s": 0.5, "end_s": 1.5})
-        result = scenario.result.model_copy(update={"candidates": (first, *others)})
-        return replace(scenario, result=result)
-
-    monkeypatch.setattr(mock, "scenario_for", with_short_candidate)
 
 
 def done_job(client: TestClient, vod: str = "9000000001") -> dict[str, Any]:
