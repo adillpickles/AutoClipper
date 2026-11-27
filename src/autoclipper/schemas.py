@@ -250,6 +250,13 @@ class JobListResponse(_Response):
     limit: int = Field(ge=1)
     offset: int = Field(ge=0)
     has_more: bool
+    next_cursor: str | None
+
+
+class JobStatusRequest(_Request):
+    """Jobs to look up in a single library polling request (§ 3.7)."""
+
+    job_ids: list[Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")]]
 
 
 class DeleteJobResponse(_Response):

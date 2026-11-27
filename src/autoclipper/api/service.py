@@ -23,6 +23,7 @@ export. Highlights videos are real too (#72): the worker joins the job's resolve
 import contextlib
 import logging
 import queue
+import re
 import secrets
 import sqlite3
 import threading
@@ -859,11 +860,35 @@ class MockService:
         *,
         limit: int = 20,
         offset: int = 0,
+        before: str | None = None,
         q: str | None = None,
         state: State | None = None,
     ) -> JobListResponse:
         """Paginated list of jobs, newest first, with optional search and state filter."""
+        boundary: tuple[datetime, int, str] | None = None
+        if before is not None:
+            try:
+                timestamp, seq, job_id = before.split("|")
+                created_at = datetime.fromisoformat(timestamp)
+                if (
+                    offset != 0
+                    or created_at.utcoffset() != UTC.utcoffset(None)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", job_id)
+                ):
+                    raise ValueError
+                boundary = (created_at, int(seq), job_id)
+            except ValueError:
+                raise ApiException(
+                    422,
+                    "invalid_request",
+                    "Use a valid job cursor without a nonzero offset.",
+                    {"fields": ["query.before"]},
+                ) from None
         needle = q.strip().lower() if q is not None else ""
+
+        def sort_key(rec: _JobRecord) -> tuple[datetime, int, str]:
+            return rec.times.created_at, rec.seq, rec.job_id
+
         with self._lock:
             matched: list[_JobRecord] = []
             for record in self._jobs.values():
@@ -882,27 +907,40 @@ class MockService:
                     if needle not in haystack:
                         continue
                 matched.append(record)
-            matched.sort(
-                key=lambda rec: (rec.times.created_at, rec.seq, rec.job_id),
-                reverse=True,
-            )
             total = len(matched)
+            if boundary is not None:
+                matched = [rec for rec in matched if sort_key(rec) < boundary]
+            matched.sort(key=sort_key, reverse=True)
             page = matched[offset : offset + limit]
-            renders_by_job: dict[str, list[_RenderRecord]] = {}
-            page_ids = {rec.job_id for rec in page}
-            for render in self._renders.values():
-                if render.job_id in page_ids:
-                    renders_by_job.setdefault(render.job_id, []).append(render)
-            items = tuple(
-                self._job_summary(rec, renders_by_job.get(rec.job_id, ())) for rec in page
-            )
+            items = self._job_summaries(page)
+            has_more = offset + len(page) < len(matched)
+            next_cursor = None
+            if has_more and page:
+                created_at, seq, job_id = sort_key(page[-1])
+                next_cursor = f"{created_at.isoformat()}|{seq}|{job_id}"
         return JobListResponse(
             items=items,
             total=total,
             limit=limit,
             offset=offset,
-            has_more=(offset + len(items)) < total,
+            has_more=has_more,
+            next_cursor=next_cursor,
         )
+
+    def job_status(self, job_ids: Sequence[str]) -> tuple[JobSummary, ...]:
+        """Return current summaries of the requested jobs that still exist."""
+        with self._lock:
+            jobs = [self._jobs[job_id] for job_id in dict.fromkeys(job_ids) if job_id in self._jobs]
+            return self._job_summaries(jobs)
+
+    def _job_summaries(self, jobs: Sequence[_JobRecord]) -> tuple[JobSummary, ...]:
+        """Summarize the selected jobs and their renders with the service lock held."""
+        renders_by_job: dict[str, list[_RenderRecord]] = {}
+        for render_id in self._store.render_ids_for_jobs([job.job_id for job in jobs]):
+            render = self._renders.get(render_id)
+            if render is not None:  # Invalid persisted rows are skipped on startup.
+                renders_by_job.setdefault(render.job_id, []).append(render)
+        return tuple(self._job_summary(job, renders_by_job.get(job.job_id, ())) for job in jobs)
 
     def delete_job(self, job_id: str, *, delete_exports: bool = False) -> DeleteJobResponse:
         """Delete a finished job from the index and optionally remove its rendered files."""

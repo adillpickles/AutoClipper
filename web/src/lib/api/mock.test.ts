@@ -732,6 +732,7 @@ describe("createMockClient library (listJobs and deleteJob)", () => {
       limit: 20,
       offset: 0,
       has_more: false,
+      next_cursor: null,
     });
 
     const first = (await client.createJob({ vod: "9000000001" })).job;
@@ -780,6 +781,22 @@ describe("createMockClient library (listJobs and deleteJob)", () => {
 
     const filtered = await client.listJobs({ q: "user_001", state: "done" });
     expect(filtered.items.map((i) => i.job_id)).toEqual([first.job_id]);
+
+    // The cursor is still usable after its boundary row has been deleted.
+    await client.deleteJob(failed.job_id);
+    const afterDelete = await client.listJobs({
+      before: page1.next_cursor ?? undefined,
+    });
+    expect(afterDelete.items.map((i) => i.job_id)).toEqual([first.job_id]);
+    expect(afterDelete.next_cursor).toBeNull();
+
+    const statuses = await client.getJobStatuses([
+      running.job_id,
+      failed.job_id,
+      first.job_id,
+      running.job_id,
+    ]);
+    expect(statuses).toEqual([page1.items[0], page2.items[0]]);
   });
 
   it("deletes finished jobs with optional export removal and rejects in-progress jobs", async () => {

@@ -18,6 +18,7 @@ import type {
   HighlightsVideo,
   Job,
   JobListResponse,
+  JobSummary,
   ListJobsParams,
   PreflightReport,
   ToolSetupRequest,
@@ -145,6 +146,9 @@ export function createHttpClient(
       if (params?.offset !== undefined) {
         query.set("offset", String(params.offset));
       }
+      if (params?.before !== undefined) {
+        query.set("before", params.before);
+      }
       if (params?.q !== undefined && params.q.trim() !== "") {
         query.set("q", params.q.trim());
       }
@@ -155,6 +159,14 @@ export function createHttpClient(
       const { data } = await request<JobListResponse>(
         qs ? `/jobs?${qs}` : "/jobs",
       );
+      return data;
+    },
+
+    async getJobStatuses(jobIds) {
+      const { data } = await request<JobSummary[]>("/jobs/status", {
+        method: "POST",
+        body: JSON.stringify({ job_ids: jobIds }),
+      });
       return data;
     },
 

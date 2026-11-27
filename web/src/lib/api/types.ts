@@ -88,6 +88,7 @@ export interface JobSummary {
 export interface ListJobsParams {
   limit?: number;
   offset?: number;
+  before?: string;
   q?: string;
   state?: State;
 }
@@ -98,6 +99,7 @@ export interface JobListResponse {
   limit: number;
   offset: number;
   has_more: boolean;
+  next_cursor: string | null;
 }
 
 export interface DeleteJobResponse {

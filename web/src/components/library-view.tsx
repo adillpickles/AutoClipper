@@ -18,11 +18,11 @@ import {
   getApiClient,
   POLL_INTERVAL_MS,
 } from "@/lib/api/client";
-import type { JobSummary, State } from "@/lib/api/types";
+import type { JobSummary, ListJobsParams, State } from "@/lib/api/types";
 import { formatDateTime, formatTime, localFileName } from "@/lib/format";
 
 const PAGE_SIZE = 20;
-const MAX_POLL_PAGE_SIZE = 100;
+const MAX_PAGE_SIZE = 100;
 // Back off on network errors (2, 4, 8 s, capped at 10 s) and give up after about a minute (§ 9.1).
 const FIRST_BACKOFF_MS = 2000;
 const MAX_BACKOFF_MS = 10_000;
@@ -43,15 +43,7 @@ type LoadView =
 
 function isJobOrRenderActive(job: JobSummary): boolean {
   if (job.state === "queued" || job.state === "running") return true;
-  if (job.exports.some((e) => e.state === "queued" || e.state === "running")) {
-    return true;
-  }
-  if (
-    job.highlights.some((h) => h.state === "queued" || h.state === "running")
-  ) {
-    return true;
-  }
-  return false;
+  return hasActiveRender(job);
 }
 
 function hasActiveRender(job: JobSummary): boolean {
@@ -134,82 +126,121 @@ function LibrarySkeleton({ label = "Loading library…" }: { label?: string }) {
   );
 }
 
+type JobList = {
+  items: JobSummary[];
+  total: number;
+  nextCursor: string | null;
+};
+
+type DeleteState = {
+  deleteExports: boolean;
+  pending: boolean;
+  error: string | null;
+};
+
+function listFilters(query: string, state: StateFilter) {
+  return { q: query || undefined, state: state === "all" ? undefined : state };
+}
+
+function matchesFilters(job: JobSummary, { q, state }: ListJobsParams) {
+  if (state !== undefined && job.state !== state) return false;
+  const searchable = [job.title, job.broadcaster_display_name, job.video_id]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return !q || searchable.includes(q.toLowerCase());
+}
+
+async function loadPages(
+  params: ListJobsParams,
+  count: number,
+): Promise<JobList> {
+  const items: JobSummary[] = [];
+  let total: number;
+  let nextCursor: string | null = null;
+  do {
+    const page = await getApiClient().listJobs({
+      ...params,
+      limit: Math.min(MAX_PAGE_SIZE, count - items.length),
+      before: nextCursor ?? undefined,
+    });
+    items.push(...page.items);
+    total = page.total;
+    nextCursor = page.next_cursor;
+  } while (nextCursor && items.length < count);
+  return { items, total, nextCursor };
+}
+
 export function LibraryView() {
   const searchInputId = useId();
   const [searchInput, setSearchInput] = useState("");
-  const [appliedQuery, setAppliedQuery] = useState("");
-  const [stateFilter, setStateFilter] = useState<StateFilter>("all");
-  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [request, setRequest] = useState({
+    query: "",
+    filter: "all" as StateFilter,
+    generation: 0,
+    count: PAGE_SIZE,
+  });
+  const {
+    query: appliedQuery,
+    filter: stateFilter,
+    generation,
+    count,
+  } = request;
   const [view, setView] = useState<LoadView>({ kind: "loading" });
-  const [items, setItems] = useState<JobSummary[]>([]);
-  const [total, setTotal] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
+  const [list, setList] = useState<JobList & { generation: number }>({
+    items: [],
+    total: 0,
+    nextCursor: null,
+    generation: -1,
+  });
+  const { items, total, nextCursor } = list;
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [pollOffline, setPollOffline] = useState(false);
   const [pollAttempt, setPollAttempt] = useState(0);
+  const [deletes, setDeletes] = useState<Record<string, DeleteState>>({});
 
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [deleteExportsChecked, setDeleteExportsChecked] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [deleteError, setDeleteError] = useState<{
-    jobId: string;
-    message: string;
-  } | null>(null);
+  const requestRef = useRef(request);
+  const listRef = useRef(list);
+  const listRevision = useRef(0);
 
-  const requestSeq = useRef(0);
-  const listVersion = useRef(0);
-  const itemsRef = useRef<JobSummary[]>(items);
-  const totalRef = useRef(total);
-  const appliedQueryRef = useRef(appliedQuery);
-  const stateFilterRef = useRef(stateFilter);
-
-  useEffect(() => {
-    itemsRef.current = items;
-    totalRef.current = total;
-    appliedQueryRef.current = appliedQuery;
-    stateFilterRef.current = stateFilter;
-  });
-
-  const triggerReload = useCallback(
-    (
-      nextQuery: string,
-      nextFilter: StateFilter,
-      { showSkeleton = true } = {},
-    ) => {
-      if (showSkeleton) {
-        setView({ kind: "loading" });
-      }
-      setLoadMoreError(null);
-      setPollOffline(false);
-      setAppliedQuery(nextQuery);
-      setStateFilter(nextFilter);
-      setRefreshNonce((n) => n + 1);
+  const commitList = useCallback(
+    (next: JobList, generation: number, membershipChanged = true) => {
+      if (membershipChanged) listRevision.current += 1;
+      listRef.current = { ...next, generation };
+      setList(listRef.current);
     },
     [],
   );
 
+  function triggerReload(
+    query: string,
+    filter: StateFilter,
+    { showSkeleton = true, count = PAGE_SIZE } = {},
+  ) {
+    if (showSkeleton) setView({ kind: "loading" });
+    setLoadingMore(false);
+    setLoadMoreError(null);
+    setPollOffline(false);
+    requestRef.current = {
+      query,
+      filter,
+      generation: requestRef.current.generation + 1,
+      count,
+    };
+    setRequest(requestRef.current);
+  }
+
   useEffect(() => {
     let cancelled = false;
-    const seq = ++requestSeq.current;
-
-    getApiClient()
-      .listJobs({
-        limit: PAGE_SIZE,
-        offset: 0,
-        q: appliedQuery.trim() || undefined,
-        state: stateFilter === "all" ? undefined : stateFilter,
-      })
-      .then((res) => {
-        if (cancelled || requestSeq.current !== seq) return;
-        listVersion.current += 1;
-        setItems(res.items);
-        setTotal(res.total);
-        setHasMore(res.has_more);
+    loadPages(listFilters(appliedQuery, stateFilter), count)
+      .then((next) => {
+        if (cancelled || requestRef.current.generation !== generation) return;
+        commitList(next, generation);
         setView({ kind: "loaded" });
       })
       .catch((error: unknown) => {
-        if (cancelled || requestSeq.current !== seq) return;
+        if (cancelled || requestRef.current.generation !== generation) return;
         const message =
           error instanceof ApiRequestError
             ? error.error.message
@@ -220,9 +251,12 @@ export function LibraryView() {
     return () => {
       cancelled = true;
     };
-  }, [appliedQuery, stateFilter, refreshNonce]);
+  }, [appliedQuery, stateFilter, generation, count, commitList]);
 
-  const hasActive = view.kind === "loaded" && items.some(isJobOrRenderActive);
+  const hasActive =
+    view.kind === "loaded" &&
+    list.generation === generation &&
+    items.some(isJobOrRenderActive);
 
   useEffect(() => {
     if (!hasActive) return;
@@ -230,123 +264,133 @@ export function LibraryView() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let failingSince: number | null = null;
     let backoff = FIRST_BACKOFF_MS;
+    const params = listFilters(appliedQuery, stateFilter);
+
+    function schedulePoll(delay = POLL_INTERVAL_MS) {
+      timer = setTimeout(() => void pollOnce(), delay);
+    }
 
     async function pollOnce() {
-      const seqAtStart = requestSeq.current;
-      try {
-        const targetCount = Math.max(PAGE_SIZE, itemsRef.current.length);
-        const collected: JobSummary[] = [];
-        let offset = 0;
-        let latestTotal = 0;
-        let latestHasMore = false;
-
-        while (offset < targetCount) {
-          const pageLimit = Math.min(MAX_POLL_PAGE_SIZE, targetCount - offset);
-          const res = await getApiClient().listJobs({
-            limit: pageLimit,
-            offset,
-            q: appliedQuery.trim() || undefined,
-            state: stateFilter === "all" ? undefined : stateFilter,
-          });
-          if (cancelled || requestSeq.current !== seqAtStart) return;
-          collected.push(...res.items);
-          latestTotal = res.total;
-          latestHasMore = res.has_more;
-          if (!res.has_more || res.items.length === 0) {
-            break;
-          }
-          offset += res.items.length;
-        }
-
-        const seen = new Set<string>();
-        const deduped = collected.filter((item) => {
-          if (seen.has(item.job_id)) return false;
-          seen.add(item.job_id);
+      if (cancelled || requestRef.current.generation !== generation) return;
+      const current = listRef.current;
+      const ids = current.items
+        .filter(isJobOrRenderActive)
+        .map((job) => job.job_id);
+      if (ids.length === 0) return;
+      const revision = listRevision.current;
+      function isStale() {
+        if (cancelled || requestRef.current.generation !== generation)
           return true;
-        });
+        if (listRevision.current === revision) return false;
+        schedulePoll();
+        return true;
+      }
+
+      try {
+        const updates = await getApiClient().getJobStatuses(ids);
+        if (isStale()) return;
+        const changedMembership =
+          updates.length !== ids.length ||
+          updates.some((job) => !matchesFilters(job, params));
+        if (changedMembership) {
+          // A tracked row disappeared or moved out of the current filter.
+          const next = await loadPages(
+            params,
+            Math.max(PAGE_SIZE, current.items.length),
+          );
+          if (isStale()) return;
+          commitList(next, generation);
+        } else {
+          const byId = new Map(updates.map((job) => [job.job_id, job]));
+          commitList(
+            {
+              ...current,
+              items: current.items.map((job) => byId.get(job.job_id) ?? job),
+            },
+            generation,
+            false,
+          );
+        }
 
         failingSince = null;
         backoff = FIRST_BACKOFF_MS;
         setPollOffline(false);
-        listVersion.current += 1;
-        setItems(deduped);
-        setTotal(latestTotal);
-        setHasMore(latestHasMore);
-
-        const stillActive = deduped.some(isJobOrRenderActive);
-        if (stillActive) {
-          timer = setTimeout(() => {
-            void pollOnce();
-          }, POLL_INTERVAL_MS);
-        }
+        schedulePoll();
       } catch {
-        if (cancelled || requestSeq.current !== seqAtStart) return;
+        if (isStale()) return;
         failingSince ??= Date.now();
         if (Date.now() - failingSince > GIVE_UP_AFTER_MS) {
           setPollOffline(true);
           return;
         }
-        const delay = backoff;
+        schedulePoll(backoff);
         backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
-        timer = setTimeout(() => {
-          void pollOnce();
-        }, delay);
       }
     }
 
-    timer = setTimeout(() => {
-      void pollOnce();
-    }, POLL_INTERVAL_MS);
-
+    schedulePoll();
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [hasActive, appliedQuery, stateFilter, pollAttempt]);
+  }, [
+    hasActive,
+    appliedQuery,
+    stateFilter,
+    generation,
+    pollAttempt,
+    commitList,
+  ]);
 
   async function handleLoadMore() {
-    if (loadingMore || !hasMore) return;
+    if (loadingMore || !nextCursor || list.generation !== generation) return;
     setLoadingMore(true);
     setLoadMoreError(null);
-    const seqAtStart = requestSeq.current;
-    const queryParams = {
-      q: appliedQuery.trim() || undefined,
-      state: stateFilter === "all" ? undefined : stateFilter,
-    };
+    const params = listFilters(appliedQuery, stateFilter);
     try {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const versionAtStart = listVersion.current;
-        const offset = itemsRef.current.length;
-        const res = await getApiClient().listJobs({
+      while (requestRef.current.generation === generation) {
+        const current = listRef.current;
+        if (!current.nextCursor) return;
+        const revision = listRevision.current;
+        const page = await getApiClient().listJobs({
+          ...params,
           limit: PAGE_SIZE,
-          offset,
-          ...queryParams,
+          before: current.nextCursor,
         });
-        if (requestSeq.current !== seqAtStart) return;
-        if (listVersion.current !== versionAtStart) {
-          // A poll updated the list while this offset page was in flight; re-fetch from the
-          // updated offset instead of skipping displaced boundary rows or applying stale has_more.
-          continue;
+        if (requestRef.current.generation !== generation) return;
+        if (listRevision.current !== revision) continue;
+
+        if (page.total !== current.total) {
+          // A different tab changed the matching jobs. Replace the loaded prefix
+          // as well so deleted rows disappear and new rows sort into place.
+          const refreshed = await loadPages(
+            params,
+            current.items.length + PAGE_SIZE,
+          );
+          if (requestRef.current.generation !== generation) return;
+          if (listRevision.current !== revision) continue;
+          commitList(refreshed, generation);
+        } else {
+          commitList(
+            {
+              items: [...listRef.current.items, ...page.items],
+              total: page.total,
+              nextCursor: page.next_cursor,
+            },
+            generation,
+          );
         }
-        listVersion.current += 1;
-        setItems((prev) => {
-          const seen = new Set(prev.map((item) => item.job_id));
-          const appended = res.items.filter((item) => !seen.has(item.job_id));
-          return [...prev, ...appended];
-        });
-        setTotal(res.total);
-        setHasMore(res.has_more);
         return;
       }
     } catch (error) {
-      if (requestSeq.current !== seqAtStart) return;
+      if (requestRef.current.generation !== generation) return;
       setLoadMoreError(
         error instanceof ApiRequestError
           ? error.error.message
           : "Couldn't load more analyses. Try again.",
       );
     } finally {
-      setLoadingMore(false);
+      if (requestRef.current.generation === generation) setLoadingMore(false);
     }
   }
 
@@ -360,44 +404,49 @@ export function LibraryView() {
     triggerReload("", "all");
   }
 
-  function openDeleteConfirm(job: JobSummary) {
-    setConfirmDeleteId(job.job_id);
-    setDeleteExportsChecked(false);
-    setDeleteError(null);
+  function setDelete(jobId: string, state: DeleteState | null) {
+    setDeletes((previous) => {
+      const next = { ...previous };
+      if (state) next[jobId] = state;
+      else delete next[jobId];
+      return next;
+    });
   }
 
-  function cancelDeleteConfirm() {
-    setConfirmDeleteId(null);
-    setDeleteExportsChecked(false);
-    setDeleteError(null);
-  }
-
-  async function confirmDelete(job: JobSummary) {
-    setDeletingId(job.job_id);
-    setDeleteError(null);
-    const seqAtStart = requestSeq.current;
+  async function confirmDelete(jobId: string, deleteExports: boolean) {
+    setDelete(jobId, { deleteExports, pending: true, error: null });
     try {
-      await getApiClient().deleteJob(job.job_id, {
-        deleteExports: deleteExportsChecked,
-      });
-      setConfirmDeleteId(null);
-      setDeleteExportsChecked(false);
-      if (seqAtStart !== requestSeq.current) {
-        triggerReload(appliedQueryRef.current, stateFilterRef.current, {
-          showSkeleton: false,
-        });
-        return;
+      await getApiClient().deleteJob(jobId, { deleteExports });
+      setDelete(jobId, null);
+
+      const current = listRef.current;
+      const latest = requestRef.current;
+      const remaining = current.items.filter((job) => job.job_id !== jobId);
+      const nextTotal = Math.max(0, current.total - 1);
+      if (remaining.length !== current.items.length) {
+        commitList(
+          {
+            items: remaining,
+            total: nextTotal,
+            nextCursor:
+              nextTotal > remaining.length ? current.nextCursor : null,
+          },
+          current.generation,
+        );
       }
-      listVersion.current += 1;
-      const remaining = itemsRef.current.filter(
-        (item) => item.job_id !== job.job_id,
-      );
-      const nextTotal = Math.max(0, totalRef.current - 1);
-      setItems(remaining);
-      setTotal(nextTotal);
-      if (remaining.length === 0 && nextTotal > 0) {
-        triggerReload(appliedQueryRef.current, stateFilterRef.current, {
+
+      if (
+        latest.generation !== generation ||
+        (remaining.length === 0 && current.nextCursor)
+      ) {
+        triggerReload(latest.query, latest.filter, {
           showSkeleton: false,
+          count: Math.max(
+            PAGE_SIZE,
+            current.generation === latest.generation
+              ? current.items.length
+              : latest.count,
+          ),
         });
       }
     } catch (error) {
@@ -405,9 +454,7 @@ export function LibraryView() {
         error instanceof ApiRequestError
           ? error.error.message
           : "Couldn't delete this analysis. Check that the server is running and try again.";
-      setDeleteError({ jobId: job.job_id, message });
-    } finally {
-      setDeletingId(null);
+      setDelete(jobId, { deleteExports, pending: false, error: message });
     }
   }
 
@@ -600,8 +647,8 @@ export function LibraryView() {
               const badge = stateBadge(job);
               const title = jobDisplayTitle(job);
               const fileName = localFileName(job.video_path);
-              const isConfirming = confirmDeleteId === job.job_id;
-              const isDeleting = deletingId === job.job_id;
+              const deletion = deletes[job.job_id];
+              const isDeleting = deletion?.pending ?? false;
               const renderFilesCount = job.export_count + job.highlights_count;
               const activeChildRender = hasActiveRender(job);
               const canDelete =
@@ -611,8 +658,6 @@ export function LibraryView() {
                 job.state === "running" && job.progress?.stage_fraction != null
                   ? Math.round(job.progress.stage_fraction * 100)
                   : null;
-              const rowDeleteError =
-                deleteError?.jobId === job.job_id ? deleteError.message : null;
 
               return (
                 <li
@@ -809,7 +854,7 @@ export function LibraryView() {
                       )}
 
                       {(job.state === "done" || job.state === "failed") &&
-                        !isConfirming && (
+                        !deletion && (
                           <Button
                             variant="subtle"
                             size="sm"
@@ -819,7 +864,13 @@ export function LibraryView() {
                                 ? "Wait for active clip or highlights renders to finish before deleting."
                                 : undefined
                             }
-                            onClick={() => openDeleteConfirm(job)}
+                            onClick={() =>
+                              setDelete(job.job_id, {
+                                deleteExports: false,
+                                pending: false,
+                                error: null,
+                              })
+                            }
                           >
                             Delete
                           </Button>
@@ -827,7 +878,7 @@ export function LibraryView() {
                     </div>
                   </div>
 
-                  {isConfirming && (
+                  {deletion && (
                     <div
                       role="region"
                       aria-label={`Confirm deleting ${title}`}
@@ -850,10 +901,13 @@ export function LibraryView() {
                         <label className="flex cursor-pointer items-start gap-2.5 rounded-control border border-danger-border/70 bg-surface-panel px-3 py-2.5 text-xs text-ink-primary">
                           <input
                             type="checkbox"
-                            checked={deleteExportsChecked}
+                            checked={deletion.deleteExports}
                             disabled={isDeleting}
                             onChange={(event) =>
-                              setDeleteExportsChecked(event.target.checked)
+                              setDelete(job.job_id, {
+                                ...deletion,
+                                deleteExports: event.target.checked,
+                              })
                             }
                             className="mt-0.5 size-4 shrink-0 rounded accent-danger"
                           />
@@ -876,9 +930,9 @@ export function LibraryView() {
                         </label>
                       )}
 
-                      {rowDeleteError && (
+                      {deletion.error && (
                         <p role="alert" className="font-medium text-danger">
-                          {rowDeleteError}
+                          {deletion.error}
                         </p>
                       )}
 
@@ -888,7 +942,10 @@ export function LibraryView() {
                           size="sm"
                           disabled={isDeleting}
                           onClick={() => {
-                            void confirmDelete(job);
+                            void confirmDelete(
+                              job.job_id,
+                              deletion.deleteExports,
+                            );
                           }}
                         >
                           {isDeleting ? "Deleting…" : "Confirm delete"}
@@ -897,7 +954,7 @@ export function LibraryView() {
                           variant="secondary"
                           size="sm"
                           disabled={isDeleting}
-                          onClick={cancelDeleteConfirm}
+                          onClick={() => setDelete(job.job_id, null)}
                         >
                           Cancel
                         </Button>
@@ -918,7 +975,7 @@ export function LibraryView() {
             </p>
           )}
 
-          {hasMore && (
+          {nextCursor && (
             <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
               <p className="font-mono text-xs text-ink-tertiary tabular-nums">
                 Showing {items.length} of {total}
@@ -926,7 +983,7 @@ export function LibraryView() {
               <Button
                 variant="secondary"
                 size="md"
-                disabled={loadingMore}
+                disabled={loadingMore || list.generation !== generation}
                 onClick={() => {
                   void handleLoadMore();
                 }}

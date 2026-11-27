@@ -622,6 +622,7 @@ def test_list_jobs_paginates_newest_first_and_filters_by_query_and_state(tmp_pat
             "limit": 20,
             "offset": 0,
             "has_more": False,
+            "next_cursor": None,
         }
 
         j1 = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
@@ -663,6 +664,34 @@ def test_list_jobs_paginates_newest_first_and_filters_by_query_and_state(tmp_pat
         assert bad_param.json()["error"]["code"] == "invalid_request"
 
 
+@pytest.mark.parametrize("delete_index", [0, 19])
+def test_list_jobs_cursor_survives_deleting_a_loaded_job(tmp_path: Path, delete_index: int) -> None:
+    # Identical timestamps make creation sequence the pagination tie-breaker.
+    service = _make_service(tmp_path, clock=_FakeClock(step_s=0.0))
+    with TestClient(create_app(service)) as client:
+        jobs = [
+            client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+            for _ in range(25)
+        ][::-1]
+        first = client.get(f"{API}/jobs", params={"q": "stream 1", "state": "done"}).json()
+        assert [job["job_id"] for job in first["items"]] == jobs[:20]
+        before = first["next_cursor"]
+        assert client.delete(f"{API}/jobs/{jobs[delete_index]}").status_code == 200
+
+        second = client.get(
+            f"{API}/jobs", params={"before": before, "q": "stream 1", "state": "done"}
+        ).json()
+        assert [job["job_id"] for job in second["items"]] == jobs[20:]
+        assert second["total"] == 24
+        assert second["has_more"] is False
+        assert second["next_cursor"] is None
+
+        for params in ({"before": "invalid"}, {"before": before, "offset": 20}):
+            invalid = client.get(f"{API}/jobs", params=params)
+            assert invalid.status_code == 422
+            assert invalid.json()["error"]["code"] == "invalid_request"
+
+
 def test_list_jobs_includes_progress_while_running_and_clears_when_done(tmp_path: Path) -> None:
     started = threading.Event()
     release = threading.Event()
@@ -690,6 +719,10 @@ def test_list_jobs_includes_progress_while_running_and_clears_when_done(tmp_path
                 "stage_fraction": None,
                 "message": "Looking up the VOD",
             }
+            status = client.post(f"{API}/jobs/status", json={"job_ids": [job_id, "missing"]})
+            assert status.status_code == 200
+            assert status.headers["cache-control"] == "no-store"
+            assert status.json() == [running]
 
             MockService._sleep = original_sleep  # type: ignore[method-assign]
             release.set()
@@ -698,6 +731,9 @@ def test_list_jobs_includes_progress_while_running_and_clears_when_done(tmp_path
                 if item["state"] == "done":
                     assert item["progress"] is None
                     assert item["candidate_count"] == 3
+                    assert client.post(
+                        f"{API}/jobs/status", json={"job_ids": [job_id, job_id]}
+                    ).json() == [item]
                     break
                 threading.Event().wait(0.02)
             else:
@@ -705,6 +741,47 @@ def test_list_jobs_includes_progress_while_running_and_clears_when_done(tmp_path
     finally:
         MockService._sleep = original_sleep  # type: ignore[method-assign]
         release.set()
+
+
+def test_job_status_checks_render_files_only_for_requested_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checked: list[str] = []
+    is_file = Path.is_file
+
+    def track_files(path: Path) -> bool:
+        if path.parent == tmp_path / "artifacts" / "exports":
+            checked.append(path.stem)
+        return is_file(path)
+
+    with TestClient(create_app(_make_service(tmp_path))) as client:
+        job_ids: list[str] = []
+        export_ids: list[str] = []
+        for _ in range(3):
+            job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+            job_ids.append(job_id)
+            export = client.post(
+                f"{API}/exports",
+                json={
+                    "job_id": job_id,
+                    "candidate_id": "c001",
+                    "start_s": 118.0,
+                    "end_s": 148.0,
+                    "layout": "center_crop",
+                    "captions": False,
+                },
+            )
+            assert export.status_code == 201
+            export_ids.append(export.json()["export_id"])
+
+        monkeypatch.setattr(Path, "is_file", track_files)
+        response = client.post(f"{API}/jobs/status", json={"job_ids": [job_ids[1]]})
+        assert response.status_code == 200
+        assert [job["job_id"] for job in response.json()] == [job_ids[1]]
+        render = response.json()[0]["exports"][0]
+        assert render["render_id"] == export_ids[1]
+        assert render["file_available"] is True
+        assert checked == [export_ids[1]]
 
 
 def test_delete_job_removes_record_and_optionally_deletes_exports(tmp_path: Path) -> None:

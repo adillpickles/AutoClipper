@@ -18,6 +18,7 @@ import type {
   HighlightsVideo,
   Job,
   JobListResponse,
+  JobSummary,
   ListJobsParams,
   PreflightReport,
   ToolSetupRequest,
@@ -39,6 +40,8 @@ export interface ApiClient {
   getChannelVods(channel: string, limit?: number): Promise<ChannelVodsResponse>;
   /** `GET /jobs`: list persisted analysis jobs newest first (§ 3.7). */
   listJobs(params?: ListJobsParams): Promise<JobListResponse>;
+  /** `POST /jobs/status`: look up the current summaries of specific jobs (§ 3.7). */
+  getJobStatuses(jobIds: string[]): Promise<JobSummary[]>;
   /** `POST /jobs`: `created` is false when a queued or running job for the same input came back. */
   createJob(request: CreateJobRequest): Promise<{ job: Job; created: boolean }>;
   /** `GET /jobs/{job_id}`. */

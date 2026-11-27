@@ -12,10 +12,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LibraryView } from "@/components/library-view";
 import { ApiRequestError, POLL_INTERVAL_MS } from "@/lib/api/client";
-import type { JobListResponse, JobSummary } from "@/lib/api/types";
+import type {
+  DeleteJobResponse,
+  JobListResponse,
+  JobSummary,
+} from "@/lib/api/types";
 
 const state = vi.hoisted(() => ({
   listJobs: vi.fn(),
+  getJobStatuses: vi.fn(),
   deleteJob: vi.fn(),
 }));
 
@@ -28,6 +33,7 @@ vi.mock("@/lib/api/client", async () => {
     ...actual,
     getApiClient: () => ({
       listJobs: state.listJobs,
+      getJobStatuses: state.getJobStatuses,
       deleteJob: state.deleteJob,
     }),
   };
@@ -65,22 +71,47 @@ function makeSummary(overrides: Partial<JobSummary>): JobSummary {
 
 function page(
   items: JobSummary[],
-  { total = items.length, hasMore = false } = {},
+  { total = items.length, nextCursor = null as string | null, limit = 20 } = {},
 ): JobListResponse {
   return {
     items,
     total,
-    limit: 20,
+    limit,
     offset: 0,
-    has_more: hasMore,
+    has_more: nextCursor !== null,
+    next_cursor: nextCursor,
   };
+}
+
+function history(count: number) {
+  return Array.from({ length: count }, (_, index) =>
+    makeSummary({ job_id: `job_${index + 1}`, title: `Stream ${index + 1}` }),
+  );
+}
+
+function finishDelete(jobId: string): DeleteJobResponse {
+  return { job_id: jobId, deleted: true, deleted_files: 0 };
+}
+
+function openDelete(title: string) {
+  const row = screen.getByText(title).closest("li") as HTMLLIElement;
+  fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+  return within(
+    screen.getByRole("region", { name: `Confirm deleting ${title}` }),
+  );
+}
+
+async function tickPoll() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+  });
 }
 
 describe("LibraryView", () => {
   afterEach(() => {
     vi.useRealTimers();
     cleanup();
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it("shows a loading skeleton, then renders the empty state when there are no jobs", async () => {
@@ -222,36 +253,30 @@ describe("LibraryView", () => {
 
   it("polls only while jobs are running and stops once all jobs finish", async () => {
     vi.useFakeTimers();
-    state.listJobs
-      .mockResolvedValueOnce(
-        page([
-          makeSummary({
-            job_id: "job_run",
-            state: "running",
-            progress: {
-              stage: "fetching_clips",
-              stage_index: 2,
-              stage_count: 6,
-              stage_fraction: null,
-              message: "Fetching viewer clips",
-            },
-            title: null,
-            broadcaster_display_name: null,
-            candidate_count: null,
-            result_available: false,
-            export_count: 0,
-            highlights_count: 0,
-          }),
-        ]),
-      )
-      .mockResolvedValueOnce(
-        page([
-          makeSummary({
-            job_id: "job_run",
-            state: "done",
-          }),
-        ]),
-      );
+    state.listJobs.mockResolvedValueOnce(
+      page([
+        makeSummary({
+          job_id: "job_run",
+          state: "running",
+          progress: {
+            stage: "fetching_clips",
+            stage_index: 2,
+            stage_count: 6,
+            stage_fraction: null,
+            message: "Fetching viewer clips",
+          },
+          title: null,
+          broadcaster_display_name: null,
+          candidate_count: null,
+          result_available: false,
+          export_count: 0,
+          highlights_count: 0,
+        }),
+      ]),
+    );
+    state.getJobStatuses.mockResolvedValueOnce([
+      makeSummary({ job_id: "job_run", state: "done" }),
+    ]);
 
     render(<LibraryView />);
     await act(async () => {
@@ -264,29 +289,26 @@ describe("LibraryView", () => {
     });
     const list = screen.getByRole("list", { name: "Analysis jobs" });
     expect(within(list).getByText("Done")).toBeTruthy();
-    expect(state.listJobs).toHaveBeenCalledTimes(2);
+    expect(state.getJobStatuses).toHaveBeenCalledExactlyOnceWith(["job_run"]);
 
     // No further polling once nothing is queued or running.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 5);
     });
-    expect(state.listJobs).toHaveBeenCalledTimes(2);
+    expect(state.getJobStatuses).toHaveBeenCalledTimes(1);
+    expect(state.listJobs).toHaveBeenCalledTimes(1);
   });
 
-  it("filters by query and status, paginates with Load more, and does not poll when idle", async () => {
+  it("filters by query and paginates with Load more when idle", async () => {
+    const jobs = history(21);
     state.listJobs
       .mockResolvedValueOnce(
-        page([makeSummary({ job_id: "job_1", title: "Stream 1" })], {
-          total: 2,
-          hasMore: true,
+        page(jobs.slice(0, 20), {
+          total: 21,
+          nextCursor: "after-first",
         }),
       )
-      .mockResolvedValueOnce(
-        page([makeSummary({ job_id: "job_0", title: "Stream 0" })], {
-          total: 2,
-          hasMore: false,
-        }),
-      )
+      .mockResolvedValueOnce(page(jobs.slice(20), { total: 21 }))
       .mockResolvedValueOnce(page([]));
 
     render(<LibraryView />);
@@ -297,11 +319,11 @@ describe("LibraryView", () => {
     });
     expect(state.listJobs).toHaveBeenNthCalledWith(2, {
       limit: 20,
-      offset: 1,
+      before: "after-first",
       q: undefined,
       state: undefined,
     });
-    expect(screen.getByText("Stream 0")).toBeTruthy();
+    expect(screen.getByText("Stream 21")).toBeTruthy();
 
     fireEvent.change(
       screen.getByLabelText("Search by VOD title, channel, or VOD ID"),
@@ -313,11 +335,12 @@ describe("LibraryView", () => {
 
     expect(state.listJobs).toHaveBeenNthCalledWith(3, {
       limit: 20,
-      offset: 0,
+      before: undefined,
       q: "missing",
       state: undefined,
     });
     expect(screen.getByText("No matching analyses")).toBeTruthy();
+    expect(state.getJobStatuses).not.toHaveBeenCalled();
   });
 
   it("confirms deletion, explains what is removed on disk, and supports delete_exports", async () => {
@@ -403,76 +426,231 @@ describe("LibraryView", () => {
     expect(screen.getByText("Synthetic stream 1")).toBeTruthy();
   });
 
-  it("refreshes the active filter when filters change while deletion is pending", async () => {
-    let resolveDelete:
-      | ((val: {
-          job_id: string;
-          deleted: true;
-          deleted_files: number;
-        }) => void)
-      | undefined;
+  it.each(["poll first", "page first"])(
+    "keeps all 40 rows when Load more overlaps a poll (%s)",
+    async (order) => {
+      vi.useFakeTimers();
+      const [finished, ...older] = history(40);
+      const running = { ...finished, state: "running" as const };
+      const total = 40;
+      const nextPage = Promise.withResolvers<JobListResponse>();
+      const poll = Promise.withResolvers<JobSummary[]>();
+      state.listJobs
+        .mockResolvedValueOnce(
+          page([running, ...older.slice(0, 19)], {
+            total,
+            nextCursor: "after-20",
+          }),
+        )
+        .mockReturnValueOnce(nextPage.promise);
+      state.getJobStatuses.mockReturnValueOnce(poll.promise);
+      state.getJobStatuses.mockResolvedValueOnce([finished]);
+
+      await act(async () => {
+        render(<LibraryView />);
+      });
+      await tickPoll();
+      expect(state.getJobStatuses).toHaveBeenCalledExactlyOnceWith([
+        running.job_id,
+      ]);
+      fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+      expect(state.listJobs).toHaveBeenLastCalledWith(
+        expect.objectContaining({ limit: 20, before: "after-20" }),
+      );
+
+      if (order === "poll first") {
+        await act(async () => poll.resolve([finished]));
+        await act(async () =>
+          nextPage.resolve(page(older.slice(19), { total })),
+        );
+      } else {
+        await act(async () =>
+          nextPage.resolve(page(older.slice(19), { total })),
+        );
+        await act(async () => poll.resolve([finished]));
+        expect(
+          screen.getByRole("link", { name: "View progress" }),
+        ).toBeTruthy();
+        await tickPoll();
+        expect(state.getJobStatuses).toHaveBeenCalledTimes(2);
+      }
+
+      expect(screen.getAllByRole("listitem")).toHaveLength(40);
+      expect(
+        screen.getAllByRole("link", { name: "Open results" }),
+      ).toHaveLength(40);
+      expect(state.listJobs).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("reconciles a cross-tab deletion when loading the rest of the history", async () => {
+    const original = history(25);
     state.listJobs
       .mockResolvedValueOnce(
-        page([
-          makeSummary({
-            job_id: "job_done",
-            title: "Completed stream",
-            state: "done",
-          }),
-        ]),
+        page(original.slice(0, 20), { total: 25, nextCursor: "after-20" }),
       )
-      .mockResolvedValueOnce(
-        page([
-          makeSummary({
-            job_id: "job_fail",
-            title: "Failed stream",
-            state: "failed",
-          }),
-        ]),
-      )
-      .mockResolvedValueOnce(
-        page([
-          makeSummary({
-            job_id: "job_fail",
-            title: "Failed stream",
-            state: "failed",
-          }),
-        ]),
-      );
-    state.deleteJob.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveDelete = resolve;
-        }),
-    );
+      .mockResolvedValueOnce(page(original.slice(20), { total: 24 }))
+      .mockResolvedValueOnce(page(original.slice(1), { total: 24, limit: 40 }));
 
     render(<LibraryView />);
-    expect(await screen.findByText("Completed stream")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
-
-    // Switch filter to Failed while deleteJob is still pending.
-    fireEvent.click(screen.getByRole("button", { name: "Failed" }));
-    expect(await screen.findByText("Failed stream")).toBeTruthy();
-
+    expect(await screen.findByText("Stream 1")).toBeTruthy();
     await act(async () => {
-      resolveDelete?.({ job_id: "job_done", deleted: true, deleted_files: 0 });
+      fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     });
 
-    expect(await screen.findByText("Failed stream")).toBeTruthy();
-    expect(screen.queryByText("Completed stream")).toBeNull();
+    expect(state.listJobs).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ before: "after-20", limit: 20 }),
+    );
+    expect(state.listJobs).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ before: undefined, limit: 40 }),
+    );
+    expect(screen.queryByText("Stream 1")).toBeNull();
+    expect(screen.getByText("Stream 21")).toBeTruthy();
+    expect(screen.getAllByRole("listitem")).toHaveLength(24);
   });
 
-  it("polls active rows beyond 100 loaded items and re-fetches offset pages invalidated by a poll", async () => {
+  it("does not restore a deleted row from an older poll's history refresh", async () => {
     vi.useFakeTimers();
-    const first100 = Array.from({ length: 100 }, (_, i) =>
-      makeSummary({ job_id: `job_${i}`, title: `Stream ${i}` }),
+    const [removed, finished, missing] = history(3);
+    const running = { ...finished, state: "running" as const };
+    const queued = { ...missing, state: "queued" as const };
+    const oldHistory = Promise.withResolvers<JobListResponse>();
+    state.listJobs
+      .mockResolvedValueOnce(page([removed, running, queued]))
+      .mockReturnValueOnce(oldHistory.promise)
+      .mockResolvedValueOnce(page([finished]));
+    state.getJobStatuses
+      .mockResolvedValueOnce([running])
+      .mockResolvedValueOnce([finished]);
+    state.deleteJob.mockResolvedValueOnce(finishDelete(removed.job_id));
+
+    await act(async () => {
+      render(<LibraryView />);
+    });
+    await tickPoll();
+    expect(state.listJobs).toHaveBeenCalledTimes(2);
+    const confirmation = openDelete("Stream 1");
+    await act(async () => {
+      fireEvent.click(
+        confirmation.getByRole("button", { name: "Confirm delete" }),
+      );
+    });
+    expect(screen.queryByText("Stream 1")).toBeNull();
+
+    await act(async () => oldHistory.resolve(page([removed, finished])));
+    expect(screen.queryByText("Stream 1")).toBeNull();
+    await tickPoll();
+
+    expect(state.getJobStatuses).toHaveBeenNthCalledWith(2, [
+      running.job_id,
+      queued.job_id,
+    ]);
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "Open results" })).toBeTruthy();
+    await tickPoll();
+    expect(state.getJobStatuses).toHaveBeenCalledTimes(2);
+  });
+
+  it("restarts polling the Running filter after a pending deletion triggers a refresh", async () => {
+    vi.useFakeTimers();
+    const [removed, finished] = history(2);
+    const running = { ...finished, state: "running" as const };
+    const deletion = Promise.withResolvers<DeleteJobResponse>();
+    const stalePoll = Promise.withResolvers<JobSummary[]>();
+    const refresh = Promise.withResolvers<JobListResponse>();
+    state.listJobs
+      .mockResolvedValueOnce(page([removed, running]))
+      .mockResolvedValueOnce(page([running]))
+      .mockReturnValueOnce(refresh.promise)
+      .mockResolvedValueOnce(page([]));
+    state.deleteJob.mockReturnValueOnce(deletion.promise);
+    state.getJobStatuses
+      .mockReturnValueOnce(stalePoll.promise)
+      .mockResolvedValueOnce([finished]);
+
+    await act(async () => {
+      render(<LibraryView />);
+    });
+    const confirmation = openDelete("Stream 1");
+    fireEvent.click(
+      confirmation.getByRole("button", { name: "Confirm delete" }),
     );
-    const tailActive = makeSummary({
-      job_id: "job_100",
-      title: "Stream 100",
-      state: "done",
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Running" }));
+    });
+    await tickPoll();
+    expect(state.getJobStatuses).toHaveBeenCalledExactlyOnceWith([
+      running.job_id,
+    ]);
+
+    await act(async () => deletion.resolve(finishDelete(removed.job_id)));
+    expect(state.listJobs).toHaveBeenLastCalledWith(
+      expect.objectContaining({ state: "running" }),
+    );
+    await act(async () => stalePoll.resolve([finished]));
+    expect(screen.getByRole("link", { name: "View progress" })).toBeTruthy();
+    await act(async () => refresh.resolve(page([running])));
+    await tickPoll();
+
+    expect(state.getJobStatuses).toHaveBeenNthCalledWith(2, [running.job_id]);
+    expect(screen.getByText("No matching analyses")).toBeTruthy();
+    await tickPoll();
+    expect(state.getJobStatuses).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the second delete failure after the first overlapping delete succeeds", async () => {
+    const first = Promise.withResolvers<DeleteJobResponse>();
+    const second = Promise.withResolvers<DeleteJobResponse>();
+    state.listJobs.mockResolvedValueOnce(page(history(2)));
+    state.deleteJob
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+
+    render(<LibraryView />);
+    expect(await screen.findByText("Stream 1")).toBeTruthy();
+    const firstConfirm = openDelete("Stream 1");
+    fireEvent.click(
+      firstConfirm.getByRole("button", { name: "Confirm delete" }),
+    );
+    const secondConfirm = openDelete("Stream 2");
+    fireEvent.click(secondConfirm.getByRole("checkbox"));
+    fireEvent.click(
+      secondConfirm.getByRole("button", { name: "Confirm delete" }),
+    );
+    expect(state.deleteJob).toHaveBeenNthCalledWith(1, "job_1", {
+      deleteExports: false,
+    });
+    expect(state.deleteJob).toHaveBeenNthCalledWith(2, "job_2", {
+      deleteExports: true,
+    });
+
+    await act(async () => first.resolve(finishDelete("job_1")));
+    await act(async () => {
+      second.reject(
+        new ApiRequestError(500, {
+          code: "delete_failed",
+          message: "The rendered file is in use.",
+          details: null,
+        }),
+      );
+    });
+
+    expect(screen.queryByText("Stream 1")).toBeNull();
+    expect(secondConfirm.getByRole("alert").textContent).toBe(
+      "The rendered file is in use.",
+    );
+    expect(
+      secondConfirm.getByRole("button", { name: "Confirm delete" }),
+    ).toHaveProperty("disabled", false);
+  });
+
+  it("polls one batch for active rows beyond 100 loaded jobs", async () => {
+    vi.useFakeTimers();
+    const jobs = history(102);
+    const renderActive = {
+      ...jobs[100],
       exports: [
         {
           render_id: "exp_active",
@@ -486,76 +664,46 @@ describe("LibraryView", () => {
           finished_at: null,
         },
       ],
-    });
-    const tailDone = makeSummary({
-      ...tailActive,
-      exports: [
-        {
-          ...tailActive.exports[0],
-          state: "done",
-          file_available: true,
-          download_url: "/api/v1/exports/exp_active/file",
-          finished_at: "2026-11-26T15:02:00Z",
-        },
-      ],
-    });
+    } satisfies JobSummary;
+    const analysisActive = { ...jobs[101], state: "running" as const };
+    for (let offset = 0; offset < 100; offset += 20) {
+      state.listJobs.mockResolvedValueOnce(
+        page(jobs.slice(offset, offset + 20), {
+          total: 102,
+          nextCursor: `after-${offset + 20}`,
+        }),
+      );
+    }
+    state.listJobs.mockResolvedValueOnce(
+      page([renderActive, analysisActive], { total: 102 }),
+    );
+    state.getJobStatuses.mockResolvedValueOnce([jobs[100], jobs[101]]);
 
-    state.listJobs
-      .mockResolvedValueOnce({
-        items: first100,
-        total: 101,
-        limit: 20,
-        offset: 0,
-        has_more: true,
-      })
-      .mockResolvedValueOnce({
-        items: [tailActive],
-        total: 101,
-        limit: 20,
-        offset: 100,
-        has_more: false,
-      })
-      .mockResolvedValueOnce({
-        items: first100,
-        total: 101,
-        limit: 100,
-        offset: 0,
-        has_more: true,
-      })
-      .mockResolvedValueOnce({
-        items: [tailDone],
-        total: 101,
-        limit: 1,
-        offset: 100,
-        has_more: false,
+    await act(async () => {
+      render(<LibraryView />);
+    });
+    for (let offset = 20; offset <= 100; offset += 20) {
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Load more" }));
       });
+      expect(state.listJobs).toHaveBeenLastCalledWith(
+        expect.objectContaining({ before: `after-${offset}`, limit: 20 }),
+      );
+    }
+    expect(screen.getByRole("link", { name: "View progress" })).toBeTruthy();
+    await tickPoll();
 
-    render(<LibraryView />);
-    await act(async () => {
-      await Promise.resolve();
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Load more" }));
-    });
-    expect(screen.getByText("Stream 100")).toBeTruthy();
-
-    // Advance one poll interval: both pages (0..100 and 100..101) refresh, enabling Delete on job_100.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
-    });
-    expect(state.listJobs).toHaveBeenNthCalledWith(3, {
-      limit: 100,
-      offset: 0,
-      q: undefined,
-      state: undefined,
-    });
-    expect(state.listJobs).toHaveBeenNthCalledWith(4, {
-      limit: 1,
-      offset: 100,
-      q: undefined,
-      state: undefined,
-    });
-    const deleteButtons = screen.getAllByRole("button", { name: "Delete" });
-    expect((deleteButtons[100] as HTMLButtonElement).disabled).toBe(false);
+    expect(state.getJobStatuses).toHaveBeenCalledExactlyOnceWith([
+      "job_101",
+      "job_102",
+    ]);
+    expect(state.listJobs).toHaveBeenCalledTimes(6);
+    expect(screen.getAllByRole("listitem")).toHaveLength(102);
+    expect(screen.queryByRole("link", { name: "View progress" })).toBeNull();
+    const row = screen.getByText("Stream 101").closest("li") as HTMLLIElement;
+    expect(within(row).getByRole("button", { name: "Delete" })).toHaveProperty(
+      "disabled",
+      false,
+    );
   });
 });

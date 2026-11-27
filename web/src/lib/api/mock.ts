@@ -682,7 +682,7 @@ function doneJobsByVideo(store: Store, at: number): Map<string, string> {
 }
 
 export function createMockClient(now: () => number = Date.now): ApiClient {
-  return {
+  const client = {
     async getHealth() {
       return {
         status: "ok" as const,
@@ -817,7 +817,10 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       };
     },
 
-    async listJobs(params?: ListJobsParams): Promise<JobListResponse> {
+    async listJobs(
+      params?: ListJobsParams,
+      jobIds?: string[],
+    ): Promise<JobListResponse> {
       const limit = params?.limit ?? 20;
       const offset = params?.offset ?? 0;
       const stateFilter = params?.state;
@@ -849,6 +852,30 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
         });
       }
 
+      const before = params?.before;
+      let boundary:
+        Pick<StoredJob, "created_ms" | "seq" | "job_id"> | undefined;
+      if (before !== undefined) {
+        const [timestamp, sequence, jobId, extra] = before.split("|");
+        const createdMs = Date.parse(timestamp);
+        const seq = Number(sequence);
+        if (
+          offset !== 0 ||
+          !Number.isFinite(createdMs) ||
+          !/^-?[0-9]+$/.test(sequence ?? "") ||
+          !Number.isSafeInteger(seq) ||
+          !/^[A-Za-z0-9_-]{1,64}$/.test(jobId ?? "") ||
+          extra !== undefined
+        ) {
+          throw new ApiRequestError(422, {
+            code: "invalid_request",
+            message: "Use a valid job cursor without a nonzero offset.",
+            details: { fields: ["query.before"] },
+          });
+        }
+        boundary = { created_ms: createdMs, seq, job_id: jobId };
+      }
+
       const store = load();
       const at = now();
       const jobStarts = schedule(store.jobs);
@@ -859,7 +886,12 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
         job: Job;
         result: AnalysisResult | null;
       }> = [];
-      for (const stored of Object.values(store.jobs)) {
+      const jobs = jobIds
+        ? [...new Set(jobIds)]
+            .filter((id) => Object.hasOwn(store.jobs, id))
+            .map((id) => store.jobs[id])
+        : Object.values(store.jobs);
+      for (const stored of jobs) {
         const job = jobAt(stored, at, jobStarts.get(stored.job_id));
         if (stateFilter !== undefined && job.state !== stateFilter) continue;
         const result =
@@ -880,15 +912,18 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
         matched.push({ stored, job, result });
       }
 
-      matched.sort(
-        (a, b) =>
-          b.stored.created_ms - a.stored.created_ms ||
-          (b.stored.seq ?? 0) - (a.stored.seq ?? 0) ||
-          b.stored.job_id.localeCompare(a.stored.job_id),
-      );
+      type JobSortKey = Pick<StoredJob, "created_ms" | "seq" | "job_id">;
+      const compareJobs = (a: JobSortKey, b: JobSortKey) =>
+        b.created_ms - a.created_ms ||
+        (b.seq ?? 0) - (a.seq ?? 0) ||
+        b.job_id.localeCompare(a.job_id);
 
       const total = matched.length;
-      const page = matched.slice(offset, offset + limit);
+      const eligible = boundary
+        ? matched.filter(({ stored }) => compareJobs(stored, boundary) > 0)
+        : matched;
+      if (!jobIds) eligible.sort((a, b) => compareJobs(a.stored, b.stored));
+      const page = jobIds ? eligible : eligible.slice(offset, offset + limit);
       const pageIds = new Set(page.map((entry) => entry.stored.job_id));
       const hasAnyRender =
         Object.values(store.exports).some((e) =>
@@ -990,13 +1025,23 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
         };
       });
 
+      const hasMore = !jobIds && offset + items.length < eligible.length;
+      const tail = page.at(-1)?.stored;
       return {
         items,
         total,
         limit,
         offset,
-        has_more: offset + items.length < total,
+        has_more: hasMore,
+        next_cursor:
+          hasMore && tail
+            ? `${iso(tail.created_ms)}|${tail.seq ?? 0}|${tail.job_id}`
+            : null,
       };
+    },
+
+    async getJobStatuses(jobIds: string[]): Promise<JobSummary[]> {
+      return (await client.listJobs(undefined, jobIds)).items;
     },
 
     async createJob(request: CreateJobRequest) {
@@ -1451,7 +1496,8 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
     resolveUrl(url: string) {
       return url; // the mock's files are served by the app itself
     },
-  };
+  } satisfies ApiClient;
+  return client;
 }
 
 /** Forget every mock job, export and highlights video (tests). */
