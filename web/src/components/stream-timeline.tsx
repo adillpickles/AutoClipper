@@ -8,7 +8,7 @@ import { useId, useRef, type KeyboardEvent } from "react";
 
 import { ClipCard, type ClipExport } from "@/components/clip-card";
 import { EmptyState } from "@/components/ui/empty-state";
-import type { Candidate } from "@/lib/api/types";
+import type { Candidate, VodSummary } from "@/lib/api/types";
 import { formatTime } from "@/lib/format";
 import { reasonFor } from "@/lib/reason";
 import { buildActivityBins, layoutTimelineMarkers } from "@/lib/timeline";
@@ -42,6 +42,7 @@ const LANE_GAP_PX = 8;
 export function StreamTimeline({
   jobId,
   videoId,
+  vod,
   durationS,
   candidates,
   selectedId,
@@ -51,6 +52,7 @@ export function StreamTimeline({
 }: {
   jobId: string;
   videoId: string;
+  vod?: Pick<VodSummary, "broadcaster_display_name" | "created_at">;
   durationS: number;
   candidates: readonly Candidate[];
   selectedId: string | null;
@@ -364,6 +366,7 @@ export function StreamTimeline({
               }
               onRetry={() => onRetry(selected.candidate)}
               videoId={videoId}
+              vod={vod}
             />
           </ol>
         </div>

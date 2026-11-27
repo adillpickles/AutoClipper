@@ -20,6 +20,7 @@ import type {
   Export,
   Layout,
 } from "@/lib/api/types";
+import { buildClipFilename } from "@/lib/filenames";
 import { formatTime } from "@/lib/format";
 import {
   clearRememberedTrim,
@@ -546,7 +547,16 @@ export function ClipEditor() {
   }
 
   const selectionDurationS = Math.max(0, trim.endS - trim.startS);
-  const downloadFilename = `autoclipper_${result.vod.video_id}_${trim.startS}-${trim.endS}.mp4`;
+  const downloadFilename =
+    (render.kind === "done" ? render.export.filename : null) ??
+    buildClipFilename({
+      channel: result.vod.broadcaster_display_name,
+      createdAt: result.vod.created_at,
+      title: candidate.title ?? null,
+      rank: candidate.rank,
+      startS: trim.startS,
+      fallbackId: result.vod.video_id,
+    });
   const clipTitle = titleFor(candidate);
   const clipReason = reasonFor(candidate);
   const signalDetails = signalDetailsFor(candidate);

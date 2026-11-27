@@ -127,9 +127,31 @@ describe("HighlightsDialog", () => {
     expect(api.getHighlights).toHaveBeenCalled();
     const download = screen.getByRole("link", { name: "Download" });
     expect(download.getAttribute("download")).toBe(
-      "autoclipper_9000000001_highlights.mp4",
+      "9000000001_unknown-date_highlights.mp4",
     );
     expect(download.getAttribute("href")).toBe("/mock-media/highlights.mp4");
+  });
+
+  it("uses server filename when provided on finished highlights video", async () => {
+    api.createHighlights.mockResolvedValue({
+      highlights: video("done", {
+        download_url: "/mock-media/highlights.mp4",
+        filename: "user_001_2026-10-12_highlights.mp4",
+        duration_s: 52,
+      }),
+      created: true,
+    });
+
+    render(dialog(() => undefined));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Make highlights video" }),
+    );
+
+    await screen.findByText(/The highlights video is ready/);
+    const download = screen.getByRole("link", { name: "Download" });
+    expect(download.getAttribute("download")).toBe(
+      "user_001_2026-10-12_highlights.mp4",
+    );
   });
 
   it("stops polling once it is closed", async () => {

@@ -188,6 +188,7 @@ def test_store_round_trips_jobs_and_renders(tmp_path: Path) -> None:
         progress=None,
         error=None,
         file=tmp_path / "artifacts" / "exports" / "exp_1.mp4",
+        filename="user_001_2026-10-12_Clip_00-00-10.mp4",
         duration_s=25.0,
         created_at=job.created_at,
         started_at=job.created_at,
@@ -207,6 +208,7 @@ def test_store_round_trips_jobs_and_renders(tmp_path: Path) -> None:
         progress=None,
         error=None,
         file=tmp_path / "artifacts" / "highlights" / "hl_1.mp4",
+        filename="user_001_2026-10-12_highlights.mp4",
         duration_s=25.0,
         created_at=job.created_at,
         started_at=job.created_at,
@@ -1052,3 +1054,156 @@ def test_delete_job_stays_retryable_when_file_unlink_fails(
         assert second.json()["deleted_files"] == 1
         assert not export_path.exists()
         assert client.get(f"{API}/jobs/{job_id}").status_code == 404
+
+
+def test_legacy_download_keeps_working_with_unreadable_analysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeClock()
+    with TestClient(create_app(_make_service(tmp_path, clock=clock))) as client:
+        job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+        render_id = client.post(
+            f"{API}/exports",
+            json={
+                "job_id": job_id,
+                "candidate_id": "c001",
+                "start_s": 115.0,
+                "end_s": 140.0,
+                "layout": "center_crop",
+                "captions": False,
+            },
+        ).json()["export_id"]
+
+    db_path = tmp_path / "artifacts" / DEFAULT_MOCK_DB_NAME
+    conn = sqlite3.connect(db_path)
+    with conn:
+        conn.execute("ALTER TABLE renders DROP COLUMN filename")
+        conn.execute("PRAGMA user_version = 1")
+    conn.close()
+
+    result_path = tmp_path / "artifacts" / "analysis" / f"{job_id}.json"
+    real_is_file = Path.is_file
+    real_read_text = Path.read_text
+
+    def denied_is_file(path: Path) -> bool:
+        if path == result_path:
+            raise PermissionError("access denied")
+        return real_is_file(path)
+
+    def denied_read_text(path: Path, *args: object, **kwargs: object) -> str:
+        if path == result_path:
+            raise PermissionError("access denied")
+        return real_read_text(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    with monkeypatch.context() as blocked:
+        blocked.setattr(Path, "is_file", denied_is_file)
+        blocked.setattr(Path, "read_text", denied_read_text)
+        with TestClient(create_app(_make_service(tmp_path, clock=clock))) as client:
+            status = client.get(f"{API}/exports/{render_id}")
+            assert status.status_code == 200
+            filename = status.json()["filename"]
+            assert filename == "user_001_2026-11-01_clip_00-01-55.mp4"
+            downloaded = client.get(f"{API}/exports/{render_id}/file")
+            assert downloaded.status_code == 200
+            assert downloaded.headers["content-disposition"] == f'attachment; filename="{filename}"'
+
+    # Restoring metadata later must not rename a previously advertised legacy download.
+    with TestClient(create_app(_make_service(tmp_path, clock=clock))) as client:
+        assert client.get(f"{API}/exports/{render_id}").json()["filename"] == filename
+
+
+def test_out_of_order_finish_preserves_first_finished_filename_across_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeClock()
+    blocked = threading.Event()
+    release = threading.Event()
+
+    class _HoldFirstRender(_FakeClipRenderer):
+        def __call__(self, spec: ClipSpec, /, **kwargs: object) -> object:
+            if not blocked.is_set():
+                blocked.set()
+                release.wait(timeout=5)
+            return super().__call__(spec, **kwargs)  # type: ignore[arg-type]
+
+    service = _make_service(
+        tmp_path, synchronous=False, step_s=0.0, clock=clock, render=_HoldFirstRender()
+    )
+    with TestClient(create_app(service)) as client:
+        job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+        for _ in range(100):
+            if client.get(f"{API}/jobs/{job_id}").json()["state"] == "done":
+                break
+            threading.Event().wait(0.02)
+
+        first = client.post(
+            f"{API}/exports",
+            json={
+                "job_id": job_id,
+                "candidate_id": "c001",
+                "start_s": 115.2,
+                "end_s": 140.0,
+                "layout": "center_crop",
+                "captions": False,
+            },
+        ).json()
+        assert blocked.wait(timeout=5)
+
+        second = client.post(
+            f"{API}/exports",
+            json={
+                "job_id": job_id,
+                "candidate_id": "c001",
+                "start_s": 115.8,
+                "end_s": 140.0,
+                "layout": "center_crop",
+                "captions": True,
+            },
+        ).json()
+
+        # Finish the later-created export out of order before releasing the earlier one.
+        second_file = tmp_path / "artifacts" / "exports" / f"{second['export_id']}.mp4"
+        second_file.parent.mkdir(parents=True, exist_ok=True)
+        second_file.write_bytes(b"second-bytes")
+        with service._lock:
+            second_rec = service._renders[second["export_id"]]
+        service._finish_render(second_rec, file=second_file)
+        release.set()
+
+        for _ in range(100):
+            if client.get(f"{API}/exports/{first['export_id']}").json()["state"] == "done":
+                break
+            threading.Event().wait(0.02)
+
+        first_state = client.get(f"{API}/exports/{first['export_id']}").json()
+        second_state = client.get(f"{API}/exports/{second['export_id']}").json()
+        assert (
+            second_state["filename"] == "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55.mp4"
+        )
+        assert (
+            first_state["filename"] == "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55_2.mp4"
+        )
+
+    # Restart without analysis JSON: persisted filenames stay intact even if path reads fail.
+    result_path = tmp_path / "artifacts" / "analysis" / f"{job_id}.json"
+    result_path.unlink()
+    restarted = _make_service(tmp_path, clock=clock)
+    with TestClient(create_app(restarted)) as client2:
+        real_read_text = Path.read_text
+
+        def blocked_read_text(self: Path, *args: object, **kwargs: object) -> str:
+            if self == result_path:
+                raise PermissionError("access denied")
+            return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "read_text", blocked_read_text)
+        assert (
+            client2.get(f"{API}/exports/{second['export_id']}").json()["filename"]
+            == "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55.mp4"
+        )
+        file_resp = client2.get(f"{API}/exports/{first['export_id']}/file")
+        assert file_resp.status_code == 200
+        assert (
+            "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55_2.mp4"
+            in file_resp.headers["content-disposition"]
+        )

@@ -16,6 +16,8 @@ npm run dev     # dev server at http://localhost:3000
 
 The same commands work in PowerShell. Full setup steps are in [docs/development/setup.md](../docs/development/setup.md#frontend-web).
 
+Clip downloads include the channel, UTC VOD date, moment title or rank, and start time in the filename. Highlights downloads include the channel, VOD date, and `highlights`. When names collide within a job, later downloads get a numeric suffix.
+
 ## Scripts
 
 | Script                 | What it does                                                            |

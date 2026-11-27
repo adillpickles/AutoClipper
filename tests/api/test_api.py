@@ -655,12 +655,13 @@ def test_an_export_from_start_to_finish(client: TestClient, tmp_path: Path) -> N
     done = client.get(f"{API}/exports/{export['export_id']}").json()
     assert done["state"] == "done"
     assert done["download_url"] == f"{API}/exports/{export['export_id']}/file"
+    assert done["filename"] == "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55.mp4"
     assert (done["start_s"], done["end_s"], done["captions"]) == (115.5, 150.0, True)
     file = client.get(done["download_url"])
     assert file.status_code == 200
     assert file.headers["content-type"] == "video/mp4"
     assert file.headers["content-disposition"] == (
-        'attachment; filename="autoclipper_9000000001_115.5-150.0.mp4"'
+        'attachment; filename="user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55.mp4"'
     )
     # Each export has its own file, keyed by its ID.
     assert (tmp_path / "artifacts" / "exports" / f"{export['export_id']}.mp4").is_file()
@@ -1049,9 +1050,41 @@ def test_a_highlights_video_from_start_to_finish(client: TestClient) -> None:
     assert [s["candidate_id"] for s in video["segments"]] == ["c003", "c001", "c002"]
     assert video["duration_s"] == pytest.approx(81.5)
     assert video["download_url"] == f"{API}/highlights/{video['highlights_id']}/file"
+    assert video["filename"] == "user_001_2026-10-12_highlights.mp4"
     file = client.get(video["download_url"])
     assert file.headers["content-disposition"] == (
-        'attachment; filename="autoclipper_9000000001_highlights.mp4"'
+        'attachment; filename="user_001_2026-10-12_highlights.mp4"'
+    )
+
+
+def test_colliding_exports_on_same_job_receive_unique_filenames_and_fallback_when_result_missing(
+    client: TestClient, tmp_path: Path
+) -> None:
+    job = done_job(client)
+
+    first = client.post(
+        f"{API}/exports", json=export_body(job["job_id"], start_s=115.2, captions=False)
+    ).json()
+    second = client.post(
+        f"{API}/exports", json=export_body(job["job_id"], start_s=115.8, captions=True)
+    ).json()
+
+    first_done = client.get(f"{API}/exports/{first['export_id']}").json()
+    second_done = client.get(f"{API}/exports/{second['export_id']}").json()
+    assert first_done["filename"] == "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55.mp4"
+    assert second_done["filename"] == "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55_2.mp4"
+    file2 = client.get(second_done["download_url"])
+    assert file2.headers["content-disposition"] == (
+        'attachment; filename="user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55_2.mp4"'
+    )
+
+    # Removing the analysis JSON still lets finished export files download with clean names.
+    (tmp_path / "artifacts" / "analysis" / f"{job['job_id']}.json").unlink()
+    file1 = client.get(first_done["download_url"])
+    assert file1.status_code == 200
+    assert (
+        "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55.mp4"
+        in file1.headers["content-disposition"]
     )
 
 
@@ -1303,6 +1336,8 @@ def test_a_real_export_of_the_sample_video(
 
     assert export["state"] == "done", export["error"]
     file = client.get(export["download_url"])
+    assert export["filename"] == "user_001_2026-10-12_Loud-audio-laughing-chat_00-00-01.mp4"
+    assert file.headers["content-disposition"] == f'attachment; filename="{export["filename"]}"'
     out = tmp_path / "download.mp4"
     out.write_bytes(file.content)
     info = probe(out)
@@ -1345,6 +1380,8 @@ def test_a_real_highlights_video_of_the_sample_video(
     assert video["state"] == "done", video["error"]
     assert video["duration_s"] == pytest.approx(3.0, abs=0.1)  # the finished file's duration
     file = client.get(video["download_url"])
+    assert video["filename"] == "user_001_2026-10-12_highlights.mp4"
+    assert file.headers["content-disposition"] == f'attachment; filename="{video["filename"]}"'
     out = tmp_path / "download.mp4"
     out.write_bytes(file.content)
     info = probe(out)

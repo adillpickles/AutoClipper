@@ -218,6 +218,9 @@ describe("createMockClient", () => {
     const done = await client.getExport(created.export_id);
     expect(done.state).toBe("done");
     expect(done.download_url).not.toBeNull();
+    expect(done.filename).toBe(
+      "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-58.mp4",
+    );
   });
 
   it("refuses exports of 9000000007 and over-long ones", async () => {

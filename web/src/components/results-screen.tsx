@@ -19,6 +19,7 @@ import type {
   ExportAvailability,
   Layout,
 } from "@/lib/api/types";
+import { buildClipFilename } from "@/lib/filenames";
 import { formatTime } from "@/lib/format";
 import {
   isTrimReset,
@@ -416,7 +417,16 @@ export function ResultsScreen() {
       const clip = clips[candidate.candidate_id];
       if (!clip || clip.kind !== "export" || !clip.url) return;
       const url = clip.url;
-      const filename = `autoclipper_${vod.video_id}_${clip.export.start_s}-${clip.export.end_s}.mp4`;
+      const filename =
+        clip.export.filename ??
+        buildClipFilename({
+          channel: vod.broadcaster_display_name,
+          createdAt: vod.created_at,
+          title: candidate.title ?? null,
+          rank: candidate.rank,
+          startS: clip.export.start_s,
+          fallbackId: vod.video_id,
+        });
       setTimeout(() => {
         const link = document.createElement("a");
         link.href = url;
@@ -571,6 +581,7 @@ export function ResultsScreen() {
             <StreamTimeline
               jobId={jobId}
               videoId={vod.video_id}
+              vod={vod}
               durationS={vod.duration_s}
               candidates={view.result.candidates}
               selectedId={selectedCandidateId}
@@ -593,6 +604,7 @@ export function ResultsScreen() {
                     clip={clips[candidate.candidate_id] ?? { kind: "pending" }}
                     onRetry={() => retry(candidate)}
                     videoId={vod.video_id}
+                    vod={vod}
                   />
                 ))}
               </ol>
@@ -605,6 +617,8 @@ export function ResultsScreen() {
         <HighlightsDialog
           jobId={jobId}
           videoId={vod.video_id}
+          channelName={vod.broadcaster_display_name}
+          vodCreatedAt={vod.created_at}
           vodDurationS={vod.duration_s}
           candidates={top}
           initialTrims={(() => {

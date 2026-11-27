@@ -17,6 +17,7 @@ import type {
   ExportAvailability,
   HighlightsVideo,
 } from "@/lib/api/types";
+import { buildHighlightsFilename } from "@/lib/filenames";
 import { formatTime } from "@/lib/format";
 import { rememberedTrims, type SavedTrim } from "@/lib/job-state";
 
@@ -34,7 +35,7 @@ interface Trim {
 type Stage =
   | { kind: "picking" }
   | { kind: "making"; highlights: HighlightsVideo | null }
-  | { kind: "done"; download: string; duration_s: number }
+  | { kind: "done"; download: string; duration_s: number; filename: string }
   | { kind: "failed"; message: string };
 
 function segmentBoundsFor(
@@ -77,6 +78,8 @@ function initialTrimFor(
 export function HighlightsDialog({
   jobId,
   videoId,
+  channelName,
+  vodCreatedAt,
   vodDurationS,
   candidates,
   initialTrims,
@@ -86,6 +89,8 @@ export function HighlightsDialog({
 }: {
   jobId: string;
   videoId: string;
+  channelName?: string | null;
+  vodCreatedAt?: string | null;
   vodDurationS: number;
   candidates: Candidate[];
   initialTrims?: Record<string, SavedTrim>;
@@ -195,6 +200,13 @@ export function HighlightsDialog({
         kind: "done",
         download: client.resolveUrl(current.download_url ?? ""),
         duration_s: current.duration_s ?? 0,
+        filename:
+          current.filename ??
+          buildHighlightsFilename({
+            channel: channelName ?? null,
+            createdAt: vodCreatedAt ?? null,
+            fallbackId: videoId,
+          }),
       });
     } catch (error) {
       if (!running.current) return;
@@ -464,7 +476,7 @@ export function HighlightsDialog({
             <div className="flex gap-3">
               <a
                 href={stage.download}
-                download={`autoclipper_${videoId}_highlights.mp4`}
+                download={stage.filename}
                 className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
               >
                 Download

@@ -811,6 +811,7 @@ Further layouts (e.g. automatic smart crop, optional polish) would be added as n
 | `progress` | `Progress` \| null | Export stages (§ 6.3); same rules as § 3.4 |
 | `error` | `ApiError` \| null | Non-null iff `failed` |
 | `download_url` | str \| null | Root-relative URL (§ 1) of the file endpoint. Non-null iff `done`. |
+| `filename` | str \| null | Sanitized human download filename (`<channel>_<YYYY-MM-DD>_<moment>_<hh-mm-ss>.mp4`, deduplicated per job). Non-null iff `done`. |
 | `created_at` | timestamp | |
 | `started_at` | timestamp \| null | |
 | `updated_at` | timestamp | |
@@ -836,7 +837,7 @@ Further layouts (e.g. automatic smart crop, optional polish) would be added as n
 
 ### 6.4 Download
 
-`GET /api/v1/exports/{export_id}/file` returns `200` with `Content-Type: video/mp4` and `Content-Disposition: attachment` (suggested filename `autoclipper_<video_id>_<start_s>-<end_s>.mp4`). Resolve `download_url` against the API origin (§ 1); a plain link works cross-origin because the header forces a download. Errors: `404 export_not_found`, `409 export_not_done`, `404 export_file_missing` (the file is no longer on disk, e.g. the user cleaned the output folder; export again). Where files are stored on disk is up to the server, but each export gets its own file keyed by `export_id`, never by `candidate_id` (which repeats across results and trims). The server never deletes export files on its own in v1.
+`GET /api/v1/exports/{export_id}/file` returns `200` with `Content-Type: video/mp4` and `Content-Disposition: attachment` (sanitized filename `<channel>_<YYYY-MM-DD>_<moment>_<hh-mm-ss>.mp4`, deduplicated with `_2`, `_3`, ... on collision within a job). Resolve `download_url` against the API origin (§ 1); a plain link works cross-origin because the header forces a download. Errors: `404 export_not_found`, `409 export_not_done`, `404 export_file_missing` (the file is no longer on disk, e.g. the user cleaned the output folder; export again). Where files are stored on disk is up to the server, but each export gets its own file keyed by `export_id`, never by `candidate_id` (which repeats across results and trims). The server never deletes export files on its own in v1.
 
 ### 6.5 Examples
 
@@ -870,6 +871,7 @@ Content-Type: application/json
   "progress": null,
   "error": null,
   "download_url": null,
+  "filename": null,
   "created_at": "2026-10-19T15:05:00Z",
   "started_at": null,
   "updated_at": "2026-10-19T15:05:00Z",
@@ -893,6 +895,7 @@ While running, `"state": "running"` and, for example, `"progress": { "stage": "t
   "progress": null,
   "error": null,
   "download_url": "/api/v1/exports/exp_5a6b7c8d9e0f4a1b/file",
+  "filename": "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55.mp4",
   "created_at": "2026-10-19T15:05:00Z",
   "started_at": "2026-10-19T15:05:01Z",
   "updated_at": "2026-10-19T15:05:48Z",
@@ -915,7 +918,7 @@ The download responds with:
 ```http
 HTTP/1.1 200 OK
 Content-Type: video/mp4
-Content-Disposition: attachment; filename="autoclipper_9000000001_115.5-150.0.mp4"
+Content-Disposition: attachment; filename="user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55.mp4"
 ```
 
 HTTP errors for exports:
@@ -982,6 +985,7 @@ The results screen sends `segments` explicitly: the ticked moments (all of the t
 | `progress` | `Progress` \| null | Highlights stages (§ 7.3); same rules as § 3.4 |
 | `error` | `ApiError` \| null | Non-null iff `failed` |
 | `download_url` | str \| null | Root-relative URL (§ 1) of the file endpoint. Non-null iff `done`. |
+| `filename` | str \| null | Sanitized human download filename (`<channel>_<YYYY-MM-DD>_highlights.mp4`, deduplicated per job). Non-null iff `done`. |
 | `duration_s` | float \| null | Duration of the finished file. Non-null iff `done`. |
 | `created_at` | timestamp | |
 | `started_at` | timestamp \| null | |
@@ -1000,7 +1004,7 @@ The results screen sends `segments` explicitly: the ticked moments (all of the t
 
 ### 7.4 Download
 
-`GET /api/v1/highlights/{highlights_id}/file` returns `200` with `Content-Type: video/mp4` and `Content-Disposition: attachment` (suggested filename `autoclipper_<video_id>_highlights.mp4`). Errors: `404 highlights_not_found`, `409 highlights_not_done`, `404 highlights_file_missing` (the file is no longer on disk; make the video again). Each highlights video gets its own file keyed by `highlights_id`, and the server never deletes it on its own in v1.
+`GET /api/v1/highlights/{highlights_id}/file` returns `200` with `Content-Type: video/mp4` and `Content-Disposition: attachment` (sanitized filename `<channel>_<YYYY-MM-DD>_highlights.mp4`, deduplicated on collision within a job). Errors: `404 highlights_not_found`, `409 highlights_not_done`, `404 highlights_file_missing` (the file is no longer on disk; make the video again). Each highlights video gets its own file keyed by `highlights_id`, and the server never deletes it on its own in v1.
 
 ### 7.5 Examples
 
@@ -1038,6 +1042,7 @@ Content-Type: application/json
   "progress": null,
   "error": null,
   "download_url": "/api/v1/highlights/hl_2c3d4e5f6a7b4c8d/file",
+  "filename": "user_001_2026-10-12_highlights.mp4",
   "duration_s": 81.5,
   "created_at": "2026-10-19T15:20:00Z",
   "started_at": "2026-10-19T15:20:01Z",
@@ -1160,6 +1165,7 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 - Long work runs in an in-process background worker, never in the request handler ([overview § 4.7](overview.md#47-interfaces)). One analysis job and one render run at a time; exports and highlights videos share the render queue. Others wait in `queued`, first in, first out.
 - There is no cancel endpoint in v1; a later cancel endpoint that fails a job with a new `cancelled` code would be a minor change (§ 10). Finished jobs can be listed via `GET /api/v1/jobs` (§ 3.7) and removed via `DELETE /api/v1/jobs/{job_id}` (§ 3.8).
 - Job, export and highlights records are persisted in a SQLite index (`<artifacts_dir>/library.db` for `pipeline` jobs and `<artifacts_dir>/library-mock.db` for `mock` jobs, WAL mode) and each finished job's `AnalysisResult` is written atomically to `<artifacts_dir>/analysis/<job_id>.json`. On restart, past `done` and `failed` jobs, results, exports, highlights and downloads keep working without mixing mock and pipeline media sources.
+- A render's download name is assigned when the render finishes and stored with the render. Older renders receive a name on first access. If their analysis JSON is unavailable, the server uses the saved channel or VOD ID, the job submission date and, for a clip, its saved start time.
 - Any job, export or highlights render that was `queued` or `running` when the server stopped is marked `failed` with `code: "interrupted"` and a retryable message on the next startup; it is never left `running`.
 - Temporary preview media IDs (`med_*`) remain session-scoped in memory: after a restart, calling `GET /api/v1/jobs/{job_id}/candidates/{candidate_id}/media` issues a fresh preview URL.
 - If the database file is corrupt or truncated, startup quarantines it aside and starts fresh without crashing. If a saved result JSON or rendered MP4 was removed from disk, the job still loads and lists cleanly (`result_available: false` or `file_available: false`), and fetching the missing file returns `404 result_file_missing`, `export_file_missing` or `highlights_file_missing`.

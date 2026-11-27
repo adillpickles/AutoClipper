@@ -29,6 +29,11 @@ import type {
 import { INVALID_CHANNEL_MESSAGE, parseChannel } from "@/lib/api/channel";
 import { EXPORT_STAGES, HIGHLIGHTS_STAGES, JOB_STAGES } from "@/lib/api/stages";
 import { INVALID_VOD_MESSAGE, looksAbsolute, parseVod } from "@/lib/api/vod";
+import {
+  buildClipFilename,
+  buildHighlightsFilename,
+  deduplicateFilename,
+} from "@/lib/filenames";
 import { MIN_TRIM_DURATION_S } from "@/lib/trim";
 
 /** Length of one mock step (queued, then each stage). */
@@ -116,34 +121,40 @@ interface StoredJob {
   created_ms: number;
 }
 
+type StoredExportInner = Omit<
+  Export,
+  | "state"
+  | "progress"
+  | "error"
+  | "download_url"
+  | "filename"
+  | "started_at"
+  | "updated_at"
+  | "finished_at"
+>;
+
 interface StoredExport {
-  export: Omit<
-    Export,
-    | "state"
-    | "progress"
-    | "error"
-    | "download_url"
-    | "started_at"
-    | "updated_at"
-    | "finished_at"
-  >;
+  export: StoredExportInner;
   created_ms: number;
   /** Creation order; exports made in the same millisecond still render first in, first out. */
   seq?: number;
 }
 
+type StoredHighlightsInner = Omit<
+  HighlightsVideo,
+  | "state"
+  | "progress"
+  | "error"
+  | "download_url"
+  | "filename"
+  | "duration_s"
+  | "started_at"
+  | "updated_at"
+  | "finished_at"
+>;
+
 interface StoredHighlights {
-  highlights: Omit<
-    HighlightsVideo,
-    | "state"
-    | "progress"
-    | "error"
-    | "download_url"
-    | "duration_s"
-    | "started_at"
-    | "updated_at"
-    | "finished_at"
-  >;
+  highlights: StoredHighlightsInner;
   created_ms: number;
   /** Creation order within highlights videos; renders interleave with exports by time (§ 9.3). */
   seq?: number;
@@ -498,6 +509,7 @@ export function exportAt(
   now: number,
   startMs = stored.created_ms + MOCK_RENDER_STEP_MS,
   stepMs = MOCK_RENDER_STEP_MS,
+  filename?: string,
 ): Export {
   const stages = renderStages(stored.export.captions);
   const base = stored.export;
@@ -508,6 +520,7 @@ export function exportAt(
       progress: null,
       error: null,
       download_url: null,
+      filename: null,
       started_at: null,
       updated_at: base.created_at,
       finished_at: null,
@@ -528,32 +541,127 @@ export function exportAt(
       },
       error: null,
       download_url: null,
+      filename: null,
       started_at: iso(startMs),
       updated_at: iso(now),
       finished_at: null,
     };
   }
   const finishedAt = iso(startMs + stages.length * stepMs);
+  const resolvedFilename =
+    filename ?? mockClipFilename(base, scenarioFor(base.video_id).result);
   return {
     ...base,
     state: "done",
     progress: null,
     error: null,
     download_url: CLIP_URL,
+    filename: resolvedFilename,
     started_at: iso(startMs),
     updated_at: finishedAt,
     finished_at: finishedAt,
   };
 }
 
+function mockClipFilename(
+  item: StoredExportInner,
+  result: AnalysisResult | undefined,
+): string {
+  const candidate = result?.candidates.find(
+    (entry) => entry.candidate_id === item.candidate_id,
+  );
+  return buildClipFilename({
+    channel: result?.vod.broadcaster_display_name,
+    createdAt: result?.vod.created_at,
+    title: candidate?.title,
+    rank: candidate?.rank,
+    startS: item.start_s,
+    fallbackId: item.video_id,
+  });
+}
+
+function mockHighlightsFilename(
+  videoId: string,
+  result: AnalysisResult | undefined,
+): string {
+  return buildHighlightsFilename({
+    channel: result?.vod.broadcaster_display_name,
+    createdAt: result?.vod.created_at,
+    fallbackId: videoId,
+  });
+}
+
+function mockRenderFilename(
+  store: Store,
+  jobId: string,
+  kind: "export" | "highlights",
+  renderId: string,
+  schedule: ReadonlyMap<string, number>,
+): string | undefined {
+  const storedJob = store.jobs[jobId];
+  const scenarioResult = storedJob
+    ? scenarioFor(storedJob.video_id).result
+    : undefined;
+  const used = new Set<string>();
+  // The shared FIFO worker has already completed every slot before this one.
+  for (const id of schedule.keys()) {
+    const clip = kind === "export" ? store.exports[id]?.export : undefined;
+    const reel =
+      kind === "highlights" ? store.highlights[id]?.highlights : undefined;
+    let base: string;
+    if (clip?.job_id === jobId) base = mockClipFilename(clip, scenarioResult);
+    else if (reel?.job_id === jobId) {
+      base = mockHighlightsFilename(reel.video_id, scenarioResult);
+    } else {
+      continue;
+    }
+    const unique = deduplicateFilename(base, used);
+    if (id === renderId) return unique;
+  }
+  return undefined;
+}
+
+function exportStateAt(
+  stored: StoredExport,
+  now: number,
+  startMs = stored.created_ms + MOCK_RENDER_STEP_MS,
+  stepMs = MOCK_RENDER_STEP_MS,
+): Export["state"] {
+  if (now < startMs) return "queued";
+  const stages = renderStages(stored.export.captions);
+  const step = Math.floor((now - startMs) / stepMs);
+  return step < stages.length ? "running" : "done";
+}
+
+function highlightsStateAt(
+  stored: StoredHighlights,
+  now: number,
+  startMs = stored.created_ms + MOCK_RENDER_STEP_MS,
+  stepMs = MOCK_RENDER_STEP_MS,
+): HighlightsVideo["state"] {
+  if (now < startMs) return "queued";
+  const stages = highlightsStages(stored.highlights.captions);
+  const step = Math.floor((now - startMs) / stepMs);
+  return step < stages.length ? "running" : "done";
+}
+
 function exportNow(store: Store, exportId: string, now: number): Export | null {
   const stored = store.exports[exportId];
   if (!stored) return null;
-  return exportAt(
-    stored,
-    now,
-    renderSchedule(store.exports, store.highlights).get(exportId),
-  );
+  const schedule = renderSchedule(store.exports, store.highlights);
+  const startMs = schedule.get(exportId);
+  const state = exportStateAt(stored, now, startMs);
+  const filename =
+    state === "done"
+      ? mockRenderFilename(
+          store,
+          stored.export.job_id,
+          "export",
+          exportId,
+          schedule,
+        )
+      : undefined;
+  return exportAt(stored, now, startMs, MOCK_RENDER_STEP_MS, filename);
 }
 
 /** The highlights video as the mock server would report it at `now` (§ 7.2). */
@@ -562,6 +670,7 @@ export function highlightsAt(
   now: number,
   startMs = stored.created_ms + MOCK_RENDER_STEP_MS,
   stepMs = MOCK_RENDER_STEP_MS,
+  filename?: string,
 ): HighlightsVideo {
   const stages = highlightsStages(stored.highlights.captions);
   const base = stored.highlights;
@@ -572,6 +681,7 @@ export function highlightsAt(
       progress: null,
       error: null,
       download_url: null,
+      filename: null,
       duration_s: null,
       started_at: null,
       updated_at: base.created_at,
@@ -593,6 +703,7 @@ export function highlightsAt(
       },
       error: null,
       download_url: null,
+      filename: null,
       duration_s: null,
       started_at: iso(startMs),
       updated_at: iso(now),
@@ -600,12 +711,16 @@ export function highlightsAt(
     };
   }
   const finishedAt = iso(startMs + stages.length * stepMs);
+  const resolvedFilename =
+    filename ??
+    mockHighlightsFilename(base.video_id, scenarioFor(base.video_id).result);
   return {
     ...base,
     state: "done",
     progress: null,
     error: null,
     download_url: HIGHLIGHTS_URL,
+    filename: resolvedFilename,
     duration_s: base.segments.reduce(
       (sum, segment) => sum + (segment.end_s - segment.start_s),
       0,
@@ -623,11 +738,20 @@ function highlightsNow(
 ): HighlightsVideo | null {
   const stored = store.highlights[highlightsId];
   if (!stored) return null;
-  return highlightsAt(
-    stored,
-    now,
-    renderSchedule(store.exports, store.highlights).get(highlightsId),
-  );
+  const schedule = renderSchedule(store.exports, store.highlights);
+  const startMs = schedule.get(highlightsId);
+  const state = highlightsStateAt(stored, now, startMs);
+  const filename =
+    state === "done"
+      ? mockRenderFilename(
+          store,
+          stored.highlights.job_id,
+          "highlights",
+          highlightsId,
+          schedule,
+        )
+      : undefined;
+  return highlightsAt(stored, now, startMs, MOCK_RENDER_STEP_MS, filename);
 }
 
 const MOCK_PREANALYZED_VIDEO_IDS = new Set(["9000000002"]);
@@ -915,12 +1039,8 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       }
       const store = load();
       const at = now();
+      const starts = renderSchedule(store.exports, store.highlights);
       for (const existing of Object.values(store.exports)) {
-        const current = exportNow(
-          store,
-          existing.export.export_id,
-          at,
-        ) as Export;
         const same = (
           [
             "job_id",
@@ -931,11 +1051,17 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
             "captions",
           ] as const
         ).every((key) => existing.export[key] === request[key]);
-        if (
-          same &&
-          (current.state === "queued" || current.state === "running")
-        ) {
-          return { export: current, created: false };
+        if (!same) continue;
+        const state = exportStateAt(
+          existing,
+          at,
+          starts.get(existing.export.export_id),
+        );
+        if (state === "queued" || state === "running") {
+          return {
+            export: exportNow(store, existing.export.export_id, at) as Export,
+            created: false,
+          };
         }
       }
       const seq = (store.next_seq ?? 0) + 1;
@@ -1093,6 +1219,7 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       const captions = request.captions ?? false;
       const store = load();
       const at = now();
+      const starts = renderSchedule(store.exports, store.highlights);
       for (const existing of Object.values(store.highlights)) {
         const same =
           existing.highlights.job_id === request.job_id &&
@@ -1105,16 +1232,21 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
               segment.start_s === segments[i].start_s &&
               segment.end_s === segments[i].end_s,
           );
-        const current = highlightsNow(
-          store,
-          existing.highlights.highlights_id,
+        if (!same) continue;
+        const state = highlightsStateAt(
+          existing,
           at,
-        ) as HighlightsVideo;
-        if (
-          same &&
-          (current.state === "queued" || current.state === "running")
-        ) {
-          return { highlights: current, created: false };
+          starts.get(existing.highlights.highlights_id),
+        );
+        if (state === "queued" || state === "running") {
+          return {
+            highlights: highlightsNow(
+              store,
+              existing.highlights.highlights_id,
+              at,
+            ) as HighlightsVideo,
+            created: false,
+          };
         }
       }
       const seq = (store.next_seq ?? 0) + 1;

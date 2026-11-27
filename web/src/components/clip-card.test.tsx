@@ -148,4 +148,47 @@ describe("ClipCard explanations", () => {
     expect(screen.getByText("Steady activity throughout")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Why/i })).toBeNull();
   });
+
+  it("uses the clean server export filename on the download link", () => {
+    render(
+      <ul>
+        <ClipCard
+          jobId="job_1"
+          candidate={RICH_CANDIDATE}
+          scoreFraction={1}
+          clip={{
+            kind: "export",
+            url: "/api/v1/exports/exp_1/file",
+            export: {
+              export_id: "exp_1",
+              job_id: "job_1",
+              candidate_id: "c001",
+              video_id: "9000000001",
+              start_s: 118,
+              end_s: 148,
+              layout: "center_crop",
+              captions: true,
+              state: "done",
+              progress: null,
+              error: null,
+              download_url: "/api/v1/exports/exp_1/file",
+              filename:
+                "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-58.mp4",
+              created_at: "2026-10-19T15:05:00Z",
+              started_at: "2026-10-19T15:05:01Z",
+              updated_at: "2026-10-19T15:05:48Z",
+              finished_at: "2026-10-19T15:05:48Z",
+            },
+          }}
+          videoId="9000000001"
+          onRetry={vi.fn()}
+        />
+      </ul>,
+    );
+
+    const link = screen.getByRole("link", { name: /Download/i });
+    expect(link.getAttribute("download")).toBe(
+      "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-58.mp4",
+    );
+  });
 });

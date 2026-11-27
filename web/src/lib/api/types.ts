@@ -145,6 +145,7 @@ export interface Export {
   progress: Progress | null;
   error: ApiError | null;
   download_url: string | null;
+  filename?: string | null;
   created_at: string;
   started_at: string | null;
   updated_at: string;
@@ -176,6 +177,7 @@ export interface HighlightsVideo {
   progress: Progress | null;
   error: ApiError | null;
   download_url: string | null;
+  filename?: string | null;
   duration_s: number | null;
   created_at: string;
   started_at: string | null;

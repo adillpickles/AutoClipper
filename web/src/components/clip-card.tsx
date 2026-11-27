@@ -3,7 +3,8 @@
 import { useId, useState } from "react";
 
 import { Button, buttonClasses, ButtonLink } from "@/components/ui/button";
-import type { Candidate, Export } from "@/lib/api/types";
+import type { Candidate, Export, VodSummary } from "@/lib/api/types";
+import { buildClipFilename } from "@/lib/filenames";
 import { formatTime } from "@/lib/format";
 import { reasonFor, signalDetailsFor, titleFor } from "@/lib/reason";
 
@@ -33,6 +34,7 @@ export function ClipCard({
   scoreFraction,
   clip,
   videoId,
+  vod,
   onRetry,
 }: {
   jobId: string;
@@ -40,6 +42,7 @@ export function ClipCard({
   scoreFraction: number;
   clip: ClipExport;
   videoId: string;
+  vod?: Pick<VodSummary, "broadcaster_display_name" | "created_at">;
   onRetry: () => void;
 }) {
   const [videoFailed, setVideoFailed] = useState(false);
@@ -51,7 +54,16 @@ export function ClipCard({
   const whyPanelId = useId();
   const ready =
     clip.kind === "export" && clip.export.state === "done" && clip.url !== null;
-  const filename = `autoclipper_${videoId}_${candidate.start_s}-${candidate.end_s}.mp4`;
+  const filename =
+    (clip.kind === "export" ? clip.export.filename : null) ??
+    buildClipFilename({
+      channel: vod?.broadcaster_display_name ?? null,
+      createdAt: vod?.created_at ?? null,
+      title: candidate.title ?? null,
+      rank: candidate.rank,
+      startS: clip.kind === "export" ? clip.export.start_s : candidate.start_s,
+      fallbackId: videoId,
+    });
 
   return (
     <li className="flex min-w-0 flex-col overflow-hidden rounded-card border border-border-subtle bg-surface-panel shadow-card transition-colors hover:border-border-strong">
