@@ -239,15 +239,20 @@ def _add_clip(
     rng: random.Random,
     plan: VodPlan,
     vod_created_at: datetime,
-    offset_s: float | None,
+    start_s: float | None,
     duration_s: float,
     strength: float,
 ) -> str:
+    """Add a clip covering ``[start_s, start_s + duration_s)``, or one with no VOD position.
+
+    Its ``vod_offset_s`` is the clip's end, as Helix reports it (exp-002, exp-003).
+    """
     clip_id = f"SyntheticClip{len(scenario.clips) + 1:02d}-" + "".join(
         rng.choices(string.ascii_letters + string.digits, k=8)
     )
+    end_s = start_s + duration_s if start_s is not None else None
     # Clips are made seconds after the end of the stretch they cover.
-    made_after_s = offset_s + duration_s if offset_s is not None else rng.uniform(30, 120)
+    made_after_s = end_s if end_s is not None else rng.uniform(30, 120)
     created_at = vod_created_at + timedelta(seconds=int(made_after_s + rng.uniform(2, 25)))
     scenario.clips.append(
         {
@@ -261,7 +266,7 @@ def _add_clip(
             "game_id": (plan.game_ids or ("9400000003",))[0],
             "language": "en",
             "created_at": created_at,
-            "vod_offset_s": offset_s,
+            "vod_offset_s": end_s,
             "duration_s": float(duration_s),
             "view_count": int(strength * rng.randint(40, 400)),
             "is_featured": strength >= 1.0,

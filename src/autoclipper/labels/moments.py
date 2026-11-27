@@ -3,7 +3,11 @@
 Follows docs/data/labeling.md § 2 and the ``moments`` table in docs/architecture/data-model.md:
 
 1. Clips with a null ``vod_offset_s`` or ``video_id`` are skipped and counted.
-2. Each clip is the interval ``[vod_offset_s, vod_offset_s + duration_s)``.
+2. Each clip becomes an interval through one `ClipPositionRule` (`clip_interval`). The default,
+   `CLIP_END`, reads Helix's ``vod_offset_s`` as where the clip ends (exp-002, exp-003):
+   ``[max(vod_offset_s - duration_s, 0), vod_offset_s)``, cut at the VOD's start. `CLIP_START`,
+   the reading before #126, is ``[vod_offset_s, vod_offset_s + duration_s)``. A clip whose
+   interval is empty (``vod_offset_s == 0`` under `CLIP_END`) is skipped and counted.
 3. Within a VOD, clips sorted by start join the current moment when they overlap it or start
    within `GAP_S` seconds of its end (touching clips merge). Chains of overlapping clips stay one
    moment however long they get.
@@ -18,6 +22,7 @@ order.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
 
@@ -29,6 +34,70 @@ log = logging.getLogger(__name__)
 GAP_S: Final = 5.0
 
 _TIMESTAMP: Final = pl.Datetime("us", "UTC")
+
+
+@dataclass(frozen=True, slots=True)
+class ClipPositionRule:
+    """How a clip's reported ``vod_offset_s`` and ``duration_s`` become its VOD interval.
+
+    Attributes:
+        name: Recorded in the ``moments`` table's ``clip_position`` column.
+        start: Builds the interval's start from the offset and duration expressions.
+        end: Builds the interval's end from the same expressions.
+    """
+
+    name: str
+    start: Callable[[pl.Expr, pl.Expr], pl.Expr]
+    end: Callable[[pl.Expr, pl.Expr], pl.Expr]
+
+
+CLIP_END: Final = ClipPositionRule(
+    "end",
+    start=lambda offset, duration: pl.max_horizontal(offset - duration, pl.lit(0.0)),
+    end=lambda offset, duration: offset,
+)
+"""``vod_offset_s`` is where the clip ends; a clip that would start before the VOD starts at 0."""
+
+CLIP_START: Final = ClipPositionRule(
+    "start",
+    start=lambda offset, duration: offset,
+    end=lambda offset, duration: offset + duration,
+)
+"""``vod_offset_s`` is where the clip starts: the reading before #126 (label rules v0)."""
+
+CLIP_POSITION_RULE: Final = CLIP_END
+"""The rule the pipeline uses unless a caller asks for another."""
+
+
+def clip_interval(clips: pl.DataFrame, rule: ClipPositionRule = CLIP_POSITION_RULE) -> pl.DataFrame:
+    """`clips` with ``start_s`` and ``end_s`` (Float64) from ``vod_offset_s`` and ``duration_s``.
+
+    The one place clip positions become intervals. A null offset gives null bounds; callers
+    validate the result.
+    """
+    offset = pl.col("vod_offset_s").cast(pl.Float64)
+    duration = pl.col("duration_s").cast(pl.Float64)
+    return clips.with_columns(
+        start_s=rule.start(offset, duration).cast(pl.Float64),
+        end_s=rule.end(offset, duration).cast(pl.Float64),
+    )
+
+
+def valid_clip_interval() -> pl.Expr:
+    """True for a `clip_interval` row with a usable duration and a finite interval in the VOD.
+
+    The interval may be empty (``end_s == start_s``); callers skip those. A negative offset
+    fails: it starts before 0 or ends before it starts.
+    """
+    return (
+        pl.col("duration_s").is_finite()
+        & (pl.col("duration_s") > 0)
+        & pl.col("start_s").is_finite()
+        & pl.col("end_s").is_finite()
+        & (pl.col("start_s") >= 0)
+        & (pl.col("end_s") >= pl.col("start_s"))
+    ).fill_null(False)
+
 
 CLIP_COLUMNS: Final = (
     "clip_id",
@@ -53,9 +122,10 @@ MOMENTS_SCHEMA: Final = pl.Schema(
         "first_clip_created_at": _TIMESTAMP,
         "clip_ids": pl.List(pl.String),
         "views_observed_at": _TIMESTAMP,
+        "clip_position": pl.String,
     }
 )
-"""The ``moments`` table (data-model.md)."""
+"""The ``moments`` table (data-model.md). ``clip_position`` is the `ClipPositionRule`'s name."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,26 +137,34 @@ class MomentsResult:
         n_without_vod_offset: Clips skipped for a null ``vod_offset_s`` (with a ``video_id``).
         n_without_video: Clips skipped for a null ``video_id``.
         n_repeated: Repeated listings of a clip that were counted once.
+        n_empty: Clips skipped because their interval under the rule is empty.
     """
 
     moments: pl.DataFrame
     n_without_vod_offset: int
     n_without_video: int
     n_repeated: int
+    n_empty: int = 0
 
 
-def merge_clips_into_moments(clips: pl.DataFrame, *, gap_s: float = GAP_S) -> MomentsResult:
+def merge_clips_into_moments(
+    clips: pl.DataFrame,
+    *,
+    gap_s: float = GAP_S,
+    rule: ClipPositionRule = CLIP_POSITION_RULE,
+) -> MomentsResult:
     """Group the clips of one snapshot into moments, per VOD.
 
     Args:
         clips: Rows of the ``clips`` table (at least `CLIP_COLUMNS`).
         gap_s: Clips starting at most this many seconds after the current moment's end join it.
+        rule: Turns each clip's reported position into its interval (`clip_interval`).
 
     Raises:
         ValueError: A column is missing, a timestamp column has no time zone, `gap_s` is
-            negative, a placed clip's offset is negative or not finite or its duration is
-            missing, not finite or not positive, or one ``clip_id`` appears with different VOD
-            positions.
+            negative, a placed clip's duration is missing, not finite or not positive, its
+            interval under `rule` isn't finite, starts before 0 or ends before it starts (a
+            negative offset), or one ``clip_id`` appears with different VOD positions.
     """
     missing = set(CLIP_COLUMNS) - set(clips.columns)
     if missing:
@@ -133,23 +211,19 @@ def merge_clips_into_moments(clips: pl.DataFrame, *, gap_s: float = GAP_S) -> Mo
             n_without_offset,
         )
     placed = frame.filter(pl.col("video_id").is_not_null() & pl.col("vod_offset_s").is_not_null())
-    valid = (
-        pl.col("vod_offset_s").is_finite()
-        & (pl.col("vod_offset_s") >= 0)
-        & pl.col("duration_s").is_finite()
-        & (pl.col("duration_s") > 0)
-    ).fill_null(False)
-    invalid = placed.filter(~valid)
+    placed = clip_interval(placed, rule)
+    # Checked on the interval the rule gives, after any cut at the VOD's start.
+    invalid = placed.filter(~valid_clip_interval())
     if invalid.height:
         raise ValueError(
             f"{invalid.height} clip(s) have a vod_offset_s that is negative or not finite, or "
             f"a duration_s that is missing, not finite or not positive, e.g. "
             f"{invalid['clip_id'].sort()[0]}"
         )
-    placed = placed.with_columns(
-        start_s=pl.col("vod_offset_s").cast(pl.Float64),
-        end_s=(pl.col("vod_offset_s") + pl.col("duration_s")).cast(pl.Float64),
-    )
+    n_empty = placed.filter(pl.col("end_s") == pl.col("start_s")).height
+    if n_empty:
+        log.warning("skipped clips with an empty interval rule=%s n=%d", rule.name, n_empty)
+        placed = placed.filter(pl.col("end_s") > pl.col("start_s"))
 
     moments = (
         placed.sort(["video_id", "start_s", "end_s", "clip_id"])
@@ -175,9 +249,10 @@ def merge_clips_into_moments(clips: pl.DataFrame, *, gap_s: float = GAP_S) -> Mo
         )
         .with_columns(
             moment_id=pl.format("{}:m{}", pl.col("video_id"), pl.col("index")),
+            clip_position=pl.lit(rule.name),
         )
         .sort(["video_id", "start_s"])
         .select(MOMENTS_SCHEMA.names())
         .cast(MOMENTS_SCHEMA)
     )
-    return MomentsResult(moments, n_without_offset, n_without_video, n_repeated)
+    return MomentsResult(moments, n_without_offset, n_without_video, n_repeated, n_empty)

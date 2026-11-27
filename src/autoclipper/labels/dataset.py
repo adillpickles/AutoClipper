@@ -22,6 +22,7 @@ from autoclipper.eval.harness import current_git_sha
 from autoclipper.features.audio import compute_audio_features
 from autoclipper.features.chat import compute_chat_features, load_lexicon
 from autoclipper.labels.annotations import (
+    LABEL_RULES,
     LABEL_RULES_VERSION,
     LABELS_SCHEMA,
     NEG_BUFFER_S,
@@ -146,15 +147,24 @@ def build_dataset(
     seed: int,
     lexicon_path: Path,
     snapshot_ids: list[str] | None = None,
+    label_rules_version: str = LABEL_RULES_VERSION,
 ) -> Path:
     """Write windows, moments, annotations, features, QC and five frozen streamer folds.
 
-    A version is never replaced. Clip captures must be unambiguous (select IDs explicitly
+    `label_rules_version` picks how viewer-clip positions are read (`LABEL_RULES`): ``v1``,
+    the default, reads them as clip ends; ``v0`` as clip starts, for comparison. A version is
+    never replaced. Clip captures must be unambiguous (select IDs explicitly
     when a VOD has several); missing or incomplete coverage leaves that VOD unlabeled.
     All VODs need parsed chat and normalized audio. No network or real collection occurs.
     Outputs are staged; the split JSON is the final commit marker, written only on success.
     """
     validate_version(version)
+    rule = LABEL_RULES.get(label_rules_version)
+    if rule is None:
+        raise ValueError(
+            f"unknown label rules version {label_rules_version!r}; "
+            f"choose one of {', '.join(sorted(LABEL_RULES))}"
+        )
     root = data_dir.resolve()
     out = root / "processed" / "datasets" / version
     split_path = root / "splits" / f"{version}.json"
@@ -191,6 +201,7 @@ def build_dataset(
         name: [] for name in ("moments", "window_labels", "features_chat", "features_audio")
     }
     coverage = []
+    n_empty = 0
     for vod in vods.iter_rows(named=True):
         video_id = vod["video_id"]
         win = windows.filter(pl.col("video_id") == video_id)
@@ -222,7 +233,9 @@ def build_dataset(
                 placed = clips.filter(pl.col("video_id") == video_id)
                 if placed.filter(pl.col("broadcaster_id") != vod["broadcaster_id"]).height:
                     raise ValueError(f"clip broadcaster disagrees with VOD {video_id}")
-                moments = merge_clips_into_moments(placed).moments
+                merged = merge_clips_into_moments(placed, rule=rule)
+                n_empty += merged.n_empty
+                moments = merged.moments
                 frames["moments"].append(moments)
                 frames["window_labels"].append(
                     label_windows(
@@ -232,6 +245,7 @@ def build_dataset(
                         broadcaster_id=vod["broadcaster_id"],
                         split=split_for(vod["broadcaster_id"], folds[0]),
                         mature=mature,
+                        rule=rule,
                     )
                 )
             if not mature:
@@ -256,13 +270,19 @@ def build_dataset(
                 for snapshot, clips in zip(snapshots, raw_clips, strict=True)
             ]
         )
-    quality = _quality(vods, outputs, raw_clips, folds, seed)
+    quality = {
+        "label_rules_version": label_rules_version,
+        "clip_position": rule.name,
+        "empty_interval_clips": n_empty,
+        **_quality(vods, outputs, raw_clips, folds, seed),
+    }
     metadata = {
         "dataset_version": version,
         "seed": seed,
         "primary_fold": 0,
         "folds": folds,
-        "label_rules_version": LABEL_RULES_VERSION,
+        "label_rules_version": label_rules_version,
+        "clip_position": rule.name,
         "weight_version": WEIGHT_VERSION,
         "parameters": {
             "window_s": WINDOW_S,

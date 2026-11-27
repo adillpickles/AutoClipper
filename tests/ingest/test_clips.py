@@ -170,6 +170,7 @@ def test_recorded_pages_are_followed_by_cursor_and_parsed_into_clip_rows() -> No
     one = clips[0]
     assert one.video_id == VIDEO_ID
     assert one.broadcaster_id == BROADCASTER_ID
+    # Helix's value unchanged: where the clip ends (#126); labels read it via clip_interval.
     assert one.vod_offset_s == 1195.0
     assert isinstance(one.vod_offset_s, float)
     assert one.duration_s == pytest.approx(29.9)

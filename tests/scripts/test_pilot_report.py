@@ -96,11 +96,12 @@ MANIFEST: dict[str, Any] = {
 
 def test_clip_stats_boundaries_and_timing() -> None:
     start = NOW - timedelta(days=10)
+    # 30 s clips; vod_offset_s is where each ends, as Helix reports it (#126).
     frame = clip_frame(
         [
-            {"vod_offset_s": 10.0, "created_at": start + timedelta(seconds=40)},
-            {"vod_offset_s": 80.0, "duration_s": 30.0},  # ends at 110 > 100: runs past the end
-            {"vod_offset_s": 100.0, "creator_hash": "cd" * 32},  # starts exactly at the end
+            {"vod_offset_s": 40.0, "created_at": start + timedelta(seconds=40)},  # [10, 40)
+            {"vod_offset_s": 110.0, "duration_s": 30.0},  # [80, 110): runs past the end
+            {"vod_offset_s": 130.0, "creator_hash": "cd" * 32},  # [100, 130): starts at the end
             {"vod_offset_s": None, "view_count": 7},
         ]
     )
@@ -641,8 +642,9 @@ def test_cli_refuses_a_directory_without_a_catalog(tmp_path: Path) -> None:
 
 
 def test_label_preview_splits_windows_by_distance_to_moments() -> None:
-    # 200 s: windows [0, 10) ... [190, 200). One moment [50, 70) from two overlapping clips.
-    clips = clip_frame([{"vod_offset_s": 50.0, "duration_s": 15.0}, {"vod_offset_s": 55.0}])
+    # 200 s: windows [0, 10) ... [190, 200). One moment [50, 70) from two overlapping 15 s clips,
+    # reported where they end (#126): [50, 65) and [55, 70).
+    clips = clip_frame([{"vod_offset_s": 65.0, "duration_s": 15.0}, {"vod_offset_s": 70.0}])
     clips = clips.with_columns(pl.col("duration_s").clip(upper_bound=15.0))
     preview = pr.label_preview(clips, video_id="100", vod_duration_s=200.0)
     assert preview.n_windows == 20

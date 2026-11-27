@@ -119,7 +119,13 @@ def test_build_dataset_prints_alert_when_null_offset_rate_exceeds_threshold(
 ) -> None:
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
-        json.dumps({"quality": {"null_offset_alert": True, "null_offset_rate": 0.25}}),
+        json.dumps(
+            {
+                "label_rules_version": "v1",
+                "clip_position": "end",
+                "quality": {"null_offset_alert": True, "null_offset_rate": 0.25},
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(cli_mod, "build_labeled_dataset", lambda *_a, **_kw: manifest)
@@ -128,6 +134,7 @@ def test_build_dataset_prints_alert_when_null_offset_rate_exceeds_threshold(
 
     assert result.exit_code == ExitCode.SUCCESS
     assert "ALERT: more than 20% of clips lack a VOD offset" in _plain(result.output)
+    assert "Label rules v1: viewer-clip positions read as clip ends" in _plain(result.output)
     assert str(manifest) in _plain(result.output)
 
 

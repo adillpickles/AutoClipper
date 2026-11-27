@@ -548,6 +548,33 @@ def test_moments_only_results_respect_the_candidate_limit(
     assert [candidate.rank for candidate in result.candidates] == list(range(1, MAX_CANDIDATES + 1))
 
 
+def test_viewer_clip_candidates_cover_the_stretch_each_clip_ends_at(
+    tmp_path: Path, chat_binary: Path, lexicon: Lexicon
+) -> None:
+    """Helix's vod_offset is a clip's end (#126): 100 s / 30 s is [70, 100], 10 s / 30 s [0, 10]."""
+    records = [clip_record(1, VOD_CREATED), clip_record(2, VOD_CREATED)]
+    records[0]["vod_offset"], records[1]["vod_offset"] = 100, 10
+    result = analyze_vod(
+        VIDEO_ID,
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        tools=tools(
+            chat_binary,
+            twitch=FakeTwitch(clips=records),
+            chat=FakeChatTool(returncode=1),
+            downloader=FakeDownloader(None, RuntimeError("offline")),
+        ),
+        lexicon=lexicon,
+        clock=lambda: NOW,
+    )
+
+    assert result.scorer.name == "no_signals"
+    assert [(c.start_s, c.end_s, c.source) for c in result.candidates] == [
+        (0.0, 10.0, "viewer_clips"),
+        (70.0, 100.0, "viewer_clips"),
+    ]
+
+
 # --- The VOD itself (§ 3.5 step 1) ----------------------------------------------------------------
 
 

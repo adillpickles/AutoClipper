@@ -31,6 +31,7 @@ from autoclipper.eval.harness import (
     evaluate_files,
 )
 from autoclipper.ffmpeg import FFmpegError
+from autoclipper.labels.annotations import LABEL_RULES_VERSION
 from autoclipper.labels.dataset import build_dataset as build_labeled_dataset
 from autoclipper.logging import configure_logging
 from autoclipper.synthetic import (
@@ -189,6 +190,12 @@ def build_dataset(
     snapshot: Annotated[
         list[str] | None, typer.Option(help="Pinned snapshot ID; repeat to select several.")
     ] = None,
+    label_rules_version: Annotated[
+        str,
+        typer.Option(
+            help="Label rules: v1 reads viewer-clip positions as clip ends, v0 as clip starts."
+        ),
+    ] = LABEL_RULES_VERSION,
 ) -> None:
     """Label windows, extract features and freeze five 3/1/1 streamer folds."""
     root = data_dir if data_dir is not None else get_settings().data_dir
@@ -199,12 +206,17 @@ def build_dataset(
             seed=seed,
             lexicon_path=lexicon,
             snapshot_ids=snapshot,
+            label_rules_version=label_rules_version,
         )
     except (ValueError, OSError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
     manifest = json.loads(path.read_text(encoding="utf-8"))
     typer.echo(json.dumps(manifest["quality"], indent=2, sort_keys=True))
+    typer.echo(
+        f"Label rules {manifest['label_rules_version']}: "
+        f"viewer-clip positions read as clip {manifest['clip_position']}s"
+    )
     if manifest["quality"]["null_offset_alert"]:
         typer.echo("ALERT: more than 20% of clips lack a VOD offset", err=True)
     typer.echo(f"Saved dataset and frozen splits: {path}")

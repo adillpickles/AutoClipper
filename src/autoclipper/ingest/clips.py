@@ -106,8 +106,10 @@ class Clip:
         game_id: The category at clip time.
         language: ISO 639-1 code, or ``"other"``.
         created_at: When the clip was made (UTC).
-        vod_offset_s: Seconds from VOD start to the clip's start; None when Twitch has none
-            (VOD deleted or still processing). Such clips can't be used as labels.
+        vod_offset_s: Helix's ``vod_offset`` as reported: seconds from VOD start to where the
+            clip *ends* (exp-002, exp-003; read it through
+            `autoclipper.labels.moments.clip_interval`). None when Twitch has none (VOD
+            deleted or still processing). Such clips can't be used as labels.
         duration_s: The clip's length in seconds.
         view_count: Views at ``fetched_at``.
         is_featured: Whether the broadcaster featured the clip; None if Twitch didn't say.

@@ -7,17 +7,37 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from autoclipper.labels.moments import GAP_S, MOMENTS_SCHEMA, merge_clips_into_moments
+from autoclipper.labels.moments import (
+    CLIP_END,
+    CLIP_POSITION_RULE,
+    CLIP_START,
+    GAP_S,
+    MOMENTS_SCHEMA,
+    ClipPositionRule,
+    clip_interval,
+    merge_clips_into_moments,
+)
 from autoclipper.synthetic import generate_dataset
 
 T0 = datetime(2026, 10, 1, 18, 0, tzinfo=UTC)
 FETCHED = datetime(2026, 10, 9, 18, 0, tzinfo=UTC)
 
+Row = tuple[str, str | None, float | None, float | None]
 
-def clips_frame(
-    *rows: tuple[str, str | None, float | None, float | None], views: list[int] | None = None
-) -> pl.DataFrame:
-    """Clips as (clip_id, video_id, vod_offset_s, duration_s), created a minute apart."""
+
+def clips_frame(*rows: Row, views: list[int] | None = None) -> pl.DataFrame:
+    """Clips covering (clip_id, video_id, start_s, duration_s), created a minute apart.
+
+    ``vod_offset_s`` is written as the clip's end, as Helix reports it.
+    """
+    reported = [
+        (r[0], r[1], None if r[2] is None or r[3] is None else r[2] + r[3], r[3]) for r in rows
+    ]
+    return reported_clips(*reported, views=views)
+
+
+def reported_clips(*rows: Row, views: list[int] | None = None) -> pl.DataFrame:
+    """Clips as (clip_id, video_id, vod_offset_s, duration_s): positions as Helix reports them."""
     n = len(rows)
     return pl.DataFrame(
         {
@@ -172,7 +192,8 @@ def test_one_clip_with_two_intervals_is_an_error() -> None:
     ids=["negative_offset", "zero_duration", "nan_offset", "inf_duration", "null_duration"],
 )
 def test_impossible_clip_intervals_are_rejected(row: tuple[str, str, float, float | None]) -> None:
-    clips = clips_frame(("x", "v", 0.0, 30.0), row, ("z", "v", 20.0, 30.0))
+    # Reported positions: a negative offset is a clip ending before the VOD starts.
+    clips = reported_clips(("x", "v", 30.0, 30.0), row, ("z", "v", 50.0, 30.0))
 
     with pytest.raises(ValueError, match=r"clip\(s\) have a vod_offset_s"):
         merge_clips_into_moments(clips)
@@ -245,3 +266,56 @@ def test_synthetic_dataset_gives_one_moment_per_clipped_highlight(tmp_path: Path
                 moment = own.filter(pl.col("clip_ids").list.contains(event["clip_ids"][0]))
                 assert moment["start_s"][0] <= event["time_s"] <= moment["end_s"][0]
     assert (result.n_without_vod_offset, result.n_without_video) == (1, 1)
+
+
+# Clip positions (#126): Helix's vod_offset is where a clip ends (exp-002, exp-003).
+
+
+def test_the_default_rule_reads_a_reported_position_as_the_clip_end() -> None:
+    assert CLIP_POSITION_RULE is CLIP_END
+    clips = reported_clips(("late", "v", 100.0, 30.0), ("early", "v", 10.0, 30.0))
+
+    intervals = clip_interval(clips).sort("clip_id").select("clip_id", "start_s", "end_s")
+
+    # 100 - 30 = 70; a clip ending at 10 s would start 20 s before the VOD, so it starts at 0.
+    assert intervals.rows() == [("early", 0.0, 10.0), ("late", 70.0, 100.0)]
+    result = merge_clips_into_moments(clips)
+    assert spans(result.moments) == [(0.0, 10.0, ["early"]), (70.0, 100.0, ["late"])]
+    assert result.moments["clip_position"].to_list() == ["end", "end"]
+
+
+def test_the_v0_rule_reads_a_reported_position_as_the_clip_start() -> None:
+    clips = reported_clips(("a", "v", 100.0, 30.0))
+
+    moments = merge_clips_into_moments(clips, rule=CLIP_START).moments
+
+    assert spans(moments) == [(100.0, 130.0, ["a"])]
+    assert moments["clip_position"].to_list() == ["start"]
+
+
+def test_moments_take_clip_positions_only_from_the_rule() -> None:
+    # A rule no real reading would use: if merging did its own vod_offset_s arithmetic, the
+    # moment would not be where this rule puts the clip.
+    fake = ClipPositionRule(
+        "fake", start=lambda offset, duration: offset * 2, end=lambda offset, duration: offset * 3
+    )
+    clips = reported_clips(("a", "v", 100.0, 30.0))
+
+    moments = merge_clips_into_moments(clips, rule=fake).moments
+
+    assert spans(moments) == [(200.0, 300.0, ["a"])]
+    assert moments["clip_position"].to_list() == ["fake"]
+
+
+def test_a_clip_ending_at_the_vod_start_is_skipped_and_counted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clips = reported_clips(("zero", "v", 0.0, 30.0), ("a", "v", 100.0, 30.0))
+
+    result = merge_clips_into_moments(clips)
+
+    assert result.moments["clip_ids"].to_list() == [["a"]]
+    assert result.n_empty == 1
+    assert "empty interval" in caplog.text
+    # Read as a start, the same clip covers [0, 30): nothing is skipped.
+    assert merge_clips_into_moments(clips, rule=CLIP_START).n_empty == 0
