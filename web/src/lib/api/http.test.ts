@@ -130,6 +130,28 @@ describe("HTTP API client", () => {
     );
   });
 
+  it("reads settings with GET and saves them with PUT /settings", async () => {
+    const saved = { output_folder: "D:/Clips", last_copy: null };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => jsonResponse(saved));
+    const client = createHttpClient("http://127.0.0.1:8000", fetchMock);
+
+    expect(await client.getSettings()).toEqual(saved);
+    expect(await client.updateSettings({ output_folder: "D:/Clips" })).toEqual(
+      saved,
+    );
+
+    const [[getUrl, getInit], [putUrl, putInit]] = fetchMock.mock.calls;
+    expect(getUrl).toBe("http://127.0.0.1:8000/api/v1/settings");
+    expect(getInit?.method ?? "GET").toBe("GET");
+    expect(putUrl).toBe("http://127.0.0.1:8000/api/v1/settings");
+    expect(putInit?.method).toBe("PUT");
+    expect(JSON.parse(String(putInit?.body))).toEqual({
+      output_folder: "D:/Clips",
+    });
+  });
+
   it("hits every GET endpoint with URL-encoded IDs", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

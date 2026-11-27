@@ -14,10 +14,10 @@ from typing import Final
 
 from fastapi import APIRouter, Request, Response
 
+from autoclipper.api.origins import OriginCheck, origin_forbidden
 from autoclipper.config import Settings, get_settings
 from autoclipper.schemas import (
     ApiError,
-    ErrorResponse,
     ToolSetupItem,
     ToolSetupName,
     ToolSetupRequest,
@@ -419,21 +419,6 @@ def _json_response(model: ToolSetupStatus, status_code: int) -> Response:
     )
 
 
-def _origin_forbidden() -> Response:
-    body = ErrorResponse(
-        error=ApiError(
-            code="origin_not_allowed",
-            message="Tool setup requests from this browser origin are not allowed.",
-        )
-    )
-    return Response(
-        content=body.model_dump_json(),
-        status_code=403,
-        media_type=_JSON_TYPE,
-        headers=_NO_STORE,
-    )
-
-
 def create_tools_router(
     manager: ToolSetupManager,
     *,
@@ -446,7 +431,7 @@ def create_tools_router(
     ``Origin`` header is not in the allowlist (preventing unpreflighted cross-origin POSTs from
     triggering downloads). Requests without an ``Origin`` header (CLI/local tools) are allowed.
     """
-    normalized_origins = frozenset(o.strip().rstrip("/").lower() for o in allowed_origins if o)
+    origins = OriginCheck(allowed_origins)
     router = APIRouter(prefix=prefix)
 
     @router.get("/tools/setup", response_model=ToolSetupStatus)
@@ -458,13 +443,8 @@ def create_tools_router(
         http_request: Request,
         request: ToolSetupRequest | None = None,
     ) -> Response:
-        origin = http_request.headers.get("origin")
-        if (
-            origin is not None
-            and normalized_origins
-            and origin.strip().rstrip("/").lower() not in normalized_origins
-        ):
-            return _origin_forbidden()
+        if not origins.allows(http_request):
+            return origin_forbidden("Tool setup requests from this browser origin are not allowed.")
         status, started = manager.start(request)
         return _json_response(status, 202 if started else 200)
 

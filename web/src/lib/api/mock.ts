@@ -883,6 +883,19 @@ export function createMockClient(
       };
     },
 
+    async getSettings() {
+      return { output_folder: null, last_copy: null };
+    },
+
+    async updateSettings() {
+      // The in-browser mock has no files to copy.
+      throw new ApiRequestError(409, {
+        code: "settings_backend_required",
+        message: "Connect to the local backend to choose an output folder.",
+        details: null,
+      });
+    },
+
     async startToolSetup() {
       const ts = iso(now());
       return {

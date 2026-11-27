@@ -1367,3 +1367,27 @@ def test_out_of_order_finish_preserves_first_finished_filename_across_restart(
             "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55_2.mp4"
             in file_resp.headers["content-disposition"]
         )
+
+
+def test_settings_persist_and_older_stores_gain_the_settings_table(tmp_path: Path) -> None:
+    path = tmp_path / "library.db"
+    store = JobStore(path)
+    store.close()
+    with sqlite3.connect(path) as conn:  # a store from before settings existed
+        conn.execute("DROP TABLE settings")
+        conn.execute("PRAGMA user_version = 2")
+
+    store = JobStore(path)
+    assert store.get_setting("output_folder") is None
+    store.set_setting("output_folder", "D:/Clips")
+    store.set_setting("output_folder", "E:/Clips")  # replaced, not duplicated
+    store.close()
+
+    reopened = JobStore(path)
+    assert reopened.get_setting("output_folder") == "E:/Clips"
+    with reopened._conn:  # an unreadable value is ignored, not fatal
+        reopened._conn.execute("UPDATE settings SET value = '{' WHERE key = 'output_folder'")
+    assert reopened.get_setting("output_folder") is None
+    reopened.set_setting("output_folder", None)
+    assert reopened.get_setting("output_folder") is None
+    reopened.close()

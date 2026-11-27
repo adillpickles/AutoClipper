@@ -283,6 +283,25 @@ export interface ArchiveStatus {
   download_url: string | null;
 }
 
+// App settings (§ 9.9): where finished renders are also copied.
+export interface OutputCopy {
+  render_id: string;
+  kind: "export" | "highlights";
+  state: "copied" | "failed";
+  filename: string | null;
+  message: string | null;
+  finished_at: string;
+}
+
+export interface AppSettings {
+  output_folder: string | null;
+  last_copy: OutputCopy | null;
+}
+
+export interface UpdateSettingsRequest {
+  output_folder: string | null;
+}
+
 export interface Health {
   status: "ok";
   schema_version: string;

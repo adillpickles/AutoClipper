@@ -8,6 +8,7 @@ import { createMockClient } from "@/lib/api/mock";
 import type {
   AnalysisResult,
   ArchiveKind,
+  AppSettings,
   CandidateMedia,
   ChannelVodsResponse,
   CreateExportRequest,
@@ -27,6 +28,7 @@ import type {
   ToolSetupStatus,
   UploadVideoOptions,
   VideoUpload,
+  UpdateSettingsRequest,
 } from "@/lib/api/types";
 
 export interface ApiClient {
@@ -40,6 +42,10 @@ export interface ApiClient {
   startToolSetup(
     request?: ToolSetupRequest,
   ): Promise<{ setup: ToolSetupStatus; started: boolean }>;
+  /** `GET /settings`: the output folder and the latest copy into it (§ 9.9). */
+  getSettings(): Promise<AppSettings>;
+  /** `PUT /settings`: set or clear the output folder (422 `invalid_output_folder`). */
+  updateSettings(request: UpdateSettingsRequest): Promise<AppSettings>;
   /** `GET /channels/vods`: resolve a channel URL or login and list recent archive VODs (§ 9.7). */
   getChannelVods(channel: string, limit?: number): Promise<ChannelVodsResponse>;
   /** `GET /jobs`: list persisted analysis jobs newest first (§ 3.7). */

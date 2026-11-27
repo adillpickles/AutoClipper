@@ -83,6 +83,11 @@ from autoclipper.export.highlights import (
 from autoclipper.export.highlights import (
     Stage as HighlightsStage,
 )
+from autoclipper.export.output_folder import (
+    OutputFolderError,
+    copy_into_folder,
+    validate_output_folder,
+)
 from autoclipper.export.reframe import StackedLayout, stacked_layout_from_region
 from autoclipper.export.seek import (
     covered_span,
@@ -116,6 +121,7 @@ from autoclipper.ingest.media import (
 from autoclipper.ingest.vod import IngestTools
 from autoclipper.schemas import (
     ApiError,
+    AppSettings,
     ArchiveKind,
     ArchiveOmission,
     CandidateMedia,
@@ -131,9 +137,11 @@ from autoclipper.schemas import (
     JobListResponse,
     JobRenderSummary,
     JobSummary,
+    OutputCopy,
     PreviewMedia,
     Progress,
     State,
+    UpdateSettingsRequest,
     VideoUpload,
     parse_vod,
 )
@@ -157,6 +165,13 @@ _OMISSION_TEXT: Final[dict[str, str]] = {
     "failed": "render failed",
     "file_missing": "file no longer on disk",
 }
+_OUTPUT_FOLDER_KEY: Final = "output_folder"
+_COPY_FOLDER_GONE: Final = (
+    "The output folder is missing. Reconnect its drive or choose another folder in Settings."
+)
+_COPY_FAILED: Final = (
+    "Couldn't copy this file into the output folder. Check that the drive has free space."
+)
 _PREPARING_MESSAGE: Final = "Fetching the video for this moment…"
 _PREPARING_LOCAL_MESSAGE: Final = "Preparing the video for playback…"
 _FETCH_FAILED_PREVIEW: Final = (
@@ -694,6 +709,11 @@ class MockService:
     _analysis_queue: "queue.Queue[str | None]" = field(default_factory=queue.Queue, init=False)
     _render_queue: "queue.Queue[str | None]" = field(default_factory=queue.Queue, init=False)
     _fetch_queue: "queue.Queue[_FetchWork | None]" = field(default_factory=queue.Queue, init=False)
+    _copy_queue: "queue.Queue[tuple[str, Path] | None]" = field(
+        default_factory=queue.Queue, init=False
+    )
+    _output_folder: Path | None = field(default=None, init=False)
+    _last_copy: OutputCopy | None = field(default=None, init=False)
     _threads: list[threading.Thread] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
@@ -720,6 +740,9 @@ class MockService:
         )
         self._store = JobStore(db_path)
         self._load_persisted()
+        saved_folder = self._store.get_setting(_OUTPUT_FOLDER_KEY)
+        # Not re-validated here: a folder on an unplugged drive stays set, and copies report it.
+        self._output_folder = Path(saved_folder) if isinstance(saved_folder, str) else None
         self._preview_media_id = new_id("med")
         self._media[self._preview_media_id] = self.samples.preview
         if self.synchronous:
@@ -728,6 +751,8 @@ class MockService:
             ("analysis", self._run_jobs),
             ("render", self._run_renders),
             ("fetch", self._run_fetches),
+            # Copies get their own worker so a long copy never holds up the next render.
+            ("copy", self._run_copies),
         )
         for name, target in workers:
             thread = threading.Thread(target=target, name=f"autoclipper-{name}", daemon=True)
@@ -835,7 +860,8 @@ class MockService:
     def close(self) -> None:
         """Stop the workers: queued work is dropped, the work in hand finishes."""
         if not self.synchronous:
-            for work in (self._analysis_queue, self._render_queue, self._fetch_queue):
+            queues = (self._analysis_queue, self._render_queue, self._fetch_queue, self._copy_queue)
+            for work in queues:
                 while True:  # queued work is dropped; on next startup it becomes interrupted
                     try:
                         work.get_nowait()
@@ -954,6 +980,36 @@ class MockService:
         if job.upload_id is not None:
             return self._resolve_upload_path(job.upload_id)
         return None
+
+    # --- Settings ------------------------------------------------------------------------------
+
+    def get_settings(self) -> AppSettings:
+        """The app settings (§ 9.9)."""
+        with self._lock:
+            folder = self._output_folder
+            return AppSettings(
+                output_folder=str(folder) if folder is not None else None,
+                last_copy=self._last_copy,
+            )
+
+    def update_settings(self, request: UpdateSettingsRequest) -> AppSettings:
+        """Set or clear the output folder (`422 invalid_output_folder` if it can't be used)."""
+        raw = (request.output_folder or "").strip()
+        folder: Path | None = None
+        if raw:
+            try:
+                folder = validate_output_folder(raw)
+            except OutputFolderError as exc:
+                # The message names no path (§ 1); the log keeps it for the user's own diagnosis.
+                log.info("rejected output folder %r: %s", raw, exc.reason)
+                raise ApiException(
+                    422, "invalid_output_folder", exc.message, {"reason": exc.reason}
+                ) from exc
+        with self._lock:
+            self._store.set_setting(_OUTPUT_FOLDER_KEY, str(folder) if folder else None)
+            self._output_folder = folder
+        log.info("output folder %s", f"set to {folder}" if folder else "cleared")
+        return self.get_settings()
 
     # --- Jobs ----------------------------------------------------------------------------------
 
@@ -2317,6 +2373,43 @@ class MockService:
         while (render_id := self._render_queue.get()) is not None:
             self._run_render_safely(render_id)
 
+    def _run_copies(self) -> None:
+        while (item := self._copy_queue.get()) is not None:
+            self._run_copy_safely(item)
+
+    def _run_copy_safely(self, item: tuple[str, Path]) -> None:
+        """Copy a finished render into the output folder it finished under; never raises."""
+        render_id, folder = item
+        with self._lock:
+            record = self._renders.get(render_id)
+            if record is None or record.state != "done" or record.file is None:
+                return  # deleted with its job before the copy started
+            source, kind = record.file, record.kind
+            filename = self._render_filename(record)
+        copied: Path | None = None
+        message: str | None = None
+        try:
+            copied = copy_into_folder(source, folder, filename)
+            log.info("copied render id=%s to %s", render_id, copied)
+        except OutputFolderError as exc:
+            log.warning("couldn't copy render id=%s into %s: %s", render_id, folder, exc.reason)
+            message = _COPY_FOLDER_GONE if exc.reason == "not_creatable" else exc.message
+        except OSError as exc:
+            log.warning("couldn't copy render id=%s into %s: %s", render_id, folder, exc)
+            message = _COPY_FAILED
+        except Exception:  # a bug: report it, keep the worker alive
+            log.exception("copying render id=%s failed", render_id)
+            message = _COPY_FAILED
+        with self._lock:
+            self._last_copy = OutputCopy(
+                render_id=render_id,
+                kind=kind,
+                state="copied" if copied is not None else "failed",
+                filename=copied.name if copied is not None else None,
+                message=message,
+                finished_at=self.clock(),
+            )
+
     def _run_fetches(self) -> None:
         while (item := self._fetch_queue.get()) is not None:
             self._run_fetch_item_safely(item)
@@ -3114,6 +3207,7 @@ class MockService:
         error: ApiError | None = None,
         duration_s: float | None = None,
     ) -> None:
+        copy_to: Path | None = None
         with self._lock:
             if record.render_id not in self._renders:
                 return
@@ -3136,6 +3230,10 @@ class MockService:
                     log.exception("couldn't persist failed render state id=%s", record.render_id)
                 else:
                     raise
+            if error is None and file is not None:
+                copy_to = self._output_folder
+        if copy_to is not None:
+            self._enqueue(self._copy_queue, (record.render_id, copy_to), self._run_copy_safely)
 
     def _run_export(self, record: _RenderRecord) -> None:
         """Render one export for real (§ 6.3): obtain the media, transcribe, render."""
