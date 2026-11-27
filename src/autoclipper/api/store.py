@@ -33,7 +33,7 @@ from autoclipper.schemas import (
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION: Final = 1
+SCHEMA_VERSION: Final = 2
 DEFAULT_DB_NAME: Final = "library.db"
 DEFAULT_MOCK_DB_NAME: Final = "library-mock.db"
 _VALID_STATES: Final = frozenset({"queued", "running", "done", "failed"})
@@ -84,6 +84,7 @@ _RENDERS_COLUMNS: Final = frozenset(
         "progress_json",
         "error_json",
         "file_path",
+        "filename",
         "duration_s",
         "created_at",
         "started_at",
@@ -130,6 +131,7 @@ CREATE TABLE IF NOT EXISTS renders (
     progress_json TEXT,
     error_json TEXT,
     file_path TEXT,
+    filename TEXT,
     duration_s REAL,
     created_at TEXT NOT NULL,
     started_at TEXT,
@@ -204,6 +206,7 @@ class StoredRenderRecord:
     started_at: datetime | None
     updated_at: datetime
     finished_at: datetime | None
+    filename: str | None = None
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -352,6 +355,17 @@ class JobStore:
                 conn.executescript(_DDL)
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 conn.commit()
+            elif user_version == 1:
+                existing_tables = {
+                    str(row[0])
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                }
+                if "renders" in existing_tables:
+                    cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(renders)")}
+                    if "filename" not in cols:
+                        conn.execute("ALTER TABLE renders ADD COLUMN filename TEXT")
+                    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                    conn.commit()
             elif user_version != SCHEMA_VERSION:
                 raise _CorruptStoreError(f"unsupported job store schema version {user_version}")
             self._verify_tables(conn)
@@ -509,6 +523,7 @@ class JobStore:
             progress_json,
             error_json,
             _encode_path(record.file),
+            record.filename,
             record.duration_s,
             _iso(record.created_at),
             _iso(record.started_at),
@@ -520,9 +535,9 @@ class JobStore:
                 """
                 INSERT INTO renders (
                     render_id, job_id, kind, video_id, captions, request_json, segments_json,
-                    sort_order, state, progress_json, error_json, file_path, duration_s,
+                    sort_order, state, progress_json, error_json, file_path, filename, duration_s,
                     created_at, started_at, updated_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(render_id) DO UPDATE SET
                     job_id = excluded.job_id,
                     kind = excluded.kind,
@@ -535,6 +550,7 @@ class JobStore:
                     progress_json = excluded.progress_json,
                     error_json = excluded.error_json,
                     file_path = excluded.file_path,
+                    filename = excluded.filename,
                     duration_s = excluded.duration_s,
                     created_at = excluded.created_at,
                     started_at = excluded.started_at,
@@ -661,4 +677,5 @@ def _row_to_render(row: sqlite3.Row, base_dir: Path) -> StoredRenderRecord:
         started_at=_parse_opt_dt(row["started_at"]),
         updated_at=_parse_dt(row["updated_at"]),
         finished_at=_parse_opt_dt(row["finished_at"]),
+        filename=_parse_opt_str(row["filename"], "filename"),
     )

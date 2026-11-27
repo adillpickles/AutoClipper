@@ -326,6 +326,7 @@ class Export(_Response):
     progress: Progress | None
     error: ApiError | None
     download_url: str | None
+    filename: str | None = None
     created_at: UtcDatetime
     started_at: UtcDatetime | None
     updated_at: UtcDatetime
@@ -376,6 +377,7 @@ class HighlightsVideo(_Response):
     progress: Progress | None
     error: ApiError | None
     download_url: str | None
+    filename: str | None = None
     duration_s: float | None
     created_at: UtcDatetime
     started_at: UtcDatetime | None

@@ -63,6 +63,12 @@ from autoclipper.export.cut import (
 )
 from autoclipper.export.encode import EncodeSettings, encode_timeout_s
 from autoclipper.export.errors import ExportError
+from autoclipper.export.filenames import (
+    build_clip_filename,
+    build_highlights_filename,
+    collision_key,
+    deduplicate_filename,
+)
 from autoclipper.export.highlights import (
     HighlightsRequest,
     HighlightsResult,
@@ -414,8 +420,9 @@ class _RenderRecord:
     error: ApiError | None = None
     file: Path | None = None
     duration_s: float | None = None
+    filename: str | None = None
 
-    def export_model(self) -> Export:
+    def export_model(self, *, filename: str | None = None) -> Export:
         assert self.request is not None
         return Export(
             export_id=self.render_id,
@@ -432,13 +439,14 @@ class _RenderRecord:
             download_url=(
                 f"/api/v1/exports/{self.render_id}/file" if self.state == "done" else None
             ),
+            filename=filename if self.state == "done" else None,
             created_at=self.times.created_at,
             started_at=self.times.started_at,
             updated_at=self.times.updated_at,
             finished_at=self.times.finished_at,
         )
 
-    def highlights_model(self) -> HighlightsVideo:
+    def highlights_model(self, *, filename: str | None = None) -> HighlightsVideo:
         done = self.state == "done"
         return HighlightsVideo(
             highlights_id=self.render_id,
@@ -451,6 +459,7 @@ class _RenderRecord:
             progress=self.progress,
             error=self.error,
             download_url=f"/api/v1/highlights/{self.render_id}/file" if done else None,
+            filename=filename if done else None,
             duration_s=self.duration_s if done else None,
             created_at=self.times.created_at,
             started_at=self.times.started_at,
@@ -501,6 +510,7 @@ class _RenderRecord:
             started_at=self.times.started_at,
             updated_at=self.times.updated_at,
             finished_at=self.times.finished_at,
+            filename=self.filename,
         )
 
 
@@ -752,6 +762,7 @@ class MockService:
                 error=stored_render.error,
                 file=stored_render.file,
                 duration_s=stored_render.duration_s,
+                filename=stored_render.filename,
             )
             if render.state in ("queued", "running"):
                 render.state = "failed"
@@ -1242,18 +1253,16 @@ class MockService:
     def get_export(self, export_id: str) -> Export:
         """The export (`404 export_not_found` if unknown)."""
         with self._lock:
-            return self._render(export_id, "export").export_model()
+            record = self._render(export_id, "export")
+            filename = self._render_filename(record) if record.state == "done" else None
+            return record.export_model(filename=filename)
 
     def export_file(self, export_id: str) -> tuple[Path, str]:
         """The finished export's file and suggested download name."""
         with self._lock:
             record = self._render(export_id, "export")
             path = self._finished_file(record)
-            assert record.request is not None
-            name = (
-                f"autoclipper_{record.video_id}_{record.request.start_s}-{record.request.end_s}.mp4"
-            )
-            return path, name
+            return path, self._render_filename(record)
 
     # --- Highlights ----------------------------------------------------------------------------
 
@@ -1345,13 +1354,94 @@ class MockService:
     def get_highlights(self, highlights_id: str) -> HighlightsVideo:
         """The highlights video (`404 highlights_not_found` if unknown)."""
         with self._lock:
-            return self._render(highlights_id, "highlights").highlights_model()
+            record = self._render(highlights_id, "highlights")
+            filename = self._render_filename(record) if record.state == "done" else None
+            return record.highlights_model(filename=filename)
 
     def highlights_file(self, highlights_id: str) -> tuple[Path, str]:
         """The finished highlights file and suggested download name."""
         with self._lock:
             record = self._render(highlights_id, "highlights")
-            return self._finished_file(record), f"autoclipper_{record.video_id}_highlights.mp4"
+            return self._finished_file(record), self._render_filename(record)
+
+    def _try_job_result(self, job: _JobRecord | None) -> AnalysisResult | None:
+        if job is None:
+            return None
+        if job.result is not None:
+            return job.result
+        if job.result_path is not None:
+            job.result = read_result_json(job.result_path)
+            return job.result
+        return None
+
+    def _base_render_filename(
+        self,
+        render: _RenderRecord,
+        *,
+        channel: str | None,
+        created_at: datetime | None,
+        candidates: Mapping[str, Candidate],
+    ) -> str:
+        if render.kind == "export":
+            req = render.request
+            cand = candidates.get(req.candidate_id) if req is not None else None
+            return build_clip_filename(
+                channel=channel,
+                created_at=created_at,
+                title=cand.title if cand is not None else None,
+                rank=cand.rank if cand is not None else None,
+                start_s=req.start_s if req is not None else 0.0,
+                fallback_id=render.video_id,
+            )
+        return build_highlights_filename(
+            channel=channel,
+            created_at=created_at,
+            fallback_id=render.video_id,
+        )
+
+    def _assign_render_filename(self, record: _RenderRecord) -> str:
+        """Assign and return a stable, unique filename for `record` (call with `_lock` held)."""
+        if record.filename is not None:
+            return record.filename
+        job = self._jobs.get(record.job_id)
+        result = self._try_job_result(job)
+        channel = (
+            result.vod.broadcaster_display_name
+            if result is not None
+            else (job.broadcaster_display_name if job is not None else None)
+        )
+        created_at = (
+            result.vod.created_at
+            if result is not None
+            else (job.times.created_at if job is not None else record.times.created_at)
+        )
+        candidates = {c.candidate_id: c for c in result.candidates} if result is not None else {}
+        used: set[str] = {
+            collision_key(peer.filename)
+            for peer in self._renders.values()
+            if peer.job_id == record.job_id
+            and peer.kind == record.kind
+            and peer.render_id != record.render_id
+            and peer.state == "done"
+            and peer.filename is not None
+        }
+        base = self._base_render_filename(
+            record, channel=channel, created_at=created_at, candidates=candidates
+        )
+        assigned = deduplicate_filename(base, used)
+        record.filename = assigned
+        return assigned
+
+    def _render_filename(self, record: _RenderRecord) -> str:
+        """Return the assigned filename for `record`, lazily assigning legacy rows without one."""
+        if record.filename is not None:
+            return record.filename
+        filename = self._assign_render_filename(record)
+        try:
+            self._persist_render(record)
+        except (sqlite3.Error, OSError):
+            log.exception("couldn't persist download filename id=%s", record.render_id)
+        return filename
 
     # --- Lookups (call with the lock held) -----------------------------------------------------
 
@@ -2731,6 +2821,7 @@ class MockService:
             record.error = error
             if error is None:
                 record.progress = None
+                self._assign_render_filename(record)
                 # Published with the state, so a status read never sees done with the
                 # planned duration still in place (§ 7.2; the highlights probed it).
                 if duration_s is not None:
