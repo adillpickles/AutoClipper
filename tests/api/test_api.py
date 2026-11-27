@@ -3893,3 +3893,46 @@ def test_segment_preview_preserves_forward_jump_timeline_and_probed_coverage(
     preview.write_bytes(served.content)
     assert 140 < _frame_mean_gray(preview, 16.0, tmp_path) < 180
     assert _audio_slice_dominant_hz(preview, 15.5, 1.0, tmp_path)[0] == pytest.approx(880, abs=20)
+
+
+@pytest.mark.ffmpeg
+def test_segment_preview_that_misses_the_candidate_says_so_and_keeps_export(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+) -> None:
+    """A downloaded segment whose measured coverage ends before the candidate reports
+    `fetch_failed` with the "doesn't cover" message (not "couldn't be prepared"), and export
+    stays available (#176)."""
+    source = _make_forward_jump_ts(tmp_path, audio_codec="aac")  # 17 s of media
+    base = _scenario_result("9000000001")
+    result = base.model_copy(
+        update={
+            "vod": base.vod.model_copy(update={"duration_s": 100.0}),
+            "candidates": (base.candidates[0].model_copy(update={"start_s": 28.0, "end_s": 29.0}),),
+        }
+    )
+
+    def ts_fetcher(video_id: str, begin_s: float, end_s: float, /) -> VideoSegment:
+        del video_id, begin_s, end_s
+        # The segment claims 10-40 s of VOD time, but the file's media ends at about 27 s.
+        return VideoSegment(source, 10.0, 40.0)
+
+    probe_runner = PipelineProbe(result)
+    client, service = make_client(
+        job_runner="pipeline",
+        data_dir=tmp_path / "data",
+        artifacts_dir=tmp_path / "artifacts",
+        lexicon=load_lexicon(LEXICON_PATH),
+        tools_for=IngestTools,
+        analyze=probe_runner,
+        segment_fetcher=ts_fetcher,
+    )
+    probe_runner.service = service
+    job = done_job(client)
+
+    media = client.get(f"{API}/jobs/{job['job_id']}/candidates/c001/media").json()
+    assert media["preview"]["status"] == "unavailable"
+    assert media["preview"]["reason"] == "fetch_failed"
+    assert "doesn't cover this whole moment" in media["preview"]["message"]
+    assert "couldn't be prepared" not in media["preview"]["message"]
+    assert media["export"]["status"] == "available"
