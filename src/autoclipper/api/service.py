@@ -47,6 +47,7 @@ from autoclipper.api.store import (
     read_result_json,
     write_result_json,
 )
+from autoclipper.export.archive import ArchiveMember, ArchivePlan
 from autoclipper.export.captions import CaptioningError, Stage, Transcriber, captions_available
 from autoclipper.export.clip import (
     MAX_CLIP_DURATION_S,
@@ -65,6 +66,7 @@ from autoclipper.export.cut import (
 from autoclipper.export.encode import EncodeSettings, encode_timeout_s
 from autoclipper.export.errors import ExportError
 from autoclipper.export.filenames import (
+    build_archive_filename,
     build_clip_filename,
     build_highlights_filename,
     collision_key,
@@ -112,6 +114,8 @@ from autoclipper.ingest.media import (
 from autoclipper.ingest.vod import IngestTools
 from autoclipper.schemas import (
     ApiError,
+    ArchiveKind,
+    ArchiveOmission,
     CandidateMedia,
     CreateExportRequest,
     CreateHighlightsRequest,
@@ -143,6 +147,13 @@ MAX_HIGHLIGHTS_DURATION_S: Final = 900.0  # § 7.1
 SEGMENT_MARGIN_S: Final = 30.0
 # Same one-output-frame slack that `render_clip` and `render_highlights` allow at segment ends.
 _RENDER_END_TOLERANCE_S: Final = 1.0 / EncodeSettings().frame_rate
+# How ``missing.txt`` in a ZIP download describes each omission reason.
+_OMISSION_TEXT: Final[dict[str, str]] = {
+    "queued": "waiting to render",
+    "running": "still rendering",
+    "failed": "render failed",
+    "file_missing": "file no longer on disk",
+}
 _PREPARING_MESSAGE: Final = "Fetching the video for this moment…"
 _PREPARING_LOCAL_MESSAGE: Final = "Preparing the video for playback…"
 _FETCH_FAILED_PREVIEW: Final = (
@@ -1425,6 +1436,83 @@ class MockService:
             record = self._render(highlights_id, "highlights")
             return self._finished_file(record), self._render_filename(record)
 
+    def export_archive(self, job_id: str, kind: ArchiveKind) -> ArchivePlan:
+        """Snapshot the job's finished files for a ZIP download (§ 7.6).
+
+        Clips take each candidate's newest export, the one the results screen shows; an older
+        trim of the same moment is left out. Highlights take every reel requested for the job.
+        Renders that aren't finished or whose file is gone are listed as omitted.
+        """
+        with self._lock:
+            job = self._job(job_id)
+            channel, created_at, candidates = self._naming_context(job, job.times.created_at)
+            render_kind = "export" if kind == "clips" else "highlights"
+            records = [
+                r for r in self._renders.values() if r.job_id == job_id and r.kind == render_kind
+            ]
+            if kind == "clips":
+                newest: dict[str, _RenderRecord] = {}
+                for record in records:  # insertion order breaks timestamp ties
+                    assert record.request is not None
+                    current = newest.get(record.request.candidate_id)
+                    if current is None or record.times.created_at >= current.times.created_at:
+                        newest[record.request.candidate_id] = record
+                rank_of = {cid: c.rank for cid, c in candidates.items()}
+                records = sorted(
+                    newest.values(),
+                    key=lambda r: rank_of.get(r.request.candidate_id, 1 << 30) if r.request else 0,
+                )
+            else:
+                records.sort(key=lambda r: r.times.created_at)
+
+            members: list[ArchiveMember] = []
+            omitted: list[ArchiveOmission] = []
+            notes: list[str] = []
+            for record in records:
+                candidate_id = record.request.candidate_id if record.request else None
+                candidate = candidates.get(candidate_id) if candidate_id else None
+                rank = candidate.rank if candidate is not None else None
+                label = (
+                    f"Clip {rank}"
+                    if rank is not None
+                    else (f"Clip {candidate_id}" if candidate_id else "Highlights reel")
+                )
+                note = f"{label} ({record.render_id}): {{}}"
+                if record.state == "done" and record.file is not None and record.file.is_file():
+                    filename = self._render_filename(record)
+                    members.append(
+                        ArchiveMember(
+                            record.file, filename, note.format(_OMISSION_TEXT["file_missing"])
+                        )
+                    )
+                    continue
+                reason = "file_missing" if record.state == "done" else record.state
+                omitted.append(
+                    ArchiveOmission(
+                        render_id=record.render_id,
+                        candidate_id=candidate_id,
+                        rank=rank,
+                        reason=reason,
+                    )
+                )
+                notes.append(note.format(_OMISSION_TEXT[reason]))
+            filename = build_archive_filename(
+                channel=channel, created_at=created_at, fallback_id=job.video_id, kind=kind
+            )
+            return ArchivePlan(filename, tuple(members), tuple(omitted), tuple(notes))
+
+    def _naming_context(
+        self, job: _JobRecord | None, fallback_created_at: datetime
+    ) -> tuple[str | None, datetime, dict[str, Candidate]]:
+        """Channel, VOD date and candidates used to name a job's downloads (lock held)."""
+        result = self._try_job_result(job)
+        if result is not None:
+            candidates = {c.candidate_id: c for c in result.candidates}
+            return result.vod.broadcaster_display_name, result.vod.created_at, candidates
+        if job is not None:
+            return job.broadcaster_display_name, job.times.created_at, {}
+        return None, fallback_created_at, {}
+
     def _try_job_result(self, job: _JobRecord | None) -> AnalysisResult | None:
         if job is None:
             return None
@@ -1464,19 +1552,9 @@ class MockService:
         """Assign and return a stable, unique filename for `record` (call with `_lock` held)."""
         if record.filename is not None:
             return record.filename
-        job = self._jobs.get(record.job_id)
-        result = self._try_job_result(job)
-        channel = (
-            result.vod.broadcaster_display_name
-            if result is not None
-            else (job.broadcaster_display_name if job is not None else None)
+        channel, created_at, candidates = self._naming_context(
+            self._jobs.get(record.job_id), record.times.created_at
         )
-        created_at = (
-            result.vod.created_at
-            if result is not None
-            else (job.times.created_at if job is not None else record.times.created_at)
-        )
-        candidates = {c.candidate_id: c for c in result.candidates} if result is not None else {}
         used: set[str] = {
             collision_key(peer.filename)
             for peer in self._renders.values()

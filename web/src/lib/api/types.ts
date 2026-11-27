@@ -3,7 +3,6 @@
 // strings (`*_at`), IDs strings. Every field is always present; optional values are `null`.
 
 export type State = "queued" | "running" | "done" | "failed";
-
 export interface ApiError {
   code: string; // open enum
   message: string;
@@ -245,6 +244,24 @@ export interface HighlightsVideo {
   started_at: string | null;
   updated_at: string;
   finished_at: string | null;
+}
+
+// A job's ZIP download (§ 7.6): what it would contain right now.
+export type ArchiveKind = "clips" | "highlights";
+
+export interface ArchiveOmission {
+  render_id: string;
+  candidate_id: string | null;
+  rank: number | null;
+  reason: "queued" | "running" | "failed" | "file_missing";
+}
+
+export interface ArchiveStatus {
+  kind: ArchiveKind;
+  ready_count: number;
+  omitted: ArchiveOmission[];
+  filename: string;
+  download_url: string | null;
 }
 
 export interface Health {

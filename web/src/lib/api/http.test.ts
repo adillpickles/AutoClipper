@@ -141,6 +141,8 @@ describe("HTTP API client", () => {
     await client.getCandidateMedia("job_1", "c001");
     await client.getExport("exp_1");
     await client.getHighlights("hl_1");
+    await client.getArchiveStatus("job 1", "clips");
+    await client.getArchiveStatus("job_1", "highlights");
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "http://127.0.0.1:8000/api/v1/jobs/job_1",
@@ -148,6 +150,8 @@ describe("HTTP API client", () => {
       "http://127.0.0.1:8000/api/v1/jobs/job_1/candidates/c001/media",
       "http://127.0.0.1:8000/api/v1/exports/exp_1",
       "http://127.0.0.1:8000/api/v1/highlights/hl_1",
+      "http://127.0.0.1:8000/api/v1/jobs/job%201/archives/clips",
+      "http://127.0.0.1:8000/api/v1/jobs/job_1/archives/highlights",
     ]);
   });
 

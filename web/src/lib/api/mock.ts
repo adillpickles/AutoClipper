@@ -1419,6 +1419,14 @@ export function createMockClient(now: () => number = Date.now): ApiClient {
       };
     },
 
+    async getArchiveStatus() {
+      throw new ApiRequestError(409, {
+        code: "archive_backend_required",
+        message: "Connect to the local backend to download ZIP archives.",
+        details: null,
+      });
+    },
+
     async getExport(exportId: string) {
       const stored = load().exports[exportId];
       if (!stored) {

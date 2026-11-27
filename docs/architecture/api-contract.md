@@ -60,8 +60,10 @@ Model names used below: `CreateJobRequest`, `Job`, `JobRenderSummary`, `JobSumma
 | `POST` | `/api/v1/highlights` | Start rendering a highlights video from chosen candidates | `201` new `HighlightsVideo`; `200` if an identical one is queued/running |
 | `GET` | `/api/v1/highlights/{highlights_id}` | Highlights video status (poll this) | `200` `HighlightsVideo` |
 | `GET` | `/api/v1/highlights/{highlights_id}/file` | Download the finished MP4 | `200` `video/mp4` |
+| `GET` | `/api/v1/jobs/{job_id}/archives/{kind}` | What the job's ZIP of finished clips (`kind=clips`) or highlights videos (`kind=highlights`) would contain (§ 7.6) | `200` `ArchiveStatus` |
+| `GET` | `/api/v1/jobs/{job_id}/archives/{kind}/file` | Download that ZIP, streamed (§ 7.6), reached only through `ArchiveStatus.download_url` | `200` `application/zip` |
 
-Clients never build media or file URLs; they use `PreviewMedia.url`, `Export.download_url` and `HighlightsVideo.download_url` as returned (§ 1). Errors for every endpoint are in § 8. There is no cancel endpoint in v1 (§ 9.3).
+Clients never build media or file URLs; they use `PreviewMedia.url`, `Export.download_url`, `HighlightsVideo.download_url` and `ArchiveStatus.download_url` as returned (§ 1). Errors for every endpoint are in § 8. There is no cancel endpoint in v1 (§ 9.3).
 
 ## 3. Jobs
 
@@ -1069,6 +1071,26 @@ HTTP errors for highlights:
 { "error": { "code": "highlights_not_done", "message": "This highlights video hasn't finished yet.", "details": { "state": "running" } } }
 ```
 
+### 7.6 ZIP downloads
+
+A job's finished renders download as one ZIP per kind: `clips` (vertical exports) or `highlights` (highlights videos). The client first asks what the ZIP would contain, shows what's left out, then follows `download_url` with a plain link.
+
+`GET /api/v1/jobs/{job_id}/archives/{kind}` returns `200` `ArchiveStatus` (`Cache-Control: no-store`):
+
+| Field | Type | Notes |
+|---|---|---|
+| `kind` | `"clips"` \| `"highlights"` | As requested |
+| `ready_count` | int | Finished files the ZIP would contain |
+| `omitted` | list of `ArchiveOmission` | Requested renders left out, in the ZIP's order |
+| `filename` | str | The ZIP's download name: `<channel>_<YYYY-MM-DD>_clips.zip` or `<channel>_<YYYY-MM-DD>_highlights.zip` |
+| `download_url` | str \| null | `null` when `ready_count` is 0 |
+
+`ArchiveOmission` is `{ "render_id", "candidate_id" (null for highlights), "rank" (null for highlights or a candidate no longer in the result), "reason" }`, with `reason` one of `queued`, `running`, `failed` or `file_missing` (`done`, but the MP4 is no longer on disk).
+
+Which renders count: for `clips`, each candidate's **newest** export (the one the results screen shows), so an earlier trim of the same moment is neither included nor listed; members are in rank order. For `highlights`, every highlights video requested for the job, oldest first.
+
+`GET /api/v1/jobs/{job_id}/archives/{kind}/file` returns `200` `application/zip` with `Content-Disposition: attachment` (`filename` above) and `Cache-Control: no-store`. The server takes a fresh snapshot, so a render that finished since the status call is included. Each MP4 is stored uncompressed (`ZIP_STORED`) under its own download name (§ 6.4, § 7.4) and streamed in bounded chunks: no archive is built in memory or on disk, and there is no `Content-Length`. Members carry ZIP64 records only when a file needs them. When anything is left out, including a file removed while the ZIP is streaming, the ZIP ends with `missing.txt` listing each omission, e.g. `Clip 3 (exp_…): render failed`. Errors: `404 job_not_found`, `409 archive_empty` (nothing finished), `422 invalid_request` (unknown `kind`).
+
 ## 8. Errors
 
 Every non-2xx response has the same body, `ErrorResponse`, except `Range` errors on the file routes (§ 5.1). `Job.error`, `Export.error` and `HighlightsVideo.error` use the same inner `ApiError`.
@@ -1094,7 +1116,7 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 | HTTP | `code` | Returned by | `details` |
 |---|---|---|---|
 | 404 | `not_found` | Unknown path | `null` |
-| 404 | `job_not_found` | `/jobs/{job_id}…`, `POST /exports`, `POST /highlights` | `null` |
+| 404 | `job_not_found` | `/jobs/{job_id}…` (including ZIP downloads), `POST /exports`, `POST /highlights` | `null` |
 | 404 | `result_file_missing` | `/jobs/{job_id}/result`, media, `POST /exports`, `POST /highlights` (saved result JSON removed from disk) | `null` |
 | 404 | `candidate_not_found` | Media endpoint, `POST /exports`, `POST /highlights` | `null` |
 | 404 | `export_not_found` | `/exports/{export_id}…` | `null` |
@@ -1108,6 +1130,7 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 | 409 | `job_in_progress` | `DELETE /jobs/{job_id}` (job or one of its renders is `queued` or `running`) | `null` |
 | 409 | `export_not_done` | Export file | `{ "state": "<export state>" }` |
 | 409 | `highlights_not_done` | Highlights file | `{ "state": "<highlights state>" }` |
+| 409 | `archive_empty` | ZIP download file (§ 7.6): no requested render has a finished file | `null` |
 | 409 | `media_unavailable` | `POST /exports`, `POST /highlights` | `{ "reason": "<MediaUnavailableReason>" }` |
 | 422 | `invalid_request` | Any body or query: malformed JSON, missing or unknown field, wrong type, invalid or unavailable enum value | `{ "fields": ["<field>", …] }` |
 | 422 | `invalid_channel` | `GET /channels/vods` | `null` |
@@ -1385,7 +1408,7 @@ Mock channel scenarios for `GET /api/v1/channels/vods` (in `--jobs mock` mode, n
 | `no_credentials` | `503 twitch_credentials_missing` |
 | `twitch_error` | `502 upstream_unavailable` |
 
-Each mock job should take a few seconds so `queued` and `running` are visible, and report `scorer.kind: "mock"`. The mock applies the normal `video_path` check (`422 invalid_video_path`), never reports `video_mismatch`, and always serves its own sample video. Exports are rendered for real (#32): the request validates exactly as in § 6, and the shared render worker cuts the requested interval from the job's `video_path`, or from the sample preview video when the job has none, with the export pipeline (exact interval, layout, captions if asked) and reports the § 6.3 stages. Highlights videos are rendered for real too (#72): a request validates exactly as in § 7, and the same worker joins the resolved segments from the job's `video_path`, or the sample preview video, with the highlights pipeline (exact cuts, the source's own framing at 1920×1080, fades, captions if asked) and reports the § 7.3 stages. So every scenario with candidates and available export can make a clip and a highlights video. The mock lists `configured_region` only when `AUTOCLIPPER_EXPORT_REGION` is set (§ 5); its examples above show a server with a region configured.
+Each mock job should take a few seconds so `queued` and `running` are visible, and report `scorer.kind: "mock"`. The mock applies the normal `video_path` check (`422 invalid_video_path`), never reports `video_mismatch`, and always serves its own sample video. Exports are rendered for real (#32): the request validates exactly as in § 6, and the shared render worker cuts the requested interval from the job's `video_path`, or from the sample preview video when the job has none, with the export pipeline (exact interval, layout, captions if asked) and reports the § 6.3 stages. Highlights videos are rendered for real too (#72): a request validates exactly as in § 7, and the same worker joins the resolved segments from the job's `video_path`, or the sample preview video, with the highlights pipeline (exact cuts, the source's own framing at 1920×1080, fades, captions if asked) and reports the § 7.3 stages. So every scenario with candidates and available export can make a clip and a highlights video. The mock lists `configured_region` only when `AUTOCLIPPER_EXPORT_REGION` is set (§ 5); its examples above show a server with a region configured. ZIP downloads (§ 7.6) work the same against the mock backend; the in-browser fixture mode has no files to zip, so its client answers `getArchiveStatus` with an `archive_backend_required` error that asks the user to connect the local backend.
 
 **Fixture mode.** The frontend can also run without any backend, from static JSON fixtures (#29–#31). Fixtures follow the examples in this document and the scenarios above. Parity with the mock backend means the same shapes, states, codes and business values (`video_id`, `vod`, candidate fields and order, warnings, failure codes, availability and bounds). It does not cover volatile values, which differ per run and must never be hard-coded or compared: `job_id`, `export_id`, `highlights_id`, `media_id` and every URL containing them, the server-clock timestamps (`created_at`, `started_at`, `updated_at` and `finished_at` on jobs, exports and highlights videos, and `generated_at`; `vod.created_at` is a business value), and progress timing. A fixture's `PreviewMedia.url` is any root-relative URL the frontend's dev setup serves a locally generated, git-ignored MP4 from (or the mock backend's media route when it's running); media files are never committed. The table above and the examples it points to fix the business values of each scenario's job, result and media, with one exception: the `warnings` of `9000000005`'s failed job. So fixtures written by hand before #28 exists already match the mock. For that exception, and anything else this page leaves open, the mock's response is canonical: until #28 exists a fixture may use any value the field tables and § 4.5 allow, and it's updated to match the mock afterward.
 

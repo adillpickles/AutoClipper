@@ -9,11 +9,12 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Annotated, Final
+from urllib.parse import quote
 
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -22,9 +23,12 @@ from autoclipper.api.channels import HelixFactory, register_channel_routes
 from autoclipper.api.service import ApiException, MockService
 from autoclipper.api.tools import ToolSetupManager, create_tools_router
 from autoclipper.config import get_settings
+from autoclipper.export.archive import stream_archive
 from autoclipper.preflight import run_preflight
 from autoclipper.schemas import (
     ApiError,
+    ArchiveKind,
+    ArchiveStatus,
     CandidateMedia,
     CreateExportRequest,
     CreateHighlightsRequest,
@@ -72,6 +76,14 @@ class _DeleteJobQuery(BaseModel):
 def _error(status: int, error: ApiError, headers: dict[str, str] | None = None) -> JSONResponse:
     body = ErrorResponse(error=error).model_dump(mode="json")
     return JSONResponse(body, status_code=status, headers=headers, media_type=_JSON_TYPE)
+
+
+def _attachment(filename: str) -> str:
+    """A ``Content-Disposition`` value in the same form FileResponse uses for downloads."""
+    quoted = quote(filename)
+    if quoted != filename:
+        return f"attachment; filename*=utf-8''{quoted}"
+    return f'attachment; filename="{filename}"'
 
 
 def _json(model: BaseModel, status: int = 200, headers: dict[str, str] | None = None) -> Response:
@@ -255,6 +267,38 @@ def create_app(
     @app.get(f"{API_PREFIX}/jobs/{{job_id}}/result", response_model=AnalysisResult)
     def get_result(job_id: str) -> Response:
         return _json(service.get_result(job_id))
+
+    @app.get(f"{API_PREFIX}/jobs/{{job_id}}/archives/{{kind}}", response_model=ArchiveStatus)
+    def get_archive(job_id: str, kind: ArchiveKind) -> Response:
+        plan = service.export_archive(job_id, kind)
+        status = ArchiveStatus(
+            kind=kind,
+            ready_count=len(plan.members),
+            omitted=plan.omitted,
+            filename=plan.filename,
+            download_url=(
+                f"{API_PREFIX}/jobs/{quote(job_id, safe='')}/archives/{kind}/file"
+                if plan.members
+                else None
+            ),
+        )
+        return _json(status, headers=_NO_STORE)
+
+    @app.get(f"{API_PREFIX}/jobs/{{job_id}}/archives/{{kind}}/file")
+    def archive_file(job_id: str, kind: ArchiveKind) -> StreamingResponse:
+        plan = service.export_archive(job_id, kind)
+        if not plan.members:
+            raise ApiException(
+                409,
+                "archive_empty",
+                "None of these renders have finished yet, so there's nothing to download.",
+            )
+        # A sync iterator: Starlette pulls each chunk in its thread pool, off the event loop.
+        return StreamingResponse(
+            stream_archive(plan),
+            media_type="application/zip",
+            headers={"Content-Disposition": _attachment(plan.filename), **_NO_STORE},
+        )
 
     @app.get(
         f"{API_PREFIX}/jobs/{{job_id}}/candidates/{{candidate_id}}/media",

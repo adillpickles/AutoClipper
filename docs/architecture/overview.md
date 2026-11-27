@@ -140,7 +140,7 @@ One pipeline runs these steps for the CLI and the API: `autoclipper.export.clip.
 
 The preview worker uses the same FFmpeg timeline options as exports. It serves compatible MP4s directly, remuxes compatible streams from other containers and encodes only streams that need conversion. Header and tail-packet probes check the prepared file's usable coverage before the API offers it for a candidate.
 
-Clip exports and highlights videos share one render queue (one render at a time). Rendered files stay in `artifacts/` until the user deletes them; the server never deletes them on its own.
+Clip exports and highlights videos share one render queue (one render at a time). Rendered files stay in `artifacts/` until the user deletes them; the server never deletes them on its own. A job's finished clips or highlights videos also download as one ZIP (`autoclipper.export.archive`, API contract § 7.6): members are stored uncompressed under their download names and streamed in fixed-size chunks from the request's thread pool, so neither the event loop nor the render worker waits on it, and a `missing.txt` lists renders that weren't ready.
 
 Analytical results stay usable when video is unavailable: permanent source unavailability (VOD deleted, subscriber-only, missing local file) disables both preview and export with an actionable explanation, while transient download or preview-preparation failures (`fetch_failed`) report the failure on preview without caching it permanently so later preview requests and exports can retry. Never claim an export succeeded or invent replacement media.
 
@@ -148,7 +148,7 @@ Analytical results stay usable when video is unavailable: permanent source unava
 
 - **CLI** (`autoclipper …`) is the primary interface for development and data work. Planned subcommands: `ingest`, `build-dataset`, `features`, `train`, `evaluate`, `analyze`, `export`, `highlights`, `serve`.
 - **Web API** (FastAPI, [web stack](../decisions/0007-web-application-stack.md)), versioned under `/api/v1` and started by `autoclipper serve` on localhost: jobs, results, per-candidate media, clip exports and the highlights video, as specified in the [API contract](api-contract.md). Analysis jobs run the real pipeline by default (`--jobs pipeline`); `--jobs mock` keeps the built-in scenarios for frontend work, and the health endpoint says which is running. Long-running work runs in an in-process background worker with bounded concurrency and explicit failure states; that's enough for a local single-user app.
-- **Web app** (Next.js + TypeScript + Tailwind): start → progress → ranked clip cards → preview and trim → download, plus "Make highlights video" (the moments picker with trims, order and captions, then progress and download; #72). Built early against mock data; preview plays local files.
+- **Web app** (Next.js + TypeScript + Tailwind): start → progress → ranked clip cards → preview and trim → download (one clip, or all finished clips or highlights videos as a ZIP), plus "Make highlights video" (the moments picker with trims, order and captions, then progress and download; #72). Built early against mock data; preview plays local files.
 - **Distribution** (stretch, #70): a project website with a packaged app download, and a link to a hosted app if deployed. Local execution is the first supported setup; hosting can extend it as needed.
 
 ## 5. Storage layout

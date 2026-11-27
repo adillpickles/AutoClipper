@@ -1,10 +1,12 @@
 """Tests for the mock backend against docs/architecture/api-contract.md (FastAPI test client)."""
 
+import io
 import itertools
 import json
 import shutil
 import threading
 import time
+import zipfile
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -12,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -1294,6 +1297,167 @@ def test_a_highlights_video_of_a_job_without_its_local_file_is_rejected(
 
 
 # --- CORS --------------------------------------------------------------------------------------
+
+
+# --- ZIP downloads (§ 7.6) ---------------------------------------------------------------------
+
+
+class FailUncaptionedRenderer(FakeRenderer):
+    """Renders captioned clips and fails uncaptioned ones, so one job has both outcomes."""
+
+    def __call__(
+        self,
+        spec: ClipSpec,
+        /,
+        *,
+        region: tuple[float, float, float, float] | None,
+        transcriber: Transcriber | None,
+        on_stage: Callable[[Stage], None],
+    ) -> object:
+        if not spec.captions:
+            raise ExportError("bad layout")
+        return super().__call__(spec, region=region, transcriber=transcriber, on_stage=on_stage)
+
+
+def open_zip(response: httpx2.Response) -> zipfile.ZipFile:
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["cache-control"] == "no-store"
+    return zipfile.ZipFile(io.BytesIO(response.content))
+
+
+def test_a_clips_zip_has_each_moments_newest_finished_export_and_lists_the_rest(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    client, _ = make_client(render=FailUncaptionedRenderer())
+    job_id = done_job(client)["job_id"]
+
+    def export(**changes: object) -> str:
+        response = client.post(f"{API}/exports", json=export_body(job_id, **changes))
+        return response.json()["export_id"]
+
+    export(start_s=115.2)  # c001's first trim, superseded by the next one
+    newest_c001 = export(start_s=116.0)
+    c002 = export(candidate_id="c002", start_s=251.5, end_s=276.5)
+    failed_c003 = export(candidate_id="c003", start_s=40.0, end_s=62.0, captions=False)
+    for export_id in (newest_c001, c002):
+        assert client.get(f"{API}/exports/{export_id}").json()["state"] == "done"
+    (tmp_path / "artifacts" / "exports" / f"{c002}.mp4").unlink()  # cleaned up by the user
+
+    status = client.get(f"{API}/jobs/{job_id}/archives/clips")
+
+    assert status.status_code == 200
+    assert status.headers["cache-control"] == "no-store"
+    assert status.json() == {
+        "kind": "clips",
+        "ready_count": 1,
+        "omitted": [
+            {"render_id": c002, "candidate_id": "c002", "rank": 2, "reason": "file_missing"},
+            {"render_id": failed_c003, "candidate_id": "c003", "rank": 3, "reason": "failed"},
+        ],
+        "filename": "user_001_2026-10-12_clips.zip",
+        "download_url": f"{API}/jobs/{job_id}/archives/clips/file",
+    }
+
+    response = client.get(status.json()["download_url"])
+
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="user_001_2026-10-12_clips.zip"'
+    )
+    newest_name = client.get(f"{API}/exports/{newest_c001}").json()["filename"]
+    with open_zip(response) as archive:
+        assert archive.testzip() is None
+        assert archive.namelist() == [newest_name, "missing.txt"]
+        assert archive.getinfo(newest_name).compress_type == zipfile.ZIP_STORED
+        assert archive.read(newest_name) == b"rendered clip"
+        missing = archive.read("missing.txt").decode()
+    assert f"Clip 2 ({c002}): file no longer on disk" in missing
+    assert f"Clip 3 ({failed_c003}): render failed" in missing
+
+
+def test_a_highlights_zip_has_every_finished_reel_under_its_download_name(
+    client: TestClient,
+) -> None:
+    job_id = done_job(client)["job_id"]
+    ids = [
+        client.post(f"{API}/highlights", json={"job_id": job_id, "count": count}).json()[
+            "highlights_id"
+        ]
+        for count in (2, 3)
+    ]
+    names = [client.get(f"{API}/highlights/{i}").json()["filename"] for i in ids]
+    assert names == ["user_001_2026-10-12_highlights.mp4", "user_001_2026-10-12_highlights_2.mp4"]
+
+    status = client.get(f"{API}/jobs/{job_id}/archives/highlights").json()
+    response = client.get(status["download_url"])
+
+    assert (status["ready_count"], status["omitted"]) == (2, [])
+    assert status["filename"] == "user_001_2026-10-12_highlights.zip"
+    with open_zip(response) as archive:
+        assert archive.namelist() == names  # no missing.txt when nothing was left out
+        assert {archive.read(name) for name in names} == {b"rendered highlights"}
+
+
+def test_an_archive_with_nothing_finished_has_no_download(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    client, _ = make_client(render=FakeRenderer(ExportError("bad layout")))
+    job_id = done_job(client)["job_id"]
+    failed = client.post(f"{API}/exports", json=export_body(job_id)).json()["export_id"]
+
+    clips = client.get(f"{API}/jobs/{job_id}/archives/clips").json()
+    highlights = client.get(f"{API}/jobs/{job_id}/archives/highlights").json()
+    file = client.get(f"{API}/jobs/{job_id}/archives/clips/file")
+
+    assert (clips["ready_count"], clips["download_url"]) == (0, None)
+    assert clips["omitted"] == [
+        {"render_id": failed, "candidate_id": "c001", "rank": 1, "reason": "failed"}
+    ]
+    assert (highlights["ready_count"], highlights["omitted"]) == (0, [])
+    assert highlights["download_url"] is None
+    assert (file.status_code, error_code(file)) == (409, "archive_empty")
+
+
+def test_archive_errors(client: TestClient) -> None:
+    job_id = done_job(client)["job_id"]
+
+    unknown_job = client.get(f"{API}/jobs/job_0000000000000000/archives/clips")
+    unknown_kind = client.get(f"{API}/jobs/{job_id}/archives/everything")
+
+    assert (unknown_job.status_code, error_code(unknown_job)) == (404, "job_not_found")
+    assert (unknown_kind.status_code, error_code(unknown_kind)) == (422, "invalid_request")
+
+
+@pytest.mark.ffmpeg
+def test_a_zip_of_real_renders_holds_playable_mp4s(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    samples = ensure_sample_media(tmp_path / "media", preview_duration_s=6.0)
+    client, _ = make_client(
+        samples=samples, render=_real_render(), highlights_render=render_highlights
+    )
+    job_id = done_job(client)["job_id"]
+    for candidate_id, start_s in (("c001", 1.0), ("c002", 3.0)):
+        body = export_body(
+            job_id, candidate_id=candidate_id, start_s=start_s, end_s=start_s + 2.0, captions=False
+        )
+        assert client.post(f"{API}/exports", json=body).status_code == 201
+    segments = [
+        {"candidate_id": "c001", "start_s": 0.5, "end_s": 2.0},
+        {"candidate_id": "c002", "start_s": 3.0, "end_s": 4.5},
+    ]
+    highlights = client.post(f"{API}/highlights", json={"job_id": job_id, "segments": segments})
+    assert highlights.status_code == 201
+
+    for kind, count, size in (("clips", 2, (1080, 1920)), ("highlights", 1, (1920, 1080))):
+        status = client.get(f"{API}/jobs/{job_id}/archives/{kind}").json()
+        assert (status["ready_count"], status["omitted"]) == (count, [])
+        with open_zip(client.get(status["download_url"])) as archive:
+            assert len(archive.infolist()) == count
+            for info in archive.infolist():
+                assert info.compress_type == zipfile.ZIP_STORED
+                video = probe(Path(archive.extract(info, tmp_path / kind))).video_streams[0]
+                assert (video.width, video.height) == size
 
 
 def test_cors_allows_the_local_frontend_only(client: TestClient) -> None:
