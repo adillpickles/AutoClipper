@@ -777,6 +777,8 @@ class MockService:
                 if loaded is not None:
                     record.result = loaded
             self._jobs[record.job_id] = record
+            if record.upload_id is not None:
+                self._resolve_upload_path(record.upload_id)  # warm the cache before workers start
 
         for stored_render in renders:
             if stored_render.job_id not in self._jobs:
@@ -895,16 +897,11 @@ class MockService:
             duration_s=duration_s,
         )
 
-    def _resolve_upload_path_locked(self, upload_id: str) -> Path | None:
-        """Resolve an opaque `upload_id` to its stored file path (call with `self._lock` held)."""
+    def _read_upload_path(self, upload_id: str) -> Path | None:
+        """Read an upload's sidecar and return its stored file, or None (no lock held)."""
         if not UPLOAD_ID_PATTERN.fullmatch(upload_id):
             return None
-        cached = self._uploads.get(upload_id)
-        if cached is not None:
-            return cached if cached.is_file() else None
         meta_path = self.uploads_dir / f"{upload_id}.json"
-        if not meta_path.is_file():
-            return None
         try:
             data: object = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -921,13 +918,22 @@ class MockService:
         candidate = (self.uploads_dir / stored_name).resolve()
         if not _is_within(candidate, self.uploads_dir) or not candidate.is_file():
             return None
-        self._uploads[upload_id] = candidate
         return candidate
 
     def _resolve_upload_path(self, upload_id: str) -> Path | None:
-        """Resolve an opaque `upload_id` to its stored file path, or None if missing/invalid."""
+        """Resolve an opaque `upload_id` to its stored file path, or None if missing/invalid.
+
+        The sidecar is read outside `self._lock`; only the cache lookup and update hold it.
+        """
         with self._lock:
-            return self._resolve_upload_path_locked(upload_id)
+            cached = self._uploads.get(upload_id)
+        if cached is None:
+            cached = self._read_upload_path(upload_id)
+            if cached is None:
+                return None
+            with self._lock:
+                cached = self._uploads.setdefault(upload_id, cached)
+        return cached if cached.is_file() else None
 
     def _has_local_source(self, job: _JobRecord) -> bool:
         return job.video_path is not None or job.upload_id is not None
@@ -936,7 +942,10 @@ class MockService:
         if job.video_path is not None:
             return Path(job.video_path)
         if job.upload_id is not None:
-            return self._resolve_upload_path_locked(job.upload_id)
+            # Cache only: uploads are cached when registered, attached (`create_job`) or loaded
+            # at startup, so callers holding the lock never read sidecars. Callers check the
+            # file still exists.
+            return self._uploads.get(job.upload_id)
         return None
 
     def _source_video_path(self, job: _JobRecord) -> Path | None:
