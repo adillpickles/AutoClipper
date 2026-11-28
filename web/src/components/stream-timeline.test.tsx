@@ -621,6 +621,55 @@ describe("StreamTimeline", () => {
     );
   });
 
+  it("draws no activity curve or legend entries when the result has none", () => {
+    renderTimeline();
+
+    expect(screen.queryByTestId("activity-curve")).toBeNull();
+    expect(screen.queryByTestId("activity-summary")).toBeNull();
+    const legend = screen.getByRole("list", { name: "Timeline legend" });
+    expect(legend.textContent).not.toContain("Chat rate");
+    expect(legend.textContent).not.toContain("Loudness");
+  });
+
+  it("draws measured chat and loudness behind the spans, with gaps", () => {
+    const chat = Array.from({ length: 36 }, (_, i) => (i === 12 ? 8 : 1));
+    const loudness: (number | null)[] = Array.from({ length: 36 }, () => -30);
+    loudness[20] = null; // a muted stretch
+    loudness[21] = null;
+    renderTimeline({ activity: { step_s: 10, chat, loudness } });
+
+    const curve = screen.getByTestId("activity-curve");
+    expect(curve.getAttribute("aria-hidden")).toBe("true");
+    expect(curve.querySelectorAll('[data-activity="chat"]')).toHaveLength(1);
+    // The gap splits the loudness line in two.
+    expect(curve.querySelectorAll('[data-activity="loudness"]')).toHaveLength(
+      2,
+    );
+    const legend = screen.getByRole("list", { name: "Timeline legend" });
+    expect(legend.textContent).toContain("Chat rate");
+    expect(legend.textContent).toContain("Loudness");
+    expect(screen.getByTestId("activity-summary").textContent).toContain(
+      "chat is busiest around 2:05, at 8.0 messages a second",
+    );
+  });
+
+  it("draws only the family that arrived", () => {
+    renderTimeline({
+      activity: { step_s: 10, chat: null, loudness: Array(36).fill(-25) },
+    });
+
+    const curve = screen.getByTestId("activity-curve");
+    expect(curve.querySelectorAll('[data-activity="chat"]')).toHaveLength(0);
+    expect(curve.querySelectorAll('[data-activity="loudness"]')).toHaveLength(
+      1,
+    );
+    const legend = screen.getByRole("list", { name: "Timeline legend" });
+    expect(legend.textContent).not.toContain("Chat rate");
+    expect(screen.getByTestId("activity-summary").textContent).toContain(
+      "No chat was measured.",
+    );
+  });
+
   it("renders an empty state when there are no candidates", () => {
     renderTimeline({ candidates: [], selectedId: null, videoId: "9000000006" });
 

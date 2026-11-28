@@ -154,6 +154,52 @@ class Candidate(_Model):
         return self
 
 
+MAX_ACTIVITY_POINTS: Final = 400
+"""Most points an `Activity` series may have (the pipeline writes at most 300)."""
+LOUDNESS_FLOOR_DBFS: Final = -60.0
+"""Loudness values are clamped to [-60, 0] dBFS; -60 is the features' silence level."""
+
+
+class Activity(_Model):
+    """Per-window chat and loudness, downsampled for the results timeline (§ 4.1, #213).
+
+    Point ``i`` covers ``[i * step_s, (i + 1) * step_s)`` of the VOD, the last one cut at its
+    end. ``chat`` is chat messages per second, ``loudness`` the mean frame RMS in dBFS. A family
+    that didn't arrive is ``None``; a point where nothing was measured (no window, no audio
+    frames, a Twitch-muted window) is a ``None`` entry, never 0.
+    """
+
+    step_s: FiniteFloat = Field(gt=0)
+    chat: tuple[FiniteFloat | None, ...] | None = None
+    loudness: tuple[FiniteFloat | None, ...] | None = None
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        series = [s for s in (self.chat, self.loudness) if s is not None]
+        if not series:
+            raise ValueError("activity needs chat, loudness or both")
+        lengths = {len(s) for s in series}
+        if len(lengths) != 1:
+            raise ValueError("chat and loudness must have the same length")
+        (length,) = lengths
+        if not 1 <= length <= MAX_ACTIVITY_POINTS:
+            raise ValueError(f"activity must have 1 to {MAX_ACTIVITY_POINTS} points")
+        if self.chat is not None and any(v is not None and v < 0 for v in self.chat):
+            raise ValueError("chat rates must be >= 0")
+        if self.loudness is not None and any(
+            v is not None and not LOUDNESS_FLOOR_DBFS <= v <= 0 for v in self.loudness
+        ):
+            raise ValueError(f"loudness must be within [{LOUDNESS_FLOOR_DBFS:g}, 0] dBFS")
+        return self
+
+    @property
+    def n_points(self) -> int:
+        """How many points each series has."""
+        series = self.chat if self.chat is not None else self.loudness
+        assert series is not None
+        return len(series)
+
+
 class AnalysisResult(_Model):
     """One analyzed VOD (api-contract.md § 4.1), checked against § 4.5."""
 
@@ -168,9 +214,17 @@ class AnalysisResult(_Model):
     # scored, or a file saved before they existed), so older files load unchanged.
     n_chat_messages: int | None = Field(default=None, ge=0, exclude_if=lambda v: v is None)
     n_windows: int | None = Field(default=None, ge=0, exclude_if=lambda v: v is None)
+    # Chat and loudness over the stream for the timeline (#213). Omitted when neither family
+    # arrived, or in a file saved before it existed.
+    activity: Activity | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def _check(self) -> Self:
+        if self.activity is not None:
+            # The points tile [0, duration_s]: the last one starts before the end.
+            n, step = self.activity.n_points, self.activity.step_s
+            if (n - 1) * step >= self.vod.duration_s or n * step < self.vod.duration_s - 1e-6:
+                raise ValueError("activity must have one point per step_s of the VOD")
         ids = [c.candidate_id for c in self.candidates]
         if len(set(ids)) != len(ids):
             raise ValueError("candidate_id values must be unique")

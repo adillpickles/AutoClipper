@@ -165,6 +165,17 @@ export interface Candidate {
   signal_details?: SignalDetail[];
 }
 
+/**
+ * Chat and loudness over the stream for the timeline (#213, contract § 4.1). Point `i` covers
+ * `[i * step_s, (i + 1) * step_s)`. `chat` is messages per second, `loudness` dBFS in [-60, 0].
+ * A family that didn't arrive is `null`; a `null` entry is a stretch where nothing was measured.
+ */
+export interface Activity {
+  step_s: number;
+  chat: (number | null)[] | null;
+  loudness: (number | null)[] | null;
+}
+
 export interface AnalysisResult {
   schema_version: string;
   generated_at: string;
@@ -176,6 +187,8 @@ export interface AnalysisResult {
   // Pipeline counts for the progress screen (#188); omitted when unknown.
   n_chat_messages?: number | null;
   n_windows?: number | null;
+  // Timeline activity (#213); omitted when no chat or audio arrived, and in older results.
+  activity?: Activity | null;
 }
 
 export interface PreviewMedia {

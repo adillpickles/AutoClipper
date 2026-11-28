@@ -563,6 +563,7 @@ export function ResultsScreen() {
               onSelect={selectTimelineCandidate}
               clips={clips}
               onRetry={retry}
+              activity={view.result.activity}
             />
           ) : (
             <div>

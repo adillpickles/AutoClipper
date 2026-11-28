@@ -319,6 +319,15 @@ def test_a_vod_with_zero_viewer_clips_is_not_a_warning(
     # The progress screen's counts (#188): every chat message read, every 10 s window scored.
     assert result.n_chat_messages == pl.read_parquet(chat_path(data, VIDEO_ID)).height > 0
     assert result.n_windows == 360  # a 3600 s VOD in 10 s windows
+    # The timeline's activity (#213): 3600 s fits in 300 points at 20 s.
+    activity = result.activity
+    assert activity is not None
+    assert activity.step_s == 20.0
+    assert activity.chat is not None
+    assert len(activity.chat) == 180
+    assert activity.loudness is not None
+    assert len(activity.loudness) == 180
+    assert any(v is not None and v > 0 for v in activity.chat)
 
 
 # --- Missing signals degrade the result (api-contract.md § 3.5) ---------------------------------
@@ -347,6 +356,9 @@ def test_missing_chat_warns_and_degrades_the_scorer(
     assert result.scorer.name == "loudness"  # chat_loudness without chat
     assert result.scorer.kind == "heuristic"
     assert result.candidates
+    assert result.activity is not None
+    assert result.activity.chat is None  # missing, not zeros
+    assert result.activity.loudness is not None
 
 
 def test_missing_audio_warns_and_degrades_the_scorer(
@@ -366,6 +378,9 @@ def test_missing_audio_warns_and_degrades_the_scorer(
     assert result.candidates
     assert result.n_chat_messages is not None
     assert result.n_windows == 360
+    assert result.activity is not None
+    assert result.activity.loudness is None
+    assert result.activity.chat is not None
 
 
 def test_without_any_signal_viewer_clips_rank_alone(
@@ -392,6 +407,7 @@ def test_without_any_signal_viewer_clips_rank_alone(
     # No chat was read and no window was scored, so the counts are unknown, not zero.
     assert result.n_chat_messages is None
     assert result.n_windows is None
+    assert result.activity is None
 
 
 def test_nothing_to_rank_after_transient_failures_is_upstream_unavailable(

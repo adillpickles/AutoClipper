@@ -357,6 +357,10 @@ def test_a_job_from_start_to_finish(client: TestClient) -> None:
     assert "3 viewer clips" in result["candidates"][0]["reason"]
     assert len(result["candidates"][0]["signal_details"]) >= 3
     assert result["n_viewer_clips_total"] == 4
+    # Made-up timeline activity (#213), one point per 10 s of the 360 s VOD.
+    activity = result["activity"]
+    assert activity["step_s"] == 10.0
+    assert len(activity["chat"]) == len(activity["loudness"]) == 36
 
 
 @pytest.mark.parametrize(
@@ -471,7 +475,9 @@ def test_scenario_9000000003_is_done_with_a_chat_missing_warning(client: TestCli
     assert result["warnings"] == job["warnings"]
     assert result["vod"]["duration_s"] == 300.0
     assert [c["source"] for c in result["candidates"]] == ["discovered", "viewer_clips"]
-    # Chat is missing on 9000000003, so no candidate should report chat signals.
+    # Chat is missing on 9000000003: no chat curve (null, not zeros) and no chat signals.
+    assert result["activity"]["chat"] is None
+    assert len(result["activity"]["loudness"]) == 30
     for cand in result["candidates"]:
         assert not any(sig.startswith("chat_") for sig in cand["top_signals"])
         assert not any(detail["kind"].startswith("chat_") for detail in cand["signal_details"])
