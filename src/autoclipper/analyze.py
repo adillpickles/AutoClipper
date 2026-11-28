@@ -29,7 +29,13 @@ analyze`` writes and the API will return (#45):
    `no_usable_signals`).
    With neither family and no viewer-clip moment, no scorer — ``random`` included — has
    anything to rank, and the § 3.5 precedence decides the code.
-5. **Candidates** (`generate_candidates`): ranked, merged with the snapshot's moments.
+5. **Ranking rules** (`apply_ranking_rules`, #192), for the default ``chat_loudness`` ranking
+   only (and what it degrades to): windows at the stream's start and end, with silent audio,
+   greeting/farewell waves or answer spam are down-weighted, never dropped. Each lowered
+   candidate's reason says why, and a VOD with a long silent stretch gets the
+   ``audio_partly_silent`` warning (whatever the scorer). Named baselines and trained models
+   rank unchanged.
+6. **Candidates** (`generate_candidates`): ranked, merged with the snapshot's moments.
 
 How long each stage took is logged. The result JSON is written atomically to
 ``<artifacts_dir>/analysis/<video_id>.json`` (or `out_path`), where ``autoclipper
@@ -89,6 +95,13 @@ from autoclipper.models.base import Scorer, ScorerError, load_scorer, make_score
 from autoclipper.models.baselines import ChatLoudness, ChatSpike, Loudness
 from autoclipper.models.candidates import MomentInput, generate_candidates
 from autoclipper.models.explain import candidate_stats, explain_candidates
+from autoclipper.models.ranking_rules import (
+    RankingRules,
+    RuledScores,
+    apply_ranking_rules,
+    candidate_flags,
+    silent_seconds,
+)
 from autoclipper.models.title_polish import TitlePolisherConfig, polish_titles
 
 log = logging.getLogger(__name__)
@@ -163,6 +176,7 @@ def analyze_vod(
     speech_keywords: SpeechKeywords | None = None,
     speech_transcriber: Transcriber | None = None,
     title_polisher: TitlePolisherConfig | None = None,
+    ranking_rules: RankingRules | None = None,
 ) -> AnalysisResult:
     """Run the whole pipeline for one VOD and write its ranked candidates.
 
@@ -200,6 +214,9 @@ def analyze_vod(
             (`autoclipper.models.title_polish.title_polisher_config`). None, the default, keeps
             the deterministic titles and makes no network call; when set, one request rewords
             the top titles and any failure falls back to the deterministic ones.
+        ranking_rules: The default ranking's rules (`load_ranking_rules`,
+            ``configs/ranking.yaml``); None uses the built-in defaults, which equal that file.
+            They apply when `baseline` is the default and no `model_dir` is given.
 
     Returns:
         The written `AnalysisResult`, ranked candidates first.
@@ -441,6 +458,15 @@ def analyze_vod(
     # could have run, is classified through _ScorerUnavailable below instead.)
     if chat_features is None and audio_features is None and not moments:
         raise _nothing_to_rank(catalog, video_id)
+    rules = ranking_rules if ranking_rules is not None else RankingRules()
+    use_rules = rules.enabled and model_dir is None and baseline == DEFAULT_SCORER
+    if audio_features is not None:
+        silent_s = silent_seconds(
+            audio_features.join(windows.select("window_id", "start_s", "end_s"), on="window_id"),
+            rules,
+        )
+        if silent_s >= rules.silent_warning_min_s:
+            add_warning("audio_partly_silent", _silent_message(silent_s, ranked_lower=use_rules))
     stage("ranking")
     try:
         scored = _timed(
@@ -460,6 +486,8 @@ def analyze_vod(
         raise _nothing_to_rank(catalog, video_id, exc.reason, exc.needed) from None
     features: pl.DataFrame | None = None
     audio_wav: Path | None = None
+    ruled: RuledScores | None = None
+    flags: dict[str, tuple[str, ...]] = {}
     if scored is None:  # neither signal family arrived, and moments exist
         # Viewer-clip moments alone rank, in stream order; the scorer field records that
         # no signal scored anything (a zero score everywhere would invent a peak at 0 s).
@@ -469,17 +497,23 @@ def analyze_vod(
         scores, scorer, run_id = scored
         scorer_info = ScorerInfo(kind=scorer.kind, name=scorer.name, run_id=run_id)
         features = _feature_frame(chat_features, audio_features)
+        if use_rules:
+            ruled = apply_ranking_rules(scores, features, duration_s=vod.duration_s, rules=rules)
+            scores = ruled.scores
         audio_wav = normalized_audio_path(data_dir, video_id) if audio_ok else None
+        ranked_scores = scores
         candidates = _timed(
             "candidates",
             lambda: generate_candidates(
-                scores,
+                ranked_scores,
                 duration_s=vod.duration_s,
                 features=features,
                 moments=moments,
                 audio_path=audio_wav,
             ),
         )
+        if ruled is not None:
+            flags = candidate_flags(candidates, ruled)
     if include_speech_features and candidates:
         if not audio_ok:
             add_warning(
@@ -522,6 +556,7 @@ def analyze_vod(
             features=features,
             duration_s=vod.duration_s,
             audio_path=audio_wav,
+            ranking_flags=flags,
         ),
     )
     if title_polisher is not None:
@@ -619,6 +654,17 @@ def _missing_reason(what: str, entry: CatalogEntry | None) -> str:
     return _missing_message(
         what, None if entry is None else entry.status, None if entry is None else entry.error
     )
+
+
+def _silent_message(silent_s: float, *, ranked_lower: bool) -> str:
+    """The ``audio_partly_silent`` warning: how much audio is silent, and what that changed."""
+    minutes = silent_s / 60
+    amount = f"about {minutes:.0f} minutes" if minutes >= 1.5 else f"about {silent_s:.0f} s"
+    message = (
+        f"{amount[0].upper()}{amount[1:]} of the VOD's audio is silent (often music muted out of "
+        "the VOD, or a starting screen), so audio signals are unreliable there"
+    )
+    return message + ("; moments there were ranked lower" if ranked_lower else "")
 
 
 def _missing_message(what: str, status: str | None, error: str | None) -> str:

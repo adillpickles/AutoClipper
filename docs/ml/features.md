@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Adopted. Build the **Phase 1** features first (everything in the chat, audio and context tables below); Phase 2 and 3 come after the MVP works. |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-28 |
 
 ## Naming
 
@@ -51,14 +51,21 @@ Ordinary reactions such as "clip it" remain eligible signals. Do not remove all 
 | `chat_event_count` | Subs, bits and raids announced in the window | Context; donations can trigger loud text-to-speech |
 | `chat_msg_rate_lead{1..3}` | `chat_msg_rate_z` of windows t+1…t+3 | **Offline only** (chat lag). Excluded in live experiments. |
 | `chat_msg_rate_lag{1..3}` | Same for t−1…t−3 | Build-up context |
+| `chat_greeting_rate` | Messages per second with a greeting or check-in ("hi", "hello chat", "LATE", "first", HeyGuys) | chat-v2 (#192). Participation, not a reaction: stream starts fill with these. Lexicon category `greeting` |
+| `chat_farewell_rate` | Messages per second with a goodbye ("bye", "gn", "cya", peepoBye) | chat-v2. Stream ends fill with these. Lexicon category `farewell` |
+| `chat_distinct_frac` | Distinct messages (lowercased, whitespace-collapsed) / messages in the window | chat-v2. Low = chat repeats a shared reaction; high = everyone says something different |
+| `chat_answer_frac` | Fraction of the window's messages that are **answers**: short (≤ 3 tokens, ≤ 25 characters), with a letter or digit, no native emote, no reaction/greeting/farewell/event match, and sent by nobody else in the window | chat-v2. Answer spam (chat-guessing games such as GeoGuessr) looks like hype by volume; this tells it from a shared reaction |
 
-**Implementation:** `autoclipper.features.chat.compute_chat_features(windows, messages, lexicon=...)` returns `features_chat` (one Float64 row per window, never null, plus `feature_version`, e.g. `chat-v1+lexicon-v1`). The reaction lists, event notices and clip-link patterns are in [`configs/lexicon.yaml`](../../configs/lexicon.yaml), loaded with `load_lexicon`; its `version` is part of `feature_version`. Choices the table leaves open:
+**Implementation:** `autoclipper.features.chat.compute_chat_features(windows, messages, lexicon=...)` returns `features_chat` (one Float64 row per window, never null, plus `feature_version`, now `chat-v2+lexicon-v2`). The reaction lists, event notices and clip-link patterns are in [`configs/lexicon.yaml`](../../configs/lexicon.yaml), loaded with `load_lexicon`; its `version` is part of `feature_version`. Choices the table leaves open:
 
 - A message counts in the window whose `[start_s, end_s)` holds its offset; rates divide by the window's real length (a short final window too). Messages after the last window aren't counted.
 - `chat_emote_frac` divides `n_emotes` by whitespace tokens (capped at 1); `chat_caps_frac` counts Unicode letters; `chat_repeat_frac` compares lowercased, whitespace-collapsed text with any chatter's message up to 10 s earlier, across window boundaries.
 - Lexicon `emotes` match whole tokens in exact case, optionally followed by punctuation (`W` and `W!` are hype, `w` isn't); emoji match anywhere (`😂😂😂`). `words` match in any case on word boundaries, `patterns` are regexes. A VOD with no messages in any window is logged as a warning (quiet stream or missing chat).
 - `chat_event_count` counts messages with bits plus subscription, gift and raid notices.
 - `_rz` needs at least two earlier windows of the VOD, otherwise 0. Lead/lag values past the VOD's edges are 0.
+- **chat-v2 (#192)** adds the last four rows of the table and changes no chat-v1 column: the new columns are appended to `FEATURE_COLUMNS`, so a model saved with chat-v1 features (its `features.json`) still finds every column it needs, and a dataset built with chat-v1 simply lacks the new ones. A dataset manifest lists the `feature_version`s it holds, so check it before comparing models across the bump.
+- `greeting` and `farewell` are optional lexicon categories (a lexicon without them counts 0); `chat_greeting_rate` and `chat_farewell_rate` match like the reaction categories. Whole-message check-ins ("late", "im late", "early", "first", "here") count as greetings. The answer limits (3 tokens, 25 characters) are the lexicon's optional `answers: {max_tokens, max_chars}` section, so changing them changes the lexicon `version`.
+- "Sent by nobody else in the window" compares the same normalized text as `chat_distinct_frac`. A message that is both short and a reaction ("lol") or an emote is never an answer, so a wave of laughter scores near 0 and a guessing game near 1. Ordinary busy chat on the demo VOD (2941757172) has `chat_answer_frac` around 0.4 (0.54 at the 90th percentile of windows with `chat_msg_rate_z > 2`), so on its own the column is a soft signal; the [ranking rules](modeling-plan.md#3-candidate-generation) use it only above 0.7.
 
 ## Audio features (`features_audio`)
 
@@ -73,7 +80,7 @@ Computed from 16 kHz mono audio with librosa/NumPy. Frame-level values are aggre
 | `audio_onset_rate` | Onsets per second (librosa onset detection) | Busy-ness |
 | `audio_spectral_centroid_mean` | Mean spectral centroid | Brightness (screams and laughter are brighter) |
 | `audio_zcr_mean` | Mean zero-crossing rate | Noisiness |
-| `audio_silence_frac` | Fraction of frames below an energy threshold | |
+| `audio_silence_frac` | Fraction of frames below an energy threshold | Near 1 = digital silence. Helix reports no muted segments for the pilot VODs, so music muted out of a VOD shows up only here ([pilot report § 10](../data/pilot-report.md#10-implications-for-36-and-38)); the default ranking down-weights such windows (#192) |
 | `audio_rms_rz` | `_rz` of `audio_rms_max` (vs. the last 5 minutes) | A sudden jump matters more than being loud all stream |
 | `audio_is_muted` | 1 if the window overlaps a Twitch muted segment | Audio features are unreliable when 1 |
 | `audio_rms_max_lead{1..2}` / `_lag{1..2}` | Neighbor context | |

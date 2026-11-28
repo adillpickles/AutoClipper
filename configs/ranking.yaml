@@ -1,0 +1,37 @@
+# Ranking rules for the default chat_loudness ranking (#192; docs/ml/modeling-plan.md § 3,
+# autoclipper.models.ranking_rules).
+#
+# Windows that only look busy (the stream's start and end, silent audio, greeting/farewell waves,
+# answer spam) are down-weighted, never dropped: each matching rule multiplies the window's
+# height above the VOD's median score by its factor (0.5 keeps half; two rules keep a quarter).
+# Keys left out keep the built-in defaults, which equal this file. These values are first guesses
+# from the demo VOD; tune them on dataset v1 validation (#40), never on test.
+version: 1
+
+enabled: true
+
+# The first and last few minutes ("starting soon", "hi", "LATE", "bye"). Skipped for VODs no
+# longer than intro_s + outro_s.
+intro_s: 180
+outro_s: 180
+edge_factor: 0.5
+
+# Near-digital silence: at least this share of the window's frames below -60 dBFS
+# (audio_silence_frac). Music muted out of a VOD shows up only like this.
+silence_frac_min: 0.95
+silence_factor: 0.5
+
+# Greeting/farewell waves: greetings + farewells (lexicon) are at least this share of messages.
+participation_frac_min: 0.25
+participation_factor: 0.5
+
+# Answer spam (chat-guessing games): at least this share of messages are different short
+# reaction-free answers (chat_answer_frac), in a window with at least answer_min_msg_rate msg/s.
+# Ordinary busy chat on the demo VOD sits around 0.4 (0.54 at the 90th percentile), so this is
+# deliberately well above it.
+answer_frac_min: 0.7
+answer_min_msg_rate: 1.0
+answer_factor: 0.5
+
+# The result warns (audio_partly_silent) when at least this many seconds of audio are silent.
+silent_warning_min_s: 60

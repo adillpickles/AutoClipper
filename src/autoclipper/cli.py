@@ -776,6 +776,15 @@ def analyze(
     lexicon: Annotated[Path, typer.Option(help="Versioned chat lexicon.")] = Path(
         "configs/lexicon.yaml"
     ),
+    ranking_rules: Annotated[
+        Path | None,
+        typer.Option(
+            help="Ranking rules of the default scorer: how much the stream's start and end, "
+            "silent audio, greeting waves and answer spam are down-weighted. Default: "
+            "configs/ranking.yaml, or the identical built-in rules when it isn't there.",
+            show_default=False,
+        ),
+    ] = None,
     speech_features: Annotated[
         bool,
         typer.Option(
@@ -814,6 +823,7 @@ def analyze(
     from autoclipper.ingest.twitch_api import HelixClient
     from autoclipper.ingest.vod import IngestTools
     from autoclipper.models.base import ScorerError
+    from autoclipper.models.ranking_rules import RankingRulesError, resolve_ranking_rules
     from autoclipper.models.title_polish import title_polisher_config
     from autoclipper.schemas import parse_vod
 
@@ -833,7 +843,8 @@ def analyze(
     settings = get_settings()
     try:
         lexicon_loaded = load_lexicon(lexicon)
-    except LexiconError as exc:
+        rules_loaded = resolve_ranking_rules(ranking_rules)
+    except (LexiconError, RankingRulesError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.USER_ERROR) from None
     loaded_speech_keywords: SpeechKeywords | None = None
@@ -869,6 +880,7 @@ def analyze(
             speech_model=settings.whisper_model,
             speech_keywords=loaded_speech_keywords,
             title_polisher=title_polisher_config(settings),
+            ranking_rules=rules_loaded,
         )
     except AnalyzeError as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -1121,6 +1133,14 @@ def serve(
     lexicon: Annotated[Path, typer.Option(help="Versioned chat lexicon (pipeline jobs).")] = Path(
         "configs/lexicon.yaml"
     ),
+    ranking_rules: Annotated[
+        Path | None,
+        typer.Option(
+            help="Ranking rules of the default scorer (pipeline jobs). Default: "
+            "configs/ranking.yaml, or the identical built-in rules when it isn't there.",
+            show_default=False,
+        ),
+    ] = None,
     channels: Annotated[
         Path,
         typer.Option(help="Channels YAML file with per-channel stacked_layout presets."),
@@ -1148,10 +1168,12 @@ def serve(
         from autoclipper.features.chat import LexiconError, load_lexicon
         from autoclipper.ingest.twitch_api import HelixClient
         from autoclipper.ingest.vod import IngestTools
+        from autoclipper.models.ranking_rules import RankingRulesError, resolve_ranking_rules
 
         try:
             options["lexicon"] = load_lexicon(lexicon)
-        except LexiconError as exc:
+            rules = resolve_ranking_rules(ranking_rules)
+        except (LexiconError, RankingRulesError) as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(ExitCode.USER_ERROR) from None
 
@@ -1185,15 +1207,23 @@ def serve(
             tools_for=tools_for,
             segment_fetcher=fetch_segment,
         )
+        from autoclipper.models.ranking_rules import RankingRules
         from autoclipper.models.title_polish import title_polisher_config
 
         polisher = title_polisher_config(settings)
+        # analyze_vod's own defaults are the built-in rules (equal to configs/ranking.yaml), so
+        # only a polisher or edited rules need passing.
+        keywords: dict[str, Any] = {}
         if polisher is not None:
+            keywords["title_polisher"] = polisher
+        if rules != RankingRules():
+            keywords["ranking_rules"] = rules
+        if keywords:
             import functools
 
             from autoclipper.analyze import analyze_vod
 
-            options["analyze"] = functools.partial(analyze_vod, title_polisher=polisher)
+            options["analyze"] = functools.partial(analyze_vod, **keywords)
     from autoclipper.export.reframe import load_channel_stacked_layouts
 
     service = MockService(
