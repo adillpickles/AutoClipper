@@ -509,7 +509,7 @@ def export(
             region=settings.export_region,
             facecam_region=settings.export_facecam_region,
             facecam_detector=lambda source, interval: find_facecam(source, interval, cache=cache),
-            on_warning=lambda message: typer.echo(f"Warning: {message}", err=True),
+            on_warning=lambda warning: typer.echo(f"Warning: {warning.message}", err=True),
         )
     except CaptioningError as exc:  # a missing install or a failing model: an external tool
         typer.echo(f"Error: {exc}", err=True)

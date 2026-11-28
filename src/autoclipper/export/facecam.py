@@ -104,6 +104,8 @@ _NEAR_PEAK_SHARE: Final = 0.5
 # far down it, flush with the frame edges it comes within the slack of (a corner is required).
 _PAD_BOX_FACES: Final = 3.0
 _PAD_FACE_DROP: Final = 0.45
+# The estimated box keeps at least this many face sizes around the face on the far sides.
+_PAD_FACE_MARGIN: Final = 0.5
 _PAD_CORNER_SLACK: Final = 0.12
 # Sides within this share of the frame edge are snapped to it.
 _SNAP: Final = 0.03
@@ -339,7 +341,17 @@ def locate_facecam(
     # its two inner borders. Without one each way, the box is estimated around the face.
     if "edge" not in (left.kind, right.kind) or "edge" not in (top.kind, bottom.kind):
         padded = _padded_corner_box(face, width, height)
-        if padded is None:
+        if padded == "too_large":
+            return FacecamDetection(
+                "not_found",
+                None,
+                _rounded(face),
+                n,
+                len(support),
+                "a steady face in a corner has no overlay border, and a box around it would "
+                "cover too much of the frame",
+            )
+        if padded == "not_in_corner":
             return FacecamDetection(
                 "full_camera",
                 None,
@@ -377,33 +389,45 @@ def locate_facecam(
     )
 
 
-def _padded_corner_box(face: Region, width: int, height: int) -> Region | None:
-    """A webcam-shaped box around a face near a frame corner, or None away from the corners.
+def _padded_corner_box(
+    face: Region, width: int, height: int
+) -> Region | Literal["not_in_corner", "too_large"]:
+    """A webcam-shaped box around a face near a frame corner.
 
     The box is `_PAD_BOX_FACES` face widths wide at 4:3 (in pixels), centered on the face across
     and with the face's center `_PAD_FACE_DROP` of the way down, then moved flush with the frame
     edges it comes within `_PAD_CORNER_SLACK` of. It must touch a side edge and the top or
-    bottom: borderless webcams sit in corners, and a face elsewhere is a full-screen camera.
+    bottom: borderless webcams sit in corners, and a face elsewhere is a full-screen camera
+    (``"not_in_corner"``). Moving it flush can leave a small face near the box's far side, so
+    the box then grows until the face and `_PAD_FACE_MARGIN` of it fit; a box that ends up
+    larger than `MAX_OVERLAY_AREA` is ``"too_large"``.
     """
     fx, fy, fw, fh = face
+    mx, my = _PAD_FACE_MARGIN * fw, _PAD_FACE_MARGIN * fh
     w = min(1.0, _PAD_BOX_FACES * fw)
     h = min(1.0, w * width * 3 / 4 / height)
     x = fx + fw / 2 - w / 2
     y = fy + fh / 2 - _PAD_FACE_DROP * h
     if x <= _PAD_CORNER_SLACK:
+        w = min(1.0, max(w, fx + fw + mx))
         x, horizontal = 0.0, True
     elif x + w >= 1 - _PAD_CORNER_SLACK:
+        w = min(1.0, max(w, 1.0 - (fx - mx)))
         x, horizontal = 1.0 - w, True
     else:
         horizontal = False
     if y <= _PAD_CORNER_SLACK:
+        h = min(1.0, max(h, fy + fh + my))
         y, vertical = 0.0, True
     elif y + h >= 1 - _PAD_CORNER_SLACK:
+        h = min(1.0, max(h, 1.0 - (fy - my)))
         y, vertical = 1.0 - h, True
     else:
         vertical = False
-    if not (horizontal and vertical) or w * h > MAX_OVERLAY_AREA:
-        return None
+    if not (horizontal and vertical):
+        return "not_in_corner"
+    if w * h > MAX_OVERLAY_AREA:
+        return "too_large"
     return (x, y, w, h)
 
 

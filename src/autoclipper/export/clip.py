@@ -48,6 +48,20 @@ MAX_CLIP_DURATION_S: Final = 90.0
 type FacecamDetector = Callable[[Path, Interval], FacecamDetection]
 
 
+@dataclass(frozen=True, slots=True)
+class LayoutWarning:
+    """Why a ``stacked`` export didn't use a detected facecam overlay (#191).
+
+    Attributes:
+        message: One sentence for people.
+        detection_failed: Detection raised (FFmpeg, OpenCV, the file), as opposed to finding
+            no facecam; a later identical export should try again.
+    """
+
+    message: str
+    detection_failed: bool = False
+
+
 class ClipTooLongError(ExportError):
     """The interval is longer than `MAX_CLIP_DURATION_S`."""
 
@@ -154,7 +168,7 @@ def layout_named(
 def _detected_stacked_layout(
     spec: ClipSpec,
     detector: FacecamDetector,
-    on_warning: Callable[[str], None] | None,
+    on_warning: Callable[[LayoutWarning], None] | None,
 ) -> Layout:
     """The stacked layout from facecam detection, else the fallback preset, else center crop.
 
@@ -168,10 +182,10 @@ def _detected_stacked_layout(
         NoFacecamConfiguredError: Detection is off and there is no fallback preset.
     """
 
-    def warn(message: str) -> None:
+    def warn(message: str, *, failed: bool = False) -> None:
         log.warning("stacked export source=%s: %s", spec.source, message)
         if on_warning is not None:
-            on_warning(message)
+            on_warning(LayoutWarning(message, detection_failed=failed))
 
     if not spec.detect_facecam:
         if spec.stacked_fallback is not None:
@@ -184,9 +198,9 @@ def _detected_stacked_layout(
         log.warning("facecam detection failed source=%s", spec.source, exc_info=True)
         reason = f"facecam detection failed ({type(exc).__name__}: {exc})"
         if preset is not None:
-            warn(f"{reason}; using the channel's stacked_layout preset")
+            warn(f"{reason}; using the channel's stacked_layout preset", failed=True)
             return preset
-        warn(f"{reason}; rendering center_crop instead of stacked")
+        warn(f"{reason}; rendering center_crop instead of stacked", failed=True)
         return CenterCrop()
     if detection.status == "found" and detection.region is not None:
         return _stacked_from_detection(detection.region, preset)
@@ -248,7 +262,7 @@ def render_clip(
     settings: EncodeSettings | None = None,
     runner: Runner | None = None,
     facecam_detector: FacecamDetector | None = None,
-    on_warning: Callable[[str], None] | None = None,
+    on_warning: Callable[[LayoutWarning], None] | None = None,
 ) -> ExportResult:
     """Render `spec` as a 1080x1920 H.264/AAC MP4 covering exactly its interval.
 

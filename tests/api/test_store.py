@@ -51,6 +51,7 @@ class _FakeClipRenderer:
         region: tuple[float, float, float, float] | None,
         transcriber: Transcriber | None,
         on_stage: object,
+        on_warning: object = None,
     ) -> object:
         del region, transcriber
         if callable(on_stage):

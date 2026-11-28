@@ -29,7 +29,12 @@ from autoclipper.api.app import create_app
 from autoclipper.api.service import MockService, SampleMedia, ensure_sample_media
 from autoclipper.config import TwitchCredentials
 from autoclipper.export.captions import CaptioningError, Stage, Transcriber, Word
-from autoclipper.export.clip import ClipSpec, IntervalOutsideMediaError, SourceMissingError
+from autoclipper.export.clip import (
+    ClipSpec,
+    IntervalOutsideMediaError,
+    LayoutWarning,
+    SourceMissingError,
+)
 from autoclipper.export.cut import IntervalTooShortError
 from autoclipper.export.errors import ExportError
 from autoclipper.export.highlights import (
@@ -84,6 +89,7 @@ class FakeRenderer:
         region: tuple[float, float, float, float] | None,
         transcriber: Transcriber | None,
         on_stage: Callable[[Stage], None],
+        on_warning: object = None,
     ) -> object:
         self.specs.append(spec)
         self.regions.append(region)
@@ -1122,6 +1128,23 @@ def test_an_identical_export_reuses_the_finished_render(client: TestClient, tmp_
     assert redo.json()["export_id"] not in (first.json()["export_id"], other.json()["export_id"])
 
 
+def test_an_export_whose_facecam_detection_errored_isnt_reused(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    client, _ = make_client(render=DetectionErrorRenderer())
+    job = done_job(client)
+    body = export_body(job["job_id"], layout="stacked")
+
+    first = client.post(f"{API}/exports", json=body)
+    again = client.post(f"{API}/exports", json=body)
+
+    # Detection raised rather than finding nothing, so the next request tries again (#191).
+    assert first.status_code == 201
+    assert client.get(f"{API}/exports/{first.json()['export_id']}").json()["state"] == "done"
+    assert again.status_code == 201
+    assert again.json()["export_id"] != first.json()["export_id"]
+
+
 def test_a_failed_export_is_retried_with_a_new_render(
     make_client: Callable[..., tuple[TestClient, MockService]],
 ) -> None:
@@ -1424,6 +1447,24 @@ def test_a_highlights_video_of_a_job_without_its_local_file_is_rejected(
 # --- ZIP downloads (§ 7.6) ---------------------------------------------------------------------
 
 
+class DetectionErrorRenderer(FakeRenderer):
+    """Renders, reporting that facecam detection raised (#191)."""
+
+    def __call__(
+        self,
+        spec: ClipSpec,
+        /,
+        *,
+        region: tuple[float, float, float, float] | None,
+        transcriber: Transcriber | None,
+        on_stage: Callable[[Stage], None],
+        on_warning: object = None,
+    ) -> object:
+        assert callable(on_warning)
+        on_warning(LayoutWarning("facecam detection failed", detection_failed=True))
+        return super().__call__(spec, region=region, transcriber=transcriber, on_stage=on_stage)
+
+
 class FailUncaptionedRenderer(FakeRenderer):
     """Renders captioned clips and fails uncaptioned ones, so one job has both outcomes."""
 
@@ -1435,6 +1476,7 @@ class FailUncaptionedRenderer(FakeRenderer):
         region: tuple[float, float, float, float] | None,
         transcriber: Transcriber | None,
         on_stage: Callable[[Stage], None],
+        on_warning: object = None,
     ) -> object:
         if not spec.captions:
             raise ExportError("bad layout")
@@ -3747,6 +3789,7 @@ def test_preview_invalidation_defers_while_parallel_export_uses_segment(
         region: tuple[float, float, float, float] | None,
         transcriber: Transcriber | None,
         on_stage: Callable[[Stage], None],
+        on_warning: object = None,
     ) -> object:
         entered.set()
         assert resume.wait(timeout=10.0)

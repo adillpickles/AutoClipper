@@ -15,7 +15,12 @@ from typer.testing import CliRunner
 
 from autoclipper.cli import ExitCode, app
 from autoclipper.export import clip as clip_module
-from autoclipper.export.clip import ClipSpec, NoFacecamConfiguredError, render_clip
+from autoclipper.export.clip import (
+    ClipSpec,
+    LayoutWarning,
+    NoFacecamConfiguredError,
+    render_clip,
+)
 from autoclipper.export.cut import Interval
 from autoclipper.export.encode import ExportRequest
 from autoclipper.export.facecam import (
@@ -26,6 +31,7 @@ from autoclipper.export.facecam import (
     FaceDetector,
     GrayFrame,
     Region,
+    _padded_corner_box,  # pyright: ignore[reportPrivateUsage]
     detect_facecam,
     haar_face_detector,
     locate_facecam,
@@ -201,6 +207,40 @@ def test_a_small_steady_face_in_a_corner_without_a_border_gets_a_padded_corner_b
     assert y + h >= face[1] + face[3]
 
 
+@pytest.mark.parametrize(
+    "face",
+    [
+        pytest.param((0.18, 0.80, 0.06, 0.10), id="bottom-left-far-from-the-side"),
+        pytest.param((0.15, 0.80, 0.06, 0.10), id="bottom-left"),
+        pytest.param((0.10, 0.82, 0.06, 0.10), id="bottom-left-close"),
+        pytest.param((0.80, 0.05, 0.06, 0.10), id="top-right"),
+        pytest.param((0.82, 0.12, 0.06, 0.10), id="top-right-far-from-the-top"),
+        pytest.param((0.14, 0.11, 0.06, 0.10), id="top-left"),
+        pytest.param((0.78, 0.80, 0.06, 0.10), id="bottom-right"),
+    ],
+)
+def test_a_padded_corner_box_always_holds_a_small_face_with_a_margin(face: Region) -> None:
+    box = _padded_corner_box(face, WIDTH, HEIGHT)
+
+    assert isinstance(box, tuple)
+    x, y, w, h = box
+    fx, fy, fw, fh = face
+    assert x <= fx - 0.4 * fw or x == 0.0
+    assert y <= fy - 0.4 * fh or y == 0.0
+    assert x + w >= fx + fw + 0.4 * fw or x + w == pytest.approx(1.0)
+    assert y + h >= fy + fh + 0.4 * fh or y + h == pytest.approx(1.0)
+    assert x >= 0.0
+    assert y >= 0.0
+    assert x + w <= 1.0 + 1e-9
+    assert y + h <= 1.0 + 1e-9
+
+
+def test_a_padded_box_that_would_be_too_large_is_not_found() -> None:
+    # A large face in the top-left corner needs a box over 35 % of the frame.
+    assert _padded_corner_box((0.02, 0.15, 0.2, 0.35), WIDTH, HEIGHT) == "too_large"
+    assert _padded_corner_box((0.42, 0.3, 0.12, 0.2), WIDTH, HEIGHT) == "not_in_corner"
+
+
 def test_a_steady_face_without_an_overlay_box_is_a_full_screen_camera() -> None:
     face: Region = (0.42, 0.3, 0.12, 0.2)
     frames, boxes = make_frames(cam=None, faces=[face] * 7)
@@ -368,7 +408,7 @@ def _render(
         spec,
         facecam_region=facecam_region,
         facecam_detector=detector,
-        on_warning=None if warnings is None else warnings.append,
+        on_warning=None if warnings is None else (lambda w: warnings.append(w.message)),
     )
     return rendered[-1].layout
 
@@ -511,6 +551,20 @@ def test_a_failing_detector_never_fails_the_render(
     assert "facecam detection failed" in warnings[0]
 
     assert isinstance(_render(tmp_path, rendered, _raise(error)), CenterCrop)
+
+
+def test_only_a_detection_error_is_flagged_as_failed(
+    tmp_path: Path, rendered: list[ExportRequest]
+) -> None:
+    source = tmp_path / "vod.mp4"
+    source.write_bytes(b"video")
+    spec = ClipSpec(source, Interval(0.0, 5.0), tmp_path / "out.mp4", layout="stacked")
+    seen: list[LayoutWarning] = []
+
+    render_clip(spec, facecam_detector=_raise(RuntimeError("boom")), on_warning=seen.append)
+    render_clip(spec, facecam_detector=lambda *_: _detection("not_found"), on_warning=seen.append)
+
+    assert [w.detection_failed for w in seen] == [True, False]
 
 
 def test_with_detection_off_the_preset_is_used_or_the_layout_refused(

@@ -55,6 +55,7 @@ from autoclipper.export.clip import (
     MAX_CLIP_DURATION_S,
     ClipSpec,
     IntervalOutsideMediaError,
+    LayoutWarning,
     SourceMissingError,
     available_layouts,
     render_clip,
@@ -248,6 +249,7 @@ class ClipRenderer(Protocol):
         region: tuple[float, float, float, float] | None,
         transcriber: Transcriber | None,
         on_stage: Callable[[Stage], None],
+        on_warning: Callable[[LayoutWarning], None] | None = None,
     ) -> object:
         """Write `spec.output` or raise."""
         ...
@@ -3368,12 +3370,14 @@ class MockService:
                     self._stacked_layout_for(job) if request.layout == "stacked" else None
                 ),
             )
+            warnings: list[LayoutWarning] = []
             try:
                 self.render(
                     spec,
                     region=self.export_region,
                     transcriber=self.transcriber,
                     on_stage=lambda stage: self._set_render_stage(record, stage),
+                    on_warning=warnings.append,
                 )
             except CaptioningError as exc:
                 log.warning("export captions failed id=%s: %s", record.render_id, exc)
@@ -3401,6 +3405,11 @@ class MockService:
             self._release_segment_path(leased_path)
         if not target.is_file():  # a renderer that returned without writing is a bug
             raise RuntimeError(f"the renderer wrote no file for {record.render_id}")
+        if any(warning.detection_failed for warning in warnings):
+            # Facecam detection errored, so this render isn't what an identical request would
+            # get next time; don't reuse it (#191).
+            with self._lock:
+                record.layout_key = f"{record.layout_key}:detect-error"
         self._finish_render(record, file=target)
 
 
