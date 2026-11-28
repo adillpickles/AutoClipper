@@ -537,3 +537,68 @@ def test_a_slow_server_hits_the_total_timeout_and_falls_back(
     assert elapsed < 2.5
     assert "timed out" in caplog.text
     assert "127.0.0.1" not in caplog.text
+
+
+def test_a_stalled_name_lookup_cannot_extend_the_deadline(
+    explained: tuple[list[Candidate], list[dict[str, float]]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A dead DNS server or captive portal stalls getaddrinfo, which can't be interrupted; the
+    polisher still returns at its deadline with the deterministic titles (#65 review)."""
+    import socket
+
+    real_getaddrinfo = socket.getaddrinfo
+    lookups = threading.Event()
+
+    def slow_getaddrinfo(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        lookups.set()
+        time.sleep(6.0)
+        return real_getaddrinfo(*args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", slow_getaddrinfo)
+    candidates, stats = explained
+    config = TitlePolisherConfig(
+        base_url="http://slow-dns.example.invalid/v1",
+        model="local",
+        api_key=None,
+        timeout_s=1.0,
+    )
+
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING):
+        out = polish_titles(candidates, stats, config)
+    elapsed = time.monotonic() - started
+
+    assert lookups.is_set()  # the request really was stuck resolving the host name
+    assert out == candidates
+    assert elapsed < 1.8
+    assert "timed out" in caplog.text
+    assert "slow-dns" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("base_url", "warns"),
+    [
+        ("http://llm.lan:8080/v1", True),
+        ("http://192.168.1.20:8080/v1", True),
+        ("https://llm.example.invalid/v1", False),
+        ("http://localhost:11434/v1", False),
+        ("http://127.0.0.1:8080/v1", False),
+        ("http://[::1]:8080/v1", False),
+    ],
+)
+def test_a_key_sent_over_plain_http_to_another_host_warns(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    base_url: str,
+    warns: bool,
+) -> None:
+    monkeypatch.setenv("AUTOCLIPPER_TITLE_LLM_BASE_URL", base_url)
+    monkeypatch.setenv("AUTOCLIPPER_TITLE_LLM_MODEL", "m")
+    monkeypatch.setenv("AUTOCLIPPER_TITLE_LLM_API_KEY", API_KEY)
+    with caplog.at_level(logging.WARNING):
+        assert title_polisher_config(Settings()) is not None
+    assert ("sent unencrypted" in caplog.text) is warns
+    assert API_KEY not in caplog.text
+    assert base_url not in caplog.text

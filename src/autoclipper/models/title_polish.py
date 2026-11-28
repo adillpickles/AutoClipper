@@ -23,14 +23,17 @@ or invalid item keeps that candidate's deterministic title, with a warning in th
 neither the URL nor the key.
 """
 
-import asyncio
+import ipaddress
 import json
 import logging
 import re
+import threading
+import time
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import SecretStr
@@ -93,12 +96,31 @@ def title_polisher_config(settings: Settings) -> TitlePolisherConfig | None:
             "AUTOCLIPPER_TITLE_LLM_MODEL to turn it on"
         )
         return None
+    if settings.title_llm_api_key is not None and _unencrypted_remote(base_url):
+        log.warning(
+            "title polisher: AUTOCLIPPER_TITLE_LLM_API_KEY is sent unencrypted because the base "
+            "URL uses http:// to a host other than this machine; use https://"
+        )
     return TitlePolisherConfig(
         base_url=base_url,
         model=model,
         api_key=settings.title_llm_api_key,
         timeout_s=settings.title_llm_timeout_s,
     )
+
+
+def _unencrypted_remote(base_url: str) -> bool:
+    """Whether `base_url` is plain http:// to a host other than this machine (loopback)."""
+    parts = urlsplit(base_url)
+    if parts.scheme != "http":
+        return False
+    host = (parts.hostname or "").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True  # a hostname other than localhost
 
 
 def build_request(
@@ -217,7 +239,7 @@ def polish_titles(
     stats: Sequence[Mapping[str, float]],
     config: TitlePolisherConfig | None,
     *,
-    transport: httpx.AsyncBaseTransport | None = None,
+    transport: httpx.BaseTransport | None = None,
 ) -> list[Candidate]:
     """Reword the top candidates' titles with the configured LLM; never raises.
 
@@ -258,30 +280,56 @@ def polish_titles(
 def _post(
     config: TitlePolisherConfig,
     payload: Mapping[str, Any],
-    transport: httpx.AsyncBaseTransport | None,
+    transport: httpx.BaseTransport | None,
 ) -> bytes:
-    """POST `payload` and return the reply body, all within ``config.timeout_s`` in total."""
+    """POST `payload` and return the reply body, all within ``config.timeout_s`` in total.
+
+    The request runs on a daemon thread that this call waits for at most ``config.timeout_s``.
+    Nothing inside it can extend that: name resolution (``getaddrinfo``, which can't be
+    interrupted and can stall for tens of seconds on a dead DNS server or a captive portal)
+    happens on that thread, and a thread still running at the deadline is abandoned. It ends
+    by itself once its own timeouts expire and never keeps the process alive.
+
+    Raises:
+        TimeoutError: No reply within the deadline.
+        httpx.HTTPError, ValueError: The request failed or the reply was too large.
+    """
     url = config.base_url.rstrip("/") + "/chat/completions"
     headers = {"Accept": "application/json"}
     if config.api_key is not None:
         headers["Authorization"] = f"Bearer {config.api_key.get_secret_value()}"
+    deadline = time.monotonic() + config.timeout_s
+    outcome: list[bytes | Exception] = []
 
-    async def request() -> bytes:
-        async with (
-            httpx.AsyncClient(
-                transport=transport, timeout=config.timeout_s, follow_redirects=False
-            ) as client,
-            client.stream("POST", url, json=payload, headers=headers) as response,
-        ):
-            response.raise_for_status()
-            body = bytearray()
-            async for chunk in response.aiter_bytes():
-                body += chunk
-                if len(body) > MAX_REPLY_BYTES:
-                    raise ValueError(f"the reply is larger than {MAX_REPLY_BYTES} bytes")
-            return bytes(body)
+    def request() -> None:
+        try:
+            with (
+                httpx.Client(
+                    transport=transport, timeout=config.timeout_s, follow_redirects=False
+                ) as client,
+                client.stream("POST", url, json=payload, headers=headers) as response,
+            ):
+                response.raise_for_status()
+                body = bytearray()
+                for chunk in response.iter_bytes():
+                    body += chunk
+                    if len(body) > MAX_REPLY_BYTES:
+                        raise ValueError(f"the reply is larger than {MAX_REPLY_BYTES} bytes")
+                    if time.monotonic() > deadline:
+                        raise TimeoutError("the reply arrived too slowly")
+                outcome.append(bytes(body))
+        except Exception as exc:  # handed to the caller, which logs it
+            outcome.append(exc)
 
-    return asyncio.run(asyncio.wait_for(request(), timeout=config.timeout_s))
+    worker = threading.Thread(target=request, name="title-polish", daemon=True)
+    worker.start()
+    worker.join(max(0.0, deadline - time.monotonic()))
+    if worker.is_alive() or not outcome:
+        raise TimeoutError(f"no reply within {config.timeout_s} s")
+    result = outcome[0]
+    if isinstance(result, Exception):
+        raise result
+    return result
 
 
 def _describe(exc: BaseException) -> str:
