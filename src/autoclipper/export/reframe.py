@@ -16,6 +16,8 @@ Layouts:
   its center, which is what the configured region (`layout_from_settings`) uses.
 - `StackedLayout` (``"stacked"`` in the API contract, #68): stacks a facecam region on top and
   a gameplay region below inside 1080x1920, cropping each pane to fill its share of the frame.
+  The facecam pane is trimmed around the region's center, or, when the layout knows where the
+  face is (a detected facecam, #191), around the face so the trim never cuts it.
 
 Pixel geometry uses the stored frame size from `probe`. Crop offsets and sizes are rounded down to
 even numbers, which yuv420p needs, so odd source sizes (e.g. 321x181) lose at most one pixel row or
@@ -126,6 +128,11 @@ class StackedLayout:
             to the full frame cropped to fill the bottom pane.
         facecam_fraction: Fraction of the 1920 px output height reserved for the top facecam
             pane (default 0.35 -> 672 px facecam over 1248 px gameplay).
+        face: Where the streamer's face is, as normalized ``(x, y, width, height)``, when it's
+            known (a detected facecam). The facecam region is usually not the top pane's shape,
+            so part of it is trimmed; with a face the trim is centered on the face (and kept
+            inside the region), so the face stays in the pane. Without one (presets, a
+            configured region) the trim is centered on the region.
     """
 
     name: ClassVar[str] = "stacked"
@@ -133,8 +140,14 @@ class StackedLayout:
     facecam: FixedRegion
     gameplay: FixedRegion = field(default_factory=_default_gameplay)
     facecam_fraction: float = DEFAULT_FACECAM_FRACTION
+    face: tuple[float, float, float, float] | None = None
 
     def __post_init__(self) -> None:
+        if self.face is not None:
+            if len(self.face) != 4 or not all(math.isfinite(v) for v in self.face):
+                raise InvalidLayoutError(f"face must be 4 finite numbers, got {self.face!r}")
+            if self.face[2] <= 0 or self.face[3] <= 0:
+                raise InvalidLayoutError(f"face needs width, height > 0, got {self.face!r}")
         if not math.isfinite(self.facecam_fraction) or not (
             MIN_FACECAM_FRACTION <= self.facecam_fraction <= MAX_FACECAM_FRACTION
         ):
@@ -171,8 +184,12 @@ def stacked_layout_from_region(
     *,
     gameplay_region: tuple[float, float, float, float] | None = None,
     facecam_fraction: float = DEFAULT_FACECAM_FRACTION,
+    face: tuple[float, float, float, float] | None = None,
 ) -> StackedLayout:
-    """Build a `StackedLayout` from normalized ``(x, y, width, height)`` tuples (#68)."""
+    """Build a `StackedLayout` from normalized ``(x, y, width, height)`` tuples (#68).
+
+    `face`, when known, anchors the facecam pane's trim on the face (`StackedLayout.face`).
+    """
     fx, fy, fw, fh = facecam_region
     facecam = FixedRegion(fx, fy, fw, fh, fit="crop")
     gameplay = (
@@ -180,7 +197,9 @@ def stacked_layout_from_region(
         if gameplay_region is None
         else FixedRegion(*gameplay_region, fit="crop")
     )
-    return StackedLayout(facecam=facecam, gameplay=gameplay, facecam_fraction=facecam_fraction)
+    return StackedLayout(
+        facecam=facecam, gameplay=gameplay, facecam_fraction=facecam_fraction, face=face
+    )
 
 
 def load_channel_stacked_layouts(channels_path: Path) -> dict[str, StackedLayout]:
@@ -365,7 +384,19 @@ def plan_reframe(layout: Layout, source_width: int, source_height: int) -> AnyRe
     if isinstance(layout, StackedLayout):
         top_h = _even(round(OUTPUT_HEIGHT * layout.facecam_fraction))
         bot_h = OUTPUT_HEIGHT - top_h
-        top = _plan_region(layout.facecam, source_width, source_height, OUTPUT_WIDTH, top_h)
+        focus = (
+            None
+            if layout.face is None
+            else (
+                layout.face[0] * source_width,
+                layout.face[1] * source_height,
+                layout.face[2] * source_width,
+                layout.face[3] * source_height,
+            )
+        )
+        top = _plan_region(
+            layout.facecam, source_width, source_height, OUTPUT_WIDTH, top_h, focus=focus
+        )
         bottom = _plan_region(layout.gameplay, source_width, source_height, OUTPUT_WIDTH, bot_h)
         return StackedReframePlan(
             top=top, bottom=bottom, output_width=OUTPUT_WIDTH, output_height=OUTPUT_HEIGHT
@@ -379,12 +410,18 @@ def plan_reframe(layout: Layout, source_width: int, source_height: int) -> AnyRe
 
 
 def _plan_region(
-    region: FixedRegion, source_width: int, source_height: int, out_width: int, out_height: int
+    region: FixedRegion,
+    source_width: int,
+    source_height: int,
+    out_width: int,
+    out_height: int,
+    *,
+    focus: tuple[float, float, float, float] | None = None,
 ) -> ReframePlan:
     rect = _region_pixels(region, source_width, source_height)
     if region.fit == "crop":
         return ReframePlan(
-            _crop_to_aspect(rect, out_width, out_height),
+            _crop_to_aspect(rect, out_width, out_height, focus=focus),
             out_width,
             out_height,
             output_width=out_width,
@@ -411,15 +448,43 @@ def _region_pixels(region: FixedRegion, source_width: int, source_height: int) -
     return rect
 
 
-def _crop_to_aspect(rect: PixelRect, target_width: int, target_height: int) -> PixelRect:
-    """The largest even-sized rectangle with ``target_width:target_height`` centered in `rect`."""
+def _crop_to_aspect(
+    rect: PixelRect,
+    target_width: int,
+    target_height: int,
+    *,
+    focus: tuple[float, float, float, float] | None = None,
+) -> PixelRect:
+    """The largest even-sized rectangle with ``target_width:target_height`` inside `rect`.
+
+    It's centered in `rect`, or, given a `focus` rectangle in source pixels (the face), centered
+    on the focus and then moved back inside `rect` if it sticks out. A focus no larger than the
+    crop (with a pixel to spare for even rounding) then lies inside it wherever it was in
+    `rect`, and the part of a focus that reaches outside `rect` is still covered as far as the
+    crop allows.
+    """
     if rect.width * target_height > rect.height * target_width:
         width = max(2, _even(rect.height * target_width // target_height))
-        x = rect.x + _even((rect.width - width) // 2)
+        if focus is None:
+            x = rect.x + _even((rect.width - width) // 2)
+        else:
+            x = _anchored(rect.x, rect.width, width, focus[0] + focus[2] / 2)
         return PixelRect(x, rect.y, width, rect.height)
     height = max(2, _even(rect.width * target_height // target_width))
-    y = rect.y + _even((rect.height - height) // 2)
+    if focus is None:
+        y = rect.y + _even((rect.height - height) // 2)
+    else:
+        y = _anchored(rect.y, rect.height, height, focus[1] + focus[3] / 2)
     return PixelRect(rect.x, y, rect.width, height)
+
+
+def _anchored(start: int, length: int, size: int, center: float) -> int:
+    """An even offset for a `size`-long span centered on `center`, kept in ``start..+length``.
+
+    `start`, `length` and `size` are even, so both limits, and the result, are even.
+    """
+    wanted = round(center - size / 2)
+    return min(max(_even(wanted), start), start + length - size)
 
 
 def _fit_with_padding(

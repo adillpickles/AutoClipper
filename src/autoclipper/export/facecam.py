@@ -53,8 +53,10 @@ from autoclipper.ffmpeg import (
 
 log = logging.getLogger(__name__)
 
-# Bump when the detection logic changes, so stale on-disk cache entries are ignored.
-DETECTOR_VERSION: Final = 2
+# Bump when the detection logic, or how a detection is framed in the export, changes, so stale
+# on-disk cache entries are ignored and the API doesn't reuse a stacked render framed the old way.
+# 3: the stacked pane is trimmed around the detected face.
+DETECTOR_VERSION: Final = 3
 
 DEFAULT_SAMPLES: Final = 7
 # Frames are scaled to this width before detection; 640 px keeps a corner webcam's face around

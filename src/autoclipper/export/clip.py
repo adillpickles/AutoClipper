@@ -12,6 +12,8 @@ The ``stacked`` layout picks its facecam region in this order (#191): an explici
 (``--facecam-region``, ``AUTOCLIPPER_EXPORT_FACECAM_REGION``, or a `StackedLayout` the caller
 passes), then the overlay `autoclipper.export.facecam` detects in the clip, then the channel
 preset (`ClipSpec.stacked_fallback`). With none of them it renders ``center_crop`` and warns.
+A detected facecam carries the face it was found around, so the top pane is trimmed around the
+face instead of the overlay's center and never cuts it off.
 """
 
 import logging
@@ -203,7 +205,7 @@ def _detected_stacked_layout(
         warn(f"{reason}; rendering center_crop instead of stacked", failed=True)
         return CenterCrop()
     if detection.status == "found" and detection.region is not None:
-        return _stacked_from_detection(detection.region, preset)
+        return _stacked_from_detection(detection, preset)
     if detection.status == "found_padded" and detection.region is not None:
         # A box estimated around a borderless webcam is a guess; a measured preset is better,
         # but only when the face is in it. Streamers move the camera between scenes.
@@ -217,7 +219,7 @@ def _detected_stacked_layout(
         else:
             message = f"{detection.message}; using that estimate"
         warn(message)
-        return _stacked_from_detection(detection.region, None)
+        return _stacked_from_detection(detection, None)
     reason = f"no facecam detected: {detection.message}"
     if preset is not None and detection.status != "full_camera":
         warn(f"{reason}; using the channel's stacked_layout preset")
@@ -235,13 +237,18 @@ def _face_in(face: tuple[float, float, float, float] | None, region: FixedRegion
 
 
 def _stacked_from_detection(
-    region: tuple[float, float, float, float], preset: StackedLayout | None
+    detection: FacecamDetection, preset: StackedLayout | None
 ) -> StackedLayout:
-    """The detected facecam over the preset's gameplay region and pane split, if any."""
+    """The detected facecam over the preset's gameplay region and pane split, if any.
+
+    The detected face goes with it, so the top pane is trimmed around the face.
+    """
+    assert detection.region is not None
     return stacked_layout_from_region(
-        region,
+        detection.region,
         gameplay_region=None if preset is None else _region_tuple(preset),
         facecam_fraction=DEFAULT_FACECAM_FRACTION if preset is None else preset.facecam_fraction,
+        face=detection.face,
     )
 
 
@@ -279,8 +286,9 @@ def render_clip(
         runner: Executes FFmpeg and FFprobe.
         facecam_detector: Finds the facecam for ``stacked`` (module docs); defaults to
             `detect_facecam` with the process-wide cache.
-        on_warning: Called with a sentence when ``stacked`` falls back to the channel preset or
-            to ``center_crop``; the fallback is also logged.
+        on_warning: Called with a `LayoutWarning` when ``stacked`` uses an estimated facecam
+            box or falls back to the channel preset or to ``center_crop``, or when detection
+            failed; the warning is also logged.
 
     Raises:
         ClipTooLongError: The interval is longer than `max_duration_s`.
