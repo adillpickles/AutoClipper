@@ -81,6 +81,19 @@ Set in `[tool.pytest]` in `pyproject.toml` (pytest 9 native TOML config):
 - `--import-mode=importlib`: test folders need no `__init__.py`, and files in different folders may share a name (`tests/ingest/test_chat.py`, `tests/features/test_chat.py`).
 - `strict = true`: an unregistered marker is an error, so a typo like `@pytest.mark.lvie` can't slip a live test into CI. Register new markers under `markers`. `xfail` is strict too: an unexpected pass fails.
 - `filterwarnings = ["error"]`: warnings fail the test. If a third-party library warns and you can't fix the cause, add a targeted `ignore:` entry with a comment saying why.
+- `-n auto` ([pytest-xdist](https://pytest-xdist.readthedocs.io/)): the suite runs in parallel. `auto` means half the CPUs but at least 4 (`pytest_xdist_auto_num_workers` in `tests/conftest.py`): 8 on a 16-thread laptop, 4 on GitHub's runners. One worker per CPU starved the tests that give a child process about a second to start. `-n 0` runs the suite in one process (handy with `pdb`, or to read output in order); `-n 4` picks a count, as does the `PYTEST_XDIST_AUTO_NUM_WORKERS` environment variable for `auto`.
+- `--reruns 2` with `only_rerun` ([pytest-rerunfailures](https://github.com/pytest-dev/pytest-rerunfailures)): a test is retried only when it failed with `[WinError 5] Access is denied`, which Windows raises when something (usually antivirus) briefly holds a file the code just wrote and is renaming into place. Parallel runs make that likelier. Every other failure fails at once, and a retried test shows as `R` in the progress line and under "rerun" in the summary. Remove both settings once the renames retry by themselves (#246).
+
+### Parallel-safe tests
+
+Each worker is a separate process collecting the whole suite, so:
+
+- **Parametrize IDs must be the same in every process.** Values that differ between runs (timestamps inside generated archives, random data, object reprs) need explicit `ids=`, or the workers refuse to start with "Different tests were collected".
+- **Write only under `tmp_path`** (or `tmp_path_factory` for module and session fixtures). Each worker gets its own base temp directory; a fixed path outside it would be shared between workers.
+- **Ports:** bind to port `0` and read the one the OS picked, as the local HTTP servers in `tests/ingest/test_media.py` and `tests/models/test_title_polish.py` do.
+- **Environment and working directory:** change them only with `monkeypatch`, which the isolation fixture already does per test. Each worker has its own process environment.
+- **Module and session fixtures** run once per worker that needs them, not once per run. Keep them cheap or deterministic; never rely on one running first.
+- **pytester sessions** (`tests/test_pytest_config.py`) run with `-n 0` and without the outer worker's `PYTEST_XDIST_*` variables, so each child stays a single process.
 
 ## FFmpeg tests
 
@@ -132,7 +145,8 @@ npx playwright show-report        # the last run's HTML report
 ## Commands
 
 ```bash
-uv run pytest                       # unit + contract + integration; live tests are deselected
+uv run pytest                       # unit + contract + integration, in parallel; live tests are deselected
+uv run pytest -n 0                  # the same, in one process
 uv run pytest tests/test_cli.py     # one file (or a folder, or file::test_name)
 uv run pytest -m live               # real services; configured credentials required
 uv run pytest -m "not live and not ffmpeg"   # also leave out tests that run the real FFmpeg

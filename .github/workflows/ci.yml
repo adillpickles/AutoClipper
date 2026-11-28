@@ -1,7 +1,19 @@
 name: CI
 
 on:
+  # Pull requests that change only docs, the landing page or the web app skip this workflow (the
+  # web app has web.yml and e2e.yml). No test reads those files. Every push to main runs it.
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "site/**"
+      - "web/**"
+      - ".github/workflows/e2e.yml"
+      - ".github/workflows/pages.yml"
+      - ".github/workflows/web.yml"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/pull_request_template.md"
   push:
     branches: [main]
 

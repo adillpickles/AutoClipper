@@ -25,7 +25,17 @@ CONFTEST = Path(__file__).resolve().parent / "conftest.py"
 SUBPROCESS_TIMEOUT_S = 180.0
 
 # Variables that would change how the child pytest runs. Tests that need CI set it themselves.
-_CHILD_ENV_OVERRIDES = ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "CI")
+# The PYTEST_XDIST_* ones are set in the outer run's worker processes (pytest-xdist).
+_CHILD_ENV_OVERRIDES = (
+    "PYTEST_ADDOPTS",
+    "PYTEST_PLUGINS",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+    "CI",
+    "PYTEST_XDIST_WORKER",
+    "PYTEST_XDIST_WORKER_COUNT",
+    "PYTEST_XDIST_TESTRUNUID",
+    "PYTEST_XDIST_AUTO_NUM_WORKERS",
+)
 
 JUNIT_XML = "inner-report.xml"
 
@@ -42,11 +52,14 @@ def _run_pytest(pytester: pytest.Pytester, *args: str) -> pytest.RunResult:
 
     `runpytest_subprocess` gives the child its own ``--basetemp`` inside the project. The cache
     provider is off so children never share or write a ``.pytest_cache``, and a JUnit report
-    records each test's outcome for `_passed_test_names`.
+    records each test's outcome for `_passed_test_names`. ``-n 0`` overrides the parallel default
+    from the copied config, so each child is a single process and its output reads as before.
     """
     return pytester.runpytest_subprocess(
         "-p",
         "no:cacheprovider",
+        "-n",
+        "0",
         f"--junitxml={pytester.path / JUNIT_XML}",
         *args,
         timeout=SUBPROCESS_TIMEOUT_S,

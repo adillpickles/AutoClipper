@@ -79,7 +79,7 @@ uv run pre-commit install      # once per clone
 uv run ruff check .            # lint (add --fix to apply safe fixes)
 uv run ruff format --check .   # format check (uv run ruff format . reformats)
 uv run pyright                 # type check
-uv run pytest                  # tests; live tests are deselected (-m live runs only those)
+uv run pytest                  # tests, in parallel (-n 0 for one process); live tests are deselected (-m live runs only those)
 uv run autoclipper --help      # CLI entry point
 uv run autoclipper synth --seed 1   # fake dev dataset in data/synthetic/seed-1
 uv run autoclipper synth --pilot --seed 1 --no-video  # five fake streamers for dataset builds

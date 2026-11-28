@@ -12,6 +12,7 @@ it errors in CI, so a CI runner without FFmpeg can't pass by skipping them.
 
 import os
 import re
+import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -47,6 +48,28 @@ def pytest_configure(config: pytest.Config) -> None:
     if _MENTIONS_LIVE.search(expression):
         return
     config.option.markexpr = f"({expression}) and not live" if expression else "not live"
+
+
+def _available_cpus() -> int:
+    if sys.platform == "linux":  # the CPUs this process may run on
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 1
+
+
+# optionalhook: the hook belongs to pytest-xdist; without that plugin pytest ignores it.
+@pytest.hookimpl(optionalhook=True, tryfirst=True)
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:
+    """The worker count for `-n auto` (the default in pyproject.toml): half the CPUs, at least 4.
+
+    One worker per CPU starves the tests that give a child process or thread about a second to
+    make progress (the timeout tests), on a laptop that is also running other things. Half the
+    CPUs lost little speed when measured (#242), and GitHub's 4-CPU runners still get 4 workers.
+    ``PYTEST_XDIST_AUTO_NUM_WORKERS`` still wins (pytest-xdist's own hook reads it).
+    """
+    if os.environ.get("PYTEST_XDIST_AUTO_NUM_WORKERS"):
+        return None
+    cpus = _available_cpus()
+    return min(cpus, max(4, cpus // 2))
 
 
 # The environment variable behind each setting, e.g. TWITCH_CLIENT_ID, AUTOCLIPPER_DATA_DIR.
