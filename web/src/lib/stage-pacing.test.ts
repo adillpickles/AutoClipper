@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { Job } from "@/lib/api/types";
-import { REPLAY_WINDOW_MS, shouldPace, targetStep } from "@/lib/stage-pacing";
+import {
+  CLOCK_TOLERANCE_MS,
+  REPLAY_WINDOW_MS,
+  shouldPace,
+  targetStep,
+} from "@/lib/stage-pacing";
 
 function job(overrides: Partial<Job>): Job {
   return {
@@ -53,6 +58,15 @@ describe("shouldPace", () => {
     const done = job({ state: "done", finished_at: finished });
     expect(shouldPace(done, finishedMs + 1000)).toBe(true);
     expect(shouldPace(done, finishedMs + REPLAY_WINDOW_MS)).toBe(false);
+  });
+
+  it("doesn't trust a finish time far in the future (clock skew)", () => {
+    const done = job({ state: "done", finished_at: finished });
+    // Whole-second timestamps can round a little ahead of the browser clock.
+    expect(shouldPace(done, finishedMs - CLOCK_TOLERANCE_MS)).toBe(true);
+    // A browser clock minutes behind the server would otherwise replay old jobs.
+    expect(shouldPace(done, finishedMs - CLOCK_TOLERANCE_MS - 1)).toBe(false);
+    expect(shouldPace(done, finishedMs - 10 * 60_000)).toBe(false);
   });
 
   it("never paces a failure", () => {

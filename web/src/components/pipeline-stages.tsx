@@ -48,9 +48,37 @@ export function pipelineCounts(result: AnalysisResult): PipelineCount[] {
 }
 
 const NUMBER = new Intl.NumberFormat("en-US");
+const COMPACT = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+/** Counts from here up are shortened (`123.5K`) on narrow screens, where a card is ~70 px. */
+export const COMPACT_FROM = 10_000;
 
 export function formatCount(value: number): string {
   return NUMBER.format(value);
+}
+
+export function formatCompactCount(value: number): string {
+  return COMPACT.format(value);
+}
+
+/**
+ * A count for the numbers row. Large counts show compact below the `sm` breakpoint; the
+ * exact number is always what assistive tech reads, and the tooltip.
+ */
+export function CountValue({ value }: { value: number }) {
+  const exact = formatCount(value);
+  if (value < COMPACT_FROM) return <>{exact}</>;
+  return (
+    <span title={exact}>
+      <span aria-hidden="true" className="sm:hidden">
+        {formatCompactCount(value)}
+      </span>
+      <span className="sr-only sm:not-sr-only">{exact}</span>
+    </span>
+  );
 }
 
 function delay(seconds: number): CSSProperties {

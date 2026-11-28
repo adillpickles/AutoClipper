@@ -1,12 +1,12 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button, ButtonLink } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
-  formatCount,
+  CountValue,
   pipelineCounts,
   STAGE_LABELS,
   StageVisual,
@@ -164,8 +164,21 @@ function JobStatus({
     { pace: knownStages && paceOnOpen && job.state !== "failed" },
   );
   const reducedMotion = usePrefersReducedMotion();
+  // "Skip to the results" moves focus to the first action of the finished screen, which
+  // replaces the button that had focus.
+  const doneActions = useRef<HTMLDivElement>(null);
+  const focusDoneActions = useRef(false);
+  function skipReplay() {
+    focusDoneActions.current = true;
+    skip();
+  }
 
   const finished = shown > stageCount;
+  useEffect(() => {
+    if (!finished || !focusDoneActions.current) return;
+    focusDoneActions.current = false;
+    doneActions.current?.querySelector<HTMLElement>("a, button")?.focus();
+  }, [finished]);
   const shownStage =
     knownStages && shown >= 1 && !finished ? JOB_STAGES[shown - 1] : null;
   const shownLabel = shownStage
@@ -214,12 +227,14 @@ function JobStatus({
         <p className="inline-flex w-fit max-w-full items-center gap-2 rounded-pill border border-border-subtle bg-surface-elevated px-3 py-1 font-mono text-xs font-medium break-all text-ink-secondary">
           VOD {job.video_id}
         </p>
-        <h1
-          className="font-display text-2xl font-semibold tracking-tight text-balance break-words text-ink-primary sm:text-3xl"
-          aria-live="polite"
-        >
+        <h1 className="font-display text-2xl font-semibold tracking-tight text-balance break-words text-ink-primary sm:text-3xl">
           {headline}
         </h1>
+        {/* Stage changes are announced here. While the stepper replays stages the server has
+            already finished, it says "Analyzing…" once instead of every step. */}
+        <p className="sr-only" aria-live="polite" data-testid="stage-announcer">
+          {catchingUp ? "Analyzing…" : headline}
+        </p>
         {job.state === "queued" && (
           <p className="text-sm text-ink-secondary">
             The server starts it as soon as it&apos;s free.
@@ -258,7 +273,7 @@ function JobStatus({
           {catchingUp && job.state === "done" && (
             <button
               type="button"
-              onClick={skip}
+              onClick={skipReplay}
               className="rounded-control px-2 py-1 text-xs font-medium text-ink-secondary underline-offset-4 hover:text-ink-primary hover:underline focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"
             >
               Skip to the results
@@ -280,7 +295,7 @@ function JobStatus({
               <dt className="text-xs text-ink-secondary">{count.label}</dt>
               <dd className="font-mono text-lg font-semibold text-ink-primary tabular-nums">
                 {count.known && count.value !== null ? (
-                  formatCount(count.value)
+                  <CountValue value={count.value} />
                 ) : (
                   <>
                     <span aria-hidden="true">–</span>
@@ -351,54 +366,59 @@ function JobStatus({
         />
       )}
 
-      {job.state === "done" &&
-        finished &&
-        result &&
-        (result.candidates.length === 0 ? (
-          <div className="border-t border-border-subtle pt-5">
-            <EmptyState
-              heading="h2"
-              title="No moments stood out"
-              description={
-                result.warnings.length > 0
-                  ? "Nothing could be ranked from the signals that were available for this VOD."
-                  : "Analysis finished, but no moments stood out to rank for this VOD."
-              }
-              action={
-                <ButtonLink href="/" variant="primary">
-                  Try another VOD
-                </ButtonLink>
-              }
-              secondaryAction={
+      <div ref={doneActions} className="contents">
+        {job.state === "done" &&
+          finished &&
+          result &&
+          (result.candidates.length === 0 ? (
+            <div className="border-t border-border-subtle pt-5">
+              <EmptyState
+                heading="h2"
+                title="No moments stood out"
+                description={
+                  result.warnings.length > 0
+                    ? "Nothing could be ranked from the signals that were available for this VOD."
+                    : "Analysis finished, but no moments stood out to rank for this VOD."
+                }
+                action={
+                  <ButtonLink href="/" variant="primary">
+                    Try another VOD
+                  </ButtonLink>
+                }
+                secondaryAction={
+                  <ButtonLink
+                    href={`/jobs/${job.job_id}/results`}
+                    variant="secondary"
+                  >
+                    See the results
+                  </ButtonLink>
+                }
+              />
+            </div>
+          ) : (
+            <div className="flex flex-col items-start gap-4 border-t border-border-subtle pt-5">
+              <p
+                className="text-base font-medium text-ink-primary"
+                role="status"
+              >
+                Found {result.candidates.length}{" "}
+                {result.candidates.length === 1 ? "moment" : "moments"}.
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
                 <ButtonLink
                   href={`/jobs/${job.job_id}/results`}
-                  variant="secondary"
+                  variant="primary"
+                  size="lg"
                 >
-                  See the results
+                  See the clips
                 </ButtonLink>
-              }
-            />
-          </div>
-        ) : (
-          <div className="flex flex-col items-start gap-4 border-t border-border-subtle pt-5">
-            <p className="text-base font-medium text-ink-primary" role="status">
-              Found {result.candidates.length}{" "}
-              {result.candidates.length === 1 ? "moment" : "moments"}.
-            </p>
-            <div className="flex flex-wrap items-center gap-3">
-              <ButtonLink
-                href={`/jobs/${job.job_id}/results`}
-                variant="primary"
-                size="lg"
-              >
-                See the clips
-              </ButtonLink>
-              <ButtonLink href="/" variant="secondary" size="lg">
-                Analyze another VOD
-              </ButtonLink>
+                <ButtonLink href="/" variant="secondary" size="lg">
+                  Analyze another VOD
+                </ButtonLink>
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+      </div>
     </div>
   );
 }

@@ -176,14 +176,31 @@ describe("JobProgress stage pacing", () => {
     expect(screen.getByRole("status").textContent).toBe("Found 3 moments.");
   });
 
-  it("announces each stage change through a polite live region", async () => {
+  it("announces a replay once, then the result", async () => {
     state.getJob.mockResolvedValue(doneJob("2026-11-20T12:00:09Z"));
     render(<JobProgress />);
     await flush();
 
-    const live = screen.getByRole("heading", { level: 1 });
+    const live = screen.getByTestId("stage-announcer");
     expect(live.getAttribute("aria-live")).toBe("polite");
-    await advance(MIN_STAGE_MS);
+    // The stages the server already finished aren't read out one by one.
+    expect(live.textContent).toBe("Analyzing…");
+    await advance(MIN_STAGE_MS * 3);
+    expect(live.textContent).toBe("Analyzing…");
+    await advance(MIN_STAGE_MS * 3);
+    expect(live.textContent).toBe("Analysis finished");
+  });
+
+  it("announces each real stage change while the job runs", async () => {
+    state.getJob
+      .mockResolvedValueOnce(makeJob({ progress: stage(1) }))
+      .mockResolvedValue(makeJob({ progress: stage(2) }));
+    render(<JobProgress />);
+    await flush();
+
+    const live = screen.getByTestId("stage-announcer");
+    expect(live.textContent).toBe("Step 1 of 6: Looking up the VOD");
+    await advance(2100);
     expect(live.textContent).toBe("Step 2 of 6: Collecting viewer clips");
   });
 
@@ -196,7 +213,32 @@ describe("JobProgress stage pacing", () => {
       screen.getByRole("button", { name: "Skip to the results" }),
     );
     expect(heading()).toBe("Analysis finished");
-    expect(screen.getByRole("link", { name: "See the clips" })).toBeTruthy();
+    // Focus moves to the first action, replacing the button that had it.
+    expect(document.activeElement).toBe(
+      screen.getByRole("link", { name: "See the clips" }),
+    );
+  });
+
+  it("shortens large counts on narrow screens but keeps the exact number readable", async () => {
+    state.getResult.mockResolvedValue({
+      ...(exampleResult as AnalysisResult),
+      n_chat_messages: 123_456,
+    });
+    state.getJob.mockResolvedValue(doneJob("2026-11-20T11:00:00Z"));
+    render(<JobProgress />);
+    await flush();
+
+    const value = screen.getByText("Chat messages read", { selector: "dt" })
+      .nextElementSibling as HTMLElement;
+    const compact = within(value).getByText("123.5K");
+    expect(compact.getAttribute("aria-hidden")).toBe("true");
+    expect(compact.className).toContain("sm:hidden");
+    const exact = within(value).getByText("123,456");
+    expect(exact.className).toContain("sr-only");
+    expect(exact.className).toContain("sm:not-sr-only");
+    expect(value.querySelector("[title]")?.getAttribute("title")).toBe(
+      "123,456",
+    );
   });
 
   it("shows an old finished job at once", async () => {

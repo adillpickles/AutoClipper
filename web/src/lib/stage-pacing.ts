@@ -43,8 +43,15 @@ export function shouldPace(job: Job, nowMs: number): boolean {
   if (job.state === "failed" || job.finished_at === null) return false;
   const finished = Date.parse(job.finished_at);
   if (Number.isNaN(finished)) return false;
-  return nowMs - finished < REPLAY_WINDOW_MS;
+  // The job carries no server "now" to compare with (a done job's `updated_at` is its
+  // `finished_at`), so the age uses the browser clock. A finish time in the future means the
+  // clocks disagree; beyond a little rounding, the age is unknown, so the job isn't replayed.
+  const age = nowMs - finished;
+  return age >= -CLOCK_TOLERANCE_MS && age < REPLAY_WINDOW_MS;
 }
+
+/** How far in the future `finished_at` may be and still count as "just now" (rounding). */
+export const CLOCK_TOLERANCE_MS = 2000;
 
 export interface PacedStep {
   /** The step to show: never ahead of `target`. */
