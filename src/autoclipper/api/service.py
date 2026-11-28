@@ -67,6 +67,7 @@ from autoclipper.export.cut import (
 )
 from autoclipper.export.encode import EncodeSettings, encode_timeout_s
 from autoclipper.export.errors import ExportError
+from autoclipper.export.facecam import DETECTOR_VERSION
 from autoclipper.export.filenames import (
     build_archive_filename,
     build_clip_filename,
@@ -477,6 +478,9 @@ class _RenderRecord:
     file: Path | None = None
     duration_s: float | None = None
     filename: str | None = None
+    # What the export's layout resolves from when it renders (`_layout_key`); None when unknown
+    # (a render restored from the library database).
+    layout_key: str | None = None
 
     def export_model(self, *, filename: str | None = None) -> Export:
         assert self.request is not None
@@ -1531,11 +1535,14 @@ class MockService:
                 )
             # Identical requests reuse the queued, running or finished render (#186), so a page
             # that asks for its top clips again doesn't render them twice. A failed render, or a
-            # finished one whose file was removed, is retried with a new export.
+            # finished one whose file was removed, is retried with a new export, and so is one
+            # whose layout region changed (#191).
+            layout_key = self._layout_key(job, request.layout)
             for record in self._renders.values():
                 if (
                     record.kind == "export"
                     and record.request == request
+                    and _same_layout(record.layout_key, layout_key, request.layout)
                     and (
                         record.state in ("queued", "running")
                         or (
@@ -1556,6 +1563,7 @@ class MockService:
                 request.captions,
                 _Timestamps(now, now),
                 request=request,
+                layout_key=layout_key,
             )
             self._persist_render(record)
             self._renders[record.render_id] = record
@@ -2036,6 +2044,20 @@ class MockService:
             return read_broadcaster_login(self.data_dir, broadcaster_id)
         except Exception:
             return None
+
+    def _layout_key(self, job: _JobRecord, layout: str) -> str:
+        """What `layout` resolves from at render time, so a changed region isn't reused.
+
+        ``stacked`` resolves from the env facecam region, the facecam detected in the clip (the
+        same for the same media and detector version) and the channel preset (#191);
+        ``configured_region`` from the env region.
+        """
+        if layout == "stacked":
+            preset = self._stacked_layout_for(job)
+            return f"stacked:v{DETECTOR_VERSION}:{self.export_facecam_region!r}:{preset!r}"
+        if layout == "configured_region":
+            return f"configured_region:{self.export_region!r}"
+        return layout
 
     def _layouts_for(self, job: _JobRecord) -> tuple[str, ...]:
         # `stacked` needs no configuration: the facecam is detected in the clip, with the
@@ -3412,6 +3434,15 @@ def _job_key(record: _JobRecord) -> tuple[str, str | None, str | None]:
 def _job_sort_key(record: _JobRecord) -> tuple[datetime, int, str]:
     """Library order key: `created_at`, creation sequence, then `job_id` (§ 3.7)."""
     return record.times.created_at, record.seq, record.job_id
+
+
+def _same_layout(recorded: str | None, current: str, layout: str) -> bool:
+    """Whether a render's layout matches a new request's (`MockService._layout_key`).
+
+    A render restored from the database has no key; only ``center_crop``, which reads no
+    configuration, can be reused then.
+    """
+    return recorded == current or (recorded is None and layout == "center_crop")
 
 
 def _is_within(path: Path, root: Path) -> bool:

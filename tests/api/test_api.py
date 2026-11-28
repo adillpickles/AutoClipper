@@ -1033,6 +1033,39 @@ def test_a_video_path_removed_after_the_analysis_is_local_file_missing(
     assert response.json()["error"]["details"] == {"reason": "local_file_missing"}
 
 
+@pytest.mark.parametrize(
+    ("layout", "setting", "before", "after"),
+    [
+        ("stacked", "export_facecam_region", (0.0, 0.6, 0.3, 0.4), (0.7, 0.6, 0.3, 0.4)),
+        ("configured_region", "export_region", (0.25, 0.0, 0.5, 1.0), (0.0, 0.0, 0.5, 1.0)),
+    ],
+)
+def test_the_same_export_with_a_different_resolved_region_renders_again(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    layout: str,
+    setting: str,
+    before: tuple[float, float, float, float],
+    after: tuple[float, float, float, float],
+) -> None:
+    client, service = make_client(
+        synchronous=False, step_s=0.05, render=FakeRenderer(delay_s=0.5), **{setting: before}
+    )
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()
+    wait_until(lambda: client.get(f"{API}/jobs/{job['job_id']}").json()["state"] == "done")
+    body = export_body(job["job_id"], layout=layout)
+
+    first = client.post(f"{API}/exports", json=body)
+    same = client.post(f"{API}/exports", json=body)
+    setattr(service, setting, after)
+    changed = client.post(f"{API}/exports", json=body)
+
+    assert first.status_code == 201
+    assert (same.status_code, same.json()["export_id"]) == (200, first.json()["export_id"])
+    # The region the layout resolves from changed (#191), so the old render isn't reused.
+    assert changed.status_code == 201
+    assert changed.json()["export_id"] != first.json()["export_id"]
+
+
 def test_a_running_export_dedupes_and_its_file_isnt_ready(
     make_client: Callable[..., tuple[TestClient, MockService]],
 ) -> None:
