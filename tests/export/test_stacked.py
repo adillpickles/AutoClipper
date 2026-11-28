@@ -16,11 +16,15 @@ from autoclipper.export.clip import (
 )
 from autoclipper.export.cut import Interval
 from autoclipper.export.encode import build_export_command
+from autoclipper.export.facecam import (
+    _padded_corner_box,  # pyright: ignore[reportPrivateUsage]
+)
 from autoclipper.export.reframe import (
     OUTPUT_HEIGHT,
     OUTPUT_WIDTH,
     FixedRegion,
     InvalidLayoutError,
+    PixelRect,
     StackedLayout,
     StackedReframePlan,
     load_channel_stacked_layouts,
@@ -60,6 +64,130 @@ def test_plan_reframe_builds_even_stacked_panes_summing_to_1080x1920() -> None:
     assert plan.top.scaled_height + plan.bottom.scaled_height == OUTPUT_HEIGHT
     assert plan.top.scaled_height == 672
     assert plan.bottom.scaled_height == 1248
+
+
+type Box = tuple[float, float, float, float]
+
+
+def _face_visible(crop: PixelRect, face: Box, width: int, height: int) -> float:
+    """The share of the normalized `face` box inside `crop` (source pixels)."""
+    fx, fy = face[0] * width, face[1] * height
+    fw, fh = face[2] * width, face[3] * height
+    ix = max(0.0, min(crop.x + crop.width, fx + fw) - max(crop.x, fx))
+    iy = max(0.0, min(crop.y + crop.height, fy + fh) - max(crop.y, fy))
+    return ix * iy / (fw * fh)
+
+
+def _assert_even_and_inside(crop: PixelRect, region: PixelRect) -> None:
+    assert all(v % 2 == 0 for v in (crop.x, crop.y, crop.width, crop.height))
+    assert region.x <= crop.x
+    assert region.y <= crop.y
+    assert crop.x + crop.width <= region.x + region.width
+    assert crop.y + crop.height <= region.y + region.height
+
+
+# A tall bottom-left overlay (0-576 x 648-1080 px of 1920x1080); the 1080x672 pane keeps 358 of
+# its 432 rows, so a centered trim drops 37 px at the top and bottom.
+TALL_CAM: Box = (0.0, 0.6, 0.3, 0.4)
+TALL_CAM_PX = PixelRect(0, 648, 576, 432)
+
+
+@pytest.mark.parametrize(
+    "face",
+    [
+        pytest.param((0.1, 0.6, 0.1, 0.2), id="face-at-the-top"),
+        pytest.param((0.1, 0.8, 0.1, 0.2), id="face-at-the-bottom"),
+        pytest.param((0.02, 0.61, 0.09, 0.16), id="small-face-in-the-corner"),
+        pytest.param((0.1, 0.7, 0.1, 0.2), id="face-in-the-middle"),
+    ],
+)
+def test_the_facecam_pane_is_trimmed_around_a_known_face(face: Box) -> None:
+    centered = plan_reframe(stacked_layout_from_region(TALL_CAM), 1920, 1080).top.crop
+    anchored = plan_reframe(stacked_layout_from_region(TALL_CAM, face=face), 1920, 1080).top.crop
+
+    assert _face_visible(anchored, face, 1920, 1080) == pytest.approx(1.0)
+    assert (anchored.width, anchored.height) == (centered.width, centered.height)
+    _assert_even_and_inside(anchored, TALL_CAM_PX)
+
+
+def test_a_centered_trim_cuts_a_face_at_the_top_of_a_tall_overlay() -> None:
+    """The bug this guards against: without the face, the trim is centered on the overlay."""
+    face: Box = (0.1, 0.6, 0.1, 0.2)
+    centered = plan_reframe(stacked_layout_from_region(TALL_CAM), 1920, 1080).top.crop
+
+    assert centered == PixelRect(0, 684, 576, 358)
+    assert _face_visible(centered, face, 1920, 1080) < 0.85
+
+
+@pytest.mark.parametrize(
+    "face",
+    [
+        pytest.param((0.6, 0.05, 0.08, 0.14), id="face-at-the-left"),
+        pytest.param((0.9, 0.05, 0.08, 0.14), id="face-at-the-right"),
+    ],
+)
+def test_a_wide_overlay_is_trimmed_at_the_sides_around_the_face(face: Box) -> None:
+    wide: Box = (0.6, 0.0, 0.4, 0.2)  # 768x216 px, wider than the 1080x672 pane
+    region = PixelRect(1152, 0, 768, 216)
+
+    crop = plan_reframe(stacked_layout_from_region(wide, face=face), 1920, 1080).top.crop
+
+    assert crop.height == region.height
+    assert crop.width < region.width
+    assert _face_visible(crop, face, 1920, 1080) == pytest.approx(1.0)
+    _assert_even_and_inside(crop, region)
+
+
+def test_a_face_reaching_past_the_overlay_keeps_the_part_inside_it() -> None:
+    # The face box starts above the overlay (Haar boxes include the forehead; a webcam cropped
+    # tight to the head has its border there): the pane starts at the overlay's top.
+    face: Box = (0.1, 0.56, 0.1, 0.2)
+
+    crop = plan_reframe(stacked_layout_from_region(TALL_CAM, face=face), 1920, 1080).top.crop
+
+    assert crop.y == TALL_CAM_PX.y
+    _assert_even_and_inside(crop, TALL_CAM_PX)
+
+
+def test_without_a_face_the_stacked_plan_is_unchanged() -> None:
+    plan = plan_reframe(stacked_layout_from_region((0.02, 0.04, 0.22, 0.28)), 1920, 1080)
+
+    # The same crop as before faces were carried (centered on the region).
+    assert plan.top.crop == PixelRect(38, 62, 422, 262)
+    assert plan.top.filters()[0] == "crop=w=422:h=262:x=38:y=62"
+
+
+def test_a_face_on_odd_sized_sources_still_gives_even_crops_inside_the_frame() -> None:
+    face: Box = (0.05, 0.62, 0.1, 0.18)
+    for width, height in ((1921, 1081), (321, 181), (1280, 720)):
+        layout = stacked_layout_from_region(TALL_CAM, face=face)
+        crop = plan_reframe(layout, width, height).top.crop
+        assert all(v % 2 == 0 for v in (crop.x, crop.y, crop.width, crop.height))
+        assert crop.x + crop.width <= width
+        assert crop.y + crop.height <= height
+
+
+@pytest.mark.parametrize("corner_x", [0.01, 0.04, 0.08, 0.84, 0.88])
+@pytest.mark.parametrize("corner_y", [0.01, 0.05, 0.1, 0.7, 0.75])
+@pytest.mark.parametrize("face_width", [0.06, 0.08, 0.1])
+def test_padded_corner_boxes_keep_the_whole_face_in_the_pane(
+    corner_x: float, corner_y: float, face_width: float
+) -> None:
+    face: Box = (corner_x, corner_y, face_width, face_width * 16 / 9)
+    box = _padded_corner_box(face, 1920, 1080)
+    assert isinstance(box, tuple)
+
+    crop = plan_reframe(stacked_layout_from_region(box, face=face), 1920, 1080).top.crop
+
+    assert _face_visible(crop, face, 1920, 1080) == pytest.approx(1.0)
+
+
+def test_stacked_layout_rejects_a_bad_face() -> None:
+    facecam = FixedRegion(0.0, 0.6, 0.3, 0.4, fit="crop")
+    with pytest.raises(InvalidLayoutError, match="face"):
+        StackedLayout(facecam=facecam, face=(0.1, 0.6, float("nan"), 0.2))
+    with pytest.raises(InvalidLayoutError, match="face"):
+        StackedLayout(facecam=facecam, face=(0.1, 0.6, 0.0, 0.2))
 
 
 def test_build_export_command_uses_filter_complex_with_vstack_and_post_filters(

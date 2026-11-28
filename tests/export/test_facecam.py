@@ -443,6 +443,35 @@ def test_a_detected_facecam_beats_the_channel_preset(
     assert layout.facecam_fraction == pytest.approx(PRESET.facecam_fraction)
 
 
+def test_a_detected_facecam_carries_its_face_to_the_layout(
+    tmp_path: Path, rendered: list[ExportRequest]
+) -> None:
+    found = FacecamDetection("found", BOTTOM_LEFT_CAM, BOTTOM_LEFT_FACE, 7, 7, "found")
+    padded = _padded((0.82, 0.68, 0.12, 0.2))
+
+    layout = _render(tmp_path, rendered, lambda *_: found, stacked_fallback=PRESET)
+    estimated = _render(tmp_path, rendered, lambda *_: padded)
+
+    assert isinstance(layout, StackedLayout)
+    assert layout.face == BOTTOM_LEFT_FACE
+    assert isinstance(estimated, StackedLayout)
+    assert estimated.face == (0.82, 0.68, 0.12, 0.2)
+
+
+def test_a_preset_or_explicit_region_has_no_face(
+    tmp_path: Path, rendered: list[ExportRequest]
+) -> None:
+    explicit = _render(tmp_path, rendered, _never, facecam_region=(0.0, 0.0, 0.25, 0.3))
+    preset = _render(
+        tmp_path, rendered, lambda *_: _detection("not_found"), stacked_fallback=PRESET
+    )
+
+    assert isinstance(explicit, StackedLayout)
+    assert explicit.face is None
+    assert preset == PRESET
+    assert PRESET.face is None
+
+
 def test_without_a_face_the_channel_preset_is_used_with_a_warning(
     tmp_path: Path, rendered: list[ExportRequest]
 ) -> None:
@@ -494,7 +523,14 @@ def test_a_padded_box_loses_to_a_preset_that_holds_the_face(
     # PRESET's facecam is the top-right corner (0.76, 0.04, 0.22, 0.28).
     in_preset = _padded((0.82, 0.08, 0.1, 0.18))
 
-    assert _render(tmp_path, rendered, lambda *_: in_preset, stacked_fallback=PRESET) == PRESET
+    layout = _render(tmp_path, rendered, lambda *_: in_preset, stacked_fallback=PRESET)
+
+    assert isinstance(layout, StackedLayout)
+    assert layout.facecam == PRESET.facecam
+    assert layout.gameplay == PRESET.gameplay
+    assert layout.facecam_fraction == PRESET.facecam_fraction
+    # The detected face comes along, so the preset's pane is trimmed around it.
+    assert layout.face == in_preset.face
 
 
 def test_a_padded_box_beats_a_preset_elsewhere_with_a_warning(
