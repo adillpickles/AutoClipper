@@ -19,6 +19,7 @@ import {
   getApiClient,
   POLL_INTERVAL_MS,
 } from "@/lib/api/client";
+import { waitForPoll } from "@/lib/poll";
 import { HIGHLIGHTS_STAGES } from "@/lib/api/stages";
 import type {
   Candidate,
@@ -208,7 +209,7 @@ export function HighlightsDialog({
         current.state !== "failed"
       ) {
         setStage({ kind: "making", highlights: current });
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        await waitForPoll(POLL_INTERVAL_MS, () => {});
         if (!running.current) return;
         current = await client.getHighlights(current.highlights_id);
       }

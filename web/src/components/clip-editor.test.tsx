@@ -225,9 +225,12 @@ describe("ClipEditor", () => {
       "Rendered vertical clip",
     ) as HTMLVideoElement;
     expect(rendered.getAttribute("preload")).toBe("none");
-    expect(poster.clipPoster).toHaveBeenCalledWith("/mock-media/clip.mp4", {
-      width: undefined,
-    });
+    // The poster is asked for from an effect, which can land just after the render.
+    await vi.waitFor(() =>
+      expect(poster.clipPoster).toHaveBeenCalledWith("/mock-media/clip.mp4", {
+        width: undefined,
+      }),
+    );
     await vi.waitFor(() =>
       expect(rendered.getAttribute("poster")).toBe(
         "data:image/jpeg;base64,CCCC",

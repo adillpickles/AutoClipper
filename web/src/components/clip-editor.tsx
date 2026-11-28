@@ -17,6 +17,7 @@ import {
   getApiClient,
   POLL_INTERVAL_MS,
 } from "@/lib/api/client";
+import { schedulePoll, waitForPoll } from "@/lib/poll";
 import { EXPORT_STAGES } from "@/lib/api/stages";
 import type {
   AnalysisResult,
@@ -206,7 +207,7 @@ export function ClipEditor() {
   useEffect(() => {
     if (!readyData) return;
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer: (() => void) | undefined;
     let failingSince: number | null = null;
     let backoff = FIRST_BACKOFF_MS;
     const client = getApiClient();
@@ -227,7 +228,7 @@ export function ClipEditor() {
           );
         }
         if (next.preview.status === "preparing") {
-          timer = setTimeout(pollMedia, POLL_INTERVAL_MS);
+          timer = schedulePoll(pollMedia, POLL_INTERVAL_MS);
         }
       } catch (error) {
         if (cancelled) return;
@@ -242,7 +243,7 @@ export function ClipEditor() {
           setMediaError("Can't reach the server to load media details.");
           return;
         }
-        timer = setTimeout(pollMedia, backoff);
+        timer = schedulePoll(pollMedia, backoff);
         backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
       }
     }
@@ -250,7 +251,7 @@ export function ClipEditor() {
     void pollMedia();
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      timer?.();
     };
   }, [readyData, jobId, candidateId, mediaRetryCount]);
 
@@ -490,8 +491,7 @@ export function ClipEditor() {
     persistTrim(effective);
     const runId = ++pollRunRef.current;
     captionsTouchedRef.current = true;
-    const wait = (ms: number) =>
-      new Promise<void>((resolve) => setTimeout(resolve, ms));
+    const wait = (ms: number) => waitForPoll(ms, () => {});
 
     try {
       const captionsAllowed =

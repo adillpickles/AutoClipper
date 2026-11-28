@@ -380,6 +380,8 @@ describe("ResultsScreen captions capability and fallback", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Make highlights video" }),
     );
+    // The dialog loads in its own chunk (#241).
+    await screen.findByRole("dialog");
     const startInput = document.getElementById(
       "start-c001",
     ) as HTMLInputElement;
@@ -431,6 +433,8 @@ describe("ResultsScreen captions capability and fallback", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Make highlights video" }),
     );
+    // The dialog loads in its own chunk (#241).
+    await screen.findByRole("dialog");
     const startInput = document.getElementById(
       "start-c001",
     ) as HTMLInputElement;
