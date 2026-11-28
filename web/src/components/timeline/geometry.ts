@@ -135,36 +135,70 @@ export function rankLabelAnchor(
   return "center";
 }
 
+export type PopoverPlacement = "above" | "beside-left" | "beside-right";
+
 /**
  * Where the scrub popover goes, so it never covers content outside the timeline card (the
- * "Download all clips" row above it, say). It sits `gap` px above the track when that fits
- * inside the card (`inset` px from its top edge). Otherwise it is clamped to the card's top and
- * moved beside the playhead, on the side with more room, so it overlaps the track without
- * hiding the spot being previewed. Vertical inputs are viewport pixels; `topPx` is the
- * popover's `top` relative to the track.
+ * "Download all clips" row above it, say) and never sticks out of the card's sides. It sits
+ * `gap` px above the track, centred on the playhead, when that fits inside the card (`inset` px
+ * from its top edge). Otherwise it is clamped to the card's top and moved beside the playhead
+ * (`offset` px clear of it), on the side with more room, so it overlaps the track without hiding
+ * the spot being previewed. Either way its left edge is then clamped so the whole label stays
+ * `inset` px inside the card's left and right edges; on a card too narrow for that it may cover
+ * the playhead rather than leave the card.
+ *
+ * `height` should be the tallest the label can get (with a moment and a frame), not its current
+ * height, so the placement doesn't flip while scrubbing on and off a moment (#238). Inputs are
+ * viewport pixels; `topPx` and `leftPx` are the popover's `top` and `left` relative to the track.
  */
-export function popoverPlacement({
-  trackTop,
-  boundsTop,
+export function popoverPosition({
+  track,
+  bounds,
+  width,
   height,
   cursorPct,
   gap = 8,
   inset = 8,
+  offset = 12,
 }: {
-  trackTop: number;
-  boundsTop: number;
+  track: { left: number; top: number; width: number };
+  bounds: { left: number; right: number; top: number };
+  width: number;
   height: number;
   cursorPct: number;
   gap?: number;
   inset?: number;
-}): { topPx: number; beside: "left" | "right" | null } {
-  const above = trackTop - gap - height;
-  const min = boundsTop + inset;
-  if (above >= min) return { topPx: above - trackTop, beside: null };
-  return { topPx: min - trackTop, beside: cursorPct < 50 ? "right" : "left" };
+  offset?: number;
+}): { topPx: number; leftPx: number; placement: PopoverPlacement } {
+  const anchor = track.left + (clamp(cursorPct, 0, 100) / 100) * track.width;
+  const minTop = bounds.top + inset;
+  const minLeft = bounds.left + inset;
+  const maxRight = bounds.right - inset;
+  const above = track.top - gap - height;
+
+  let placement: PopoverPlacement;
+  let top: number;
+  let left: number;
+  if (above >= minTop) {
+    placement = "above";
+    top = above;
+    left = anchor - width / 2;
+  } else {
+    top = minTop;
+    placement =
+      maxRight - anchor >= anchor - minLeft ? "beside-right" : "beside-left";
+    left =
+      placement === "beside-right" ? anchor + offset : anchor - offset - width;
+  }
+  // A label wider than the card (never the case at 320 px and up) keeps its left edge inside.
+  left = clamp(left, minLeft, Math.max(minLeft, maxRight - width));
+  return { topPx: top - track.top, leftPx: left - track.left, placement };
 }
 
-/** Which way a floating label anchored at `pct` should extend so it stays inside the track. */
+/**
+ * Which way a floating label anchored at `pct` should extend so it stays inside the track. Only a
+ * first guess before the label is measured (`popoverPosition` then clamps it to the card).
+ */
 export function popoverAlign(pct: number): "start" | "center" | "end" {
   if (pct < 18) return "start";
   if (pct > 82) return "end";

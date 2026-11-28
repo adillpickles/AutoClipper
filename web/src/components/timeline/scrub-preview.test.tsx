@@ -128,55 +128,111 @@ describe("ScrubPreview placement", () => {
     vi.restoreAllMocks();
   });
 
-  /** Render inside a card whose top is `cardTop` px above the track (viewport y 500). */
-  function placeIn(cardTop: number, height: number, leftPct = 50) {
+  /**
+   * Render inside a card whose top is at viewport y `cardTop` (the track is at y 500). The label
+   * is `height` px tall (`sizerHeight` for its hidden tallest copy, the same unless given).
+   */
+  function placeIn(
+    cardTop: number,
+    height: number,
+    leftPct = 50,
+    {
+      sizerHeight = height,
+      momentLabel = null,
+      cardWidth = 800,
+    }: {
+      sizerHeight?: number;
+      momentLabel?: string | null;
+      cardWidth?: number;
+    } = {},
+  ) {
     const card = document.createElement("section");
     const track = document.createElement("div");
     card.appendChild(track);
     document.body.appendChild(card);
     vi.spyOn(card, "getBoundingClientRect").mockReturnValue(
-      DOMRect.fromRect({ x: 0, y: cardTop, width: 800, height: 400 }),
+      DOMRect.fromRect({ x: 0, y: cardTop, width: cardWidth, height: 400 }),
     );
     vi.spyOn(track, "getBoundingClientRect").mockReturnValue(
-      DOMRect.fromRect({ x: 0, y: 500, width: 800, height: 96 }),
+      DOMRect.fromRect({ x: 0, y: 500, width: cardWidth, height: 96 }),
     );
-    // jsdom has no layout: give the label its height and the track as its offset parent.
-    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(
-      height,
+    // jsdom has no layout: give the label its size and the track as its offset parent.
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.dataset.testid === "scrub-preview-sizer"
+          ? sizerHeight
+          : height;
+      },
     );
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(160);
     vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockReturnValue(
       track,
     );
-    render(
+    const view = (label: string | null) => (
       <ScrubPreview
         visible
         leftPct={leftPct}
         align="center"
         timeLabel="3:00"
-        momentLabel={null}
-        hint={null}
+        momentLabel={label}
+        hint={label ? "Click to open" : null}
         source={null}
         timeS={180}
         onSourceError={vi.fn()}
         boundsRef={{ current: card }}
-      />,
-      { container: track },
+      />
     );
-    return screen.getByTestId("scrub-preview");
+    const { rerender } = render(view(momentLabel), { container: track });
+    return {
+      label: screen.getByTestId("scrub-preview"),
+      rerender: (label: string | null) => rerender(view(label)),
+    };
   }
 
-  it("sits above the track when the card has room", () => {
-    const label = placeIn(300, 120);
+  it("sits above the track, centred on the playhead, when the card has room", () => {
+    const { label } = placeIn(300, 120);
     expect(label.dataset.placement).toBe("above");
     expect(label.style.top).toBe("-128px");
-    expect(label.style.translate).toBe("");
+    expect(label.style.left).toBe("320px");
+    expect(label.style.translate).toBe("none");
   });
 
   it("stays inside the card, beside the playhead, when there isn't room above", () => {
-    const label = placeIn(420, 137, 30);
+    const { label } = placeIn(420, 137, 30);
     expect(label.dataset.placement).toBe("beside-right");
     // 8 px below the card's top: nothing above the timeline card is covered.
     expect(label.style.top).toBe("-72px");
-    expect(label.style.translate).toMatch(/^12px( 0(px)?)?$/);
+    // 12 px clear of the playhead at 240 px.
+    expect(label.style.left).toBe("252px");
+  });
+
+  it("keeps one placement while scrubbing on and off a moment (375 px)", () => {
+    // 150 px above the track: the bare label (120 px) would fit, the label with a moment
+    // (160 px) wouldn't. The hidden tallest copy (172 px) decides, so it never flips.
+    const { label, rerender } = placeIn(350, 120, 12, {
+      sizerHeight: 172,
+      cardWidth: 343,
+    });
+    expect(label.dataset.placement).toBe("beside-right");
+    const top = label.style.top;
+    rerender("#1 · Huge clutch");
+    expect(label.dataset.placement).toBe("beside-right");
+    expect(label.style.top).toBe(top);
+    rerender(null);
+    expect(label.dataset.placement).toBe("beside-right");
+  });
+
+  it("clamps a centred label inside the card's left edge (320 px)", () => {
+    // A 288 px card; centred at 19% the label would start 25 px before the card.
+    const { label } = placeIn(300, 120, 19, { cardWidth: 288 });
+    expect(label.dataset.placement).toBe("above");
+    expect(label.style.left).toBe("8px");
+  });
+
+  it("clamps a label beside the playhead inside the card's right edge (320 px)", () => {
+    // Beside the playhead at 40% it would end at 287 px, past the card's 280 px inner edge.
+    const { label } = placeIn(420, 137, 40, { cardWidth: 288 });
+    expect(label.dataset.placement).toBe("beside-right");
+    expect(label.style.left).toBe("120px");
   });
 });

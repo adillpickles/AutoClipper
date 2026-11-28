@@ -1,5 +1,8 @@
 "use client";
 
+import { useEffect, useId, useRef, useState } from "react";
+
+import { Button } from "@/components/ui/button";
 import { usePosterFrame } from "@/lib/use-poster-frame";
 
 /**
@@ -7,6 +10,11 @@ import { usePosterFrame } from "@/lib/use-poster-frame";
  * `usePosterFrame`, and a soft placeholder with a play glyph covers it until a frame is in.
  * It fills its parent (`absolute inset-0`), so the parent sets the size and aspect ratio and
  * must be `relative`. Used by the clip cards, the clip editor and the highlights player.
+ *
+ * If the video fails to load, the placeholder goes away either way (#238). With `onFailed` the
+ * parent decides what replaces the player (the clip cards show their own message); without it,
+ * a short "can't be played" note with a Retry button takes its place, and Retry loads the file
+ * again from scratch.
  */
 export function PosterVideo({
   src,
@@ -20,6 +28,77 @@ export function PosterVideo({
   /** Widest poster frame to grab, in pixels; larger views want a sharper one. */
   posterWidth?: number;
 }) {
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const statusRef = useRef<HTMLDivElement | null>(null);
+  const videoId = useId();
+
+  // Retry removes its own button, so keep keyboard focus from falling to <body>: on the new
+  // player while it loads, or on the message if the retry fails too.
+  useEffect(() => {
+    if (attempt === 0) return;
+    if (failed && !onFailed) statusRef.current?.focus();
+    else if (!failed) document.getElementById(videoId)?.focus();
+  }, [failed, onFailed, attempt, videoId]);
+
+  if (failed && !onFailed) {
+    return (
+      <div
+        ref={statusRef}
+        tabIndex={-1}
+        role="status"
+        className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[radial-gradient(80%_60%_at_50%_40%,var(--surface-elevated),var(--surface-media))] p-4 text-center text-sm text-ink-secondary"
+      >
+        <p className="max-w-52 text-pretty">
+          This video can&apos;t be played here. Try again, or download it
+          instead.
+        </p>
+        <Button
+          variant="media"
+          size="sm"
+          onClick={() => {
+            setFailed(false);
+            setAttempt((n) => n + 1);
+          }}
+        >
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <PosterVideoPlayer
+      // A fresh element per attempt: a new load and a new poster capture.
+      key={attempt}
+      id={videoId}
+      src={src}
+      label={label}
+      posterWidth={posterWidth}
+      failed={failed}
+      onError={() => {
+        setFailed(true);
+        onFailed?.();
+      }}
+    />
+  );
+}
+
+function PosterVideoPlayer({
+  id,
+  src,
+  label,
+  posterWidth,
+  failed,
+  onError,
+}: {
+  id: string;
+  src: string;
+  label: string;
+  posterWidth?: number;
+  failed: boolean;
+  onError: () => void;
+}) {
   const { showFrame, videoProps } = usePosterFrame(src, {
     width: posterWidth,
   });
@@ -28,14 +107,15 @@ export function PosterVideo({
     <>
       <video
         {...videoProps}
+        id={id}
         src={src}
         controls
         playsInline
-        onError={onFailed}
+        onError={onError}
         className="absolute inset-0 size-full object-contain"
         aria-label={label}
       />
-      {!showFrame && (
+      {!showFrame && !failed && (
         <div
           aria-hidden="true"
           data-testid="clip-frame-placeholder"

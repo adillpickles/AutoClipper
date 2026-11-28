@@ -5,7 +5,7 @@ import {
   momentAt,
   pctOf,
   popoverAlign,
-  popoverPlacement,
+  popoverPosition,
   rankLabelAnchor,
   rulerTicks,
   spanGeometry,
@@ -92,46 +92,108 @@ describe("timeline geometry", () => {
     expect(rulerTicks(250).map((t) => t.seconds)).toEqual([0, 120, 250]);
   });
 
-  it("floats the scrub popover above the track when the card has room for it", () => {
+  it("floats the scrub popover above the track, centred on the playhead, when the card has room", () => {
     // 175 px between the card's top and the track (a 375 px wide screen).
     expect(
-      popoverPlacement({
-        trackTop: 672,
-        boundsTop: 498,
+      popoverPosition({
+        track: { left: 33, top: 672, width: 310 },
+        bounds: { left: 16, right: 359, top: 498 },
+        width: 160,
         height: 119,
         cursorPct: 50,
       }),
-    ).toEqual({ topPx: -127, beside: null });
+    ).toEqual({ topPx: -127, leftPx: 75, placement: "above" });
   });
 
   it("never lets the scrub popover past the card's top edge, moving it beside the playhead", () => {
     // 97 px of room at 1440 px wide but a 137 px popover: pinned 8 px below the card's top,
     // overlapping the track beside the playhead instead of covering the row above the card.
-    const left = popoverPlacement({
-      trackTop: 522,
-      boundsTop: 425,
+    const track = { left: 53, top: 522, width: 1334 };
+    const bounds = { left: 32, right: 1408, top: 425 };
+    const right = popoverPosition({
+      track,
+      bounds,
+      width: 192,
       height: 137,
       cursorPct: 30,
     });
-    expect(left).toEqual({ topPx: -89, beside: "right" });
-    expect(522 + left.topPx).toBeGreaterThanOrEqual(425);
-    expect(
-      popoverPlacement({
-        trackTop: 522,
-        boundsTop: 425,
-        height: 137,
-        cursorPct: 70,
-      }).beside,
-    ).toBe("left");
+    expect(right.placement).toBe("beside-right");
+    expect(right.topPx).toBe(-89);
+    expect(522 + right.topPx).toBeGreaterThanOrEqual(425);
+    // 12 px clear of the playhead.
+    expect(right.leftPx).toBeCloseTo(0.3 * 1334 + 12);
+    const left = popoverPosition({
+      track,
+      bounds,
+      width: 192,
+      height: 137,
+      cursorPct: 70,
+    });
+    expect(left.placement).toBe("beside-left");
+    expect(left.leftPx).toBeCloseTo(0.7 * 1334 - 12 - 192);
     // A card shorter than the popover still keeps its top edge.
     expect(
-      popoverPlacement({
-        trackTop: 100,
-        boundsTop: 95,
+      popoverPosition({
+        track: { left: 0, top: 100, width: 800 },
+        bounds: { left: 0, right: 800, top: 95 },
+        width: 160,
         height: 300,
         cursorPct: 50,
       }).topPx,
     ).toBe(3);
+  });
+
+  // The timeline card and its track as laid out at each screen width (the card is inset 16 px
+  // below 640 px, with p-4; wider, more inset and p-5), with the label's width there.
+  const LAYOUTS = [
+    { viewport: 320, cardLeft: 16, cardRight: 304, pad: 17, width: 160 },
+    { viewport: 375, cardLeft: 16, cardRight: 359, pad: 17, width: 160 },
+    { viewport: 768, cardLeft: 24, cardRight: 744, pad: 21, width: 192 },
+    { viewport: 1440, cardLeft: 32, cardRight: 1408, pad: 21, width: 192 },
+  ];
+  const SWEEP = [
+    0, 1, 2, 5, 10, 15, 17, 18, 19, 20, 25, 33, 50, 67, 75, 80, 81, 82, 83, 85,
+    90, 95, 98, 99, 100,
+  ];
+
+  it.each(LAYOUTS)(
+    "keeps the scrub popover inside the card at $viewport px, near both edges",
+    ({ cardLeft, cardRight, pad, width }) => {
+      const track = {
+        left: cardLeft + pad,
+        top: 600,
+        width: cardRight - cardLeft - 2 * pad,
+      };
+      const bounds = { left: cardLeft, right: cardRight, top: 300 };
+      // Plenty of room above (placed above) and too little (placed beside the playhead).
+      for (const roomTop of [300, 520]) {
+        for (const cursorPct of SWEEP) {
+          const { leftPx, placement } = popoverPosition({
+            track,
+            bounds: { ...bounds, top: roomTop },
+            width,
+            height: 200,
+            cursorPct,
+          });
+          const left = track.left + leftPx;
+          expect(placement === "above").toBe(roomTop === 300);
+          expect(left).toBeGreaterThanOrEqual(cardLeft + 8);
+          expect(left + width).toBeLessThanOrEqual(cardRight - 8);
+        }
+      }
+    },
+  );
+
+  it("still centres the popover on the playhead wherever that fits", () => {
+    // 375 px: just past the old 18% threshold the label is centred but pulled 8 px inside.
+    const track = { left: 33, top: 600, width: 310 };
+    const bounds = { left: 16, right: 359, top: 300 };
+    const at = (cursorPct: number) =>
+      popoverPosition({ track, bounds, width: 160, height: 120, cursorPct })
+        .leftPx;
+    expect(at(50)).toBeCloseTo(155 - 80);
+    expect(at(19)).toBe(24 - 33);
+    expect(at(81)).toBe(359 - 8 - 160 - 33);
   });
 
   it("keeps floating labels inside the track near its edges", () => {
