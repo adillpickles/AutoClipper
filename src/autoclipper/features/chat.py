@@ -19,11 +19,16 @@ Rules (docs/ml/features.md § Chat preprocessing, § Chat features, § Normaliza
   below `ZERO_STD` gives 0, so a VOD where every window is alike scores 0 everywhere.
 - **Lead/lag** columns are ``chat_msg_rate_z`` of windows t±k of the same VOD, and 0 past the
   VOD's edges (the VOD's average). Leads are offline-only: chat reacts 5-15 s after the event.
+- **Participation vs. reaction** (#192): greeting and farewell waves ("hi", "LATE", "bye") and
+  answer spam (many different short messages, as in chat-guessing games) are busy chat that
+  isn't reacting to anything. ``chat_greeting_rate``, ``chat_farewell_rate``,
+  ``chat_distinct_frac`` and ``chat_answer_frac`` let the ranking rule and the models tell them
+  from a shared reaction such as a wave of "KEKW".
 """
 
 import logging
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
@@ -34,7 +39,7 @@ log = logging.getLogger(__name__)
 
 # Bump when a definition below changes (docs/ml/features.md § Naming). The lexicon's own version
 # is appended, so changing a word list also changes `feature_version`.
-CHAT_FEATURE_VERSION: Final = "chat-v1"
+CHAT_FEATURE_VERSION: Final = "chat-v2"
 
 # docs/ml/features.md § Normalization: R = 30 windows (5 minutes of 10 s windows).
 ROLLING_WINDOWS: Final = 30
@@ -44,7 +49,16 @@ REPEAT_WINDOW_S: Final = 10.0
 LEAD_LAG_WINDOWS: Final = (1, 2, 3)
 
 REACTIONS: Final = ("laugh", "hype", "shock", "keyword")
-"""Lexicon categories; each becomes ``chat_<category>_rate``."""
+"""Lexicon reaction categories; each becomes ``chat_<category>_rate``."""
+
+PARTICIPATION: Final = ("greeting", "farewell")
+"""Optional lexicon categories for check-ins and goodbyes; each becomes ``chat_<category>_rate``
+(0 everywhere when the lexicon has no such section)."""
+
+# Answer-spam defaults (the lexicon's optional `answers` section overrides them): a message of at
+# most this many whitespace tokens and characters can be an answer.
+ANSWER_MAX_TOKENS: Final = 3
+ANSWER_MAX_CHARS: Final = 25
 
 MESSAGE_COLUMNS: Final = ("video_id", "offset_s", "user_hash", "text", "n_emotes", "bits")
 WINDOW_COLUMNS: Final = ("window_id", "video_id", "index", "start_s", "end_s")
@@ -67,6 +81,11 @@ FEATURE_COLUMNS: Final = (
     "chat_event_count",
     *(f"chat_msg_rate_lead{k}" for k in LEAD_LAG_WINDOWS),
     *(f"chat_msg_rate_lag{k}" for k in LEAD_LAG_WINDOWS),
+    # chat-v2 (#192): appended, so the chat-v1 columns keep their names, order and meaning.
+    "chat_greeting_rate",
+    "chat_farewell_rate",
+    "chat_distinct_frac",
+    "chat_answer_frac",
 )
 """The ``features_chat`` feature columns, all Float64, in output order."""
 
@@ -84,12 +103,19 @@ class Lexicon:
         reactions: One regex per category in `REACTIONS`.
         events: Regex for subscription, gift and raid notices.
         clip_filter: Regex for messages that give a clip away.
+        participation: One regex per `PARTICIPATION` category the file defines (greetings and
+            farewells); a missing one counts no messages.
+        answer_max_tokens: Longest answer-spam message, in whitespace tokens.
+        answer_max_chars: Longest answer-spam message, in characters.
     """
 
     version: int
     reactions: Mapping[str, str]
     events: str
     clip_filter: str
+    participation: Mapping[str, str] = field(default_factory=dict[str, str])
+    answer_max_tokens: int = ANSWER_MAX_TOKENS
+    answer_max_chars: int = ANSWER_MAX_CHARS
 
     @property
     def feature_version(self) -> str:
@@ -114,23 +140,61 @@ def load_lexicon(path: Path) -> Lexicon:
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise LexiconError(f"lexicon {path}: 'version' must be a positive integer")
     categories = data.get("categories")
-    if not isinstance(categories, dict) or set(categories) != set(REACTIONS):
-        raise LexiconError(f"lexicon {path}: 'categories' must hold exactly {', '.join(REACTIONS)}")
+    if (
+        not isinstance(categories, dict)
+        or not set(REACTIONS) <= set(categories)
+        or not set(categories) <= {*REACTIONS, *PARTICIPATION}
+    ):
+        raise LexiconError(
+            f"lexicon {path}: 'categories' must hold {', '.join(REACTIONS)} and may hold "
+            f"{', '.join(PARTICIPATION)}"
+        )
     reactions = {
         name: _category_regex(categories[name], f"{path}: categories.{name}") for name in REACTIONS
     }
+    participation = {
+        name: _category_regex(categories[name], f"{path}: categories.{name}", whole_message=True)
+        for name in PARTICIPATION
+        if name in categories
+    }
     events = _category_regex(data.get("events"), f"{path}: events")
     clip_filter = _category_regex(data.get("clip_filter"), f"{path}: clip_filter")
-    return Lexicon(version, reactions, events, clip_filter)
+    answers = data.get("answers", {})
+    if not isinstance(answers, dict) or not set(answers) <= set(_ANSWER_DEFAULTS):
+        raise LexiconError(f"lexicon {path}: 'answers' must be a mapping of max_tokens, max_chars")
+    limits = {key: answers.get(key, default) for key, default in _ANSWER_DEFAULTS.items()}
+    for key, value in limits.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise LexiconError(f"lexicon {path}: answers.{key} must be a positive integer")
+    return Lexicon(
+        version,
+        reactions,
+        events,
+        clip_filter,
+        participation,
+        answer_max_tokens=limits["max_tokens"],
+        answer_max_chars=limits["max_chars"],
+    )
 
 
-def _category_regex(section: object, where: str) -> str:
-    """One regex matching a message when any of the section's entries matches."""
+_ANSWER_DEFAULTS: Final = {"max_tokens": ANSWER_MAX_TOKENS, "max_chars": ANSWER_MAX_CHARS}
+
+
+def _category_regex(section: object, where: str, *, whole_message: bool = False) -> str:
+    """One regex matching a message when any of the section's entries matches.
+
+    With `whole_message`, the message must consist of the section's entries alone (repeated,
+    separated by spaces or punctuation): "hi chat" and "bye bye" match, "hey what was that" and
+    "he said bye" don't. Greetings and farewells use it, so a reaction that merely contains
+    "hey" or "bye" isn't counted as one.
+    """
     if not isinstance(section, dict) or not set(section) <= {"emotes", "words", "patterns"}:
         raise LexiconError(f"{where} must be a mapping of emotes, words and patterns")
     emotes = _strings(section.get("emotes", []), f"{where}.emotes")
     words = _strings(section.get("words", []), f"{where}.words")
     patterns = _strings(section.get("patterns", []), f"{where}.patterns")
+    if whole_message:
+        return _compiled(_whole_message_regex(emotes, words, patterns, where), where)
     parts: list[str] = []
     # Emoji match anywhere ("😂😂😂"); other emotes are whole tokens in exact case ("W" is hype,
     # "w" isn't), optionally followed by punctuation ("KEKW!").
@@ -147,7 +211,27 @@ def _category_regex(section: object, where: str) -> str:
     parts.extend(f"(?i:{pattern})" for pattern in patterns)
     if not parts:
         raise LexiconError(f"{where} has no entries")
-    regex = "|".join(parts)
+    return _compiled("|".join(parts), where)
+
+
+def _whole_message_regex(
+    emotes: list[str], words: list[str], patterns: list[str], where: str
+) -> str:
+    """A regex for messages made only of these entries (see `_category_regex`)."""
+    tokens: list[str] = []
+    if emotes:  # exact case, emoji included
+        tokens.append("|".join(pl.escape_regex(e) for e in sorted(emotes, key=len, reverse=True)))
+    if words:
+        alternatives = "|".join(pl.escape_regex(w) for w in sorted(words, key=len, reverse=True))
+        tokens.append(rf"(?i:(?:{alternatives})\b)")
+    tokens.extend(f"(?i:{pattern})" for pattern in patterns)
+    if not tokens:
+        raise LexiconError(f"{where} has no entries")
+    token = "|".join(f"(?:{t})" for t in tokens)
+    return rf"^\W*(?:(?:{token})\W*)+$"
+
+
+def _compiled(regex: str, where: str) -> str:
     try:
         pl.Series([""]).str.contains(regex)
     except pl.exceptions.ComputeError as exc:
@@ -215,6 +299,11 @@ def compute_chat_features(
             check_sortedness=False,
         )
         .filter(pl.col("window_id").is_not_null() & (pl.col("offset_s") < pl.col("end_s")))
+        # An answer is a short, reaction-free message nobody else sent in the same window: many
+        # of them is chat answering (a guessing game), not chat reacting together.
+        .with_columns(
+            is_answer=pl.col("is_short_plain") & (pl.len().over(["window_id", "normalized"]) == 1)
+        )
     )
     n_outside = chat.height - placed.height
     silent = sorted(set(windows["video_id"].unique()) - set(placed["video_id"].unique()))
@@ -239,7 +328,9 @@ def compute_chat_features(
         n_chars=pl.col("n_chars").sum(),
         n_repeats=pl.col("is_repeat").sum(),
         n_events=pl.col("is_event").sum(),
-        **{f"n_{name}": pl.col(f"is_{name}").sum() for name in REACTIONS},
+        n_distinct=pl.col("normalized").n_unique(),
+        n_answers=pl.col("is_answer").sum(),
+        **{f"n_{name}": pl.col(f"is_{name}").sum() for name in (*REACTIONS, *PARTICIPATION)},
     )
     count_columns = [c for c in counts.columns if c != "window_id"]
     frame = (
@@ -263,7 +354,9 @@ def compute_chat_features(
         chat_repeat_frac=fraction("n_repeats", "n_msgs"),
         chat_mean_len=fraction("n_chars", "n_msgs"),
         chat_event_count=pl.col("n_events"),
-        **{f"chat_{name}_rate": per_second(f"n_{name}") for name in REACTIONS},
+        chat_distinct_frac=fraction("n_distinct", "n_msgs"),
+        chat_answer_frac=fraction("n_answers", "n_msgs"),
+        **{f"chat_{name}_rate": per_second(f"n_{name}") for name in (*REACTIONS, *PARTICIPATION)},
     )
     frame = frame.with_columns(
         chat_msg_rate_z=_vod_z("chat_msg_rate"),
@@ -299,6 +392,12 @@ def _with_message_signals(chat: pl.DataFrame, lexicon: Lexicon) -> pl.DataFrame:
     """Add per-message counts and flags; repeats are found across window boundaries."""
     text = pl.col("text")
     normalized = text.str.to_lowercase().str.replace_all(r"\s+", " ").str.strip_chars()
+    participation = {
+        name: text.str.contains(lexicon.participation[name])
+        if name in lexicon.participation
+        else pl.lit(False)
+        for name in PARTICIPATION
+    }
     return (
         chat.with_columns(
             n_tokens=text.str.count_matches(r"\S+"),
@@ -308,6 +407,19 @@ def _with_message_signals(chat: pl.DataFrame, lexicon: Lexicon) -> pl.DataFrame:
             is_event=(pl.col("bits") > 0) | text.str.contains(lexicon.events),
             normalized=normalized,
             **{f"is_{name}": text.str.contains(lexicon.reactions[name]) for name in REACTIONS},
+            **{f"is_{name}": flag for name, flag in participation.items()},
+        )
+        .with_columns(
+            # Answer-shaped: short, has a letter or digit, no emote, and neither a reaction, a
+            # greeting/farewell nor an event notice. Whether anyone else sent it is checked per
+            # window once messages are placed.
+            is_short_plain=pl.col("n_tokens").is_between(1, lexicon.answer_max_tokens)
+            & (pl.col("n_chars") <= lexicon.answer_max_chars)
+            & text.str.contains(r"[\p{L}\p{N}]")
+            & (pl.col("n_emotes") == 0)
+            & ~pl.any_horizontal(
+                pl.col(f"is_{name}") for name in (*REACTIONS, *PARTICIPATION, "event")
+            )
         )
         .sort(["video_id", "normalized", "offset_s"])
         .with_columns(
@@ -317,7 +429,6 @@ def _with_message_signals(chat: pl.DataFrame, lexicon: Lexicon) -> pl.DataFrame:
                 <= REPEAT_WINDOW_S
             ).fill_null(False)
         )
-        .drop("normalized")
     )
 
 

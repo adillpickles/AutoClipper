@@ -480,3 +480,44 @@ def test_ranking_order_and_scores_are_strictly_unchanged() -> None:
         assert after.top_signals == before.top_signals
         assert after.title is not None
         assert after.reason is not None
+
+
+def test_ranking_rule_flags_are_stated_in_the_reason_and_details() -> None:
+    """A candidate the default ranking's rules lowered says why (#192); others don't."""
+    n = 100
+    win = _windows(n)
+    msg_rate = np.full(n, 1.0)
+    msg_rate[4] = 8.0
+    msg_rate[50] = 8.0
+    features = pl.DataFrame(
+        {
+            "window_id": win["window_id"],
+            "chat_msg_rate": msg_rate,
+            "chat_msg_rate_z": (msg_rate - msg_rate.mean()) / msg_rate.std(),
+        }
+    )
+    lowered = _candidate(2, start_s=30.0, end_s=60.0, top_signals=("chat_msg_rate_z",))
+    plain = _candidate(1, start_s=490.0, end_s=520.0, top_signals=("chat_msg_rate_z",))
+
+    out = explain_candidates(
+        [plain, lowered],
+        windows=win,
+        features=features,
+        ranking_flags={"c002": ("stream_start", "silent_audio")},
+    )
+
+    assert out[1].reason is not None
+    assert out[1].reason.endswith(
+        "; ranked lower: near the start of the stream, the VOD's audio is silent here"
+    )
+    assert out[1].reason.startswith("Chat jumped")
+    rule = [d for d in out[1].signal_details if d.kind == "ranking_rule"]
+    assert [d.detail for d in rule] == [
+        "Near the start of the stream; the VOD's audio is silent here"
+    ]
+    assert out[0].reason is not None
+    assert "ranked lower" not in out[0].reason
+    assert all(d.kind != "ranking_rule" for d in out[0].signal_details)
+    # Order and scores are untouched.
+    assert [c.candidate_id for c in out] == ["c001", "c002"]
+    assert [c.score for c in out] == [plain.score, lowered.score]

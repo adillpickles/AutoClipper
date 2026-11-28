@@ -179,6 +179,7 @@ Analysis stages, in order. Skipped stages (e.g. served from a cache) are passed 
 | `chat_missing` | No chat replay could be obtained, for any reason (see **Precedence** below). Chat signals are absent. |
 | `audio_missing` | No audio could be obtained, for any reason. Audio signals are absent. |
 | `audio_partly_muted` | Twitch muted part of the VOD's audio, so audio signals are unreliable there. |
+| `audio_partly_silent` | At least a minute of the VOD's audio is digital silence (music muted out of the VOD without a Helix muted segment, or a starting screen), so audio signals are unreliable there. With the default ranking the message adds that moments there were ranked lower ([ranking rules](../ml/modeling-plan.md#3-candidate-generation)). |
 | `viewer_clips_missing` | The viewer clip list couldn't be fetched. No candidate is `viewer_clips` or `both`, and `n_viewer_clips_total` is `null` (unknown, not zero). |
 | `viewer_clips_incomplete` | Clip discovery hit a known query limit ([data sources](../data/data-sources.md), Get Clips), so some clips may be missing. |
 
@@ -486,7 +487,7 @@ To continue browsing, pass the last page's `next_cursor` as `before`. The cursor
 
 | Field | Type | Notes |
 |---|---|---|
-| `kind` | str (open enum) | Stable signal category, e.g. `chat_rate`, `chat_laugh`, `chat_hype`, `chat_shock`, `chat_keyword`, `chat_unique`, `chat_events`, `chat_emotes`, `chat_caps`, `audio_loudness`, `audio_onset`, `audio_event`, `viewer_clips`, `pause_snap` |
+| `kind` | str (open enum) | Stable signal category, e.g. `chat_rate`, `chat_laugh`, `chat_hype`, `chat_shock`, `chat_keyword`, `chat_unique`, `chat_events`, `chat_emotes`, `chat_caps`, `audio_loudness`, `audio_onset`, `audio_event`, `viewer_clips`, `pause_snap`, `ranking_rule` (the default ranking lowered this candidate's score; `detail` says why) |
 | `label` | str | Short human-readable label, e.g. `"Chat rate"`, `"Audio loudness"`, `"Viewer clips"` |
 | `detail` | str | Concrete aggregate summary, e.g. `"6× usual stream rate (z=3.4)"`, `"Loudest in the last 20 min (z=2.6)"`, `"3 viewer clips overlap this moment"` |
 

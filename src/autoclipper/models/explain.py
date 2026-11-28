@@ -9,6 +9,11 @@ attach three fields to each `Candidate`:
 - ``reason``: plain-English one-line summary of why the moment stood out.
 - ``signal_details``: structured list of contributing signals (`SignalDetail`) for the UI's
   "why" breakdown.
+
+When the default ranking's rules (`autoclipper.models.ranking_rules`, #192) lowered a
+candidate's score, its reason ends with what lowered it ("ranked lower: near the start of the
+stream, the VOD's audio is silent here") and a ``ranking_rule`` detail says the same, so a
+down-weighted moment that still ranks is never presented as plain hype.
 """
 
 import logging
@@ -139,6 +144,16 @@ _TOP_SIGNAL_FALLBACKS: Final[tuple[tuple[str, str, str, str], ...]] = (
 )
 
 
+# Ranking-rule flags (`autoclipper.models.ranking_rules.FLAGS`) in plain English.
+_RANKING_FLAG_TEXT: Final[dict[str, str]] = {
+    "stream_start": "near the start of the stream",
+    "stream_end": "near the end of the stream",
+    "silent_audio": "the VOD's audio is silent here",
+    "greetings": "chat is mostly greetings or goodbyes",
+    "answer_spam": "chat is mostly different short answers, not a shared reaction",
+}
+
+
 type _FloatArray = npt.NDArray[np.float64]
 
 
@@ -169,6 +184,7 @@ class _SignalSummary:
     audio_event_kind: str | None = None
     clips_clause: str | None = None
     pause_clause: str | None = None
+    ranking_clause: str | None = None
     details: list[SignalDetail] | None = None
 
     def __post_init__(self) -> None:
@@ -186,6 +202,7 @@ def explain_candidates(
     pause_snapped_edges: Mapping[str, tuple[bool, bool]] | None = None,
     pause_snapped_ids: Collection[str] | None = None,
     pause_snap: PauseSnapParams | None = None,
+    ranking_flags: Mapping[str, Sequence[str]] | None = None,
 ) -> list[Candidate]:
     """Attach deterministic ``title``, ``reason`` and ``signal_details`` to ranked candidates.
 
@@ -206,6 +223,8 @@ def explain_candidates(
         pause_snapped_ids: Optional explicit set of ``candidate_id``s known to have both edges
             snapped to speech pauses.
         pause_snap: Optional `PauseSnapParams` for WAV pause checks.
+        ranking_flags: Optional mapping ``candidate_id -> flags`` of the ranking rules that
+            lowered each candidate's score (`autoclipper.models.ranking_rules.candidate_flags`).
 
     Returns:
         New list of `Candidate` objects in the exact input order with ``title``, ``reason`` and
@@ -249,7 +268,8 @@ def explain_candidates(
                 log.warning("skipping pause alignment check path=%s error=%s", wav, exc)
                 wav_failed = True
 
-        title, reason, details = _explain_one(candidate, index, pause_state)
+        flags = () if ranking_flags is None else ranking_flags.get(candidate.candidate_id, ())
+        title, reason, details = _explain_one(candidate, index, pause_state, flags)
         explained.append(
             candidate.model_copy(
                 update={
@@ -365,6 +385,7 @@ def _explain_one(
     candidate: Candidate,
     index: _FeatureIndex | None,
     pause_state: str | None,
+    ranking_flags: Sequence[str] = (),
 ) -> tuple[str, str, list[SignalDetail]]:
     summary = _SignalSummary()
     assert summary.details is not None
@@ -431,6 +452,18 @@ def _explain_one(
                 kind="pause_snap",
                 label="Speech boundaries",
                 detail="End aligned to a speech pause",
+            )
+        )
+
+    # Ranking rules that lowered the score: always stated, whatever else the reason holds.
+    reasons = [_RANKING_FLAG_TEXT[flag] for flag in ranking_flags if flag in _RANKING_FLAG_TEXT]
+    if reasons:
+        summary.ranking_clause = "ranked lower: " + ", ".join(reasons)
+        summary.details.append(
+            SignalDetail(
+                kind="ranking_rule",
+                label="Ranked lower",
+                detail=_capitalize("; ".join(reasons)),
             )
         )
 
@@ -966,7 +999,9 @@ def _compose_reason(summary: _SignalSummary) -> str:
         clauses.append(summary.pause_clause)
 
     if not clauses:
-        return "Steady activity throughout"
+        clauses.append("steady activity throughout")
+    if summary.ranking_clause is not None:
+        clauses.append(summary.ranking_clause)
     return _capitalize("; ".join(clauses))
 
 

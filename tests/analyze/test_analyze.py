@@ -1390,6 +1390,76 @@ def test_analyze_explanations_preserve_candidate_order_and_scores(
         assert raw.reason is None
 
 
+def _silence_wav_start(path: Path, seconds: float) -> None:
+    """Overwrite the first `seconds` of a 16-bit PCM WAV with digital silence."""
+    import wave
+
+    with wave.open(str(path), "rb") as source:
+        params = source.getparams()
+        frames = source.readframes(params.nframes)
+    n_bytes = min(
+        len(frames), int(seconds * params.framerate) * params.sampwidth * params.nchannels
+    )
+    with wave.open(str(path), "wb") as target:
+        target.setparams(params)
+        target.writeframes(bytes(n_bytes) + frames[n_bytes:])
+
+
+def test_the_default_ranking_down_weights_a_silent_stream_start_and_says_so(
+    tmp_path: Path, lexicon: Lexicon
+) -> None:
+    """#192: with the first two minutes of audio silent, the default ranking lowers that stretch,
+    warns `audio_partly_silent` and states the rule in each lowered candidate's reason; a named
+    baseline ranks with the plain sum, and disabled rules change nothing."""
+    from autoclipper.ingest.media import normalized_audio_path
+    from autoclipper.models.ranking_rules import RankingRules
+
+    root = tmp_path / "synthetic"
+    generate_dataset(root, seed=1)
+    vods = pl.read_parquet(root / "processed" / "vods.parquet")
+    video_id = str(vods["video_id"][0])
+    _adapt_clip_snapshot(root, video_id)
+    _silence_wav_start(normalized_audio_path(root, video_id), 120.0)
+
+    def run(name: str, **kwargs: object) -> AnalysisResult:
+        return analyze_vod(
+            video_id,
+            data_dir=root,
+            artifacts_dir=tmp_path / name,
+            tools=IngestTools(),
+            lexicon=lexicon,
+            clock=lambda: NOW,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    ruled = run("default")
+    plain = run("off", ranking_rules=RankingRules(enabled=False))
+    named = run("named", baseline="chat_spike")
+
+    warnings = {w.code: w.message for w in ruled.warnings}
+    assert "audio_partly_silent" in warnings
+    assert "ranked lower" in warnings["audio_partly_silent"]
+    assert "ranked lower" not in {w.code: w.message for w in plain.warnings}["audio_partly_silent"]
+    lowered = [c for c in ruled.candidates if c.reason and "ranked lower" in c.reason]
+    assert lowered, "something in the silent stream start should have ranked lower"
+    # The synthetic VOD (a few minutes) is shorter than intro_s + outro_s: only silence applies.
+    assert ruled.vod.duration_s <= RankingRules().intro_s + RankingRules().outro_s
+    assert all(c.reason and c.reason.endswith("the VOD's audio is silent here") for c in lowered)
+    assert all(c.start_s < 120.0 for c in lowered)
+    assert all(any(d.kind == "ranking_rule" for d in c.signal_details) for c in lowered), (
+        "the why-breakdown must carry the rule too"
+    )
+    for result in (plain, named):
+        assert not any(c.reason and "ranked lower" in c.reason for c in result.candidates)
+    # Candidates clear of the silent stretch keep their scores.
+    audible = {(c.start_s, c.end_s): c.score for c in plain.candidates if c.start_s >= 130.0}
+    kept = {
+        (c.start_s, c.end_s): c.score for c in ruled.candidates if (c.start_s, c.end_s) in audible
+    }
+    assert kept
+    assert all(kept[key] == audible[key] for key in kept)
+
+
 def _adapt_clip_snapshot(root: Path, video_id: str) -> None:
     """Write this VOD's clip snapshot the way ingest would have (a Parquet plus its
     manifest), from the single synthetic clips table, so the ingest step finds it done."""

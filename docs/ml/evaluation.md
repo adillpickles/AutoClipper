@@ -33,7 +33,7 @@ Build step 1 first. Everything below is the fuller version.
 | Random | `random` | Uniform random window scores (mean over 100 seeds) |
 | Chat spike | `chat_spike` | Window score = `chat_msg_rate_z` |
 | Loudness | `loudness` | Window score = `audio_rms_max_z` |
-| Chat + loudness | `chat_loudness` | Window score = `chat_msg_rate_z + audio_rms_max_z`. A strong unlearned heuristic. |
+| Chat + loudness | `chat_loudness` | Window score = `chat_msg_rate_z + audio_rms_max_z`. A strong unlearned heuristic. The app's default ranking adds the [ranking rules](modeling-plan.md#3-candidate-generation) on top (#192); the baseline here is the plain sum. |
 
 The ID is the name used in configs, reports and the API's `scorer.name`. Implemented in `autoclipper.models.baselines` on the shared `Scorer` interface (`autoclipper.models.base`: `fit` / `score` / `save` / `load`, created by name with `make_scorer`). `random` hashes the seed and `window_id`, so a seed gives the same ranking whatever the row order; it is reported as the mean over seeds 0–99 (`random_scorers` plus `autoclipper.eval.harness.evaluate_mean`, which averages each VOD's metrics over the runs before the VOD bootstrap). A missing feature value counts as 0 (the VOD's average) and is logged, and so does the audio of a window flagged `audio_is_muted`, whose values are unreliable. Every baseline is a window scorer and goes through the same filtering, source-time alignment, candidate generation ([modeling plan § 3](modeling-plan.md#3-candidate-generation)), top-10 budget and matching rules as the trained models. If a signal is unavailable for a VOD (e.g. muted audio), record it and the baselines it affects.
 

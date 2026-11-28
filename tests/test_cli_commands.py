@@ -779,3 +779,75 @@ def test_serve_pipeline_wires_tools_for_and_segment_fetcher(
     assert seen_creds[0].client_secret.get_secret_value() == "fake-secret"
     assert tools_ok.salt is not None
     assert tools_ok.salt.get_secret_value() == "fake-salt"
+
+
+# --- ranking rules (#192) -----------------------------------------------------------------------
+
+
+def test_analyze_passes_the_ranking_rules_file_and_rejects_a_bad_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autoclipper.models.ranking_rules import RankingRules
+
+    lexicon_path = Path(__file__).resolve().parents[1] / "configs" / "lexicon.yaml"
+    seen: list[object] = []
+
+    def _capture(*_args: object, **kwargs: Any) -> AnalysisResult:  # noqa: ANN401
+        seen.append(kwargs["ranking_rules"])
+        raise ScorerError("stop here")
+
+    monkeypatch.setattr(analyze_mod, "analyze_vod", _capture)
+    rules = tmp_path / "ranking.yaml"
+    rules.write_text("version: 1\nintro_s: 60\nenabled: false\n", encoding="utf-8")
+    bad = tmp_path / "bad-ranking.yaml"
+    bad.write_text("version: 1\nintro_seconds: 60\n", encoding="utf-8")
+
+    base = ["analyze", "123456", "--lexicon", str(lexicon_path)]
+    runner.invoke(app, [*base, "--ranking-rules", str(rules)])
+    runner.invoke(app, base)  # no option: configs/ranking.yaml or the equal built-in defaults
+    rejected = runner.invoke(app, [*base, "--ranking-rules", str(bad)])
+
+    assert seen == [RankingRules(intro_s=60.0, enabled=False), RankingRules()]
+    assert rejected.exit_code == ExitCode.USER_ERROR
+    assert "unknown keys: intro_seconds" in _plain(rejected.output)
+
+
+def test_serve_hands_edited_ranking_rules_to_pipeline_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import functools
+
+    from autoclipper.models.ranking_rules import RankingRules
+
+    sample_path = tmp_path / "preview.mp4"
+    sample_path.write_bytes(b"stub")
+    configs = Path(__file__).resolve().parents[1] / "configs"
+    captured: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        api_service_mod,
+        "ensure_sample_media",
+        lambda _dir: api_service_mod.SampleMedia(sample_path),
+    )
+
+    class _FakeService:
+        def __init__(self, **kwargs: Any) -> None:  # noqa: ANN401
+            captured.append(kwargs)
+
+    monkeypatch.setattr(api_service_mod, "MockService", _FakeService)
+    monkeypatch.setattr(api_app_mod, "create_app", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(uvicorn, "run", lambda *_args, **_kwargs: None)
+    edited = tmp_path / "ranking.yaml"
+    edited.write_text("version: 1\nedge_factor: 0.25\n", encoding="utf-8")
+    base = ["serve", "--jobs", "pipeline", "--lexicon", str(configs / "lexicon.yaml")]
+    base += ["--channels", str(configs / "channels.yaml")]
+
+    default = runner.invoke(app, [*base, "--ranking-rules", str(configs / "ranking.yaml")])
+    custom = runner.invoke(app, [*base, "--ranking-rules", str(edited)])
+
+    assert default.exit_code == ExitCode.SUCCESS, default.output
+    assert custom.exit_code == ExitCode.SUCCESS, custom.output
+    assert "analyze" not in captured[0]  # the shipped rules are analyze_vod's own defaults
+    partial = captured[1]["analyze"]
+    assert isinstance(partial, functools.partial)
+    assert partial.func is analyze_mod.analyze_vod
+    assert partial.keywords["ranking_rules"] == RankingRules(edge_factor=0.25)
