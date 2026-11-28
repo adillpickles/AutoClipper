@@ -2,11 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useState, useSyncExternalStore } from "react";
 
 import { getApiClient, isMockMode } from "@/lib/api/client";
 
 type RunnerBadge = "mock" | "pipeline" | null;
+
+// The API mode never changes while the page is open.
+const subscribeNever = () => () => {};
 
 const NAV_ITEMS = [
   { href: "/", label: "Single VOD", match: (path: string) => path === "/" },
@@ -71,8 +74,14 @@ function NavLinks({
   );
 }
 
+/** `/library/` and `/library` are the same page; only the root keeps its slash. */
+export function normalizePath(pathname: string): string {
+  const trimmed = pathname.replace(/\/+$/, "");
+  return trimmed === "" ? "/" : trimmed;
+}
+
 function ActiveNavLinks({ variant }: { variant: "desktop" | "mobile" }) {
-  const pathname = usePathname() ?? "/";
+  const pathname = normalizePath(usePathname() ?? "/");
   return <NavLinks pathname={pathname} variant={variant} />;
 }
 
@@ -85,8 +94,15 @@ export function SiteHeader({
 }: {
   width?: "default" | "wide";
 } = {}) {
-  const browserMock = isMockMode();
-  const [badge, setBadge] = useState<RunnerBadge>(browserMock ? "mock" : null);
+  // Read after hydration, never while hydrating: the server render and the browser's first
+  // render must match even if their view of the API mode differs (#217).
+  const browserMock = useSyncExternalStore(
+    subscribeNever,
+    isMockMode,
+    () => false,
+  );
+  const [serverBadge, setServerBadge] = useState<RunnerBadge>(null);
+  const badge: RunnerBadge = browserMock ? "mock" : serverBadge;
 
   useEffect(() => {
     if (browserMock) return;
@@ -94,7 +110,7 @@ export function SiteHeader({
     getApiClient()
       .getHealth()
       .then((health) => {
-        if (!cancelled) setBadge(health.job_runner);
+        if (!cancelled) setServerBadge(health.job_runner);
       })
       .catch(() => {
         // The active screen handles server reachability errors.
