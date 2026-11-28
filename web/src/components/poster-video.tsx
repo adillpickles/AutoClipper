@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { usePosterFrame } from "@/lib/use-poster-frame";
@@ -31,11 +31,15 @@ export function PosterVideo({
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
   const statusRef = useRef<HTMLDivElement | null>(null);
+  const videoId = useId();
 
-  // After a Retry that fails again, keep keyboard focus on the message instead of <body>.
+  // Retry removes its own button, so keep keyboard focus from falling to <body>: on the new
+  // player while it loads, or on the message if the retry fails too.
   useEffect(() => {
-    if (failed && !onFailed && attempt > 0) statusRef.current?.focus();
-  }, [failed, onFailed, attempt]);
+    if (attempt === 0) return;
+    if (failed && !onFailed) statusRef.current?.focus();
+    else if (!failed) document.getElementById(videoId)?.focus();
+  }, [failed, onFailed, attempt, videoId]);
 
   if (failed && !onFailed) {
     return (
@@ -67,12 +71,11 @@ export function PosterVideo({
     <PosterVideoPlayer
       // A fresh element per attempt: a new load and a new poster capture.
       key={attempt}
+      id={videoId}
       src={src}
       label={label}
       posterWidth={posterWidth}
       failed={failed}
-      // Retry removes its own button: move focus to the new player so it isn't lost.
-      autoFocus={attempt > 0}
       onError={() => {
         setFailed(true);
         onFailed?.();
@@ -82,33 +85,29 @@ export function PosterVideo({
 }
 
 function PosterVideoPlayer({
+  id,
   src,
   label,
   posterWidth,
   failed,
-  autoFocus,
   onError,
 }: {
+  id: string;
   src: string;
   label: string;
   posterWidth?: number;
   failed: boolean;
-  autoFocus: boolean;
   onError: () => void;
 }) {
   const { showFrame, videoProps } = usePosterFrame(src, {
     width: posterWidth,
   });
-  const videoRef = videoProps.ref;
-
-  useEffect(() => {
-    if (autoFocus) videoRef.current?.focus();
-  }, [autoFocus, videoRef]);
 
   return (
     <>
       <video
         {...videoProps}
+        id={id}
         src={src}
         controls
         playsInline
