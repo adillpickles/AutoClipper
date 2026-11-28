@@ -89,6 +89,8 @@ describe("PosterVideo", () => {
     );
 
     poster.clipPoster.mockResolvedValue("data:image/jpeg;base64,CCCC");
+    // jsdom won't focus a <video> without a tabindex (browsers do), so watch the call.
+    const focus = vi.spyOn(HTMLMediaElement.prototype, "focus");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     const retried = container.querySelector("video") as HTMLVideoElement;
     expect(retried).toBeTruthy();
@@ -97,6 +99,12 @@ describe("PosterVideo", () => {
     expect(poster.clipPoster).toHaveBeenCalledTimes(2);
     await act(async () => {});
     expect(retried.getAttribute("poster")).toBe("data:image/jpeg;base64,CCCC");
+    // Retry removed its own button, so focus moves to the new player.
+    expect(focus.mock.contexts).toContain(retried);
+
+    // If the retry fails too, focus lands on the message, not <body>.
+    fireEvent.error(retried);
+    expect(document.activeElement).toBe(screen.getByRole("status"));
   });
 
   it("tells the parent about a failure and drops the placeholder when it handles it", async () => {

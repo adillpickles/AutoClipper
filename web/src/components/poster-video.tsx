@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { usePosterFrame } from "@/lib/use-poster-frame";
@@ -30,10 +30,18 @@ export function PosterVideo({
 }) {
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
+  const statusRef = useRef<HTMLDivElement | null>(null);
+
+  // After a Retry that fails again, keep keyboard focus on the message instead of <body>.
+  useEffect(() => {
+    if (failed && !onFailed && attempt > 0) statusRef.current?.focus();
+  }, [failed, onFailed, attempt]);
 
   if (failed && !onFailed) {
     return (
       <div
+        ref={statusRef}
+        tabIndex={-1}
         role="status"
         className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[radial-gradient(80%_60%_at_50%_40%,var(--surface-elevated),var(--surface-media))] p-4 text-center text-sm text-ink-secondary"
       >
@@ -63,6 +71,8 @@ export function PosterVideo({
       label={label}
       posterWidth={posterWidth}
       failed={failed}
+      // Retry removes its own button: move focus to the new player so it isn't lost.
+      autoFocus={attempt > 0}
       onError={() => {
         setFailed(true);
         onFailed?.();
@@ -76,17 +86,24 @@ function PosterVideoPlayer({
   label,
   posterWidth,
   failed,
+  autoFocus,
   onError,
 }: {
   src: string;
   label: string;
   posterWidth?: number;
   failed: boolean;
+  autoFocus: boolean;
   onError: () => void;
 }) {
   const { showFrame, videoProps } = usePosterFrame(src, {
     width: posterWidth,
   });
+  const videoRef = videoProps.ref;
+
+  useEffect(() => {
+    if (autoFocus) videoRef.current?.focus();
+  }, [autoFocus, videoRef]);
 
   return (
     <>
