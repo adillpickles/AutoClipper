@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Current Python and frontend setup. Tested on Windows 11 in PowerShell and Git Bash; CI runs Python on Ubuntu/Windows and frontend checks on Ubuntu. macOS is not yet tested. Background: [tooling](../decisions/0002-language-and-tooling.md). |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-28 |
 
 ## Prerequisites
 
@@ -32,6 +32,8 @@ TwitchDownloaderCLI --version
 ## First-time setup
 
 Only Git and uv are needed for these steps. FFmpeg and TwitchDownloaderCLI are needed once you run media or chat tasks.
+
+**Just want to run the app?** `bash scripts/demo.sh` (macOS, Linux) or `powershell -ExecutionPolicy Bypass -File scripts/demo.ps1` (Windows) does the install, `.env` (with a generated chat hash salt), `setup-tools`, `npm ci`, `web/.env.local` and `doctor` steps, then starts the backend and web app and opens the browser. Re-running is safe; `--skip-install` / `-SkipInstall` skips the installs and `--mock` / `-Mock` forces mock jobs (the default when Twitch credentials are empty). `demo.sh` writes the server logs to `artifacts/demo-logs/`. The steps below are the manual version, plus the dev tooling.
 
 **macOS, Linux, Git Bash:**
 
