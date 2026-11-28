@@ -73,28 +73,33 @@ export function ArchiveDownloads({ jobId }: { jobId: string }) {
 
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="mr-1 w-full text-xs font-semibold text-ink-tertiary sm:w-auto">
+          Get everything
+        </span>
         <Button
-          variant="secondary"
+          variant="ghost"
           size="sm"
           disabled={busy}
           onClick={() => void download("clips")}
         >
+          <ZipGlyph />
           Download all clips (ZIP)
         </Button>
         <Button
-          variant="secondary"
+          variant="ghost"
           size="sm"
           disabled={busy}
           onClick={() => void download("highlights")}
         >
+          <ZipGlyph />
           Download all highlights (ZIP)
         </Button>
       </div>
-      <div role="status" className="text-sm text-ink-secondary">
+      <div role="status" className="text-sm leading-6 text-ink-secondary">
         {message && <p>{message}</p>}
         {omitted.length > 0 && (
-          <ul className="mt-1 list-disc space-y-1 pl-5">
+          <ul className="mt-1 list-disc space-y-1 pl-5 marker:text-ink-tertiary">
             {omitted.map((item) => (
               <li key={item.render_id} className="wrap-anywhere">
                 {omissionLabel(item)}: {REASONS[item.reason]}
@@ -104,5 +109,22 @@ export function ArchiveDownloads({ jobId }: { jobId: string }) {
         )}
       </div>
     </div>
+  );
+}
+
+function ZipGlyph() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+      className="size-3.5 shrink-0"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M8 2.5v8M4.5 7.5L8 11l3.5-3.5M3 13.5h10" />
+    </svg>
   );
 }

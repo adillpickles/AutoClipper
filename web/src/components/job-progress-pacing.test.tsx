@@ -175,12 +175,12 @@ describe("JobProgress stage pacing", () => {
     await advance(MIN_STAGE_MS);
     expect(heading()).toBe("Analysis finished");
     expect(number("Windows scored")).toBe("36");
-    expect(number("Moments found")).toBe("3");
+    expect(number("Moments scored")).toBe("3");
     expect(
       screen.getByRole("link", { name: "See the clips" }).getAttribute("href"),
     ).toBe("/jobs/job_1/results");
     expect(screen.getByRole("status").textContent).toBe(
-      "Found 3 moments. Opening the clips…",
+      "Picked the top 3 moments. Opening the clips…",
     );
     expect(state.router.replace).toHaveBeenCalledTimes(1);
     expect(state.router.replace).toHaveBeenCalledWith("/jobs/job_1/results");

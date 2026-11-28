@@ -17,7 +17,6 @@ export const STAGE_LABELS: Readonly<Record<string, string>> = {
 
 export interface PipelineCount {
   label: string;
-  /** null when the pipeline couldn't count it (e.g. no chat replay). */
   value: number | null;
   /** The stage after which the count is known. */
   stage: string;
@@ -25,26 +24,24 @@ export interface PipelineCount {
 
 /**
  * The live numbers the screen shows once the result is in: chat messages read, windows scored
- * and moments found. Only counts the pipeline reports; nothing is estimated.
+ * and moments scored. Only counts the pipeline reports; nothing is estimated. A count the
+ * pipeline didn't report is left out, and results from before these counts existed (no chat or
+ * window count, #208) get no numbers row at all rather than a row of dashes (#217).
  */
 export function pipelineCounts(result: AnalysisResult): PipelineCount[] {
-  return [
+  const chat = result.n_chat_messages ?? null;
+  const windows = result.n_windows ?? null;
+  if (chat === null && windows === null) return [];
+  const counts: PipelineCount[] = [
+    { label: "Chat messages read", value: chat, stage: "downloading_chat" },
+    { label: "Windows scored", value: windows, stage: "ranking" },
     {
-      label: "Chat messages read",
-      value: result.n_chat_messages ?? null,
-      stage: "downloading_chat",
-    },
-    {
-      label: "Windows scored",
-      value: result.n_windows ?? null,
-      stage: "ranking",
-    },
-    {
-      label: "Moments found",
+      label: "Moments scored",
       value: result.candidates.length,
       stage: "ranking",
     },
   ];
+  return counts.filter((count) => count.value !== null);
 }
 
 const NUMBER = new Intl.NumberFormat("en-US");

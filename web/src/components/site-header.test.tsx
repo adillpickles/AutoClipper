@@ -77,6 +77,27 @@ describe("SiteHeader", () => {
     expect(libraryLinks[0].getAttribute("href")).toBe("/library");
     expect(libraryLinks[0].getAttribute("aria-current")).toBe("page");
   });
+
+  it.each(["/library", "/library/", "/channels", "/settings", "/jobs/job_1"])(
+    "marks at most the current page's tab on %s (#217)",
+    (pathname) => {
+      state.pathname = pathname;
+      render(<SiteHeader />);
+      const active = screen
+        .getAllByRole("link")
+        .filter((link) => link.getAttribute("aria-current") === "page")
+        .map((link) => link.textContent);
+      const expected = {
+        "/library": "Library",
+        "/library/": "Library",
+        "/channels": "Channels",
+        "/settings": "Settings",
+      }[pathname];
+      // Desktop and mobile navs each mark the same one tab; "Single VOD" never on another page.
+      expect(new Set(active)).toEqual(new Set(expected ? [expected] : []));
+      expect(active).not.toContain("Single VOD");
+    },
+  );
 });
 
 describe("SiteHeader settings link", () => {

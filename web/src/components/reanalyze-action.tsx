@@ -55,11 +55,23 @@ export function ReanalyzeAction({ jobId }: { jobId: string }) {
     return (
       <div key="idle" ref={container} className="contents">
         <Button
-          variant="ghost"
+          variant="subtle"
           size="sm"
           className="self-start"
           onClick={() => show({ kind: "confirm", pending: false, error: null })}
         >
+          <svg
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+            className="size-3.5"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M13 8a5 5 0 1 1-1.46-3.54M13 2.5v2.75h-2.75" />
+          </svg>
           Re-analyze
         </Button>
       </div>
@@ -72,17 +84,21 @@ export function ReanalyzeAction({ jobId }: { jobId: string }) {
       ref={container}
       role="region"
       aria-label="Confirm re-analyzing this VOD"
-      className="flex flex-col gap-3 rounded-control border border-border-subtle bg-surface-elevated p-4 text-sm text-ink-secondary"
+      className="relative flex w-full max-w-md flex-col gap-3 overflow-hidden rounded-card border border-signal-border bg-surface-elevated p-4 pl-5 text-sm text-ink-secondary shadow-card"
     >
-      <p className="font-semibold text-ink-primary">
+      <span
+        aria-hidden="true"
+        className="absolute inset-y-0 left-0 w-[3px] bg-signal"
+      />
+      <p className="font-display text-base font-semibold text-ink-primary">
         Analyze this VOD again from scratch?
       </p>
-      <p className="leading-5">
+      <p className="leading-6 text-pretty">
         A new analysis runs and renders its top clips again. It replaces this
         one in the Library; these results and their clips stay on disk.
       </p>
       {state.error && (
-        <p role="alert" className="font-medium text-danger">
+        <p role="alert" className="font-medium text-danger-soft-ink">
           {state.error}
         </p>
       )}

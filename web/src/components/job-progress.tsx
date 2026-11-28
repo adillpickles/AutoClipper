@@ -3,15 +3,18 @@
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { Button, ButtonLink } from "@/components/ui/button";
-import { EmptyState } from "@/components/ui/empty-state";
 import {
   CountValue,
   pipelineCounts,
   STAGE_LABELS,
   StageVisual,
 } from "@/components/pipeline-stages";
+import { Badge, type BadgeTone } from "@/components/ui/badge";
+import { Button, ButtonLink } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
+import { Notice } from "@/components/ui/notice";
+import { ProgressBar } from "@/components/ui/progress";
 import { JobProgressSkeleton } from "@/components/ui/skeleton";
 import {
   ApiRequestError,
@@ -27,6 +30,7 @@ import {
   usePacedStep,
   wasJustRequested,
 } from "@/lib/stage-pacing";
+import { momentsSummary } from "@/lib/top-clips";
 import { usePrefersReducedMotion } from "@/lib/use-reduced-motion";
 
 type View =
@@ -259,13 +263,25 @@ function JobStatus({
       })
     : [];
 
+  const status = STATUS_BADGE[shownState];
+
   return (
-    <div className="flex flex-col gap-6 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-panel sm:p-8">
-      <div className="flex flex-col gap-2">
-        <p className="inline-flex w-fit max-w-full items-center gap-2 rounded-pill border border-border-subtle bg-surface-elevated px-3 py-1 font-mono text-xs font-medium break-all text-ink-secondary">
-          VOD {job.video_id}
-        </p>
-        <h1 className="font-display text-2xl font-semibold tracking-tight text-balance break-words text-ink-primary sm:text-3xl">
+    <div className="relative flex flex-col gap-6 overflow-hidden rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-panel sm:p-8">
+      {/* A faint accent wash behind the headline: the edit bay's "on air" light. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 top-0 h-40 bg-[radial-gradient(60%_100%_at_50%_0%,var(--accent-soft),transparent)]"
+      />
+      <div className="relative flex flex-col gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Badge mono className="max-w-full truncate">
+            VOD {job.video_id}
+          </Badge>
+          <Badge tone={status.tone} live={status.live} dot={!status.live}>
+            {status.label}
+          </Badge>
+        </div>
+        <h1 className="font-display text-2xl font-semibold tracking-[-0.025em] text-balance break-words text-ink-primary sm:text-3xl">
           {headline}
         </h1>
         {/* Stage changes are announced here. While the stepper replays stages the server has
@@ -274,48 +290,36 @@ function JobStatus({
           {catchingUp ? "Analyzing…" : headline}
         </p>
         {job.state === "queued" && (
-          <p className="text-sm text-ink-secondary">
+          <p className="text-sm leading-6 text-ink-secondary">
             The server starts it as soon as it&apos;s free.
           </p>
         )}
       </div>
 
       {shownStage && job.state !== "failed" && (
-        <div className="flex flex-col items-center gap-3 rounded-card border border-border-subtle bg-surface-elevated px-4 py-5">
+        <div className="relative flex flex-col items-center gap-3 rounded-card border border-border-subtle bg-surface-canvas/60 px-4 pt-5 pb-4">
           <StageVisual
             key={shownStage.stage}
             stage={shownStage.stage}
             animated={!reducedMotion}
           />
-          <p className="text-sm font-medium text-ink-primary">{shownLabel}</p>
+          <p className="text-sm font-semibold text-ink-primary">{shownLabel}</p>
           {fraction !== null && progress && (
             <div className="flex w-full max-w-sm flex-col gap-2">
-              <div
-                role="progressbar"
-                aria-label={progress.message}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={Math.round(fraction * 100)}
-                className="h-2 overflow-hidden rounded-pill bg-surface-subtle"
-              >
-                <div
-                  className="h-full rounded-pill bg-accent transition-[width] duration-500"
-                  style={{ width: `${Math.round(fraction * 100)}%` }}
-                />
-              </div>
+              <ProgressBar
+                value={fraction * 100}
+                label={progress.message}
+                size="sm"
+              />
               <p className="text-center font-mono text-xs text-ink-secondary tabular-nums">
                 {Math.round(fraction * 100)}% of this step
               </p>
             </div>
           )}
           {catchingUp && job.state === "done" && (
-            <button
-              type="button"
-              onClick={skipReplay}
-              className="rounded-control px-2 py-1 text-xs font-medium text-ink-secondary underline-offset-4 hover:text-ink-primary hover:underline focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"
-            >
+            <Button variant="ghost" size="sm" onClick={skipReplay}>
               Skip to the results
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -323,23 +327,29 @@ function JobStatus({
       {counts.length > 0 && (
         <dl
           aria-label="Analysis numbers"
-          className="grid grid-cols-3 gap-2 sm:gap-3"
+          className={`relative grid gap-2 sm:gap-3 ${
+            counts.length === 3 ? "grid-cols-3" : "grid-cols-2"
+          }`}
         >
           {counts.map((count) => (
             <div
               key={count.label}
-              className="flex min-w-0 flex-col gap-1 rounded-card border border-border-subtle bg-surface-elevated px-3 py-2"
+              className="flex min-w-0 flex-col gap-1 rounded-card border border-border-subtle bg-surface-elevated px-3 py-2.5 sm:px-4"
             >
-              <dt className="text-xs text-ink-secondary">{count.label}</dt>
-              <dd className="font-mono text-lg font-semibold text-ink-primary tabular-nums">
+              <dt className="text-xs leading-4 text-ink-secondary">
+                {count.label}
+              </dt>
+              <dd
+                className={`font-mono text-lg font-semibold tabular-nums transition-colors sm:text-xl ${
+                  count.known ? "text-ink-primary" : "text-ink-tertiary"
+                }`}
+              >
                 {count.known && count.value !== null ? (
                   <CountValue value={count.value} />
                 ) : (
                   <>
                     <span aria-hidden="true">–</span>
-                    <span className="sr-only">
-                      {count.known ? "Not available" : "Not counted yet"}
-                    </span>
+                    <span className="sr-only">Not counted yet</span>
                   </>
                 )}
               </dd>
@@ -351,7 +361,7 @@ function JobStatus({
       {knownStages && (
         <ol
           role="list"
-          className="flex flex-col gap-3 border-t border-border-subtle pt-5"
+          className="relative flex flex-col gap-3.5 border-t border-border-subtle pt-5 before:absolute before:top-8 before:bottom-3 before:left-[0.6875rem] before:w-0.5 before:rounded-pill before:bg-border-subtle"
           aria-label={listLabel}
         >
           {JOB_STAGES.map((stage, i) => {
@@ -360,7 +370,7 @@ function JobStatus({
               <li
                 key={stage.stage}
                 aria-current={status === "current" ? "step" : undefined}
-                className="flex items-center gap-3 text-sm"
+                className="relative flex items-center gap-3 text-sm"
               >
                 <StepIcon status={status} />
                 <span className={`min-w-0 ${STEP_TEXT[status]}`}>
@@ -380,11 +390,8 @@ function JobStatus({
           className="flex flex-col gap-2"
         >
           {job.warnings.map((warning) => (
-            <li
-              key={warning.code}
-              className="rounded-control border border-signal-border bg-signal-soft px-4 py-3 text-sm text-signal-soft-ink"
-            >
-              {warning.message}
+            <li key={warning.code}>
+              <Notice tone="signal">{warning.message}</Notice>
             </li>
           ))}
         </ul>
@@ -434,15 +441,22 @@ function JobStatus({
               />
             </div>
           ) : (
-            <div className="flex flex-col items-start gap-4 border-t border-border-subtle pt-5">
-              <p
-                className="text-base font-medium text-ink-primary"
-                role="status"
-              >
-                Found {result.candidates.length}{" "}
-                {result.candidates.length === 1 ? "moment" : "moments"}.
-                {opensResults && " Opening the clips…"}
-              </p>
+            <div className="flex flex-col gap-4 border-t border-border-subtle pt-5">
+              <div className="flex items-start gap-3">
+                <span
+                  aria-hidden="true"
+                  className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-pill border border-success-border bg-success-soft text-success"
+                >
+                  <CheckGlyph className="size-3.5" />
+                </span>
+                <p
+                  className="text-base leading-7 font-semibold text-ink-primary"
+                  role="status"
+                >
+                  {momentsSummary(result.candidates.length)}
+                  {opensResults && " Opening the clips…"}
+                </p>
+              </div>
               <div className="flex flex-wrap items-center gap-3">
                 <ButtonLink href={resultsHref} variant="primary" size="lg">
                   See the clips
@@ -455,6 +469,33 @@ function JobStatus({
           ))}
       </div>
     </div>
+  );
+}
+
+const STATUS_BADGE: Record<
+  Job["state"],
+  { label: string; tone: BadgeTone; live: boolean }
+> = {
+  queued: { label: "Queued", tone: "neutral", live: false },
+  running: { label: "Analyzing", tone: "accent", live: true },
+  done: { label: "Finished", tone: "success", live: false },
+  failed: { label: "Stopped", tone: "danger", live: false },
+};
+
+function CheckGlyph({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+      className={className}
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3.5 8.5l3 3 6-7" />
+    </svg>
   );
 }
 
@@ -473,15 +514,13 @@ const STEP_SUFFIX: Record<StepStatus, string> = {
 };
 
 function StepIcon({ status }: { status: StepStatus }) {
+  // Solid backgrounds hide the stepper's connector line behind each icon.
   const base =
-    "flex size-6 shrink-0 items-center justify-center rounded-pill text-xs font-bold";
+    "relative z-10 flex size-6 shrink-0 items-center justify-center rounded-pill text-xs font-bold";
   if (status === "done") {
     return (
-      <span
-        aria-hidden="true"
-        className={`${base} bg-source-both text-source-both-ink`}
-      >
-        ✓
+      <span aria-hidden="true" className={`${base} bg-success text-accent-ink`}>
+        <CheckGlyph className="size-3.5" />
       </span>
     );
   }
@@ -494,7 +533,10 @@ function StepIcon({ status }: { status: StepStatus }) {
   }
   if (status === "current") {
     return (
-      <span aria-hidden="true" className={`${base} border-2 border-accent`}>
+      <span
+        aria-hidden="true"
+        className={`${base} border-2 border-accent bg-surface-panel shadow-[0_0_0_4px_var(--accent-soft)]`}
+      >
         <span className="size-2 rounded-pill bg-accent motion-safe:animate-pulse" />
       </span>
     );
@@ -502,7 +544,7 @@ function StepIcon({ status }: { status: StepStatus }) {
   return (
     <span
       aria-hidden="true"
-      className={`${base} border-2 border-border-strong`}
+      className={`${base} border-2 border-border-strong bg-surface-panel`}
     />
   );
 }

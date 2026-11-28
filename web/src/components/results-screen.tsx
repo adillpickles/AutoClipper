@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
@@ -9,7 +8,12 @@ import { ClipCard, type ClipExport } from "@/components/clip-card";
 import { HighlightsDialog } from "@/components/highlights-dialog";
 import { ReanalyzeAction } from "@/components/reanalyze-action";
 import { StreamTimeline } from "@/components/stream-timeline";
-import { buttonClasses } from "@/components/ui/button";
+import { Button, ButtonLink } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Notice } from "@/components/ui/notice";
+import { ProgressBar } from "@/components/ui/progress";
+import { ClipListSkeleton } from "@/components/ui/skeleton";
 import {
   ApiRequestError,
   getApiClient,
@@ -31,9 +35,9 @@ import {
   rememberedTrims,
   type SavedTrim,
 } from "@/lib/job-state";
+import { TOP_CLIPS } from "@/lib/top-clips";
 
-/** The top 10 are rendered as vertical clips automatically (PRD § 4). */
-export const TOP_CLIPS = 10;
+export { TOP_CLIPS } from "@/lib/top-clips";
 
 // Back off on network errors (2, 4, 8 s, capped at 10 s) and give up after about a minute (§ 9.1).
 const FIRST_BACKOFF_MS = 2000;
@@ -373,26 +377,27 @@ export function ResultsScreen() {
   };
 
   if (view.kind === "loading") {
-    return (
-      <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-primary">
-        Loading the results…
-      </h1>
-    );
+    return <ClipListSkeleton heading="h1" label="Loading the results…" />;
   }
   if (view.kind === "problem") {
+    const stillWorking = view.title === "Still working";
     return (
-      <div className="flex flex-col gap-4">
-        <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-primary">
-          {view.title}
-        </h1>
-        <p className="text-ink-secondary">{view.message}</p>
-        <Link
-          href={`/jobs/${jobId}`}
-          className="self-start rounded-[3px] font-semibold text-accent underline decoration-accent/40 underline-offset-[3px] hover:text-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
-        >
-          Back to the analysis
-        </Link>
-      </div>
+      <ErrorState
+        heading="h1"
+        tone={stillWorking ? "signal" : "danger"}
+        title={view.title}
+        message={view.message}
+        primaryAction={
+          <ButtonLink href={`/jobs/${jobId}`} variant="primary">
+            Back to the analysis
+          </ButtonLink>
+        }
+        secondaryAction={
+          <ButtonLink href="/" variant="secondary">
+            Analyze another VOD
+          </ButtonLink>
+        }
+      />
     );
   }
 
@@ -427,29 +432,37 @@ export function ResultsScreen() {
     }
   }
 
+  const rendering = finished < top.length;
+
   return (
     <div className="flex flex-col gap-8">
-      <div className="flex flex-col gap-3">
-        <p className="text-sm font-medium text-ink-tertiary">
-          {vod.broadcaster_display_name} · {formatTime(vod.duration_s)} · VOD{" "}
-          {vod.video_id}
-        </p>
-        <h1 className="font-display text-2xl font-semibold tracking-tight text-balance break-words text-ink-primary sm:text-3xl">
-          {vod.title}
-        </h1>
+      <header className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+          <div className="flex max-w-3xl min-w-0 flex-col gap-2.5">
+            <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-ink-tertiary">
+              <span className="font-semibold text-ink-secondary">
+                {vod.broadcaster_display_name}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono text-xs tabular-nums">
+                {formatTime(vod.duration_s)}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono text-xs">VOD {vod.video_id}</span>
+            </p>
+            <h1 className="font-display text-title font-semibold text-balance break-words text-ink-primary">
+              {vod.title}
+            </h1>
+          </div>
+          <ReanalyzeAction key={jobId} jobId={jobId} />
+        </div>
         {view.result.warnings.map((warning) => (
-          <p
-            key={warning.code}
-            className="rounded-control border border-signal-border bg-signal-soft px-4 py-3 text-sm text-signal-soft-ink"
-          >
+          <Notice key={warning.code} tone="signal">
             {warning.message}
-          </p>
+          </Notice>
         ))}
         {(captionsStatus === "unavailable" || captionsFallback !== "none") && (
-          <p
-            role="status"
-            className="rounded-control border border-border-subtle bg-surface-elevated px-4 py-3 text-sm text-ink-secondary"
-          >
+          <Notice role="status" tone="info">
             {captionsStatus === "unavailable" ? (
               <>
                 Clips are rendered without captions because captioning
@@ -468,90 +481,110 @@ export function ResultsScreen() {
             ) : (
               "Captioning failed on the server for one or more clips; retrying without captions…"
             )}
-          </p>
+          </Notice>
         )}
-        <ReanalyzeAction key={jobId} jobId={jobId} />
-      </div>
+      </header>
 
       {top.length === 0 ? (
-        <div className="flex flex-col gap-3 rounded-panel border border-dashed border-border-strong bg-surface-panel/60 p-8 text-center">
-          <h2 className="font-display text-lg font-semibold text-ink-primary">
-            No moments stood out
-          </h2>
-          <p className="text-ink-secondary">
-            {view.result.warnings.length > 0
+        <EmptyState
+          title="No moments stood out"
+          description={
+            view.result.warnings.length > 0
               ? "Nothing could be ranked from the signals that were available for this VOD."
               : view.result.n_viewer_clips_total === 0
                 ? "Chat and audio stayed steady through this VOD and nobody clipped it, so there's nothing to rank."
-                : "Chat and audio stayed steady through this VOD, so there's nothing to rank."}
-          </p>
-          <Link
-            href="/"
-            className="self-center rounded-[3px] font-semibold text-accent underline decoration-accent/40 underline-offset-[3px] hover:text-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
-          >
-            Try another VOD
-          </Link>
-        </div>
+                : "Chat and audio stayed steady through this VOD, so there's nothing to rank."
+          }
+          action={
+            <ButtonLink href="/" variant="primary">
+              Try another VOD
+            </ButtonLink>
+          }
+        />
       ) : (
         <section
           aria-labelledby="clips-heading"
-          className="flex flex-col gap-4"
+          className="flex flex-col gap-5"
         >
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2
-                id="clips-heading"
-                className="font-display text-lg font-semibold text-ink-primary"
-              >
-                Top {top.length} {top.length === 1 ? "moment" : "moments"}
-              </h2>
-              <p className="text-sm text-ink-secondary" aria-live="polite">
-                {finished < top.length
-                  ? `Rendering clips: ${finished} of ${top.length} done`
-                  : `${ready.length} of ${top.length} clips ready`}
-                {view.result.n_viewer_clips_total === 0 &&
-                  " · Nobody clipped this VOD, so every moment was discovered."}
-              </p>
+          <div className="flex flex-col gap-4 rounded-panel border border-border-subtle bg-surface-panel p-4 shadow-panel sm:p-5">
+            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-4">
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <h2
+                  id="clips-heading"
+                  className="font-display text-xl font-semibold tracking-[-0.015em] text-ink-primary"
+                >
+                  Top {top.length} {top.length === 1 ? "moment" : "moments"}
+                </h2>
+                <p
+                  className="flex flex-wrap items-center gap-x-2 text-sm text-ink-secondary"
+                  aria-live="polite"
+                >
+                  {rendering ? (
+                    <span
+                      aria-hidden="true"
+                      className="size-3 rounded-full border-[1.5px] border-accent border-t-transparent motion-safe:animate-spin"
+                    />
+                  ) : (
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 rounded-full bg-success"
+                    />
+                  )}
+                  <span>
+                    {rendering
+                      ? `Rendering clips: ${finished} of ${top.length} done`
+                      : `${ready.length} of ${top.length} clips ready`}
+                    {view.result.n_viewer_clips_total === 0 &&
+                      " · Nobody clipped this VOD, so every moment was discovered."}
+                  </span>
+                </p>
+              </div>
+              <div className="flex w-full flex-wrap items-center gap-3 sm:w-auto">
+                <div
+                  role="group"
+                  aria-label="Results view"
+                  className="flex w-full rounded-control border border-border-subtle bg-surface-canvas p-1 sm:inline-flex sm:w-auto"
+                >
+                  {(
+                    [
+                      ["cards", "Clip cards"],
+                      ["timeline", "Timeline"],
+                    ] as const
+                  ).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={viewMode === mode}
+                      onClick={() => setViewMode(mode)}
+                      className={`min-h-8 flex-1 rounded-[0.375rem] px-3 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring sm:flex-none ${
+                        viewMode === mode
+                          ? "bg-surface-subtle text-ink-primary shadow-card"
+                          : "text-ink-tertiary hover:text-ink-primary"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <Button
+                  onClick={() => setHighlightsOpen(true)}
+                  className="flex-1 sm:flex-none"
+                >
+                  Make highlights video
+                </Button>
+              </div>
             </div>
-            <div
-              role="group"
-              aria-label="Results view"
-              className="inline-flex rounded-control border border-border-control bg-surface-canvas p-0.5"
-            >
-              <button
-                type="button"
-                aria-pressed={viewMode === "cards"}
-                onClick={() => setViewMode("cards")}
-                className={`min-h-8 rounded-[0.375rem] px-3 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${
-                  viewMode === "cards"
-                    ? "bg-surface-subtle text-ink-primary shadow-card"
-                    : "text-ink-tertiary hover:text-ink-primary"
-                }`}
-              >
-                Clip cards
-              </button>
-              <button
-                type="button"
-                aria-pressed={viewMode === "timeline"}
-                onClick={() => setViewMode("timeline")}
-                className={`min-h-8 rounded-[0.375rem] px-3 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${
-                  viewMode === "timeline"
-                    ? "bg-surface-subtle text-ink-primary shadow-card"
-                    : "text-ink-tertiary hover:text-ink-primary"
-                }`}
-              >
-                Timeline
-              </button>
+            {rendering && (
+              <ProgressBar
+                value={(finished / top.length) * 100}
+                label="Rendering clips"
+                size="sm"
+              />
+            )}
+            <div className="border-t border-border-subtle pt-3">
+              <ArchiveDownloads key={jobId} jobId={jobId} />
             </div>
-            <button
-              type="button"
-              onClick={() => setHighlightsOpen(true)}
-              className={buttonClasses()}
-            >
-              Make highlights video
-            </button>
           </div>
-          <ArchiveDownloads key={jobId} jobId={jobId} />
           {viewMode === "timeline" ? (
             <StreamTimeline
               jobId={jobId}
@@ -566,25 +599,23 @@ export function ResultsScreen() {
               activity={view.result.activity}
             />
           ) : (
-            <div>
-              <ol
-                role="list"
-                className="grid grid-cols-1 gap-5 min-[480px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
-              >
-                {top.map((candidate) => (
-                  <ClipCard
-                    key={candidate.candidate_id}
-                    jobId={jobId}
-                    candidate={candidate}
-                    scoreFraction={scale(candidate.score)}
-                    clip={clips[candidate.candidate_id] ?? { kind: "pending" }}
-                    onRetry={() => retry(candidate)}
-                    videoId={vod.video_id}
-                    vod={vod}
-                  />
-                ))}
-              </ol>
-            </div>
+            <ol
+              role="list"
+              className="grid grid-cols-1 gap-5 min-[480px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+            >
+              {top.map((candidate) => (
+                <ClipCard
+                  key={candidate.candidate_id}
+                  jobId={jobId}
+                  candidate={candidate}
+                  scoreFraction={scale(candidate.score)}
+                  clip={clips[candidate.candidate_id] ?? { kind: "pending" }}
+                  onRetry={() => retry(candidate)}
+                  videoId={vod.video_id}
+                  vod={vod}
+                />
+              ))}
+            </ol>
           )}
         </section>
       )}

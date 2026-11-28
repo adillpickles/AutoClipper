@@ -14,8 +14,14 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className="h-full antialiased">
-      <body className="flex min-h-full flex-col bg-surface-canvas font-sans text-ink-primary">
+    // Browser extensions (password managers, Grammarly, dark-mode tools) add attributes to <html>
+    // and <body> before React hydrates; that's not an app bug, so only these two elements'
+    // own attributes are exempt from the hydration check (#217).
+    <html lang="en" className="h-full antialiased" suppressHydrationWarning>
+      <body
+        className="flex min-h-full flex-col bg-surface-canvas font-sans text-ink-primary"
+        suppressHydrationWarning
+      >
         <SkipLink />
         {children}
       </body>
