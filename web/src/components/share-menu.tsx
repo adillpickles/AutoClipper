@@ -31,7 +31,7 @@ type Status =
   | { tone: "ok" | "info"; text: string }
   | { tone: "error"; text: string; manual?: string };
 
-const STATUS_FOR: Partial<Record<ShareOutcome["kind"], Status>> = {
+const STATUS_FOR: Partial<Record<ShareOutcome["kind"] | "blocked", Status>> = {
   "shared-file": { tone: "ok", text: "Shared." },
   "shared-text": {
     tone: "ok",
@@ -40,6 +40,10 @@ const STATUS_FOR: Partial<Record<ShareOutcome["kind"], Status>> = {
   retry: {
     tone: "info",
     text: "The video is ready to share now. Press Share again.",
+  },
+  blocked: {
+    tone: "error",
+    text: "This browser won't open the share sheet. Download the video or copy the caption instead.",
   },
   unsupported: {
     tone: "error",
@@ -53,6 +57,9 @@ const STATUS_FOR: Partial<Record<ShareOutcome["kind"], Status>> = {
 
 const ITEM = `flex min-h-11 w-full flex-col items-start justify-center gap-0.5 rounded-control px-3 py-2 text-left text-sm font-semibold text-ink-primary transition-colors hover:bg-surface-subtle focus:bg-surface-subtle disabled:cursor-wait disabled:opacity-60 ${FOCUS_RING}`;
 const HINT = "text-xs font-normal text-ink-tertiary";
+
+/** How long a success message stays before it clears. */
+export const OK_STATUS_MS = 4000;
 
 /** Whether this browser has the Popover API (the menu renders only on the client). */
 function supportsPopover(): boolean {
@@ -105,12 +112,18 @@ export function ShareMenu({
   const [capability, setCapability] = useState<ShareCapability>("none");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
+  // The browser refused the share sheet twice: offer only Download and copy from now on.
+  const [shareBlocked, setShareBlocked] = useState(false);
+  const retriedRef = useRef(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const fileRef = useRef<{ url: string; file: Promise<File | null> } | null>(
-    null,
-  );
+  // The one prefetched MP4: loaded while the menu is open, aborted and dropped when it closes.
+  const fileRef = useRef<{
+    url: string;
+    controller: AbortController;
+    file: Promise<File | null>;
+  } | null>(null);
   const menuId = useId();
   const triggerId = useId();
 
@@ -128,11 +141,25 @@ export function ShareMenu({
     ).filter((item) => !item.hasAttribute("disabled"));
   }
 
+  function dropFile() {
+    fileRef.current?.controller.abort();
+    fileRef.current = null;
+  }
+
   function preparedFile(current: ShareEnvironment): Promise<File | null> {
     if (fileRef.current?.url !== fileUrl) {
+      dropFile();
+      const controller = new AbortController();
       fileRef.current = {
         url: fileUrl,
-        file: loadShareFile(fileUrl, filename, current),
+        controller,
+        file: loadShareFile(
+          fileUrl,
+          filename,
+          current,
+          undefined,
+          controller.signal,
+        ),
       };
     }
     return fileRef.current.file;
@@ -143,11 +170,26 @@ export function ShareMenu({
     const next = shareCapability(current);
     setCapability(next);
     setStatus(null);
+    retriedRef.current = false;
     setOpen(true);
     // Load the MP4 while the menu is open: the share sheet must open within the click's
     // activation window, which a large download started on click would outlast.
-    if (next === "files") void preparedFile(current);
+    if (next === "files" && !shareBlocked) void preparedFile(current);
   }
+
+  // Closing the menu or unmounting aborts the download and frees the File: a clip can be
+  // tens of MB, and a results page has ten of them.
+  useEffect(() => {
+    if (!open) return;
+    return dropFile;
+  }, [open]);
+
+  // Success messages clear by themselves; errors stay until the next action.
+  useEffect(() => {
+    if (status?.tone !== "ok") return;
+    const timer = setTimeout(() => setStatus(null), OK_STATUS_MS);
+    return () => clearTimeout(timer);
+  }, [status]);
 
   function closeMenu(returnFocus: boolean) {
     setOpen(false);
@@ -230,7 +272,8 @@ export function ShareMenu({
         closeMenu(true);
         return;
       case "Tab":
-        setOpen(false);
+        // Focus goes back to the trigger, and Tab's default action continues from there.
+        closeMenu(true);
         return;
       case "ArrowDown":
         next = list[(index + 1) % list.length];
@@ -251,24 +294,43 @@ export function ShareMenu({
     next?.focus();
   }
 
+  function focusFirstItem() {
+    requestAnimationFrame(() => items()[0]?.focus());
+  }
+
   async function share() {
     const current = env();
     setBusy(true);
+    let outcome: ShareOutcome = { kind: "failed" };
     try {
       const file = capability === "files" ? await preparedFile(current) : null;
-      const outcome = await shareVideo({
+      outcome = await shareVideo({
         file,
         title,
         caption,
         link,
         env: current,
       });
-      // A cancelled share sheet is not a share: show nothing.
-      setStatus(STATUS_FOR[outcome.kind] ?? null);
     } finally {
       setBusy(false);
-      closeMenu(true);
     }
+    if (outcome.kind === "retry") {
+      // Usually the file took the click's activation. It's loaded now, so keep the menu (and
+      // the file) open for one more press; a second refusal means sharing won't work here.
+      if (!retriedRef.current) {
+        retriedRef.current = true;
+        setStatus(STATUS_FOR.retry ?? null);
+      } else {
+        setShareBlocked(true);
+        dropFile();
+        setStatus(STATUS_FOR.blocked ?? null);
+      }
+      focusFirstItem();
+      return;
+    }
+    // A cancelled share sheet is not a share: show nothing.
+    setStatus(STATUS_FOR[outcome.kind] ?? null);
+    closeMenu(true);
   }
 
   async function copy(text: string, what: string) {
@@ -340,7 +402,7 @@ export function ShareMenu({
               side === "top" ? "bottom-full mb-2" : "top-full mt-2"
             } ${align === "end" ? "right-0" : "left-0"}`}
           >
-            {capability !== "none" && (
+            {capability !== "none" && !shareBlocked && (
               <button
                 type="button"
                 role="menuitem"

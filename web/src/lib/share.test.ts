@@ -142,7 +142,9 @@ describe("loadShareFile", () => {
     const file = await loadShareFile("/api/v1/exports/e/file", "clip.mp4", {
       fetch: fetchMock as unknown as typeof fetch,
     });
-    expect(fetchMock).toHaveBeenCalledWith("/api/v1/exports/e/file");
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/exports/e/file", {
+      signal: undefined,
+    });
     expect(file?.name).toBe("clip.mp4");
     expect(file?.type).toBe("video/mp4");
     expect(file?.size).toBe(3);
@@ -164,6 +166,25 @@ describe("loadShareFile", () => {
       }),
     ).toBeNull();
     expect(await loadShareFile("/f", "c.mp4", {})).toBeNull();
+  });
+
+  it("passes the abort signal and is null once aborted", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      controller.abort();
+      if (init?.signal?.aborted) throw domError("AbortError");
+      return mp4();
+    });
+    expect(
+      await loadShareFile(
+        "/f",
+        "c.mp4",
+        { fetch: fetchMock as unknown as typeof fetch },
+        undefined,
+        controller.signal,
+      ),
+    ).toBeNull();
+    expect(fetchMock.mock.calls[0][1]?.signal).toBe(controller.signal);
   });
 
   it("is null when the file is larger than the limit", async () => {

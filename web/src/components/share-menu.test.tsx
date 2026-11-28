@@ -10,7 +10,11 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ClipShareMenu, ShareMenu } from "@/components/share-menu";
+import {
+  ClipShareMenu,
+  OK_STATUS_MS,
+  ShareMenu,
+} from "@/components/share-menu";
 import type { Candidate, Export } from "@/lib/api/types";
 import type { ShareEnvironment } from "@/lib/share";
 
@@ -269,6 +273,119 @@ describe("ShareMenu", () => {
     expect(
       screen.getAllByRole("menuitem").map((item) => item.textContent),
     ).toContain("Copy VOD linkOpens the full stream on Twitch");
+  });
+});
+
+describe("ShareMenu review fixes", () => {
+  function signalFetch() {
+    const signals: AbortSignal[] = [];
+    const fetchMock = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (signal) {
+            signals.push(signal);
+            signal.addEventListener("abort", () =>
+              reject(domError("AbortError")),
+            );
+          }
+        }),
+    );
+    return { fetchMock: fetchMock as unknown as typeof fetch, signals };
+  }
+
+  it("aborts the prefetch when the menu closes, and keeps one file at a time", () => {
+    const { fetchMock, signals } = signalFetch();
+    renderMenu({ share: vi.fn(), canShare: () => true, fetch: fetchMock });
+    fireEvent.click(trigger());
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(false);
+
+    fireEvent.keyDown(screen.getAllByRole("menuitem")[0], { key: "Escape" });
+    expect(signals[0].aborted).toBe(true);
+
+    // Opening again starts one new download; the old one stays aborted.
+    fireEvent.click(trigger());
+    expect(signals).toHaveLength(2);
+    expect(signals[1].aborted).toBe(false);
+    fireEvent.pointerDown(document.body);
+    expect(signals[1].aborted).toBe(true);
+  });
+
+  it("aborts the prefetch when the component unmounts", () => {
+    const { fetchMock, signals } = signalFetch();
+    const { unmount } = renderMenu({
+      share: vi.fn(),
+      canShare: () => true,
+      fetch: fetchMock,
+    });
+    fireEvent.click(trigger());
+    unmount();
+    expect(signals[0].aborted).toBe(true);
+  });
+
+  it("closes on Tab and hands focus back to the trigger without blocking Tab", () => {
+    renderMenu({});
+    fireEvent.click(trigger());
+    const notPrevented = fireEvent.keyDown(screen.getAllByRole("menuitem")[0], {
+      key: "Tab",
+    });
+    expect(notPrevented).toBe(true);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(trigger());
+  });
+
+  it("asks once to press Share again, then falls back to download and copy", async () => {
+    const share = vi.fn(async () => {
+      throw domError("NotAllowedError");
+    });
+    renderMenu({ share, canShare: () => true, fetch: mp4Fetch() });
+    fireEvent.click(trigger());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: /Share video/ }));
+    });
+    expect(screen.getByRole("status").textContent).toContain(
+      "Press Share again",
+    );
+    // The menu stays open with the loaded file for the second press.
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: /Share video/ }));
+    });
+    expect(share).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("status").textContent).toContain(
+      "Download the video or copy the caption",
+    );
+    const labels = screen
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent ?? "");
+    expect(labels.some((label) => label.startsWith("Share"))).toBe(false);
+    expect(labels[0]).toContain("Download");
+
+    // Reopening doesn't bring the refused share back.
+    fireEvent.keyDown(screen.getAllByRole("menuitem")[0], { key: "Escape" });
+    fireEvent.click(trigger());
+    expect(screen.queryByRole("menuitem", { name: /Share video/ })).toBeNull();
+  });
+
+  it("clears a success message after a few seconds", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      renderMenu({ writeText: vi.fn(async () => {}) });
+      fireEvent.click(trigger());
+      await act(async () => {
+        fireEvent.click(screen.getByRole("menuitem", { name: /Copy caption/ }));
+      });
+      expect(screen.getByRole("status").textContent).toBe("Caption copied.");
+      act(() => {
+        vi.advanceTimersByTime(OK_STATUS_MS);
+      });
+      expect(screen.getByRole("status").textContent).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

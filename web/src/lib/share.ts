@@ -106,17 +106,19 @@ export function shareCapability(env: ShareEnvironment): ShareCapability {
 
 /**
  * Load the finished MP4 as a `File` for `navigator.share`. Null when it can't be loaded (no
- * fetch, a network or CORS error, a non-2xx status) or is too large to hold in memory.
+ * fetch, a network or CORS error, a non-2xx status), is too large to hold in memory, or
+ * `signal` aborted the download.
  */
 export async function loadShareFile(
   url: string,
   filename: string,
   env: ShareEnvironment,
   maxBytes = MAX_SHARE_FILE_BYTES,
+  signal?: AbortSignal,
 ): Promise<File | null> {
   if (!env.fetch || typeof File !== "function") return null;
   try {
-    const response = await env.fetch(url);
+    const response = await env.fetch(url, { signal });
     if (!response.ok) return null;
     const declared = Number(response.headers.get("Content-Length"));
     if (Number.isFinite(declared) && declared > maxBytes) return null;
