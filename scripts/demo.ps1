@@ -4,6 +4,7 @@
 
 .DESCRIPTION
     Run from anywhere:  powershell -ExecutionPolicy Bypass -File scripts\demo.ps1
+    (scripts/demo.sh is the macOS/Linux equivalent.)
     It installs dependencies, fills in what .env and web\.env.local need, checks tools,
     starts `autoclipper serve` and the Next.js dev server in their own windows, waits for
     both, and opens the browser. Re-running it is safe: finished steps are skipped.
@@ -17,6 +18,10 @@
     Skip `uv sync`, `npm ci` and tool downloads (faster when already set up).
 .PARAMETER DemoVod
     The VOD link to copy to the clipboard for the start page.
+.PARAMETER ApiPort
+    Backend port (default 8000).
+.PARAMETER WebPort
+    Web app port (default 3000).
 #>
 [CmdletBinding()]
 param(
@@ -33,6 +38,9 @@ Set-Location $Root
 
 function Write-Step([string]$Text) { Write-Host "`n==> $Text" -ForegroundColor Cyan }
 function Fail([string]$Text) { Write-Host "ERROR: $Text" -ForegroundColor Red; exit 1 }
+
+# Single-quote a value for a -Command string (paths may contain apostrophes).
+function ConvertTo-Quoted([string]$Value) { "'" + ($Value -replace "'", "''") + "'" }
 
 function Test-Port([int]$Port) {
     $null -ne (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
@@ -82,9 +90,10 @@ if (-not (Get-EnvValue $EnvFile "AUTOCLIPPER_CHAT_HASH_SALT")) {
 $HasTwitch = (Get-EnvValue $EnvFile "TWITCH_CLIENT_ID") -and (Get-EnvValue $EnvFile "TWITCH_CLIENT_SECRET")
 if (-not $HasTwitch -and -not $Mock) {
     Write-Host "TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET are empty in .env." -ForegroundColor Yellow
-    Write-Host "Ask the team lead for the shared Twitch app credentials. Starting in MOCK mode for now." -ForegroundColor Yellow
+    Write-Host "Add the team's shared Twitch app credentials (or your own from https://dev.twitch.tv/console) for real analysis. Starting in MOCK mode for now." -ForegroundColor Yellow
     $Mock = $true
 }
+$Jobs = if ($Mock) { "mock" } else { "pipeline" }
 
 # 3. Dependencies and tools --------------------------------------------------
 if (-not $SkipInstall) {
@@ -92,18 +101,29 @@ if (-not $SkipInstall) {
     uv sync --extra captions
     if ($LASTEXITCODE -ne 0) { Fail "uv sync failed." }
 
-    if (-not $Mock) {
+    # Mock mode still needs FFmpeg (the backend renders sample videos); pipeline mode also
+    # needs TwitchDownloaderCLI. Both are skipped quickly when already installed.
+    if ($Mock) {
+        Write-Step "Installing pinned FFmpeg if missing (autoclipper setup-tools --tool ffmpeg)"
+        uv run autoclipper setup-tools --tool ffmpeg
+    } else {
         Write-Step "Installing pinned FFmpeg and TwitchDownloaderCLI if missing (autoclipper setup-tools)"
         uv run autoclipper setup-tools
-        if ($LASTEXITCODE -ne 0) { Write-Host "setup-tools reported a problem; see the doctor output below." -ForegroundColor Yellow }
     }
+    if ($LASTEXITCODE -ne 0) { Write-Host "setup-tools reported a problem; see the doctor output below." -ForegroundColor Yellow }
 
     Write-Step "Installing web dependencies (npm ci)"
-    Push-Location (Join-Path $Root "web")
-    try {
-        if (-not (Test-Path "node_modules")) { npm ci } else { Write-Host "web\node_modules exists; skipping." }
-        if ($LASTEXITCODE -ne 0) { Fail "npm ci failed." }
-    } finally { Pop-Location }
+    if (Test-Path (Join-Path $Root "web\node_modules")) {
+        Write-Host "web\node_modules exists; skipping."
+    } else {
+        Push-Location (Join-Path $Root "web")
+        try {
+            npm ci
+            if ($LASTEXITCODE -ne 0) { Fail "npm ci failed." }
+        } finally { Pop-Location }
+    }
+} elseif (-not (Test-Path (Join-Path $Root ".venv")) -or -not (Test-Path (Join-Path $Root "web\node_modules"))) {
+    Fail "-SkipInstall needs an existing .venv and web\node_modules. Run once without it."
 }
 
 $WebEnv = Join-Path $Root "web\.env.local"
@@ -113,22 +133,28 @@ Set-EnvValue $WebEnv "NEXT_PUBLIC_API_ORIGIN" $ApiOrigin
 
 # 4. Health check ------------------------------------------------------------
 Write-Step "Checking setup (autoclipper doctor)"
-uv run autoclipper doctor
+uv run autoclipper doctor --jobs $Jobs
+if ($LASTEXITCODE -ne 0) { Write-Host "doctor reported problems (see above); continuing." -ForegroundColor Yellow }
 
 # 5. Start -------------------------------------------------------------------
 Write-Step "Starting the app"
-$Jobs = if ($Mock) { "mock" } else { "pipeline" }
 if (Test-Port $ApiPort) {
     Write-Host "Something is already listening on port $ApiPort; assuming the backend is running." -ForegroundColor Yellow
 } else {
+    # The backend's default CORS origins only cover port 3000.
+    $Cors = ""
+    if ($WebPort -ne 3000 -and -not $env:AUTOCLIPPER_CORS_ORIGINS) {
+        $Cors = "`$env:AUTOCLIPPER_CORS_ORIGINS = 'http://localhost:$WebPort,http://127.0.0.1:$WebPort'; "
+    }
     Start-Process powershell -ArgumentList "-NoExit", "-Command",
-        "`$Host.UI.RawUI.WindowTitle = 'AutoClipper backend'; Set-Location '$Root'; uv run autoclipper serve --port $ApiPort --jobs $Jobs"
+        "`$Host.UI.RawUI.WindowTitle = 'AutoClipper backend'; Set-Location $(ConvertTo-Quoted $Root); ${Cors}uv run autoclipper serve --port $ApiPort --jobs $Jobs"
 }
 if (Test-Port $WebPort) {
     Write-Host "Something is already listening on port $WebPort; assuming the web app is running." -ForegroundColor Yellow
 } else {
+    # npx rather than `npm run dev -- --port`: Windows PowerShell 5.1 drops the `--` for npm.
     Start-Process powershell -ArgumentList "-NoExit", "-Command",
-        "`$Host.UI.RawUI.WindowTitle = 'AutoClipper web'; Set-Location '$Root\web'; npx --no-install next dev --port $WebPort"
+        "`$Host.UI.RawUI.WindowTitle = 'AutoClipper web'; Set-Location $(ConvertTo-Quoted (Join-Path $Root 'web')); npx --no-install next dev --port $WebPort"
 }
 
 Write-Host "Waiting for the backend and web app (first start can take a minute)..."
@@ -144,9 +170,14 @@ for ($i = 0; $i -lt 90; $i++) {
 if (-not $ready) { Fail "The app did not come up in 3 minutes. Check the two new windows for errors." }
 
 Start-Process "http://localhost:$WebPort"
-Set-Clipboard $DemoVod
+$Copied = $true
+try { Set-Clipboard $DemoVod } catch { $Copied = $false }
 Write-Host "`nAutoClipper is running ($Jobs mode)." -ForegroundColor Green
 Write-Host "  Web app:  http://localhost:$WebPort"
 Write-Host "  API docs: $ApiOrigin/docs"
-Write-Host "  Demo VOD: $DemoVod  (copied to clipboard; paste it on the start page)"
+if ($Copied) {
+    Write-Host "  Demo VOD: $DemoVod  (copied to clipboard; paste it on the start page)"
+} else {
+    Write-Host "  Demo VOD: $DemoVod  (paste it on the start page)"
+}
 Write-Host "Close the two AutoClipper windows to stop it."
