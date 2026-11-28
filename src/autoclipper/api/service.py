@@ -496,6 +496,10 @@ class _RenderRecord:
     # What the export's layout resolves from when it renders (`_layout_key`), saved in the
     # library database; None for renders saved before #191.
     layout_key: str | None = None
+    # How a ``stacked`` export fell back (#218): the layout rendered and a sentence for people,
+    # from the render's `LayoutWarning`; None when it rendered as asked.
+    effective_layout: str | None = None
+    layout_note: str | None = None
     # Queued automatically when its job finished (#187): runs after user work and may be
     # dropped while still queued. Not persisted; a restart fails queued renders anyway.
     auto: bool = False
@@ -518,6 +522,8 @@ class _RenderRecord:
                 f"/api/v1/exports/{self.render_id}/file" if self.state == "done" else None
             ),
             filename=filename if self.state == "done" else None,
+            effective_layout=self.effective_layout if self.state == "done" else None,
+            layout_note=self.layout_note if self.state == "done" else None,
             created_at=self.times.created_at,
             started_at=self.times.started_at,
             updated_at=self.times.updated_at,
@@ -590,6 +596,8 @@ class _RenderRecord:
             finished_at=self.times.finished_at,
             filename=self.filename,
             layout_key=self.layout_key,
+            effective_layout=self.effective_layout,
+            layout_note=self.layout_note,
         )
 
 
@@ -871,6 +879,8 @@ class MockService:
                 duration_s=stored_render.duration_s,
                 filename=stored_render.filename,
                 layout_key=stored_render.layout_key,
+                effective_layout=stored_render.effective_layout,
+                layout_note=stored_render.layout_note,
             )
             if render.state in ("queued", "running"):
                 render.state = "failed"
@@ -3605,11 +3615,16 @@ class MockService:
             self._release_segment_path(leased_path)
         if not target.is_file():  # a renderer that returned without writing is a bug
             raise RuntimeError(f"the renderer wrote no file for {record.render_id}")
-        if any(warning.detection_failed for warning in warnings):
-            # Facecam detection errored, so this render isn't what an identical request would
-            # get next time; don't reuse it (#191).
-            with self._lock:
+        with self._lock:
+            if any(warning.detection_failed for warning in warnings):
+                # Facecam detection errored, so this render isn't what an identical request
+                # would get next time; don't reuse it (#191).
                 record.layout_key = f"{record.layout_key}:detect-error"
+            if warnings:
+                # Tell the user the stacked layout fell back, and why (#218); the last word wins.
+                last = warnings[-1]
+                record.effective_layout = last.effective_layout
+                record.layout_note = last.note or last.message
         self._finish_render(record, file=target)
 
 

@@ -7,6 +7,7 @@ import {
   highlightsAt,
   jobAt,
   MOCK_RENDER_STEP_MS,
+  MOCK_STACKED_FALLBACK_NOTE,
   MOCK_STEP_MS,
   renderSchedule,
   resetMockStore,
@@ -406,6 +407,20 @@ describe("exportAt", () => {
       "transcribing",
     );
     expect(exportAt(stored, T0 + 4 * MOCK_RENDER_STEP_MS).state).toBe("done");
+  });
+
+  it("reports a stacked export's center-crop fallback once it's done (#218)", () => {
+    const stacked = item("exp_s", T0);
+    stacked.export.layout = "stacked";
+    const running = exportAt(stacked, T0 + 2 * MOCK_RENDER_STEP_MS);
+    expect(running.layout_note ?? null).toBeNull();
+    const done = exportAt(stacked, T0 + 4 * MOCK_RENDER_STEP_MS);
+    expect(done.effective_layout).toBe("center_crop");
+    expect(done.layout_note).toBe(MOCK_STACKED_FALLBACK_NOTE);
+
+    const plain = exportAt(item("exp_c", T0), T0 + 4 * MOCK_RENDER_STEP_MS);
+    expect(plain.effective_layout).toBeNull();
+    expect(plain.layout_note).toBeNull();
   });
 
   it("keeps creation order for exports made in the same millisecond", async () => {

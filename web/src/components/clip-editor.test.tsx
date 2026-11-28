@@ -220,6 +220,54 @@ describe("ClipEditor", () => {
     });
   });
 
+  it("says when a stacked render fell back, and shows nothing when it didn't (#218)", async () => {
+    const note =
+      "No facecam found in this part of the stream, so this clip is a center crop.";
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia.mockResolvedValue({
+      ...AVAILABLE_MEDIA,
+      export: {
+        ...AVAILABLE_MEDIA.export,
+        layouts: ["center_crop", "stacked"],
+      },
+    });
+    api.createExport.mockResolvedValue({
+      export: makeExport("queued", { layout: "stacked" }),
+      created: true,
+    });
+    api.getExport.mockResolvedValueOnce(
+      makeExport("done", {
+        layout: "stacked",
+        effective_layout: "center_crop",
+        layout_note: note,
+      }),
+    );
+
+    render(<ClipEditor />);
+    await waitForMediaLimits();
+    fireEvent.click(screen.getByLabelText("Stacked (facecam + gameplay)"));
+    fireEvent.click(screen.getByRole("button", { name: "Re-render clip" }));
+
+    await screen.findByRole("link", { name: "Download clip" });
+    expect(screen.getByText(note)).toBeTruthy();
+
+    // Changing the layout drops the finished render, and its note with it.
+    fireEvent.click(screen.getByLabelText("Center crop (9:16)"));
+    expect(screen.queryByText(note)).toBeNull();
+
+    // A render that used the layout as asked has no note.
+    api.createExport.mockResolvedValue({
+      export: makeExport("queued", { layout: "center_crop" }),
+      created: true,
+    });
+    api.getExport.mockResolvedValue(
+      makeExport("done", { layout: "center_crop", layout_note: null }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Re-render clip" }));
+    await screen.findByRole("link", { name: "Download clip" });
+    expect(screen.queryByText(/no facecam found/i)).toBeNull();
+  });
+
   it("shows the video unavailable state with contract reasons and disables export", async () => {
     for (const [reason, label] of [
       ["source_unavailable", "Source unavailable"],

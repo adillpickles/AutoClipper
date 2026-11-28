@@ -55,13 +55,19 @@ class LayoutWarning:
     """Why a ``stacked`` export didn't use a detected facecam overlay (#191).
 
     Attributes:
-        message: One sentence for people.
+        message: What happened, in detail, for the server log.
         detection_failed: Detection raised (FFmpeg, OpenCV, the file), as opposed to finding
             no facecam; a later identical export should try again.
+        effective_layout: The layout the clip was rendered with: ``stacked`` (with a preset or
+            an estimated facecam box) or ``center_crop`` (#218).
+        note: One short sentence for the person exporting, shown next to the layout picker
+            (#218); empty when the caller didn't set one.
     """
 
     message: str
     detection_failed: bool = False
+    effective_layout: Literal["stacked", "center_crop"] = "stacked"
+    note: str = ""
 
 
 class ClipTooLongError(ExportError):
@@ -184,10 +190,20 @@ def _detected_stacked_layout(
         NoFacecamConfiguredError: Detection is off and there is no fallback preset.
     """
 
-    def warn(message: str, *, failed: bool = False) -> None:
+    def warn(
+        message: str,
+        note: str,
+        *,
+        failed: bool = False,
+        effective: Literal["stacked", "center_crop"] = "stacked",
+    ) -> None:
         log.warning("stacked export source=%s: %s", spec.source, message)
         if on_warning is not None:
-            on_warning(LayoutWarning(message, detection_failed=failed))
+            on_warning(
+                LayoutWarning(
+                    message, detection_failed=failed, effective_layout=effective, note=note
+                )
+            )
 
     if not spec.detect_facecam:
         if spec.stacked_fallback is not None:
@@ -200,9 +216,18 @@ def _detected_stacked_layout(
         log.warning("facecam detection failed source=%s", spec.source, exc_info=True)
         reason = f"facecam detection failed ({type(exc).__name__}: {exc})"
         if preset is not None:
-            warn(f"{reason}; using the channel's stacked_layout preset", failed=True)
+            warn(
+                f"{reason}; using the channel's stacked_layout preset",
+                _NOTE_DETECTION_FAILED_PRESET,
+                failed=True,
+            )
             return preset
-        warn(f"{reason}; rendering center_crop instead of stacked", failed=True)
+        warn(
+            f"{reason}; rendering center_crop instead of stacked",
+            _NOTE_DETECTION_FAILED_CENTER,
+            failed=True,
+            effective="center_crop",
+        )
         return CenterCrop()
     if detection.status == "found" and detection.region is not None:
         return _stacked_from_detection(detection, preset)
@@ -219,14 +244,35 @@ def _detected_stacked_layout(
             )
         else:
             message = f"{detection.message}; using that estimate"
-        warn(message)
+        warn(message, _NOTE_ESTIMATED)
         return _stacked_from_detection(detection, None)
     reason = f"no facecam detected: {detection.message}"
     if preset is not None and detection.status != "full_camera":
-        warn(f"{reason}; using the channel's stacked_layout preset")
+        warn(f"{reason}; using the channel's stacked_layout preset", _NOTE_PRESET)
         return preset
-    warn(f"{reason}; rendering center_crop instead of stacked")
+    note = _NOTE_FULL_CAMERA if detection.status == "full_camera" else _NOTE_CENTER
+    warn(f"{reason}; rendering center_crop instead of stacked", note, effective="center_crop")
     return CenterCrop()
+
+
+# What the person exporting sees when ``stacked`` fell back (#218); one short sentence each.
+_NOTE_CENTER: Final = "No facecam found in this part of the stream, so this clip is a center crop."
+_NOTE_FULL_CAMERA: Final = (
+    "The camera fills the screen in this part of the stream, so this clip is a center crop."
+)
+_NOTE_PRESET: Final = (
+    "No facecam found in this part of the stream, so this clip uses the channel's saved "
+    "facecam position."
+)
+_NOTE_ESTIMATED: Final = (
+    "Facecam position estimated from the streamer's face, since the webcam has no clear border."
+)
+_NOTE_DETECTION_FAILED_PRESET: Final = (
+    "Facecam detection didn't work on this clip, so it uses the channel's saved facecam position."
+)
+_NOTE_DETECTION_FAILED_CENTER: Final = (
+    "Facecam detection didn't work on this clip, so it's a center crop."
+)
 
 
 def _face_in(face: tuple[float, float, float, float] | None, region: FixedRegion) -> bool:

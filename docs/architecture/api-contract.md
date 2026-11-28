@@ -858,7 +858,7 @@ Layouts ([PRD § Export](../product/prd.md#export), #20, #68):
 
 - `center_crop`: the central 9:16 region of the 16:9 source, scaled to 1080×1920.
 - `configured_region`: one fixed 9:16 source region set in server configuration (e.g. where a streamer's layout puts the action). It isn't chosen per request in v1.
-- `stacked`: facecam region stacked above gameplay inside 1080×1920 (#68), always listed. The facecam region is `AUTOCLIPPER_EXPORT_FACECAM_REGION` when set, otherwise the webcam overlay detected in the clip, otherwise the channel's `stacked_layout` preset in `configs/channels.yaml`; a full-screen camera, or no facecam and no preset, renders a center crop instead (#191). The export still succeeds in those cases; the fallback is logged on the server.
+- `stacked`: facecam region stacked above gameplay inside 1080×1920 (#68), always listed. The facecam region is `AUTOCLIPPER_EXPORT_FACECAM_REGION` when set, otherwise the webcam overlay detected in the clip, otherwise the channel's `stacked_layout` preset in `configs/channels.yaml`; a full-screen camera, or no facecam and no preset, renders a center crop instead (#191). The export still succeeds in those cases; the fallback is logged on the server, and the finished `Export` reports it in `effective_layout` and `layout_note` (§ 6.2, #218).
 
 Further layouts (e.g. automatic smart crop, optional polish) would be added as new values (§ 10).
 
@@ -891,6 +891,8 @@ When a job enters `done`, the server itself queues exports of its top 10 candida
 | `error` | `ApiError` \| null | Non-null iff `failed` |
 | `download_url` | str \| null | Root-relative URL (§ 1) of the file endpoint. Non-null iff `done`. |
 | `filename` | str \| null | Sanitized human download filename (`<channel>_<YYYY-MM-DD>_<moment>_<hh-mm-ss>.mp4`, deduplicated per job). Non-null iff `done`. |
+| `effective_layout` | str \| null | Set only on a `done` `stacked` export that didn't use a detected facecam (#218): `center_crop` when it was rendered as a center crop (no facecam, a full-screen camera, or detection failed without a preset), `stacked` when it fell back to the channel preset or used an estimated facecam box (a preset chosen because the detected face is inside it counts as a detected facecam, so null). Null otherwise, including while queued or running. Optional: older servers omit it. |
+| `layout_note` | str \| null | One short sentence for the user saying why, set exactly when `effective_layout` is, e.g. `"No facecam found in this part of the stream, so this clip is a center crop."` or `"Facecam position estimated from the streamer's face, since the webcam has no clear border."`. Display text; don't parse it. Optional, like `effective_layout`. Both are saved with the render and survive a restart. |
 | `created_at` | timestamp | |
 | `started_at` | timestamp \| null | |
 | `updated_at` | timestamp | |
@@ -951,6 +953,8 @@ Content-Type: application/json
   "error": null,
   "download_url": null,
   "filename": null,
+  "effective_layout": null,
+  "layout_note": null,
   "created_at": "2026-10-19T15:05:00Z",
   "started_at": null,
   "updated_at": "2026-10-19T15:05:00Z",
@@ -975,6 +979,8 @@ While running, `"state": "running"` and, for example, `"progress": { "stage": "t
   "error": null,
   "download_url": "/api/v1/exports/exp_5a6b7c8d9e0f4a1b/file",
   "filename": "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55.mp4",
+  "effective_layout": null,
+  "layout_note": null,
   "created_at": "2026-10-19T15:05:00Z",
   "started_at": "2026-10-19T15:05:01Z",
   "updated_at": "2026-10-19T15:05:48Z",
@@ -1508,7 +1514,7 @@ Mock channel scenarios for `GET /api/v1/channels/vods` (in `--jobs mock` mode, n
 | `no_credentials` | `503 twitch_credentials_missing` |
 | `twitch_error` | `502 upstream_unavailable` |
 
-Each mock job should take a few seconds so `queued` and `running` are visible, and report `scorer.kind: "mock"`. The mock applies the normal `video_path` check (`422 invalid_video_path`), never reports `video_mismatch`, and always serves its own sample video. Exports are rendered for real (#32): the request validates exactly as in § 6, and the shared render worker cuts the requested interval from the job's `video_path`, or from the sample preview video when the job has none, with the export pipeline (exact interval, layout, captions if asked) and reports the § 6.3 stages. Highlights videos are rendered for real too (#72): a request validates exactly as in § 7, and the same worker joins the resolved segments from the job's `video_path`, or the sample preview video, with the highlights pipeline (exact cuts, the source's own framing at 1920×1080, fades, captions if asked) and reports the § 7.3 stages. So every scenario with candidates and available export can make a clip and a highlights video. The mock lists `configured_region` only when `AUTOCLIPPER_EXPORT_REGION` is set (§ 5); its examples above show a server with a region configured. ZIP downloads (§ 7.6) work the same against the mock backend; the in-browser fixture mode has no files to zip, so its client answers `getArchiveStatus` with an `archive_backend_required` error that asks the user to connect the local backend.
+Each mock job should take a few seconds so `queued` and `running` are visible, and report `scorer.kind: "mock"`. The mock applies the normal `video_path` check (`422 invalid_video_path`), never reports `video_mismatch`, and always serves its own sample video. Exports are rendered for real (#32): the request validates exactly as in § 6, and the shared render worker cuts the requested interval from the job's `video_path`, or from the sample preview video when the job has none, with the export pipeline (exact interval, layout, captions if asked) and reports the § 6.3 stages. Highlights videos are rendered for real too (#72): a request validates exactly as in § 7, and the same worker joins the resolved segments from the job's `video_path`, or the sample preview video, with the highlights pipeline (exact cuts, the source's own framing at 1920×1080, fades, captions if asked) and reports the § 7.3 stages. So every scenario with candidates and available export can make a clip and a highlights video. The mock lists `configured_region` only when `AUTOCLIPPER_EXPORT_REGION` is set (§ 5); its examples above show a server with a region configured. A `stacked` export of the sample preview video finds no facecam, so it renders a center crop and reports `effective_layout` and `layout_note` (§ 6.2, #218); the in-browser fixture mode does the same for every finished `stacked` export. ZIP downloads (§ 7.6) work the same against the mock backend; the in-browser fixture mode has no files to zip, so its client answers `getArchiveStatus` with an `archive_backend_required` error that asks the user to connect the local backend.
 
 **Fixture mode.** The frontend can also run without any backend, from static JSON fixtures (#29–#31). Fixtures follow the examples in this document and the scenarios above. Parity with the mock backend means the same shapes, states, codes and business values (`video_id`, `vod`, candidate fields and order, warnings, failure codes, availability and bounds). It does not cover volatile values, which differ per run and must never be hard-coded or compared: `job_id`, `export_id`, `highlights_id`, `media_id` and every URL containing them, the server-clock timestamps (`created_at`, `started_at`, `updated_at` and `finished_at` on jobs, exports and highlights videos, and `generated_at`; `vod.created_at` is a business value), and progress timing. A fixture's `PreviewMedia.url` is any root-relative URL the frontend's dev setup serves a locally generated, git-ignored MP4 from (or the mock backend's media route when it's running); media files are never committed. The table above and the examples it points to fix the business values of each scenario's job, result and media, with one exception: the `warnings` of `9000000005`'s failed job. So fixtures written by hand before #28 exists already match the mock. For that exception, and anything else this page leaves open, the mock's response is canonical: until #28 exists a fixture may use any value the field tables and § 4.5 allow, and it's updated to match the mock afterward.
 

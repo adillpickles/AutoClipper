@@ -373,6 +373,10 @@ class Export(_Response):
     error: ApiError | None
     download_url: str | None
     filename: str | None = None
+    # Set when a finished ``stacked`` export fell back (#218): the layout it was rendered with
+    # and one sentence saying why. Both null otherwise.
+    effective_layout: str | None = None
+    layout_note: str | None = None
     created_at: UtcDatetime
     started_at: UtcDatetime | None
     updated_at: UtcDatetime

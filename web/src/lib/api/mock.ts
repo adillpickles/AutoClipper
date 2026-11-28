@@ -472,11 +472,19 @@ function mediaFor(
       min_start_s: 0,
       max_end_s: duration,
       max_duration_s: 90,
-      // Like `autoclipper serve` without AUTOCLIPPER_EXPORT_REGION (contract § 5).
-      layouts: ["center_crop"],
+      // Like `autoclipper serve` without AUTOCLIPPER_EXPORT_REGION: `stacked` is always
+      // offered because the facecam is detected per clip (contract § 5, § 6.1).
+      layouts: ["center_crop", "stacked"],
     },
   };
 }
+
+/**
+ * What a finished `stacked` export reports in the mock: the sample video has no facecam, so,
+ * like the real server on such a scene, it falls back to a center crop and says so (#218).
+ */
+export const MOCK_STACKED_FALLBACK_NOTE =
+  "No facecam found in this part of the stream, so this clip is a center crop.";
 
 /** Length of one render step: renders are quick in the mock so the cards fill in visibly. */
 export const MOCK_RENDER_STEP_MS = 800;
@@ -594,6 +602,7 @@ export function exportAt(
   const finishedAt = iso(startMs + stages.length * stepMs);
   const resolvedFilename =
     filename ?? mockClipFilename(base, scenarioFor(base.video_id).result);
+  const fellBack = base.layout === "stacked";
   return {
     ...base,
     state: "done",
@@ -601,6 +610,8 @@ export function exportAt(
     error: null,
     download_url: CLIP_URL,
     filename: resolvedFilename,
+    effective_layout: fellBack ? "center_crop" : null,
+    layout_note: fellBack ? MOCK_STACKED_FALLBACK_NOTE : null,
     started_at: iso(startMs),
     updated_at: finishedAt,
     finished_at: finishedAt,

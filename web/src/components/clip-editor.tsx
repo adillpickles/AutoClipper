@@ -9,6 +9,7 @@ import { useEffect, useId, useRef, useState } from "react";
 
 import { ShareMenu } from "@/components/share-menu";
 import { buttonClasses } from "@/components/ui/button";
+import { Notice } from "@/components/ui/notice";
 
 import {
   ApiRequestError,
@@ -1021,6 +1022,13 @@ export function ClipEditor() {
                 No export layouts available right now.
               </p>
             )}
+            {/* Kept mounted so screen readers announce the note when it appears (#218). */}
+            <div role="status" aria-live="polite">
+              {render.kind === "done" && render.export.layout_note && (
+                // The stacked layout fell back for this render: say what was rendered.
+                <Notice>{render.export.layout_note}</Notice>
+              )}
+            </div>
           </fieldset>
 
           <div className="flex flex-col gap-1">
