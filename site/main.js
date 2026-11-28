@@ -22,3 +22,35 @@
     });
   }
 })();
+
+// Demo clip: play it while it's on screen, and only when the visitor hasn't asked for reduced
+// motion. The markup has no autoplay attribute and preload="none", so nothing downloads until
+// the clip is about to scroll into view; without JavaScript it's a poster with controls.
+(() => {
+  const video = document.querySelector("video[data-autoplay]");
+  if (!video || !("IntersectionObserver" in window)) return;
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+  let visible = false;
+  let pausedByUser = false;
+  const sync = () => {
+    if (visible && !reduce.matches && !pausedByUser) {
+      video.play().catch(() => {});
+    } else if (!video.paused) {
+      video.pause();
+    }
+  };
+  video.addEventListener("pause", () => {
+    if (visible && !reduce.matches && document.visibilityState === "visible") pausedByUser = true;
+  });
+  video.addEventListener("play", () => {
+    pausedByUser = false;
+  });
+  new IntersectionObserver(
+    (entries) => {
+      visible = entries.some((entry) => entry.isIntersecting);
+      sync();
+    },
+    { rootMargin: "200px 0px", threshold: 0.25 },
+  ).observe(video);
+  reduce.addEventListener("change", sync);
+})();
