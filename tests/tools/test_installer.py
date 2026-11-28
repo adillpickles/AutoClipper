@@ -299,6 +299,15 @@ def test_checksum_mismatch_discards_download_and_fails(tmp_path: Path) -> None:
             "missing expected binary",
         ),
     ],
+    # Fixed IDs: the zip bytes embed the current time, and an ID built from them would differ
+    # between pytest-xdist workers, which then refuse to run ("Different tests were collected").
+    ids=[
+        "zip-corrupt",
+        "zip-path-traversal",
+        "zip-symlinked-binary",
+        "tar.xz-path-traversal",
+        "tar.xz-symlinked-binary",
+    ],
 )
 def test_unsafe_or_corrupt_archives_are_rejected(
     tmp_path: Path,
