@@ -60,16 +60,41 @@ export function Dialog({
         : null;
     (initialFocus?.current ?? panelRef.current)?.focus();
 
+    // Focus must never rest outside the panel while the dialog is open. When the focused
+    // control is removed (a button replaced by progress, say), browsers drop focus to <body>
+    // without any event, so Tab is guarded at the document level as well.
+    function pullFocusIn() {
+      const panel = panelRef.current;
+      if (!panel) return;
+      (focusableWithin(panel)[0] ?? panel).focus();
+    }
+    const outside = (target: EventTarget | null) => {
+      const panel = panelRef.current;
+      return (
+        panel !== null && !(target instanceof Node && panel.contains(target))
+      );
+    };
+
     // Escape closes from anywhere, even when focus has left the panel.
     const keydown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") closeRef.current();
+      if (event.key === "Escape") {
+        closeRef.current();
+      } else if (event.key === "Tab" && outside(document.activeElement)) {
+        event.preventDefault();
+        pullFocusIn();
+      }
+    };
+    const focusin = (event: FocusEvent) => {
+      if (outside(event.target)) pullFocusIn();
     };
     window.addEventListener("keydown", keydown);
+    document.addEventListener("focusin", focusin);
 
     const { overflow } = document.body.style;
     document.body.style.overflow = "hidden";
     return () => {
       window.removeEventListener("keydown", keydown);
+      document.removeEventListener("focusin", focusin);
       document.body.style.overflow = overflow;
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
     };
@@ -87,7 +112,11 @@ export function Dialog({
     const first = items[0];
     const last = items[items.length - 1];
     const active = document.activeElement;
-    if (event.shiftKey && (active === first || active === panelRef.current)) {
+    if (!items.includes(active as HTMLElement)) {
+      // Focus sits on the panel or a non-tabbable region inside it.
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && active === first) {
       event.preventDefault();
       last.focus();
     } else if (!event.shiftKey && active === last) {

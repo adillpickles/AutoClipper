@@ -3,6 +3,7 @@ import type {
   AnchorHTMLAttributes,
   ButtonHTMLAttributes,
   ReactNode,
+  Ref,
 } from "react";
 
 export type ButtonVariant =
@@ -50,6 +51,7 @@ export function buttonClasses({
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
+  ref?: Ref<HTMLButtonElement>;
 }
 
 export function Button({

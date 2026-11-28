@@ -74,6 +74,29 @@ describe("Dialog", () => {
     expect(document.body.style.overflow).toBe("");
   });
 
+  it("pulls focus back when it escapes or drops to the page", () => {
+    render(
+      <div>
+        <button type="button">Outside</button>
+        <Dialog labelledBy="t" onClose={() => undefined}>
+          <h2 id="t">Title</h2>
+          <button type="button">Inside</button>
+        </Dialog>
+      </div>,
+    );
+    const dialog = screen.getByRole("dialog");
+    const inside = screen.getByRole("button", { name: "Inside" });
+
+    screen.getByRole("button", { name: "Outside" }).focus();
+    expect(document.activeElement).toBe(inside);
+
+    // A removed control leaves focus on <body>; the next Tab lands back inside.
+    (document.activeElement as HTMLElement).blur();
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
   it("lists only reachable controls", () => {
     const root = document.createElement("div");
     root.innerHTML = `

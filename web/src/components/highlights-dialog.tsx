@@ -137,6 +137,25 @@ export function HighlightsDialog({
   const [captions, setCaptions] = useState(false);
   const [stage, setStage] = useState<Stage>({ kind: "picking" });
   const running = useRef(false);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const downloadRef = useRef<HTMLAnchorElement | null>(null);
+  const retryRef = useRef<HTMLButtonElement | null>(null);
+  const previousStage = useRef<Stage["kind"]>(stage.kind);
+
+  // Each stage replaces the controls of the one before, so the focused control (say the
+  // "Make highlights video" button) disappears. Move focus to the new stage's main control,
+  // or to the dialog body, so keyboard users stay inside the dialog.
+  useEffect(() => {
+    if (previousStage.current === stage.kind) return;
+    previousStage.current = stage.kind;
+    const target =
+      stage.kind === "done"
+        ? downloadRef.current
+        : stage.kind === "failed"
+          ? retryRef.current
+          : bodyRef.current;
+    (target ?? bodyRef.current)?.focus();
+  }, [stage.kind]);
 
   // Unmounting cancels any in-flight render's polling. The cleanup runs only when the dialog
   // truly unmounts (not on parent rerenders), or polling would stop early. Escape and focus
@@ -254,7 +273,11 @@ export function HighlightsDialog({
         onClose={onClose}
       />
 
-      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5 sm:px-6">
+      <div
+        ref={bodyRef}
+        tabIndex={-1}
+        className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5 focus:outline-none sm:px-6"
+      >
         {stage.kind === "picking" && (
           <>
             <section
@@ -264,7 +287,7 @@ export function HighlightsDialog({
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <fieldset className="flex min-w-0 flex-col gap-1.5">
                   <legend className="sr-only">Order</legend>
-                  <div className="inline-flex rounded-control border border-border-strong bg-surface-canvas p-0.5">
+                  <div className="inline-flex rounded-control border border-border-control bg-surface-canvas p-0.5">
                     {(
                       [
                         { value: "chronological", label: "Stream order" },
@@ -483,7 +506,7 @@ export function HighlightsDialog({
               title="Couldn't make the highlights video"
               message={stage.message}
               primaryAction={
-                <Button size="sm" onClick={make}>
+                <Button ref={retryRef} size="sm" onClick={make}>
                   Try again
                 </Button>
               }
@@ -531,6 +554,7 @@ export function HighlightsDialog({
               <a
                 href={stage.download}
                 download={stage.filename}
+                ref={downloadRef}
                 className={buttonClasses({ size: "lg" })}
               >
                 Download
@@ -645,7 +669,7 @@ function SequencePreview({
             <span className="font-mono text-[0.6875rem] leading-4 font-bold">
               #{item.rank}
             </span>
-            <span className="truncate font-mono text-[0.625rem] leading-3 tabular-nums opacity-75 max-sm:hidden">
+            <span className="truncate font-mono text-[0.625rem] leading-3 tabular-nums max-sm:hidden">
               {formatTime(item.duration_s)}
             </span>
           </li>

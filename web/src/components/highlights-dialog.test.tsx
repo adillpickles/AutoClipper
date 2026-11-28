@@ -319,6 +319,10 @@ describe("HighlightsDialog", () => {
 });
 
 describe("sequenceFor", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   const trims = {
     c001: { checked: true, start_s: 118, end_s: 148 },
     c002: { checked: true, start_s: 40, end_s: 62 },
@@ -367,5 +371,61 @@ describe("sequenceFor", () => {
     expect(firstAction?.textContent).toBe("Make highlights video");
     fireEvent.click(screen.getByLabelText("Best first"));
     expect(order.firstElementChild?.textContent).toContain("#1");
+  });
+});
+
+describe("HighlightsDialog focus", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("keeps focus inside the dialog when a stage replaces the focused control", async () => {
+    api.createHighlights.mockResolvedValue({
+      highlights: video("queued"),
+      created: true,
+    });
+    api.getHighlights.mockResolvedValue(
+      video("done", {
+        download_url: "/mock-media/highlights.mp4",
+        duration_s: 77,
+      }),
+    );
+    render(
+      <div>
+        <button type="button">Outside</button>
+        {dialog(() => undefined)}
+      </div>,
+    );
+    const panel = screen.getByRole("dialog");
+    const make = screen.getByRole("button", { name: "Make highlights video" });
+    make.focus();
+    fireEvent.click(make);
+
+    // The button is gone; focus moved into the dialog instead of falling to <body>.
+    await screen.findByText(/Waiting in render queue/);
+    expect(panel.contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Tab" });
+    expect(panel.contains(document.activeElement)).toBe(true);
+
+    // Focus that lands outside the panel is pulled back in.
+    screen.getByRole("button", { name: "Outside" }).focus();
+    expect(panel.contains(document.activeElement)).toBe(true);
+
+    // When the video is ready, Download takes focus.
+    await screen.findByText(/The highlights video is ready/);
+    expect(document.activeElement).toBe(
+      screen.getByRole("link", { name: "Download" }),
+    );
+  });
+
+  it("focuses Try again when the render fails", async () => {
+    api.createHighlights.mockRejectedValue(new Error("offline"));
+    render(dialog(() => undefined));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Make highlights video" }),
+    );
+    const retry = await screen.findByRole("button", { name: "Try again" });
+    expect(document.activeElement).toBe(retry);
   });
 });
