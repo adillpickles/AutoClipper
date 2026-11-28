@@ -61,7 +61,7 @@ Model names used below: `CreateJobRequest`, `VideoUpload`, `Job`, `JobRenderSumm
 | `POST` | `/api/v1/exports` | Start exporting a trimmed candidate | `201` new `Export`; `200` if an identical export is queued/running or finished with its file on disk |
 | `GET` | `/api/v1/exports/{export_id}` | Export status (poll this) | `200` `Export` |
 | `GET` | `/api/v1/exports/{export_id}/file` | Download the finished MP4 | `200` `video/mp4` |
-| `POST` | `/api/v1/highlights` | Start rendering a highlights video from chosen candidates | `201` new `HighlightsVideo`; `200` if an identical one is queued/running |
+| `POST` | `/api/v1/highlights` | Start rendering a highlights video from chosen candidates | `201` new `HighlightsVideo`; `200` if an identical one is queued/running or finished with its file on disk |
 | `GET` | `/api/v1/highlights/{highlights_id}` | Highlights video status (poll this) | `200` `HighlightsVideo` |
 | `GET` | `/api/v1/highlights/{highlights_id}/file` | Download the finished MP4 | `200` `video/mp4` |
 | `GET` | `/api/v1/jobs/{job_id}/archives/{kind}` | What the job's ZIP of finished clips (`kind=clips`) or highlights videos (`kind=highlights`) would contain (§ 7.6) | `200` `ArchiveStatus` |
@@ -1054,7 +1054,7 @@ The results screen sends `segments` explicitly: the ticked moments (all of the t
 
 **Bounds.** Every segment must satisfy its candidate's export bounds: `export.min_start_s ≤ start_s < end_s ≤ export.max_end_s` and `end_s - start_s ≤ export.max_duration_s` (§ 5). The total duration must not exceed a server-configured maximum, default 900 s (15 minutes). A violation, or `segments: null` on a result with no candidates, is `422 invalid_highlights_bounds`. Its `details` name the first offending segment (0-based index into the resolved, ordered list; `null` when the total or an empty result is the problem) and the limits.
 
-**Responses.** `201 Created` with the new `HighlightsVideo` (`queued`) and `Location: /api/v1/highlights/{highlights_id}`. If one with the same `job_id`, resolved `segments`, `order` and `captions` is `queued` or `running`, it comes back with `200 OK` instead, so a `null` request and its explicit equivalent deduplicate. Checks run in this order and the first failure is returned: the body's shape and types (`422 invalid_request`), the job (`404 job_not_found`, then `409 job_not_done`), each segment's candidate (`404 candidate_not_found`), export availability for those candidates (`409 media_unavailable`), then the bounds (`422 invalid_highlights_bounds`).
+**Responses.** `201 Created` with the new `HighlightsVideo` (`queued`) and `Location: /api/v1/highlights/{highlights_id}`. If one with the same `job_id`, resolved `segments` (the same moments in the same order with the same trims), `order` and `captions` is `queued` or `running`, or `done` with its file still on disk, it comes back with `200 OK` instead (no `Location`), so pressing "Make highlights video" again renders nothing new and a `null` request and its explicit equivalent deduplicate (#230). A `failed` highlights video, or a `done` one whose file was removed, is never reused: posting again renders a new one. Checks run in this order and the first failure is returned: the body's shape and types (`422 invalid_request`), the job (`404 job_not_found`, then `409 job_not_done`), each segment's candidate (`404 candidate_not_found`), export availability for those candidates (`409 media_unavailable`), then the bounds (`422 invalid_highlights_bounds`).
 
 ### 7.2 The `HighlightsVideo` resource
 
