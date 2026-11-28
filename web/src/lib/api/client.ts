@@ -56,6 +56,11 @@ export interface ApiClient {
   uploadVideo(file: File, options?: UploadVideoOptions): Promise<VideoUpload>;
   /** `POST /jobs`: `created` is false when a queued or running job for the same input came back. */
   createJob(request: CreateJobRequest): Promise<{ job: Job; created: boolean }>;
+  /**
+   * `POST /jobs/{job_id}/reanalyze`: analyze the job's VOD and video source again (§ 3.9, #187).
+   * `created` is false when an analysis of that source was already queued or running.
+   */
+  reanalyzeJob(jobId: string): Promise<{ job: Job; created: boolean }>;
   /** `GET /jobs/{job_id}`. */
   getJob(jobId: string): Promise<Job>;
   /** `DELETE /jobs/{job_id}`: remove a finished job and optionally delete rendered MP4s (§ 3.8). */

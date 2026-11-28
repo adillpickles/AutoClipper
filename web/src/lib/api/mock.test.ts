@@ -147,6 +147,46 @@ describe("createMockClient", () => {
     expect(local.created).toBe(true);
   });
 
+  it("re-analyzes a VOD as a new job that replaces the old one (#187)", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const first = await client.createJob({
+      vod: "9000000011",
+      video_path: "/videos/vod.mp4",
+    });
+    now += 60_000;
+
+    const fresh = await client.reanalyzeJob(first.job.job_id);
+    expect(fresh.created).toBe(true);
+    expect(fresh.job.job_id).not.toBe(first.job.job_id);
+    expect(fresh.job.video_path).toBe("/videos/vod.mp4");
+    expect(fresh.job.state).toBe("queued");
+    // A second click while it runs returns the same re-analysis.
+    const again = await client.reanalyzeJob(first.job.job_id);
+    expect(again).toEqual({ job: fresh.job, created: false });
+    // The Library row and a plain post both use the new analysis, even while it runs.
+    const listed = await client.listJobs();
+    expect(listed.items.map((item) => item.job_id)).toEqual([fresh.job.job_id]);
+    const plain = await client.createJob({
+      vod: "9000000011",
+      video_path: "/videos/vod.mp4",
+    });
+    expect(plain.job.job_id).toBe(fresh.job.job_id);
+
+    // The flag on POST /jobs always creates another one.
+    const forced = await client.createJob({
+      vod: "9000000011",
+      video_path: "/videos/vod.mp4",
+      reanalyze: true,
+    });
+    expect(forced.created).toBe(true);
+    expect(forced.job.job_id).not.toBe(fresh.job.job_id);
+    await expect(client.reanalyzeJob("job_missing")).rejects.toMatchObject({
+      status: 404,
+      error: { code: "job_not_found" },
+    });
+  });
+
   it("retries a failed analysis instead of reusing it", async () => {
     let now = T0;
     const client = createMockClient(() => now);
@@ -905,7 +945,7 @@ describe("createMockClient library (listJobs and deleteJob)", () => {
     });
 
     now += 12 * MOCK_STEP_MS;
-    await client.createExport({
+    const { export: exp } = await client.createExport({
       job_id: active.job_id,
       candidate_id: "c001",
       start_s: 118,
@@ -913,7 +953,14 @@ describe("createMockClient library (listJobs and deleteJob)", () => {
       layout: "center_crop",
       captions: false,
     });
-    now += 4 * MOCK_RENDER_STEP_MS;
+    // A render in progress blocks the delete (#187)…
+    now += 2 * MOCK_RENDER_STEP_MS;
+    expect((await client.getExport(exp.export_id)).state).toBe("running");
+    await expect(client.deleteJob(active.job_id)).rejects.toMatchObject({
+      status: 409,
+      error: { code: "job_in_progress" },
+    });
+    now += 2 * MOCK_RENDER_STEP_MS;
 
     const kept = await client.deleteJob(active.job_id);
     expect(kept).toEqual({
@@ -938,6 +985,29 @@ describe("createMockClient library (listJobs and deleteJob)", () => {
       job_id: second.job_id,
       deleted: true,
       deleted_files: 1,
+    });
+  });
+
+  it("cancels a finished job's queued renders when it is deleted (#187)", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const job = (await client.createJob({ vod: "9000000001" })).job;
+    now += 12 * MOCK_STEP_MS;
+    const { export: queued } = await client.createExport({
+      job_id: job.job_id,
+      candidate_id: "c001",
+      start_s: 118,
+      end_s: 148,
+      layout: "center_crop",
+      captions: false,
+    });
+    expect(queued.state).toBe("queued");
+
+    await expect(client.deleteJob(job.job_id)).resolves.toMatchObject({
+      deleted: true,
+    });
+    await expect(client.getExport(queued.export_id)).rejects.toMatchObject({
+      status: 404,
     });
   });
 

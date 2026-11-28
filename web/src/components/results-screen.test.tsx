@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ResultsScreen } from "@/components/results-screen";
@@ -23,10 +29,14 @@ const api = vi.hoisted(() => ({
   createHighlights: vi.fn(),
   getHighlights: vi.fn(),
   resolveUrl: vi.fn((url: string) => url),
+  reanalyzeJob: vi.fn(),
 }));
+
+const router = vi.hoisted(() => ({ push: vi.fn() }));
 
 vi.mock("next/navigation", () => ({
   useParams: () => params,
+  useRouter: () => router,
 }));
 
 vi.mock("@/lib/api/client", async (importOriginal) => ({
@@ -426,5 +436,154 @@ describe("ResultsScreen captions capability and fallback", () => {
     ) as HTMLInputElement;
     // Must stay at the original candidate start (118), not revive the old export's 110.
     expect(startInput.value).toBe("118");
+  });
+});
+
+describe("ResultsScreen with exports queued when the analysis finished (#187)", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    api.getHealth.mockResolvedValue({
+      status: "ok",
+      schema_version: "1.1",
+      job_runner: "mock",
+      captions_available: true,
+    });
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia.mockResolvedValue(MEDIA);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("asks for exactly the export the server queued and shows it rendering", async () => {
+    const queued: CreateExportRequest = {
+      job_id: "job_1",
+      candidate_id: "c001",
+      start_s: 118,
+      end_s: 148,
+      layout: "center_crop",
+      captions: true,
+    };
+    // The server returns its auto-queued render (200, created false), already running.
+    api.createExport.mockImplementation(async (req: CreateExportRequest) => ({
+      export: makeExport(req, {
+        export_id: "exp_auto",
+        state: "running",
+        progress: {
+          stage: "rendering",
+          stage_index: 3,
+          stage_count: 3,
+          stage_fraction: null,
+          message: "Rendering the clip",
+        },
+        download_url: null,
+        finished_at: null,
+      }),
+      created: false,
+    }));
+    api.getExport.mockImplementation(async () =>
+      makeExport(queued, { export_id: "exp_auto" }),
+    );
+
+    render(<ResultsScreen />);
+
+    expect(
+      await screen.findByText(/Rendering… Rendering the clip/),
+    ).toBeTruthy();
+    // Field for field the request the server auto-queued, so it reuses that render.
+    expect(api.createExport).toHaveBeenCalledTimes(1);
+    expect(api.createExport).toHaveBeenCalledWith(queued);
+    expect(await screen.findByText(/1 of 1 clips ready/)).toBeTruthy();
+    expect(api.getExport).toHaveBeenCalledWith("exp_auto");
+  });
+});
+
+describe("ResultsScreen re-analyze", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    api.getHealth.mockResolvedValue({
+      status: "ok",
+      schema_version: "1.1",
+      job_runner: "mock",
+      captions_available: true,
+    });
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia.mockResolvedValue(MEDIA);
+    api.createExport.mockImplementation(async (req: CreateExportRequest) => ({
+      export: makeExport(req),
+      created: false,
+    }));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("starts a fresh analysis after a confirm and follows its progress", async () => {
+    api.reanalyzeJob.mockResolvedValue({
+      job: { job_id: "job_new", state: "queued" },
+      created: true,
+    });
+    render(<ResultsScreen />);
+    await screen.findByText(/1 of 1 clips ready/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
+    const confirm = screen.getByRole("region", {
+      name: "Confirm re-analyzing this VOD",
+    });
+    expect(api.reanalyzeJob).not.toHaveBeenCalled();
+    // Focus moves into the panel, onto its confirm button.
+    expect(document.activeElement).toBe(
+      within(confirm).getByRole("button", { name: "Re-analyze" }),
+    );
+
+    // Cancel leaves everything as it was, with focus back on "Re-analyze".
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(confirm.isConnected).toBe(false);
+    expect(api.reanalyzeJob).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Re-analyze" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
+    fireEvent.click(
+      within(
+        screen.getByRole("region", { name: "Confirm re-analyzing this VOD" }),
+      ).getByRole("button", { name: "Re-analyze" }),
+    );
+
+    await vi.waitFor(() =>
+      expect(router.push).toHaveBeenCalledWith("/jobs/job_new"),
+    );
+    expect(api.reanalyzeJob).toHaveBeenCalledTimes(1);
+    expect(api.reanalyzeJob).toHaveBeenCalledWith("job_1");
+  });
+
+  it("shows the server's message when the new analysis can't start", async () => {
+    const { ApiRequestError } = await import("@/lib/api/errors");
+    api.reanalyzeJob.mockRejectedValue(
+      new ApiRequestError(422, {
+        code: "invalid_video_path",
+        message: "That video file can't be opened.",
+        details: null,
+      }),
+    );
+    render(<ResultsScreen />);
+    await screen.findByText(/1 of 1 clips ready/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
+    fireEvent.click(
+      within(
+        screen.getByRole("region", { name: "Confirm re-analyzing this VOD" }),
+      ).getByRole("button", { name: "Re-analyze" }),
+    );
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "That video file can't be opened.",
+    );
+    expect(router.push).not.toHaveBeenCalled();
   });
 });

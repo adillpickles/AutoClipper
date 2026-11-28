@@ -176,6 +176,8 @@ def make_client(
             "probe_video": lambda path: path.suffix == ".mp4",
             "render": FakeRenderer(),
             "highlights_render": FakeHighlightsRenderer(),
+            # Most tests count renders; the auto-queued top 10 (#187) have their own tests.
+            "auto_export_top": 0,
         }
         options.update(kwargs)
         service = MockService(**options)  # type: ignore[arg-type]
@@ -637,6 +639,382 @@ def test_a_failed_analysis_or_a_lost_result_is_analyzed_again(
     # Collapsed jobs stay reachable by ID.
     status = client.post(f"{API}/jobs/status", json={"job_ids": [failed["job_id"]]}).json()
     assert [item["job_id"] for item in status] == [failed["job_id"]]
+
+
+# --- Re-analysis and auto-queued exports (#187) -------------------------------------------------
+
+
+def test_reanalyze_always_creates_a_new_job_that_the_library_shows(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    client, _ = make_client()
+    old = done_job(client)
+
+    fresh = client.post(f"{API}/jobs", json={"vod": "9000000001", "reanalyze": True})
+
+    assert fresh.status_code == 201
+    assert fresh.headers["location"] == f"{API}/jobs/{fresh.json()['job_id']}"
+    assert fresh.json()["job_id"] != old["job_id"]
+    # The new analysis is the VOD's row, and analyzing again without the flag reuses it.
+    listed = client.get(f"{API}/jobs").json()
+    assert [item["job_id"] for item in listed["items"]] == [fresh.json()["job_id"]]
+    again = client.post(f"{API}/jobs", json={"vod": "9000000001"})
+    assert (again.status_code, again.json()["job_id"]) == (200, fresh.json()["job_id"])
+    # The old analysis is hidden, not deleted.
+    assert client.get(f"{API}/jobs/{old['job_id']}/result").status_code == 200
+
+    invalid = client.post(f"{API}/jobs", json={"vod": "9000000001", "reanalyze": "yes"})
+    assert (invalid.status_code, error_code(invalid)) == (422, "invalid_request")
+
+
+def test_a_running_reanalysis_replaces_the_finished_one_in_the_library(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    client, _ = make_client(synchronous=False, step_s=0.05)
+    old_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+    wait_until(lambda: client.get(f"{API}/jobs/{old_id}").json()["state"] == "done")
+
+    fresh = client.post(f"{API}/jobs", json={"vod": "9000000001", "reanalyze": True}).json()
+
+    # While it runs, the Library row and a plain post both point at the re-analysis.
+    assert fresh["state"] in ("queued", "running")
+    listed = client.get(f"{API}/jobs").json()
+    assert [item["job_id"] for item in listed["items"]] == [fresh["job_id"]]
+    plain = client.post(f"{API}/jobs", json={"vod": "9000000001"})
+    assert plain.json()["job_id"] == fresh["job_id"]
+    wait_until(lambda: client.get(f"{API}/jobs/{fresh['job_id']}").json()["state"] == "done")
+
+
+def test_reanalyzing_a_job_reuses_its_video_source(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    client, _ = make_client()
+    video = tmp_path / "vod.mp4"
+    video.write_bytes(b"x")
+    old = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(video)}).json()
+
+    fresh = client.post(f"{API}/jobs/{old['job_id']}/reanalyze")
+
+    assert fresh.status_code == 201
+    assert fresh.headers["location"] == f"{API}/jobs/{fresh.json()['job_id']}"
+    assert fresh.json()["job_id"] != old["job_id"]
+    assert (fresh.json()["video_id"], fresh.json()["video_path"]) == ("9000000001", str(video))
+    listed = client.get(f"{API}/jobs").json()
+    assert [item["job_id"] for item in listed["items"]] == [fresh.json()["job_id"]]
+
+    missing = client.post(f"{API}/jobs/job_0000000000000000/reanalyze")
+    assert (missing.status_code, error_code(missing)) == (404, "job_not_found")
+
+    # Another site can't start analyses on this machine.
+    foreign = client.post(
+        f"{API}/jobs/{old['job_id']}/reanalyze", headers={"Origin": "https://evil.example"}
+    )
+    assert (foreign.status_code, error_code(foreign)) == (403, "origin_not_allowed")
+    allowed = client.post(
+        f"{API}/jobs/{old['job_id']}/reanalyze", headers={"Origin": "http://localhost:3000"}
+    )
+    assert allowed.status_code == 201
+
+
+def test_reanalyzing_while_a_reanalysis_runs_returns_it(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    client, _ = make_client(synchronous=False, step_s=0.05)
+    old_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+    wait_until(lambda: client.get(f"{API}/jobs/{old_id}").json()["state"] == "done")
+
+    first = client.post(f"{API}/jobs/{old_id}/reanalyze")
+    second = client.post(f"{API}/jobs/{old_id}/reanalyze")
+
+    assert first.status_code == 201
+    assert (second.status_code, second.json()["job_id"]) == (200, first.json()["job_id"])
+    assert "location" not in second.headers
+    new_id = first.json()["job_id"]
+    wait_until(lambda: client.get(f"{API}/jobs/{new_id}").json()["state"] == "done")
+
+
+class GatedRenderer(FakeRenderer):
+    """A `FakeRenderer` whose first render waits for `release`, so later work stays queued."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(
+        self,
+        spec: ClipSpec,
+        /,
+        *,
+        region: tuple[float, float, float, float] | None,
+        transcriber: Transcriber | None,
+        on_stage: Callable[[Stage], None],
+        on_warning: object = None,
+    ) -> object:
+        if not self.started.is_set():
+            self.started.set()
+            assert self.release.wait(timeout=10)
+        return super().__call__(
+            spec,
+            region=region,
+            transcriber=transcriber,
+            on_stage=on_stage,
+            on_warning=on_warning,
+        )
+
+    def order(self) -> list[str]:
+        """The export IDs in the order they rendered."""
+        return [spec.output.stem for spec in self.specs]
+
+
+def _finished_job(client: TestClient, vod: str) -> str:
+    job_id = client.post(f"{API}/jobs", json={"vod": vod}).json()["job_id"]
+    wait_until(lambda: client.get(f"{API}/jobs/{job_id}").json()["state"] == "done")
+    return job_id
+
+
+def _exports_of(client: TestClient, job_id: str) -> dict[str, dict[str, Any]]:
+    """The job's exports by candidate ID (one each here)."""
+    summary = client.post(f"{API}/jobs/status", json={"job_ids": [job_id]}).json()[0]
+    return {render["candidate_id"]: render for render in summary["exports"]}
+
+
+def test_deleting_a_job_cancels_its_waiting_auto_exports(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    renderer = GatedRenderer()
+    client, _ = make_client(
+        render=renderer,
+        auto_export_top=10,
+        captions_supported=True,
+        synchronous=False,
+        step_s=0.01,
+    )
+    first = _finished_job(client, "9000000001")
+    assert renderer.started.wait(timeout=10)  # the first job's top clip is rendering
+    second = _finished_job(client, "9000000003")
+    wait_until(lambda: len(_exports_of(client, second)) == 2)
+    second_exports = {r["render_id"] for r in _exports_of(client, second).values()}
+    assert {r["state"] for r in _exports_of(client, second).values()} == {"queued"}
+
+    # Deleting right after analysis works: the clips that haven't started are cancelled.
+    deleted = client.delete(f"{API}/jobs/{second}")
+    assert deleted.status_code == 200, deleted.text
+    for export_id in second_exports:
+        assert client.get(f"{API}/exports/{export_id}").status_code == 404
+    # A render that is actually running still has to finish first.
+    busy = client.delete(f"{API}/jobs/{first}")
+    assert (busy.status_code, error_code(busy)) == (409, "job_in_progress")
+
+    renderer.release.set()
+    wait_until(lambda: _exports_of(client, first)["c003"]["state"] == "done")
+    assert len(renderer.order()) == 3
+    assert not second_exports & set(renderer.order())
+
+
+def test_user_renders_go_before_waiting_auto_exports(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    renderer = GatedRenderer()
+    client, _ = make_client(
+        render=renderer,
+        auto_export_top=10,
+        captions_supported=True,
+        synchronous=False,
+        step_s=0.01,
+    )
+    first = _finished_job(client, "9000000001")
+    assert renderer.started.wait(timeout=10)
+    second = _finished_job(client, "9000000003")
+    wait_until(lambda: len(_exports_of(client, second)) == 2)
+    auto_first = _exports_of(client, first)
+
+    # A trim asked for after both jobs finished renders next, before any waiting auto export.
+    trim = client.post(
+        f"{API}/exports",
+        json=export_body(second, candidate_id="c002", start_s=191.0, end_s=214.0),
+    )
+    assert trim.status_code == 201
+    # Opening the first job's results moves its waiting clips up, but behind the trim.
+    opened = client.post(
+        f"{API}/exports",
+        json=export_body(first, candidate_id="c003", start_s=40.0, end_s=62.0),
+    )
+    assert opened.status_code == 200
+    assert opened.json()["export_id"] == auto_first["c003"]["render_id"]
+
+    renderer.release.set()
+    wait_until(lambda: len(renderer.order()) == 6)
+    order = renderer.order()
+    assert order[:3] == [
+        auto_first["c001"]["render_id"],  # was already running
+        trim.json()["export_id"],
+        auto_first["c003"]["render_id"],
+    ]
+    # Then the remaining auto exports, oldest first; nothing rendered twice.
+    assert order[3] == auto_first["c002"]["render_id"]
+    assert len(set(order)) == 6
+
+
+def test_waiting_auto_exports_are_capped_newest_jobs_first(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    renderer = GatedRenderer()
+    client, _ = make_client(
+        render=renderer,
+        auto_export_top=2,  # two clips per job, two may wait: one job's worth
+        max_queued_auto_exports=2,
+        captions_supported=True,
+        synchronous=False,
+        step_s=0.01,
+    )
+    first = _finished_job(client, "9000000001")
+    assert renderer.started.wait(timeout=10)
+    second = _finished_job(client, "9000000003")
+    wait_until(lambda: len(_exports_of(client, second)) == 2)
+
+    # The older job's top clip is rendering, its second was waiting. When the newer job finishes,
+    # only its two clips wait: the older job keeps the clip already rendering. (The drop runs
+    # just after the newest job's exports are queued.)
+    wait_until(lambda: set(_exports_of(client, first)) == {"c001"})
+    assert {r["state"] for r in _exports_of(client, second).values()} == {"queued"}
+    # The dropped clips render when their results page asks for them.
+    reopened = client.post(
+        f"{API}/exports",
+        json=export_body(first, candidate_id="c002", start_s=251.5, end_s=276.5),
+    )
+    assert reopened.status_code == 201
+
+    renderer.release.set()
+    wait_until(lambda: len(renderer.order()) == 4)
+
+
+def _results_page_exports(client: TestClient, job_id: str) -> list[Any]:
+    """POST the exports the results page asks for by default (results-screen.tsx)."""
+    captions = client.get(f"{API}/health").json()["captions_available"]
+    result = client.get(f"{API}/jobs/{job_id}/result").json()
+    responses: list[Any] = []
+    for candidate in result["candidates"][:10]:
+        media = client.get(
+            f"{API}/jobs/{job_id}/candidates/{candidate['candidate_id']}/media"
+        ).json()
+        export = media["export"]
+        if export["status"] != "available":
+            continue
+        layouts = export["layouts"]
+        layout = "center_crop" if "center_crop" in layouts else "configured_region"
+        responses.append(
+            client.post(
+                f"{API}/exports",
+                json={
+                    "job_id": job_id,
+                    "candidate_id": candidate["candidate_id"],
+                    "start_s": candidate["start_s"],
+                    "end_s": candidate["end_s"],
+                    "layout": layout,
+                    "captions": captions,
+                },
+            )
+        )
+    return responses
+
+
+@pytest.mark.parametrize("captions", [True, False])
+def test_a_finished_job_exports_its_top_10_and_the_results_page_reuses_them(
+    make_client: Callable[..., tuple[TestClient, MockService]], captions: bool
+) -> None:
+    renderer = FakeRenderer()
+    client, _ = make_client(
+        render=renderer,
+        auto_export_top=10,
+        captions_supported=captions,
+        export_region=(0.2, 0.0, 0.3, 1.0),
+    )
+
+    job = done_job(client)
+
+    # The exports start when the job finishes, before anyone opens the results.
+    result = client.get(f"{API}/jobs/{job['job_id']}/result").json()
+    top = result["candidates"][:10]
+    assert len(top) == 3  # this scenario's whole result
+    assert [(spec.layout, spec.captions) for spec in renderer.specs] == [
+        ("center_crop", captions)
+    ] * len(top)
+    summary = client.post(f"{API}/jobs/status", json={"job_ids": [job["job_id"]]}).json()[0]
+    assert sorted(r["candidate_id"] for r in summary["exports"]) == sorted(
+        c["candidate_id"] for c in top
+    )
+    assert summary["export_count"] == len(top)
+
+    # Opening the results page asks for exactly those renders: nothing new is created.
+    responses = _results_page_exports(client, job["job_id"])
+    assert [r.status_code for r in responses] == [200] * len(top)
+    assert {r.json()["export_id"] for r in responses} == {
+        r["render_id"] for r in summary["exports"]
+    }
+    assert len(renderer.specs) == len(top)
+    after = client.post(f"{API}/jobs/status", json={"job_ids": [job["job_id"]]}).json()[0]
+    assert len(after["exports"]) == len(top)
+
+
+def test_auto_exports_queue_on_the_render_worker_without_holding_up_the_job(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    renderer = FakeRenderer(delay_s=0.02)
+    client, _ = make_client(render=renderer, auto_export_top=10, synchronous=False, step_s=0.01)
+    job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+    wait_until(lambda: client.get(f"{API}/jobs/{job_id}").json()["state"] == "done")
+
+    def summary() -> dict[str, Any]:
+        return client.post(f"{API}/jobs/status", json={"job_ids": [job_id]}).json()[0]
+
+    wait_until(lambda: len(summary()["exports"]) == 3)
+    # The results page opens while they render and picks them up.
+    responses = _results_page_exports(client, job_id)
+    assert [r.status_code for r in responses] == [200] * 3
+    wait_until(lambda: summary()["export_count"] == 3)
+    assert len(renderer.specs) == 3
+
+
+def test_only_the_top_candidates_are_exported(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    renderer = FakeRenderer()
+    client, _ = make_client(render=renderer, auto_export_top=2)
+
+    job = done_job(client)
+
+    summary = client.post(f"{API}/jobs/status", json={"job_ids": [job["job_id"]]}).json()[0]
+    assert sorted(r["candidate_id"] for r in summary["exports"]) == ["c001", "c002"]
+    assert len(renderer.specs) == 2
+
+
+def test_a_job_without_exportable_media_finishes_without_auto_exports(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    renderer = FakeRenderer()
+    client, _ = make_client(render=renderer, auto_export_top=10)
+
+    job = done_job(client, mock.NO_MEDIA_VIDEO_ID)
+
+    assert job["state"] == "done"
+    assert renderer.specs == []
+    summary = client.post(f"{API}/jobs/status", json={"job_ids": [job["job_id"]]}).json()[0]
+    assert summary["exports"] == []
+
+
+def test_a_bug_in_auto_exports_never_fails_the_finished_job(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = make_client(auto_export_top=10)
+
+    def broken(self: MockService, job_id: str, *, captions: bool) -> list[object]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(MockService, "_default_export_requests", broken)
+
+    assert done_job(client)["state"] == "done"
 
 
 # --- Media -------------------------------------------------------------------------------------

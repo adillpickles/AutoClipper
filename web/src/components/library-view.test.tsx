@@ -684,6 +684,47 @@ describe("LibraryView", () => {
     ).toHaveProperty("disabled", false);
   });
 
+  it("lets a job with only queued renders be deleted, not one with a render in progress (#187)", async () => {
+    const render_ = (state: "queued" | "running") => ({
+      render_id: `exp_${state}`,
+      kind: "export" as const,
+      candidate_id: "c001",
+      state,
+      file_available: false,
+      download_url: null,
+      duration_s: 30,
+      created_at: "2026-11-26T15:01:00Z",
+      finished_at: null,
+    });
+    state.listJobs.mockResolvedValue(
+      page([
+        makeSummary({
+          job_id: "job_1",
+          title: "Stream 1",
+          exports: [render_("queued")],
+        }),
+        makeSummary({
+          job_id: "job_2",
+          title: "Stream 2",
+          exports: [render_("running")],
+        }),
+      ]),
+    );
+    state.getJobStatuses.mockResolvedValue([]);
+
+    await act(async () => {
+      render(<LibraryView />);
+    });
+
+    const deleteIn = (title: string) =>
+      within(screen.getByText(title).closest("li") as HTMLLIElement).getByRole(
+        "button",
+        { name: "Delete" },
+      );
+    expect(deleteIn("Stream 1")).toHaveProperty("disabled", false);
+    expect(deleteIn("Stream 2")).toHaveProperty("disabled", true);
+  });
+
   it("polls one batch for active rows beyond 100 loaded jobs", async () => {
     vi.useFakeTimers();
     const jobs = history(102);

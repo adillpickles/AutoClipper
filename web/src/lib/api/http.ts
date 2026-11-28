@@ -294,6 +294,14 @@ export function createHttpClient(
       return { job: data, created: status === 201 };
     },
 
+    async reanalyzeJob(jobId: string): Promise<{ job: Job; created: boolean }> {
+      const { status, data } = await request<Job>(
+        `/jobs/${encodeURIComponent(jobId)}/reanalyze`,
+        { method: "POST" },
+      );
+      return { job: data, created: status === 201 };
+    },
+
     async getJob(jobId: string): Promise<Job> {
       const { data } = await request<Job>(`/jobs/${encodeURIComponent(jobId)}`);
       return data;

@@ -632,6 +632,16 @@ class JobStore:
             cursor = self._conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
             return cursor.rowcount > 0
 
+    def delete_renders(self, render_ids: Sequence[str]) -> None:
+        """Delete render rows, e.g. queued renders cancelled before they started (#187)."""
+        if not render_ids:
+            return
+        with self._lock, self._conn:
+            self._conn.executemany(
+                "DELETE FROM renders WHERE render_id = ?",
+                [(render_id,) for render_id in render_ids],
+            )
+
 
 def _row_to_job(row: sqlite3.Row, base_dir: Path) -> StoredJobRecord:
     job_id = row["job_id"]

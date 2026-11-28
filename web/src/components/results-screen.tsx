@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { ArchiveDownloads } from "@/components/archive-downloads";
 import { ClipCard, type ClipExport } from "@/components/clip-card";
 import { HighlightsDialog } from "@/components/highlights-dialog";
+import { ReanalyzeAction } from "@/components/reanalyze-action";
 import { StreamTimeline } from "@/components/stream-timeline";
 import { buttonClasses } from "@/components/ui/button";
 import {
@@ -115,9 +116,10 @@ export function ResultsScreen() {
   const result = view.kind === "result" ? view.result : null;
 
   // Request the top 10 exports once the result is in, then poll each until it finishes.
-  // Export IDs are remembered per job, so coming back to the page shows the same clips instead of
-  // rendering them all again. Without a remembered ID (another browser, cleared storage) the
-  // server returns the identical finished render instead of a new one (§ 6.1, #186).
+  // The server already queued these exports when the analysis finished (§ 6.1a, #187), so the
+  // default request below (the candidate's own start/end, center crop, captions as `/health`
+  // says) must match that one field for field: the server then returns its queued, running or
+  // finished render instead of a new one (§ 6.1, #186). Export IDs are also remembered per job.
   // `renderRef` lets a card's Retry button run the same flow.
   const renderRef = useRef<
     ((candidate: Candidate, fresh: boolean) => Promise<void>) | null
@@ -468,6 +470,7 @@ export function ResultsScreen() {
             )}
           </p>
         )}
+        <ReanalyzeAction key={jobId} jobId={jobId} />
       </div>
 
       {top.length === 0 ? (

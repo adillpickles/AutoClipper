@@ -831,29 +831,51 @@ function compareJobsNewestFirst(
 }
 
 /**
- * One Library row per VOD and source (§ 3.7, #186): the newest done job, else the newest job.
- * Older duplicates are hidden, not deleted.
+ * One Library row per VOD and source (§ 3.7, #186, #187): the newest job that hasn't failed
+ * (a re-analysis replaces the analysis before it), else the newest job. Older duplicates are
+ * hidden, not deleted.
  */
 function libraryRows(
   jobs: StoredJob[],
   at: number,
   starts: Map<string, number>,
 ): StoredJob[] {
-  const best = new Map<string, { stored: StoredJob; done: boolean }>();
+  const best = new Map<string, { stored: StoredJob; usable: boolean }>();
   for (const stored of jobs) {
     const key = jobSourceKey(stored);
-    const done = jobAt(stored, at, starts.get(stored.job_id)).state === "done";
+    const usable =
+      jobAt(stored, at, starts.get(stored.job_id)).state !== "failed";
     const current = best.get(key);
     if (
       !current ||
-      (done && !current.done) ||
-      (done === current.done &&
+      (usable && !current.usable) ||
+      (usable === current.usable &&
         compareJobsNewestFirst(stored, current.stored) < 0)
     ) {
-      best.set(key, { stored, done });
+      best.set(key, { stored, usable });
     }
   }
   return [...best.values()].map((entry) => entry.stored);
+}
+
+/** Add a new job for `source` to the store (§ 3.1). */
+function insertJob(store: Store, source: JobSource, at: number): Job {
+  const seq = (store.next_seq ?? 0) + 1;
+  const stored: StoredJob = {
+    job_id: randomId("job"),
+    video_id: source.video_id,
+    video_path: source.video_path,
+    upload_id: source.upload_id ?? null,
+    created_ms: at,
+    seq,
+  };
+  const next = {
+    ...store,
+    next_seq: seq,
+    jobs: { ...store.jobs, [stored.job_id]: stored },
+  };
+  save(next);
+  return jobNow(next, stored.job_id, at) as Job;
 }
 
 function doneJobsByVideo(store: Store, at: number): Map<string, string> {
@@ -1366,50 +1388,52 @@ export function createMockClient(
         });
       }
       const at = now();
-      // Reuse the newest done analysis of the same VOD and source, else a queued/running one
-      // (§ 3.1, #186). Failed jobs are retried.
-      const starts = schedule(store.jobs);
-      let reusable: { job: Job; done: boolean; stored: StoredJob } | null =
-        null;
-      for (const stored of Object.values(store.jobs)) {
-        if (
-          jobSourceKey(stored) !==
-          jobSourceKey({
-            video_id: videoId,
-            video_path: videoPath,
-            upload_id: uploadId,
-          })
-        )
-          continue;
-        const job = jobAt(stored, at, starts.get(stored.job_id));
-        if (job.state === "failed") continue;
-        const done = job.state === "done";
-        if (
-          reusable === null ||
-          (done && !reusable.done) ||
-          (done === reusable.done &&
-            compareJobsNewestFirst(stored, reusable.stored) < 0)
-        ) {
-          reusable = { job, done, stored };
-        }
-      }
-      if (reusable) return { job: reusable.job, created: false };
-      const seq = (store.next_seq ?? 0) + 1;
-      const stored: StoredJob = {
-        job_id: randomId("job"),
+      const source: JobSource = {
         video_id: videoId,
         video_path: videoPath,
         upload_id: uploadId,
-        created_ms: at,
-        seq,
       };
-      const next = {
-        ...store,
-        next_seq: seq,
-        jobs: { ...store.jobs, [stored.job_id]: stored },
-      };
-      save(next);
-      return { job: jobNow(next, stored.job_id, at) as Job, created: true };
+      // Reuse the newest analysis of the same VOD and source that hasn't failed (§ 3.1, #186),
+      // unless the request asks for a fresh one (#187). Failed jobs are retried.
+      if (!request.reanalyze) {
+        const starts = schedule(store.jobs);
+        let reusable: { job: Job; stored: StoredJob } | null = null;
+        for (const stored of Object.values(store.jobs)) {
+          if (jobSourceKey(stored) !== jobSourceKey(source)) continue;
+          const job = jobAt(stored, at, starts.get(stored.job_id));
+          if (job.state === "failed") continue;
+          if (
+            reusable === null ||
+            compareJobsNewestFirst(stored, reusable.stored) < 0
+          ) {
+            reusable = { job, stored };
+          }
+        }
+        if (reusable) return { job: reusable.job, created: false };
+      }
+      return { job: insertJob(store, source, at), created: true };
+    },
+
+    async reanalyzeJob(jobId: string) {
+      const store = load();
+      const original = store.jobs[jobId];
+      if (!original) throw JOB_NOT_FOUND();
+      const at = now();
+      const starts = schedule(store.jobs);
+      // An analysis of the same source already under way is the re-analysis (§ 3.9).
+      let active: { job: Job; stored: StoredJob } | null = null;
+      for (const stored of Object.values(store.jobs)) {
+        if (jobSourceKey(stored) !== jobSourceKey(original)) continue;
+        const job = jobAt(stored, at, starts.get(stored.job_id));
+        if (job.state !== "queued" && job.state !== "running") continue;
+        if (
+          active === null ||
+          compareJobsNewestFirst(stored, active.stored) < 0
+        )
+          active = { job, stored };
+      }
+      if (active) return { job: active.job, created: false };
+      return { job: insertJob(store, original, at), created: true };
     },
 
     async getJob(jobId: string) {
@@ -1443,15 +1467,13 @@ export function createMockClient(
             renderStarts.get(entry.highlights.highlights_id),
           ),
         );
+      // Only a render that is actually running blocks the delete; ones still queued are
+      // cancelled with the job (§ 3.8, #187).
       if (
         job.state === "queued" ||
         job.state === "running" ||
-        childExports.some(
-          (e) => e.state === "queued" || e.state === "running",
-        ) ||
-        childHighlights.some(
-          (h) => h.state === "queued" || h.state === "running",
-        )
+        childExports.some((e) => e.state === "running") ||
+        childHighlights.some((h) => h.state === "running")
       ) {
         throw new ApiRequestError(409, {
           code: "job_in_progress",

@@ -303,6 +303,17 @@ def create_app(
             return _json(job, 200, _NO_STORE)
         return _json(job, 201, {"Location": f"{API_PREFIX}/jobs/{job.job_id}", **_NO_STORE})
 
+    @app.post(f"{API_PREFIX}/jobs/{{job_id}}/reanalyze", response_model=Job, status_code=201)
+    def reanalyze_job(http_request: Request, job_id: str) -> Response:
+        # A no-body POST is a "simple" cross-origin request: another site could start
+        # analyses (and their renders) on this machine without this check.
+        if not settings_origins.allows(http_request):
+            return origin_forbidden("Re-analyzing from this browser origin is not allowed.")
+        job, created = service.reanalyze_job(job_id)
+        if not created:
+            return _json(job, 200, _NO_STORE)
+        return _json(job, 201, {"Location": f"{API_PREFIX}/jobs/{job.job_id}", **_NO_STORE})
+
     @app.get(f"{API_PREFIX}/jobs/{{job_id}}", response_model=Job)
     def get_job(job_id: str) -> Response:
         return _json(service.get_job(job_id), headers=_NO_STORE)

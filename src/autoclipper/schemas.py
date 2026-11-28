@@ -199,6 +199,7 @@ class CreateJobRequest(_Request):
     vod: str
     video_path: str | None = None
     upload_id: str | None = None
+    reanalyze: bool = False
 
 
 class Job(_Response):

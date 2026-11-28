@@ -21,6 +21,7 @@ export. Highlights videos are real too (#72): the worker joins the job's resolve
 """
 
 import contextlib
+import itertools
 import json
 import logging
 import queue
@@ -141,6 +142,7 @@ from autoclipper.schemas import (
     JobListResponse,
     JobRenderSummary,
     JobSummary,
+    Layout,
     OutputCopy,
     PreviewMedia,
     Progress,
@@ -160,6 +162,17 @@ MAX_HIGHLIGHTS_DURATION_S: Final = 900.0  # § 7.1
 # How much more than a candidate (or trim) is fetched for preview and cuts (#46): room to move
 # a trim without another download, kept well under the 90 s export bound.
 SEGMENT_MARGIN_S: Final = 30.0
+# How many top candidates are exported as soon as a job finishes (#187, PRD § 4): the results
+# page shows the same top 10 as clip cards.
+AUTO_EXPORT_TOP: Final = 10
+# At most this many automatic exports wait on the render worker (#187). When more jobs finish,
+# the oldest waiting ones are dropped; their results page renders them when it's opened.
+MAX_QUEUED_AUTO_EXPORTS: Final = 20
+# Render queue priorities: what a user asked for always goes before automatic exports.
+_USER_PRIORITY: Final = 0
+_AUTO_PRIORITY: Final = 1
+_RENDER_STOP: Final = (-1, -1, None)
+"""Put on the render queue by `close()`; sorts before any work so the worker stops first."""
 # Same one-output-frame slack that `render_clip` and `render_highlights` allow at segment ends.
 _RENDER_END_TOLERANCE_S: Final = 1.0 / EncodeSettings().frame_rate
 # How ``missing.txt`` in a ZIP download describes each omission reason.
@@ -483,6 +496,9 @@ class _RenderRecord:
     # What the export's layout resolves from when it renders (`_layout_key`), saved in the
     # library database; None for renders saved before #191.
     layout_key: str | None = None
+    # Queued automatically when its job finished (#187): runs after user work and may be
+    # dropped while still queued. Not persisted; a restart fails queued renders anyway.
+    auto: bool = False
 
     def export_model(self, *, filename: str | None = None) -> Export:
         assert self.request is not None
@@ -675,6 +691,10 @@ class MockService:
             settings). Required in pipeline mode.
         analyze: The pipeline's analysis function; tests pass a fake.
         baseline: The scorer the pipeline scores with (§ 4.1 ``scorer``).
+        auto_export_top: How many top candidates are exported, with the results page's default
+            request, as soon as a job finishes (#187); 0 turns it off.
+        max_queued_auto_exports: How many automatic exports may wait on the render worker;
+            the oldest waiting ones beyond it are dropped (#187).
     """
 
     samples: SampleMedia
@@ -699,6 +719,8 @@ class MockService:
     baseline: str = DEFAULT_SCORER
     segment_fetcher: SegmentFetcher | None = field(default=None, kw_only=True)
     store_path: Path | None = field(default=None, kw_only=True)
+    auto_export_top: int = field(default=AUTO_EXPORT_TOP, kw_only=True)
+    max_queued_auto_exports: int = field(default=MAX_QUEUED_AUTO_EXPORTS, kw_only=True)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _store: JobStore = field(init=False)
     _next_seq: int = field(default=0, init=False)
@@ -719,7 +741,11 @@ class MockService:
         default_factory=lambda: threading.Condition(), init=False
     )
     _analysis_queue: "queue.Queue[str | None]" = field(default_factory=queue.Queue, init=False)
-    _render_queue: "queue.Queue[str | None]" = field(default_factory=queue.Queue, init=False)
+    # (priority, sequence, render ID): user work first, then first in, first out (#187).
+    _render_queue: "queue.PriorityQueue[tuple[int, int, str | None]]" = field(
+        default_factory=queue.PriorityQueue, init=False
+    )
+    _render_seq: "itertools.count[int]" = field(default_factory=itertools.count, init=False)
     _fetch_queue: "queue.Queue[_FetchWork | None]" = field(default_factory=queue.Queue, init=False)
     _copy_queue: "queue.Queue[tuple[str, Path] | None]" = field(
         default_factory=queue.Queue, init=False
@@ -876,14 +902,16 @@ class MockService:
         """Stop the workers: queued work is dropped, the work in hand finishes."""
         self._copy_stop.set()
         if not self.synchronous:
-            queues = (self._analysis_queue, self._render_queue, self._fetch_queue, self._copy_queue)
-            for work in queues:
+            queues = (self._analysis_queue, self._fetch_queue, self._copy_queue)
+            for work in (*queues, self._render_queue):
                 while True:  # queued work is dropped; on next startup it becomes interrupted
                     try:
                         work.get_nowait()
                     except queue.Empty:
                         break
+            for work in queues:
                 work.put(None)
+            self._render_queue.put(_RENDER_STOP)
             for thread in self._threads:
                 thread.join(timeout=5)
         with self._lock:
@@ -1030,7 +1058,21 @@ class MockService:
     # --- Jobs ----------------------------------------------------------------------------------
 
     def create_job(self, request: CreateJobRequest) -> tuple[Job, bool]:
-        """Create a job, or return the queued/running one for the same input (`created` False)."""
+        """Create a job, or return the existing one for the same input (`created` False).
+
+        With `reanalyze` a new job is always created (#187). It is then the newest job for its
+        VOD and source, so the Library and later posts use it instead of the older analysis.
+        """
+        return self._create_job(request)
+
+    def _create_job(
+        self, request: CreateJobRequest, *, reuse_active_only: bool = False
+    ) -> tuple[Job, bool]:
+        """`create_job`; with `reuse_active_only`, only a queued or running job is reused.
+
+        The check for a job to reuse and the insert happen under one lock, so two requests
+        racing for the same input create one job.
+        """
         video_id = parse_vod(request.vod)
         if video_id is None:
             raise ApiException(
@@ -1067,7 +1109,10 @@ class MockService:
                 )
         with self._lock:
             key = (video_id, request.video_path, request.upload_id)
-            reusable = self._reusable_job(key)
+            if reuse_active_only:
+                reusable = self._active_job(key)
+            else:
+                reusable = None if request.reanalyze else self._reusable_job(key)
             if reusable is not None:
                 return reusable.model(), False
             now = self.clock()
@@ -1088,33 +1133,63 @@ class MockService:
         self._enqueue(self._analysis_queue, record.job_id, self._run_job_safely)
         return model, True
 
+    def reanalyze_job(self, job_id: str) -> tuple[Job, bool]:
+        """Analyze a job's VOD and video source again from scratch (#187).
+
+        The new job reads the same source as `job_id`, including an upload the client can't
+        name. If an analysis of that source is already queued or running, it is returned
+        instead (`created` False), so a double click starts one re-analysis.
+        """
+        with self._lock:
+            record = self._job(job_id)
+            request = CreateJobRequest(
+                vod=record.video_id,
+                video_path=record.video_path,
+                upload_id=record.upload_id,
+                reanalyze=True,
+            )
+        return self._create_job(request, reuse_active_only=True)
+
+    def _active_job(self, key: tuple[str, str | None, str | None]) -> _JobRecord | None:
+        """The newest queued or running job for `key` (call with the lock held)."""
+        active = [
+            record
+            for record in self._jobs.values()
+            if _job_key(record) == key and record.state in ("queued", "running")
+        ]
+        return max(active, key=_job_sort_key) if active else None
+
     def _reusable_job(self, key: tuple[str, str | None, str | None]) -> _JobRecord | None:
         """The job a new request for `key` should reuse, with the service lock held (#186).
 
-        A `done` job whose result is still on disk wins (newest first), then a `queued` or
-        `running` one. Failed jobs and done jobs whose result file is gone are never reused, so
-        posting again retries them.
+        The newest job that is `queued`, `running`, or `done` with its result still on disk. A
+        re-analysis (#187) is newer than the analysis it replaces, so it wins while it runs.
+        Failed jobs and done jobs whose result file is gone are never reused, so posting again
+        retries them.
         """
-        done: list[_JobRecord] = []
-        active: list[_JobRecord] = []
-        for record in self._jobs.values():
-            if _job_key(record) != key or record.job_id in self._deleting:
-                continue
-            if record.state == "done" and self._result_available(record):
-                done.append(record)
-            elif record.state in ("queued", "running"):
-                active.append(record)
-        if done or active:
-            return max(done or active, key=_job_sort_key)
-        return None
+        usable = [
+            record
+            for record in self._jobs.values()
+            if _job_key(record) == key
+            and record.job_id not in self._deleting
+            and self._usable_job(record)
+        ]
+        return max(usable, key=_job_sort_key) if usable else None
+
+    def _usable_job(self, record: _JobRecord) -> bool:
+        """Whether a job is in progress or has a result to show (call with the lock held)."""
+        if record.state in ("queued", "running"):
+            return True
+        return record.state == "done" and self._result_available(record)
 
     def _library_rows(self, jobs: Iterable[_JobRecord]) -> list[_JobRecord]:
         """One job per VOD and video source for the Library, with the service lock held (#186).
 
         Older libraries can hold several analyses of the same VOD from before job creation reused
-        finished jobs. They are collapsed here rather than deleted, so no result or render is lost:
-        the row is the newest `done` job with its result on disk, else the newest job. Deleting
-        that row reveals the next one.
+        finished jobs, and a re-analysis (#187) adds a newer job next to the old one. They are
+        collapsed here rather than deleted, so no result or render is lost: the row is the newest
+        job that is `queued`, `running`, or `done` with its result on disk, else the newest job.
+        Deleting that row reveals the next one.
         """
         groups: dict[tuple[str, str | None, str | None], list[_JobRecord]] = {}
         for record in jobs:
@@ -1124,8 +1199,8 @@ class MockService:
             if len(members) == 1:
                 rows.append(members[0])
                 continue
-            done = [rec for rec in members if rec.state == "done" and self._result_available(rec)]
-            rows.append(max(done or members, key=_job_sort_key))
+            usable = [rec for rec in members if self._usable_job(rec)]
+            rows.append(max(usable or members, key=_job_sort_key))
         return rows
 
     def get_job(self, job_id: str) -> Job:
@@ -1233,7 +1308,7 @@ class MockService:
             if (
                 job_id in self._deleting
                 or record.state in ("queued", "running")
-                or any(r.state in ("queued", "running") for r in child_renders)
+                or any(r.state == "running" for r in child_renders)
             ):
                 raise ApiException(
                     409,
@@ -1241,6 +1316,13 @@ class MockService:
                     "This analysis or one of its renders is still running. Wait for it to finish "
                     "before deleting it.",
                 )
+            # Renders that haven't started (e.g. the automatic top 10, #187) are cancelled: they
+            # leave the queue now, so the worker never picks them up.
+            cancelled = [r.render_id for r in child_renders if r.state == "queued"]
+            for render_id in cancelled:
+                self._renders.pop(render_id, None)
+            self._store.delete_renders(cancelled)
+            child_renders = [r for r in child_renders if r.state != "queued"]
             self._deleting.add(job_id)
             result_path = record.result_path
             render_files = [r.file for r in child_renders if r.file is not None]
@@ -1495,8 +1577,15 @@ class MockService:
 
     # --- Exports -------------------------------------------------------------------------------
 
-    def create_export(self, request: CreateExportRequest) -> tuple[Export, bool]:
-        """Create an export, or return an identical queued/running one (`created` False)."""
+    def create_export(
+        self, request: CreateExportRequest, *, auto: bool = False
+    ) -> tuple[Export, bool]:
+        """Create an export, or return an identical queued/running one (`created` False).
+
+        `auto` marks the exports queued when a job finishes (#187): they render after user
+        work. A user request that matches a queued automatic export moves it up to user priority.
+        """
+        promote: str | None = None
         with self._lock:
             job = self._done_job(request.job_id)
             if job.job_id in self._deleting:
@@ -1542,38 +1631,53 @@ class MockService:
             # finished one whose file was removed, is retried with a new export, and so is one
             # whose layout region changed (#191).
             layout_key = self._layout_key(job, request.layout)
-            for record in self._renders.values():
+            reused: Export | None = None
+            for existing in self._renders.values():
                 if (
-                    record.kind == "export"
-                    and record.request == request
-                    and _same_layout(record.layout_key, layout_key, request.layout)
+                    existing.kind == "export"
+                    and existing.request == request
+                    and _same_layout(existing.layout_key, layout_key, request.layout)
                     and (
-                        record.state in ("queued", "running")
+                        existing.state in ("queued", "running")
                         or (
-                            record.state == "done"
-                            and record.file is not None
-                            and record.file.is_file()
+                            existing.state == "done"
+                            and existing.file is not None
+                            and existing.file.is_file()
                         )
                     )
                 ):
-                    filename = self._render_filename(record) if record.state == "done" else None
-                    return record.export_model(filename=filename), False
-            now = self.clock()
-            record = _RenderRecord(
-                "export",
-                new_id("exp"),
-                job.job_id,
-                job.video_id,
-                request.captions,
-                _Timestamps(now, now),
-                request=request,
-                layout_key=layout_key,
-            )
-            self._persist_render(record)
-            self._renders[record.render_id] = record
-            model = record.export_model()
-        self._enqueue(self._render_queue, record.render_id, self._run_render_safely)
-        return model, True
+                    done = existing.state == "done"
+                    filename = self._render_filename(existing) if done else None
+                    if existing.auto and not auto and existing.state == "queued":
+                        existing.auto = False  # someone is waiting for it now
+                        promote = existing.render_id
+                    reused = existing.export_model(filename=filename)
+                    break
+            if reused is None:
+                now = self.clock()
+                record = _RenderRecord(
+                    "export",
+                    new_id("exp"),
+                    job.job_id,
+                    job.video_id,
+                    request.captions,
+                    _Timestamps(now, now),
+                    request=request,
+                    layout_key=layout_key,
+                    auto=auto,
+                )
+                self._persist_render(record)
+                self._renders[record.render_id] = record
+                created = record.export_model()
+            else:
+                created = None
+        if created is None:
+            assert reused is not None
+            if promote is not None:
+                self._enqueue_render(promote)
+            return reused, False
+        self._enqueue_render(created.export_id, auto=auto)
+        return created, True
 
     def get_export(self, export_id: str) -> Export:
         """The export (`404 export_not_found` if unknown)."""
@@ -1673,7 +1777,7 @@ class MockService:
             self._persist_render(record)
             self._renders[record.render_id] = record
             model = record.highlights_model()
-        self._enqueue(self._render_queue, record.render_id, self._run_render_safely)
+        self._enqueue_render(record.render_id)
         return model, True
 
     def get_highlights(self, highlights_id: str) -> HighlightsVideo:
@@ -2333,6 +2437,7 @@ class MockService:
             record.progress = None
             record.times.updated_at = record.times.finished_at = now
             self._persist_job(record)
+        self._queue_top_exports(job_id)
 
     def _run_pipeline_job(self, job_id: str) -> None:
         """Run one job through the real analysis, reporting progress as stages begin."""
@@ -2433,6 +2538,85 @@ class MockService:
             len(result.candidates),
             len(result.warnings),
         )
+        self._queue_top_exports(job_id)
+
+    def _queue_top_exports(self, job_id: str) -> None:
+        """Export a finished job's top candidates on the render worker (#187).
+
+        Each request is exactly the one the results page sends for a card by default, so when
+        the page opens, `create_export` returns these renders instead of starting new ones
+        (§ 6.1): the candidate's own `start_s` and `end_s`, `center_crop` (else
+        `configured_region`), and captions on iff the server can caption (as `/health` says).
+        Candidates the page wouldn't export (media unavailable, too long) are skipped. Never
+        raises: the job is done whatever happens here.
+        """
+        if self.auto_export_top <= 0:
+            return
+        try:
+            requests = self._default_export_requests(job_id, captions=self.captions_available)
+            for request in requests:
+                try:
+                    self.create_export(request, auto=True)
+                except ApiException as exc:
+                    log.info(
+                        "auto export skipped job_id=%s candidate_id=%s code=%s",
+                        job_id,
+                        request.candidate_id,
+                        exc.error.code,
+                    )
+            self._drop_old_auto_exports()
+        except Exception:  # a bug here must not fail the finished job
+            log.exception("auto exports failed job_id=%s", job_id)
+
+    def _drop_old_auto_exports(self) -> None:
+        """Keep at most `max_queued_auto_exports` automatic exports waiting (#187).
+
+        The oldest waiting ones go first, so a bulk channel queue renders the jobs that
+        finished last instead of scheduling hundreds of clips. A dropped export never started:
+        its record is removed, and the results page renders it again when it's opened.
+        """
+        with self._lock:
+            waiting = [r for r in self._renders.values() if r.auto and r.state == "queued"]
+            excess = len(waiting) - max(self.max_queued_auto_exports, 0)
+            if excess <= 0:
+                return
+            dropped = [record.render_id for record in waiting[:excess]]  # creation order
+            for render_id in dropped:
+                self._renders.pop(render_id, None)
+            self._store.delete_renders(dropped)
+        log.info("dropped %d waiting auto exports", len(dropped))
+
+    def _default_export_requests(self, job_id: str, *, captions: bool) -> list[CreateExportRequest]:
+        """The results page's default export request for each of a job's top candidates."""
+        requests: list[CreateExportRequest] = []
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None or not self._result_available(record) or record.result is None:
+                return requests
+            for candidate in record.result.candidates[: self.auto_export_top]:
+                export = self._media_for(record, candidate).export
+                if export.status != "available":
+                    continue
+                if "center_crop" in export.layouts:
+                    layout: Layout = "center_crop"
+                elif "configured_region" in export.layouts:
+                    layout = "configured_region"
+                else:
+                    continue
+                duration_s = candidate.end_s - candidate.start_s
+                if export.max_duration_s is not None and duration_s > export.max_duration_s:
+                    continue
+                requests.append(
+                    CreateExportRequest(
+                        job_id=job_id,
+                        candidate_id=candidate.candidate_id,
+                        start_s=candidate.start_s,
+                        end_s=candidate.end_s,
+                        layout=layout,
+                        captions=captions,
+                    )
+                )
+        return requests
 
     def _fail_job(self, job_id: str, error: ApiError) -> None:
         with self._lock:
@@ -2448,8 +2632,16 @@ class MockService:
             except (sqlite3.Error, OSError):
                 log.exception("couldn't persist failed job state job_id=%s", job_id)
 
+    def _enqueue_render(self, render_id: str, *, auto: bool = False) -> None:
+        """Queue a render: user work before automatic exports, else first in, first out."""
+        priority = _AUTO_PRIORITY if auto else _USER_PRIORITY
+        if self.synchronous:
+            self._run_render_safely(render_id)
+        else:
+            self._render_queue.put((priority, next(self._render_seq), render_id))
+
     def _run_renders(self) -> None:
-        while (render_id := self._render_queue.get()) is not None:
+        while (render_id := self._render_queue.get()[2]) is not None:
             self._run_render_safely(render_id)
 
     def _run_copies(self) -> None:
@@ -2997,8 +3189,12 @@ class MockService:
     def _run_render(self, render_id: str) -> None:
         with self._lock:
             record = self._renders.get(render_id)
-            if record is None:
+            # Gone (dropped or its job deleted), or already run: a promoted render has a
+            # second queue entry (#187).
+            if record is None or record.state != "queued":
                 return
+            # Claim it in the same step: once running, a drop or a job delete leaves it alone.
+            self._set_render_stage_locked(record, "obtaining_media")
         if record.kind == "export":
             self._run_export(record)
             return
@@ -3268,27 +3464,31 @@ class MockService:
         self._finish_render(record, file=result.output, duration_s=result.duration_s)
 
     def _set_render_stage(self, record: _RenderRecord, stage: str) -> None:
+        with self._lock:
+            self._set_render_stage_locked(record, stage)
+
+    def _set_render_stage_locked(self, record: _RenderRecord, stage: str) -> None:
+        """Report `stage` (and enter `running` with it); call with the service lock held."""
         index = RENDER_STAGES.index(stage) + 1
         final = (
             "Rendering the clip" if record.kind == "export" else "Rendering the highlights video"
         )
         message = _RENDER_MESSAGES.get(stage, final)
-        with self._lock:
-            if record.render_id not in self._renders:
-                return
-            now = self.clock()
-            if record.state == "queued":  # running and its first progress together (§ 3.4)
-                record.state = "running"
-                record.times.started_at = now
-            record.progress = Progress(
-                stage=stage,
-                stage_index=index,
-                stage_count=len(RENDER_STAGES),
-                stage_fraction=None,
-                message=message,
-            )
-            record.times.updated_at = now
-            self._persist_render(record)
+        if record.render_id not in self._renders:
+            return
+        now = self.clock()
+        if record.state == "queued":  # running and its first progress together (§ 3.4)
+            record.state = "running"
+            record.times.started_at = now
+        record.progress = Progress(
+            stage=stage,
+            stage_index=index,
+            stage_count=len(RENDER_STAGES),
+            stage_fraction=None,
+            message=message,
+        )
+        record.times.updated_at = now
+        self._persist_render(record)
 
     def _finish_render(
         self,
