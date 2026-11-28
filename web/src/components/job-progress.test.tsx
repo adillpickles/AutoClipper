@@ -102,7 +102,8 @@ describe("JobProgress", () => {
     ).toBe("/");
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByText(/Step 4 of 6/)).toBeTruthy();
+    // First seen mid-run, the stepper starts from the first stage (#188).
+    expect(await screen.findByText(/Step 1 of 6/)).toBeTruthy();
     expect(state.getJob).toHaveBeenCalledTimes(2);
   });
 
@@ -134,9 +135,9 @@ describe("JobProgress", () => {
     state.getJob.mockResolvedValue(makeJob());
     render(<JobProgress />);
 
-    await screen.findByText(/Step 4 of 6/);
+    await screen.findByText(/Step 1 of 6/);
     const active = document.querySelector('li[aria-current="step"]');
-    expect(active?.textContent).toContain("Downloading audio");
+    expect(active?.textContent).toContain("Looking up the VOD");
   });
 
   it("renders EmptyState with recovery links when analysis finishes with zero moments", async () => {

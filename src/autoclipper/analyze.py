@@ -417,16 +417,15 @@ def analyze_vod(
             video_id, vod.duration_s, tuple((s.offset_s, s.duration_s) for s in vod.muted_segments)
         ),
     )
-    chat_features = (
-        _timed(
-            "chat_features",
-            lambda: compute_chat_features(
-                windows, pl.read_parquet(chat_path(data_dir, video_id)), lexicon=lexicon
-            ),
+    # The chat replay is read once: its features, and its message count for the result (#188).
+    n_chat_messages: int | None = None
+    chat_features: pl.DataFrame | None = None
+    if chat_ok:
+        messages = pl.read_parquet(chat_path(data_dir, video_id))
+        n_chat_messages = messages.height
+        chat_features = _timed(
+            "chat_features", lambda: compute_chat_features(windows, messages, lexicon=lexicon)
         )
-        if chat_ok
-        else None
-    )
     audio_features = (
         _timed(
             "audio_features",
@@ -545,6 +544,8 @@ def analyze_vod(
         n_viewer_clips_total=n_viewer_clips_total,
         warnings=tuple(warnings),
         candidates=tuple(candidates),
+        n_chat_messages=n_chat_messages,
+        n_windows=windows.height if scored is not None else None,
     )
     path = result_path(artifacts_dir, video_id, out_path)
     _write_result(path, result)

@@ -164,6 +164,10 @@ class AnalysisResult(_Model):
     n_viewer_clips_total: int | None = Field(ge=0)
     warnings: tuple[AnalysisWarning, ...] = ()
     candidates: tuple[Candidate, ...] = Field(max_length=MAX_CANDIDATES)
+    # Pipeline counts the progress screen shows (#188). Omitted when unknown (no chat, nothing
+    # scored, or a file saved before they existed), so older files load unchanged.
+    n_chat_messages: int | None = Field(default=None, ge=0, exclude_if=lambda v: v is None)
+    n_windows: int | None = Field(default=None, ge=0, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def _check(self) -> Self:

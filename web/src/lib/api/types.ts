@@ -171,6 +171,9 @@ export interface AnalysisResult {
   n_viewer_clips_total: number | null;
   warnings: AnalysisWarning[];
   candidates: Candidate[];
+  // Pipeline counts for the progress screen (#188); omitted when unknown.
+  n_chat_messages?: number | null;
+  n_windows?: number | null;
 }
 
 export interface PreviewMedia {

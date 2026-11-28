@@ -247,6 +247,69 @@ body {
   color: var(--accent-soft-ink);
 }
 
+/* Progress screen stage visuals (#188). Only applied while motion is allowed; the component also
+   drops these classes when the user prefers reduced motion. */
+@keyframes stage-wave {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes stage-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  20%,
+  80% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes stage-scan {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+@keyframes stage-grow {
+  0% {
+    transform: scaleY(0.15);
+  }
+  60%,
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .stage-anim-wave {
+    animation: stage-wave 1s ease-in-out infinite;
+  }
+  .stage-anim-rise {
+    animation: stage-rise 1.8s ease-out infinite;
+  }
+  .stage-anim-scan {
+    animation: stage-scan 1.2s ease-in-out infinite;
+  }
+  .stage-anim-grow {
+    animation: stage-grow 1.4s ease-out infinite alternate;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

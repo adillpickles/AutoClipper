@@ -31,7 +31,7 @@ from autoclipper.ingest.media import (
     normalized_audio_path,
 )
 from autoclipper.ingest.twitch_api import HelixClient
-from autoclipper.ingest.vod import IngestTools
+from autoclipper.ingest.vod import IngestTools, chat_path
 from autoclipper.synthetic import generate_dataset
 
 FIXTURES = Path(__file__).parents[1] / "ingest" / "fixtures"
@@ -316,6 +316,9 @@ def test_a_vod_with_zero_viewer_clips_is_not_a_warning(
     assert result.candidates
     assert all(candidate.source == "discovered" for candidate in result.candidates)
     assert all(candidate.n_viewer_clips == 0 for candidate in result.candidates)
+    # The progress screen's counts (#188): every chat message read, every 10 s window scored.
+    assert result.n_chat_messages == pl.read_parquet(chat_path(data, VIDEO_ID)).height > 0
+    assert result.n_windows == 360  # a 3600 s VOD in 10 s windows
 
 
 # --- Missing signals degrade the result (api-contract.md § 3.5) ---------------------------------
@@ -361,6 +364,8 @@ def test_missing_audio_warns_and_degrades_the_scorer(
     assert "audio_missing" in warning_codes(result)
     assert result.scorer.name == "chat_spike"  # chat_loudness without audio
     assert result.candidates
+    assert result.n_chat_messages is not None
+    assert result.n_windows == 360
 
 
 def test_without_any_signal_viewer_clips_rank_alone(
@@ -384,6 +389,9 @@ def test_without_any_signal_viewer_clips_rank_alone(
     assert result.n_viewer_clips_total == 2
     assert [candidate.source for candidate in result.candidates] == ["viewer_clips"] * 2
     assert all(candidate.score == 0.0 for candidate in result.candidates)
+    # No chat was read and no window was scored, so the counts are unknown, not zero.
+    assert result.n_chat_messages is None
+    assert result.n_windows is None
 
 
 def test_nothing_to_rank_after_transient_failures_is_upstream_unavailable(

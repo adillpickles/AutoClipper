@@ -174,6 +174,8 @@ def _example_result(video_id: str) -> AnalysisResult:
         scorer=MOCK_SCORER,
         n_viewer_clips_total=4,
         candidates=_EXAMPLE_CANDIDATES,
+        n_chat_messages=2418,
+        n_windows=36,
     )
 
 
@@ -220,6 +222,7 @@ def scenario_for(video_id: str) -> Scenario:
             scorer=MOCK_SCORER,
             n_viewer_clips_total=1,
             warnings=(CHAT_MISSING,),
+            n_windows=30,
             candidates=(
                 Candidate(
                     candidate_id="c001",
