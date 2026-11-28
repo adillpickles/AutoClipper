@@ -7,7 +7,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { HighlightsDialog } from "@/components/highlights-dialog";
+import { HighlightsDialog, sequenceFor } from "@/components/highlights-dialog";
 import type { Candidate } from "@/lib/api/types";
 import { rememberTrim } from "@/lib/job-state";
 
@@ -315,5 +315,57 @@ describe("HighlightsDialog", () => {
       />,
     );
     expect(start1.value).toBe("112");
+  });
+});
+
+describe("sequenceFor", () => {
+  const trims = {
+    c001: { checked: true, start_s: 118, end_s: 148 },
+    c002: { checked: true, start_s: 40, end_s: 62 },
+    c003: { checked: false, start_s: 300, end_s: 320 },
+  };
+  const three: Candidate[] = [
+    { ...candidates[0], candidate_id: "c001", rank: 1 },
+    { ...candidates[0], candidate_id: "c002", rank: 2 },
+    { ...candidates[0], candidate_id: "c003", rank: 3 },
+  ];
+
+  it("plays ticked moments in stream order or best first", () => {
+    expect(
+      sequenceFor(three, trims, "chronological").map((s) => s.candidate_id),
+    ).toEqual(["c002", "c001"]);
+    expect(sequenceFor(three, trims, "rank").map((s) => s.rank)).toEqual([
+      1, 2,
+    ]);
+  });
+
+  it("never reports a negative length for a half-typed trim", () => {
+    const sequence = sequenceFor(
+      three,
+      { ...trims, c001: { checked: true, start_s: 150, end_s: 148 } },
+      "rank",
+    );
+    expect(sequence[0].duration_s).toBe(0);
+  });
+
+  it("shows the play order and keeps the primary action first", () => {
+    render(
+      <HighlightsDialog
+        jobId="job_seq"
+        videoId="9000000001"
+        vodDurationS={360}
+        candidates={candidates}
+        onClose={() => undefined}
+      />,
+    );
+    const order = screen.getByRole("list", { name: "Play order" });
+    expect(order.children.length).toBe(candidates.length);
+    const dialog = screen.getByRole("dialog");
+    const firstAction = dialog.querySelector(
+      'button:not([aria-label="Close"])',
+    );
+    expect(firstAction?.textContent).toBe("Make highlights video");
+    fireEvent.click(screen.getByLabelText("Best first"));
+    expect(order.firstElementChild?.textContent).toContain("#1");
   });
 });
