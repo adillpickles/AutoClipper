@@ -262,8 +262,9 @@
               <span class="step-num mono">02</span>
               <h3>Score every moment</h3>
               <p>
-                A model trained on viewer clips (logistic regression, then LightGBM) scores each
-                window, and has to beat simple baselines like "biggest chat spike" to earn its keep.
+                Each window gets a score from chat and loudness signals. Next up: a model trained on
+                viewer clips (logistic regression, then LightGBM) that has to beat those simple
+                baselines to earn its keep.
                 Each pick comes with a one-line reason.
               </p>
               <div class="chips" aria-hidden="true">
@@ -369,7 +370,8 @@
               shows where your Twitch API keys go.
             </p>
             <p class="note">
-              <strong>Pre-alpha.</strong> The full pipeline works end to end; models trained on
+              <strong>Pre-alpha.</strong> The full pipeline has been run end to end on a real
+              two-hour stream; today's ranking uses chat and loudness, and models trained on
               real Twitch data are still in progress.
             </p>
             <div class="cta-row">

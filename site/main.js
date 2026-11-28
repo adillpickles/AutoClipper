@@ -13,7 +13,7 @@
         button.textContent = "Copied";
         button.dataset.done = "";
       } catch {
-        button.textContent = "Press Ctrl+C";
+        button.textContent = "Select and copy";
       }
       setTimeout(() => {
         button.textContent = "Copy";
