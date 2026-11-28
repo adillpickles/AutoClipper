@@ -7,8 +7,7 @@ on:
   pull_request:
     paths:
       - "web/**"
-      - "src/autoclipper/api/**"
-      - "src/autoclipper/cli.py"
+      - "src/autoclipper/**"
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/e2e.yml"
@@ -16,8 +15,7 @@ on:
     branches: [main]
     paths:
       - "web/**"
-      - "src/autoclipper/api/**"
-      - "src/autoclipper/cli.py"
+      - "src/autoclipper/**"
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/e2e.yml"
