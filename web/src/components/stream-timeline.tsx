@@ -117,7 +117,10 @@ export function StreamTimeline({
   );
   const ticks = useMemo(() => rulerTicks(duration), [duration]);
   const { sources, ensure, markFailed } = usePreviewMedia(jobId, top, duration);
-  const drawable = useMemo(() => drawableActivity(activity), [activity]);
+  const drawable = useMemo(
+    () => drawableActivity(activity, duration),
+    [activity, duration],
+  );
   const summary = useMemo(
     () => activitySummary(activity, duration),
     [activity, duration],

@@ -14,8 +14,21 @@ export const VIEW_W = 1000;
 export const VIEW_H = 100;
 /** Highest a curve reaches, leaving the top of the track to the rank labels. */
 const CURVE_TOP = 24;
-/** Quietest loudness the contract allows (dBFS); the scale never goes below it. */
-const LOUDNESS_FLOOR_DBFS = -60;
+/**
+ * Loudness at or below this (dBFS) is digital silence at the contract's -60 floor: a muted song
+ * or a starting screen. It is drawn at the baseline and left out of the scale, so a few minutes
+ * of silence don't squash the rest of the stream into the top of the track.
+ */
+const SILENCE_DBFS = -59.5;
+/** The scale's top: one raid or emote-wall spike shouldn't flatten every other point. */
+const TOP_PERCENTILE = 0.98;
+/** Loudness scale bottom, robust to a few unusually quiet points. */
+const LOUDNESS_BOTTOM_PERCENTILE = 0.05;
+/**
+ * Half a 10 s window: the pipeline makes no window for a shorter tail, so a last point starting
+ * this close to the end is a tail without data, not an unmeasured stretch.
+ */
+const MIN_WINDOW_S = 5;
 
 export type ActivityKind = "chat" | "loudness";
 
@@ -30,10 +43,21 @@ export function usableSeries(values: unknown): (number | null)[] | null {
   return clean.some((v) => v !== null) ? clean : null;
 }
 
+/** The `q` quantile (0–1) of ascending `sorted`, interpolating between neighbours. */
+export function quantile(sorted: readonly number[], q: number): number {
+  if (sorted.length === 0) return Number.NaN;
+  const position = Math.min(Math.max(q, 0), 1) * (sorted.length - 1);
+  const below = Math.floor(position);
+  const above = Math.min(below + 1, sorted.length - 1);
+  return sorted[below] + (sorted[above] - sorted[below]) * (position - below);
+}
+
 /**
- * Heights in `[0, 1]` for drawing. Chat is scaled from 0 to its busiest point, so a quiet chat
- * stays low. Loudness (dBFS, from -60) is scaled between its quietest and loudest measured
- * points: stream audio lives in a narrow band, and a fixed -60..0 scale would draw a flat line.
+ * Heights in `[0, 1]` for drawing, on a robust scale; points outside it are clamped. Chat runs
+ * from 0 to its 98th percentile, so a quiet chat stays low and one spike doesn't flatten the
+ * rest. Loudness (dBFS) runs from the 5th to the 98th percentile of its non-silent points:
+ * stream audio lives in a narrow band, so a fixed -60..0 scale would draw a flat line, and
+ * silence (see `SILENCE_DBFS`) sits at the baseline.
  */
 export function normalizeSeries(
   values: Series,
@@ -41,9 +65,13 @@ export function normalizeSeries(
 ): (number | null)[] {
   const finite = values.filter((v): v is number => v !== null);
   if (finite.length === 0) return values.map(() => null);
-  const high = Math.max(...finite);
-  const low =
-    kind === "chat" ? 0 : Math.max(LOUDNESS_FLOOR_DBFS, Math.min(...finite));
+  const audible =
+    kind === "loudness" ? finite.filter((v) => v > SILENCE_DBFS) : finite;
+  const basis = (audible.length > 0 ? audible : finite).sort((a, b) => a - b);
+  const low = kind === "chat" ? 0 : quantile(basis, LOUDNESS_BOTTOM_PERCENTILE);
+  let high = quantile(basis, TOP_PERCENTILE);
+  // Mostly-flat series (e.g. a silent chat with one burst): fall back to the maximum.
+  if (!(high > low)) high = basis[basis.length - 1];
   const span = high - low;
   return values.map((v) => {
     if (v === null) return null;
@@ -106,14 +134,42 @@ export function curvePaths(
   });
 }
 
+/**
+ * `values` without a last `null` point that starts within half a window of the VOD's end:
+ * nothing could be measured there, so it is neither drawn nor reported as a gap. (Results from
+ * before the pipeline stopped writing that point still have it.)
+ */
+function withoutDatalessTail(
+  values: (number | null)[] | null,
+  stepS: number,
+  durationS: number | undefined,
+): (number | null)[] | null {
+  if (!values || values.length < 2 || durationS === undefined) return values;
+  const last = values.length - 1;
+  if (values[last] === null && last * stepS >= durationS - MIN_WINDOW_S) {
+    return values.slice(0, last);
+  }
+  return values;
+}
+
 /** The series worth drawing, keyed by kind; empty when `activity` is absent or unusable. */
 export function drawableActivity(
   activity: Activity | null | undefined,
+  durationS?: number,
 ): Partial<Record<ActivityKind, (number | null)[]>> {
   if (!activity || !(activity.step_s > 0)) return {};
   const out: Partial<Record<ActivityKind, (number | null)[]>> = {};
-  const chat = usableSeries(activity.chat);
-  const loudness = usableSeries(activity.loudness);
+  const step = activity.step_s;
+  const chat = withoutDatalessTail(
+    usableSeries(activity.chat),
+    step,
+    durationS,
+  );
+  const loudness = withoutDatalessTail(
+    usableSeries(activity.loudness),
+    step,
+    durationS,
+  );
   if (chat) out.chat = chat;
   if (loudness) out.loudness = loudness;
   return out;
@@ -153,7 +209,7 @@ export function activitySummary(
   activity: Activity | null | undefined,
   durationS: number,
 ): string | null {
-  const series = drawableActivity(activity);
+  const series = drawableActivity(activity, durationS);
   if (!activity || (!series.chat && !series.loudness)) return null;
   const parts: string[] = [];
   const gaps: string[] = [];

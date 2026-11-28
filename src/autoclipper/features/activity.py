@@ -8,6 +8,8 @@ out. No new signal is measured here.
 - ``step_s`` is the smallest multiple of the window stride that keeps the series within
   `MAX_POINTS` points: 10 s for VODs up to 50 minutes, 80 s for a 6-hour VOD. Point ``i``
   covers ``[i * step_s, (i + 1) * step_s)``; a window belongs to the point holding its start.
+  The series ends at the last point a window starts in, so the short tail `make_windows` leaves
+  without a window (under half a window) isn't a point.
 - ``chat``: the mean ``chat_msg_rate`` (messages per second) of the point's windows. A window
   with no messages is a measured 0.
 - ``loudness``: the mean ``audio_rms_mean`` of the point's measured windows in dBFS, clamped
@@ -64,12 +66,15 @@ def timeline_activity(
         max_points: Most points per series.
 
     Returns:
-        The `Activity`, or None when neither family arrived.
+        The `Activity`, or None when neither family arrived or the VOD has no windows.
     """
-    if chat_features is None and audio_features is None:
+    if (chat_features is None and audio_features is None) or windows.height == 0:
         return None
     step_s = activity_step_s(duration_s, max_points=max_points)
-    n_points = math.ceil(duration_s / step_s - 1e-9)
+    # Up to the last point a window starts in: the tail after the last window (shorter than half
+    # a window, see make_windows) gets no point, so it can't read as an unmeasured stretch.
+    last_start_s = float(windows["start_s"].to_numpy().max())
+    n_points = math.floor(last_start_s / step_s + 1e-9) + 1
     starts = windows.select("window_id", "start_s")
     chat = None
     if chat_features is not None:

@@ -462,11 +462,11 @@ To continue browsing, pass the last page's `next_cursor` as `before`. The cursor
 
 | Field | Type | Notes |
 |---|---|---|
-| `step_s` | float | Seconds per point, greater than 0. The pipeline uses the smallest multiple of the 10 s window stride that keeps the series at most 300 points (10 s up to 50 minutes, 30 s for 2 hours, 80 s for 6 hours). Point `i` covers `[i * step_s, (i + 1) * step_s)`, the last one cut at `vod.duration_s`; a window belongs to the point holding its start. |
+| `step_s` | float | Seconds per point, greater than 0. The pipeline uses the smallest multiple of the 10 s window stride that keeps the series at most 300 points (10 s up to 50 minutes, 30 s for 2 hours, 80 s for 6 hours). Point `i` covers `[i * step_s, (i + 1) * step_s)`, the last one cut at `vod.duration_s`; a window belongs to the point holding its start. The series ends at the last point a window starts in, so the VOD's last few seconds (a tail shorter than half a window, which gets no window) have no point rather than a `null` one. |
 | `chat` | list<float \| null> \| null | Mean chat messages per second of the point's windows (≥ 0, 3 decimals). `null` as a whole when no chat replay arrived (`chat_missing`), never a row of zeros. A quiet chat is a measured `0`. |
 | `loudness` | list<float \| null> \| null | Mean audio frame RMS of the point's measured windows in dBFS (1 decimal), clamped to `[-60, 0]`; `-60` is the features' silence level. `null` as a whole when no audio arrived (`audio_missing`). An entry is `null` where nothing was measured: windows Twitch muted, or past the end of the audio. |
 
-At least one of `chat` and `loudness` is set, both have the same length, at most 400 points (the pipeline writes at most 300), and an entry is `null` when no window of the point was measured. Values are raw (rate and dBFS) so the client chooses the display scale: the web timeline scales chat from 0 to its busiest point and loudness between its quietest and loudest points, and leaves gaps at `null` entries. It's a picture of the inputs, not of the score.
+At least one of `chat` and `loudness` is set, both have the same length, at most 400 points (the pipeline writes at most 300), and an entry is `null` when no window of the point was measured. Values are raw (rate and dBFS) so the client chooses the display scale: the web timeline scales chat from 0 to its 98th percentile and loudness from the 5th to the 98th percentile of its non-silent points (above -59.5 dBFS; silence is drawn at the baseline), clamping points outside, so a single spike or a few minutes of silence don't flatten the rest; it leaves gaps at `null` entries. It's a picture of the inputs, not of the score.
 
 `VodSummary`:
 
@@ -544,7 +544,7 @@ The server checks every result against these before returning it, and the CLI be
 5. At most 200 candidates. Zero is valid (e.g. a very short VOD) and the UI shows an empty state.
 6. All numbers are finite.
 7. `n_viewer_clips_total` is `null` exactly when `warnings` contains `viewer_clips_missing`, and then every candidate is `discovered`. Otherwise `n_viewer_clips ≤ n_viewer_clips_total` for every candidate.
-8. When `activity` is present, its points tile the VOD: `(n - 1) * step_s < vod.duration_s ≤ n * step_s` for its `n` points.
+8. When `activity` is present, its `n` points start inside the VOD and reach to within one step of its end: `(n - 1) * step_s < vod.duration_s ≤ (n + 1) * step_s`.
 
 Candidates may overlap each other; the timeline has to cope with overlapping markers.
 

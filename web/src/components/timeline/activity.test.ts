@@ -5,6 +5,7 @@ import {
   curvePaths,
   drawableActivity,
   normalizeSeries,
+  quantile,
   seriesRuns,
   usableSeries,
 } from "./activity";
@@ -19,18 +20,47 @@ describe("usableSeries", () => {
   });
 });
 
+describe("quantile", () => {
+  it("interpolates between neighbours", () => {
+    expect(quantile([0, 10], 0.5)).toBe(5);
+    expect(quantile([1, 2, 3], 1)).toBe(3);
+    expect(quantile([], 0.5)).toBeNaN();
+  });
+});
+
 describe("normalizeSeries", () => {
-  it("scales chat from zero to its busiest point", () => {
-    expect(normalizeSeries([0, 2, null, 4], "chat")).toEqual([0, 0.5, null, 1]);
+  it("scales chat from zero to its 98th percentile, so one spike doesn't flatten the rest", () => {
+    const rates = [...Array.from({ length: 100 }, (_, i) => i), 1000];
+    const heights = normalizeSeries(rates, "chat");
+    expect(heights[49]).toBeCloseTo(0.5);
+    expect(heights[100]).toBe(1); // the spike is clamped
+    expect(normalizeSeries([0, 2, null, 4], "chat")[2]).toBeNull();
   });
 
-  it("scales loudness between its quietest and loudest points", () => {
-    expect(normalizeSeries([-40, -30, -20], "loudness")).toEqual([0, 0.5, 1]);
+  it("falls back to the maximum when a chat is silent except for one burst", () => {
+    const heights = normalizeSeries([...Array(60).fill(0), 5], "chat");
+    expect(heights[0]).toBe(0);
+    expect(heights[60]).toBe(1);
+  });
+
+  it("keeps digital silence at the baseline and out of the loudness scale", () => {
+    const audible = Array.from({ length: 81 }, (_, i) => -35 + i * 0.25);
+    const heights = normalizeSeries(
+      [...Array(20).fill(-60), ...audible],
+      "loudness",
+    );
+    expect(heights.slice(0, 20).every((h) => h === 0)).toBe(true);
+    // -25 dBFS sits mid-track instead of squashed near the top by the silence.
+    expect(heights[20 + 40]).toBeGreaterThan(0.4);
+    expect(heights[20 + 40]).toBeLessThan(0.6);
+    expect(heights[20]).toBe(0);
+    expect(heights[20 + 80]).toBe(1);
   });
 
   it("draws a flat series without dividing by zero", () => {
     expect(normalizeSeries([0, 0], "chat")).toEqual([0, 0]);
     expect(normalizeSeries([-20, -20], "loudness")).toEqual([0.5, 0.5]);
+    expect(normalizeSeries([-60, -60], "loudness")).toEqual([0.5, 0.5]);
   });
 });
 
@@ -87,6 +117,18 @@ describe("drawableActivity and activitySummary", () => {
     );
     expect(text).toBe(
       "Activity behind the timeline: the stream is loudest around 0:25. No chat was measured. Some stretches have no loudness measurement.",
+    );
+  });
+
+  it("ignores a last null point in the tail too short for a window", () => {
+    const activity = { step_s: 10, chat: [1, 2, 1, null], loudness: null };
+    // 34 s: the last point starts at 30 s, within half a window of the end.
+    expect(drawableActivity(activity, 34).chat).toEqual([1, 2, 1]);
+    expect(activitySummary(activity, 34)).not.toContain("Some stretches");
+    // 40 s: a window fits there, so the null point is a real gap.
+    expect(drawableActivity(activity, 40).chat).toEqual([1, 2, 1, null]);
+    expect(activitySummary(activity, 40)).toContain(
+      "Some stretches have no chat measurement.",
     );
   });
 

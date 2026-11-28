@@ -106,19 +106,41 @@ def test_muted_and_frameless_windows_are_gaps_but_silence_is_measured() -> None:
     assert activity.loudness == (-20.0, None, -60.0, None)
 
 
-def test_a_point_without_windows_is_null() -> None:
-    # A 44 s VOD: the last 4 s are shorter than half a window, so no window starts there.
-    windows = make_windows("v", 44.0)
-    assert windows.height == 4
+@pytest.mark.parametrize(
+    ("duration_s", "n_points"), [(44.0, 4), (1234.0, 123), (3604.0, 180), (7203.0, 240)]
+)
+def test_the_tail_without_a_window_gets_no_point(duration_s: float, n_points: int) -> None:
+    # The last few seconds are shorter than half a window, so no window starts there; a
+    # fully measured VOD must not end in a null point (#221 review).
+    windows = make_windows("v", duration_s)
     activity = timeline_activity(
         windows,
-        chat_frame(windows, [1.0] * 4),
-        audio_frame(windows, [0.1] * 4),
-        duration_s=44.0,
+        chat_frame(windows, [1.0] * windows.height),
+        audio_frame(windows, [0.1] * windows.height),
+        duration_s=duration_s,
     )
     assert activity is not None
-    assert activity.chat == (1.0, 1.0, 1.0, 1.0, None)
-    assert activity.loudness == (-20.0, -20.0, -20.0, -20.0, None)
+    assert activity.n_points == n_points
+    assert activity.chat is not None
+    assert activity.loudness is not None
+    assert None not in activity.chat
+    assert None not in activity.loudness
+
+
+def test_a_point_without_windows_inside_the_vod_is_null() -> None:
+    # Points coarser than windows only lack a window when windows are missing, e.g. dropped.
+    windows = make_windows("v", 60.0).filter(pl.col("start_s") != 20.0)
+    activity = timeline_activity(
+        windows, chat_frame(windows, [1.0] * windows.height), None, duration_s=60.0
+    )
+    assert activity is not None
+    assert activity.chat == (1.0, 1.0, None, 1.0, 1.0, 1.0)
+
+
+def test_a_vod_without_windows_has_no_activity() -> None:
+    windows = make_windows("v", 4.0)
+    assert windows.height == 0
+    assert timeline_activity(windows, chat_frame(windows, []), None, duration_s=4.0) is None
 
 
 def test_a_long_vod_stays_small() -> None:

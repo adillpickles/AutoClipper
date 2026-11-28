@@ -164,9 +164,10 @@ class Activity(_Model):
     """Per-window chat and loudness, downsampled for the results timeline (§ 4.1, #213).
 
     Point ``i`` covers ``[i * step_s, (i + 1) * step_s)`` of the VOD, the last one cut at its
-    end. ``chat`` is chat messages per second, ``loudness`` the mean frame RMS in dBFS. A family
-    that didn't arrive is ``None``; a point where nothing was measured (no window, no audio
-    frames, a Twitch-muted window) is a ``None`` entry, never 0.
+    end. The series may stop up to one step short of the end (a tail too short for a window).
+    ``chat`` is chat messages per second, ``loudness`` the mean frame RMS in dBFS. A family that
+    didn't arrive is ``None``; a point where nothing was measured (no window, no audio frames, a
+    Twitch-muted window) is a ``None`` entry, never 0.
     """
 
     step_s: FiniteFloat = Field(gt=0)
@@ -221,9 +222,11 @@ class AnalysisResult(_Model):
     @model_validator(mode="after")
     def _check(self) -> Self:
         if self.activity is not None:
-            # The points tile [0, duration_s]: the last one starts before the end.
+            # One point per step from 0: the last one starts before the end, and at most one
+            # step of the end (the tail without a window) has no point.
             n, step = self.activity.n_points, self.activity.step_s
-            if (n - 1) * step >= self.vod.duration_s or n * step < self.vod.duration_s - 1e-6:
+            end = self.vod.duration_s
+            if (n - 1) * step >= end or (n + 1) * step < end - 1e-6:
                 raise ValueError("activity must have one point per step_s of the VOD")
         ids = [c.candidate_id for c in self.candidates]
         if len(set(ids)) != len(ids):
