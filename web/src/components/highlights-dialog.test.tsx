@@ -398,6 +398,10 @@ describe("HighlightsDialog focus", () => {
       </div>,
     );
     const panel = screen.getByRole("dialog");
+    // Focus that lands outside the panel is pulled back in.
+    screen.getByRole("button", { name: "Outside" }).focus();
+    expect(panel.contains(document.activeElement)).toBe(true);
+
     const make = screen.getByRole("button", { name: "Make highlights video" });
     make.focus();
     fireEvent.click(make);
@@ -406,10 +410,6 @@ describe("HighlightsDialog focus", () => {
     await screen.findByText(/Waiting in render queue/);
     expect(panel.contains(document.activeElement)).toBe(true);
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Tab" });
-    expect(panel.contains(document.activeElement)).toBe(true);
-
-    // Focus that lands outside the panel is pulled back in.
-    screen.getByRole("button", { name: "Outside" }).focus();
     expect(panel.contains(document.activeElement)).toBe(true);
 
     // When the video is ready, Download takes focus.
