@@ -166,8 +166,11 @@ if ($LASTEXITCODE -ne 0) { Write-Host "doctor reported problems (see above); con
 # 5. Start -------------------------------------------------------------------
 Write-Step "Starting the app"
 $ChildPs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-Command")
-if (Test-Port $ApiPort) {
-    # An open port must belong to AutoClipper; otherwise stop now instead of waiting 3 minutes.
+# An open port must belong to AutoClipper; otherwise stop now instead of waiting 3 minutes.
+# Both ports are checked before anything starts.
+$ApiRunning = Test-Port $ApiPort
+$WebRunning = Test-Port $WebPort
+if ($ApiRunning) {
     $health = $null
     try { $health = Get-UrlBody "$ApiOrigin/api/v1/health" 30 | ConvertFrom-Json } catch { }
     if ($null -eq $health -or $null -eq $health.job_runner) {
@@ -177,7 +180,15 @@ if (Test-Port $ApiPort) {
         Write-Host "The backend already on port $ApiPort runs $($health.job_runner) jobs, not $Jobs; stop it to switch." -ForegroundColor Yellow
     }
     Write-Host "Port $ApiPort already has an AutoClipper backend; using it." -ForegroundColor Yellow
-} else {
+}
+if ($WebRunning) {
+    $page = Get-UrlBody "http://localhost:$WebPort" 30
+    if ($null -eq $page -or -not $page.Contains("AutoClipper")) {
+        Fail "Port $WebPort is in use by another program (it does not answer as the AutoClipper web app). Stop that program or pick another port with -WebPort N."
+    }
+    Write-Host "Port $WebPort already has the AutoClipper web app; using it." -ForegroundColor Yellow
+}
+if (-not $ApiRunning) {
     # The backend's default CORS origins only cover port 3000.
     $Cors = ""
     if ($WebPort -ne 3000 -and -not $env:AUTOCLIPPER_CORS_ORIGINS) {
@@ -186,13 +197,7 @@ if (Test-Port $ApiPort) {
     Start-Process powershell -ArgumentList ($ChildPs + @(
         "`$Host.UI.RawUI.WindowTitle = 'AutoClipper backend'; Set-Location $(ConvertTo-Quoted $Root); ${Cors}uv run autoclipper serve --port $ApiPort --jobs $Jobs"))
 }
-if (Test-Port $WebPort) {
-    $page = Get-UrlBody "http://localhost:$WebPort" 30
-    if ($null -eq $page -or -not $page.Contains("AutoClipper")) {
-        Fail "Port $WebPort is in use by another program (it does not answer as the AutoClipper web app). Stop that program or pick another port with -WebPort N."
-    }
-    Write-Host "Port $WebPort already has the AutoClipper web app; using it." -ForegroundColor Yellow
-} else {
+if (-not $WebRunning) {
     # npx rather than `npm run dev -- --port`: Windows PowerShell 5.1 drops the `--` for npm.
     Start-Process powershell -ArgumentList ($ChildPs + @(
         "`$Host.UI.RawUI.WindowTitle = 'AutoClipper web'; Set-Location $(ConvertTo-Quoted (Join-Path $Root 'web')); npx --no-install next dev --port $WebPort"))

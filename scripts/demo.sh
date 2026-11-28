@@ -307,25 +307,33 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-set -m  # own process group per background job, so Ctrl+C and cleanup reach the servers' children
+# An open port must belong to AutoClipper; both are checked before anything starts.
+API_RUNNING=0
+WEB_RUNNING=0
 if port_open "$API_PORT"; then
+    API_RUNNING=1
     check_port_owner "$API_PORT" "$API_ORIGIN/api/v1/health" '"job_runner"' backend --api-port
     case "$(url_body "$API_ORIGIN/api/v1/health" 5)" in
         *"\"job_runner\":\"$JOBS\""*) ;;
         *) warn "The backend already on port $API_PORT runs a different job mode than $JOBS; stop it to switch." ;;
     esac
     warn "Port $API_PORT already has an AutoClipper backend; using it."
-else
+fi
+if port_open "$WEB_PORT"; then
+    WEB_RUNNING=1
+    check_port_owner "$WEB_PORT" "$WEB_URL" AutoClipper "web app" --web-port
+    warn "Port $WEB_PORT already has the AutoClipper web app; using it."
+fi
+
+set -m  # own process group per background job, so Ctrl+C and cleanup reach the servers' children
+if [ "$API_RUNNING" -eq 0 ]; then
     if [ "$WEB_PORT" != "3000" ] && [ -z "${AUTOCLIPPER_CORS_ORIGINS:-}" ]; then
         export AUTOCLIPPER_CORS_ORIGINS="http://localhost:$WEB_PORT,http://127.0.0.1:$WEB_PORT"
     fi
     uv run autoclipper serve --port "$API_PORT" --jobs "$JOBS" </dev/null >"$API_LOG" 2>&1 &
     PIDS="$PIDS $!"
 fi
-if port_open "$WEB_PORT"; then
-    check_port_owner "$WEB_PORT" "$WEB_URL" AutoClipper "web app" --web-port
-    warn "Port $WEB_PORT already has the AutoClipper web app; using it."
-else
+if [ "$WEB_RUNNING" -eq 0 ]; then
     (cd "$ROOT/web" && exec npx --no-install next dev --port "$WEB_PORT") </dev/null >"$WEB_LOG" 2>&1 &
     PIDS="$PIDS $!"
 fi
