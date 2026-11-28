@@ -1,27 +1,34 @@
 """Tests for `autoclipper ingest`: the four steps, the catalog, re-runs and failures (mocked)."""
 
+import dataclasses
 import json
 import os
 import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from pydantic import SecretStr
 from typer.testing import CliRunner
 
+from autoclipper import tables
 from autoclipper.cli import ExitCode, app
 from autoclipper.config import TwitchCredentials
-from autoclipper.ingest.catalog import catalog_path, read_catalog
+from autoclipper.ingest.catalog import catalog_path, read_catalog, write_table_atomically
 from autoclipper.ingest.chat import (
     PINNED_TOOL_VERSION,
+    ChatReplay,
     CommandResult,
     chat_download_timeout_s,
+    parse_chat_json,
 )
 from autoclipper.ingest.media import (
     DownloadedMedia,
@@ -33,6 +40,7 @@ from autoclipper.ingest.twitch_api import Broadcaster, HelixClient
 from autoclipper.ingest.vod import (
     IngestReport,
     IngestTools,
+    _write_chat,  # pyright: ignore[reportPrivateUsage]
     audio_source_path,
     broadcasters_path,
     chat_path,
@@ -871,6 +879,50 @@ def test_the_catalog_keeps_one_row_per_object(tmp_path: Path, chat_binary: Path)
     table = pl.read_parquet(catalog_path(data))
     assert len(table) == 4
     assert table.filter(pl.col("object_type") == "audio")["status"].to_list() == ["failed"]
+
+
+def _write_chat_row_by_row(path: Path, replay: ChatReplay) -> None:
+    """The chat writer before #115, kept as the reference the column-wise writer must match."""
+    rows = [
+        {**dataclasses.asdict(message), "emote_ids": list(message.emote_ids)}
+        for message in replay.messages
+    ]
+    write_table_atomically(pa.Table.from_pylist(rows, schema=tables.CHAT_MESSAGES), path)
+
+
+def _chat_replays() -> dict[str, ChatReplay]:
+    fixture = parse_chat_json(
+        (FIXTURES / "chat_replay.json").read_bytes(), video_id=VIDEO_ID, salt=SALT
+    )
+    base = fixture.messages[0]
+    edge_cases = (
+        replace(base, is_subscriber=None, is_moderator=None),
+        replace(base, emote_ids=("25", "305954156", "25"), n_emotes=4, bits=100),
+        replace(base, text="", emote_ids=(), offset_s=0.0, is_subscriber=True),
+    )
+    return {
+        "empty": replace(fixture, messages=()),
+        "fixture": fixture,
+        "edge cases": replace(fixture, messages=fixture.messages + edge_cases),
+    }
+
+
+@pytest.mark.parametrize("replay", _chat_replays().values(), ids=_chat_replays().keys())
+def test_the_chat_table_is_written_exactly_as_the_row_by_row_writer_did(
+    tmp_path: Path, replay: ChatReplay
+) -> None:
+    old, new = tmp_path / "old.parquet", tmp_path / "new.parquet"
+    _write_chat_row_by_row(old, replay)
+
+    _write_chat(new, replay)
+
+    assert new.read_bytes() == old.read_bytes()
+    table = pq.read_table(new)
+    assert table.schema.equals(tables.CHAT_MESSAGES, check_metadata=True)
+    rows = table.to_pylist()
+    assert len(rows) == len(replay.messages)
+    for row, message in zip(rows, replay.messages, strict=True):
+        assert row == {**dataclasses.asdict(message), "emote_ids": list(message.emote_ids)}
 
 
 def test_write_and_read_broadcaster_upserts_by_broadcaster_id(tmp_path: Path) -> None:

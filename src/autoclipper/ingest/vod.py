@@ -32,6 +32,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from operator import attrgetter
 from pathlib import Path
 from typing import Final, Literal
 
@@ -718,8 +719,8 @@ def _iso(value: datetime) -> str:
 
 
 def _write_chat(path: Path, replay: chat_module.ChatReplay) -> None:
-    rows = [
-        {**dataclasses.asdict(message), "emote_ids": list(message.emote_ids)}
-        for message in replay.messages
-    ]
-    _write_table(pa.Table.from_pylist(rows, schema=tables.CHAT_MESSAGES), path)
+    # Built column by column from the message attributes (#115): no per-row dicts, and the
+    # schema fixes the column order and types. Arrow reads each emote_ids tuple as a list.
+    messages = replay.messages
+    columns = {name: list(map(attrgetter(name), messages)) for name in tables.CHAT_MESSAGES.names}
+    _write_table(pa.Table.from_pydict(columns, schema=tables.CHAT_MESSAGES), path)
