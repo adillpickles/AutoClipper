@@ -32,6 +32,7 @@ Clip downloads include the channel, UTC VOD date, moment title or rank, and star
 | `npm run format`       | Prettier: format every file, sorting Tailwind classes                   |
 | `npm run format:check` | Prettier: report unformatted files without changing them (what CI runs) |
 | `npm test`             | Vitest unit tests (`src/**/*.test.ts`)                                  |
+| `npm run test:e2e`     | Playwright browser tests of the demo path (`e2e/`, builds the app)      |
 | `npm run mock-media`   | Generate the sample videos mock mode plays (needs FFmpeg)               |
 
 Before you push, run what CI runs ([`.github/workflows/web.yml`](../.github/workflows/web.yml)):
@@ -39,6 +40,19 @@ Before you push, run what CI runs ([`.github/workflows/web.yml`](../.github/work
 ```bash
 npm run lint && npm run typecheck && npm run format:check && npm test && npm run build
 ```
+
+## End-to-end tests
+
+`npm run test:e2e` walks the demo path in headless Chromium with [Playwright](https://playwright.dev): start page → demo VOD link → progress → results → highlights dialog → clip editor → back to a working start form (#184), plus the library. Playwright builds the app and serves it on port 3197 in mock mode, so no backend is needed. Install the browser once per Playwright version first:
+
+```bash
+npx playwright install chromium
+npm run test:e2e
+E2E_API_ORIGIN=http://127.0.0.1:8000 npm run test:e2e   # also starts autoclipper serve --jobs mock
+npx playwright show-report                               # HTML report of the last run
+```
+
+Selectors live in `e2e/selectors.ts` and go by role and accessible name; when a screen changes, update them there. Outside CI an already running server on the port is reused, so stop it after changing app code. Details: [testing § End-to-end tests](../docs/development/testing.md#end-to-end-tests-web).
 
 ## Layout
 
@@ -53,9 +67,11 @@ web/
 │   │   └── globals.css      # Tailwind entry point and color tokens
 │   ├── components/          # start form, job progress, results and clip cards, header
 │   └── lib/api/             # the typed API client: types, mock mode, fixtures
+├── e2e/                     # Playwright specs and the shared selectors (npm run test:e2e)
 ├── AGENTS.md           # maintained by Next.js; see below
 ├── eslint.config.mjs
 ├── next.config.ts
+├── playwright.config.ts
 ├── .prettierrc.json
 └── tsconfig.json
 ```

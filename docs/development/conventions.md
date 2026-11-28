@@ -135,5 +135,5 @@ The Next.js app in `web/` ([app stack](../decisions/0007-web-application-stack.m
 - **Styling:** Tailwind utility classes in JSX. Global CSS lives only in `src/app/globals.css` (Tailwind entry point and color tokens). Support light and dark (`dark:` variants follow the OS setting).
 - **Accessibility:** semantic elements (`header`, `main`, `nav`, real `<button>`s), one `h1` per page, labelled form controls, visible focus, and WCAG AA text contrast in both color schemes.
 - **Next.js version drift:** Next.js 16 changed many APIs. Before relying on memory, check the docs bundled with the installed version in `web/node_modules/next/dist/docs/`. `web/AGENTS.md` (maintained by `next dev`) tells agents the same.
-- **Tests:** Vitest (`npm test`) for logic: `src/**/*.test.ts` next to the code (the API client's mock and link parsing so far). CI runs it.
+- **Tests:** Vitest (`npm test`) for logic and components: `src/**/*.test.ts(x)` next to the code. Playwright (`npm run test:e2e`) for the demo path in a browser: specs in `e2e/`, selectors by role and accessible name in `e2e/selectors.ts` ([testing § End-to-end tests](testing.md#end-to-end-tests-web)). CI runs both.
 - **Dependencies:** `npm install <pkg>` (or `--save-dev`) inside `web/`. Commit `package.json` and `package-lock.json` together and justify the dependency in the PR (§9).

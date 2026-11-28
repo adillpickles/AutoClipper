@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Current test guidance. pytest is configured in `pyproject.toml` (`[tool.pytest]`). Coverage target below. |
-| **Last updated** | 2026-10-21 |
+| **Last updated** | 2026-11-28 |
 
 ## Goals
 
@@ -17,6 +17,8 @@ Tests protect the parts where bugs are **silent**: a label shifted by 10 seconds
 | **Contract** | A stage's output matches [data model](../architecture/data-model.md) (columns, dtypes, keys) | `tests/contracts/` | ❌ | ✅ |
 | **Integration** | Several stages chained on a tiny synthetic VOD (generated audio + fake chat + fake clips) | `tests/integration/` | ❌ | ✅ |
 | **Live API** | Real Twitch API / tool calls | `tests/live/`, marked `@pytest.mark.live` and excluded by default | ✅ | ❌ (manual, needs `.env`) |
+| **Web unit** | Components and the API client (Vitest, jsdom) | `web/src/**/*.test.ts(x)` | ❌ | ✅ (`web.yml`) |
+| **Web end-to-end** | The demo path in a real browser (Playwright, Chromium) | `web/e2e/` | ❌ | ✅ (`e2e.yml`) |
 | **Metric checks** | Eval metrics match hand-computed values on toy inputs | `tests/eval/` | ❌ | ✅ |
 
 ## Must-have tests (by area)
@@ -106,6 +108,25 @@ def test_probe_reads_a_tone(make_test_media: Callable[..., Path]) -> None:
 ```
 
 Keyword arguments: `duration_s`, `video_size` (`(width, height)`, or `None` for audio only), `frame_rate`, `sample_rate_hz`, `channels`, `tone_hz`. The file extension picks the container and its default audio codec. Generated media exists only in `tmp_path`; never commit it.
+
+## End-to-end tests (web)
+
+Playwright specs in `web/e2e/` walk the demo path in headless Chromium: start page → the demo VOD link → progress → results (one clip card per moment found) → highlights dialog → clip editor → back to the start page, where the form must work again without a reload (regression for #184). The library spec checks that the page loads and lists a submitted VOD.
+
+- **No backend by default.** `web/playwright.config.ts` builds the app and starts it on port 3197 (`E2E_PORT` changes it) in in-browser mock mode, so a run needs only Node and Chromium. A mock job takes about 20 seconds (`MOCK_STEP_MS`), and the whole suite about 35 seconds plus the build.
+- **Against the backend.** With `E2E_API_ORIGIN=http://127.0.0.1:8000`, the app is built with `NEXT_PUBLIC_API_ORIGIN` set to it, and Playwright also starts `uv run autoclipper serve --jobs mock` from the repo root (it needs `uv sync` and FFmpeg for the sample videos, and allows the test origin through `AUTOCLIPPER_CORS_ORIGINS`). The specs are the same.
+- **Mock counts, not demo counts.** Mock results have 3 moments, the real demo VOD gives 10. The specs read "Found N moments" on the progress screen and expect N cards, so they hold for either.
+- **Selectors** go by role and accessible name and all live in `web/e2e/selectors.ts`. When a screen's copy or structure changes, update that file rather than the specs. Prefer adding a proper accessible name in the app over a CSS selector.
+- **Outside CI** a server already running on the port is reused as is, so stop a stale one (or change `E2E_PORT`) after changing app code or the API mode.
+- **CI** (`.github/workflows/e2e.yml`) runs both variants on PRs touching `web/` or the backend API, caches the Chromium download per Playwright version and uploads `playwright-report/` and `test-results/` (traces, screenshots) when a test fails. Open a trace with `npx playwright show-trace <trace.zip>`.
+
+```bash
+cd web
+npx playwright install chromium   # once per Playwright version
+npm run test:e2e                  # browser mock mode
+E2E_API_ORIGIN=http://127.0.0.1:8000 npm run test:e2e   # against autoclipper serve --jobs mock
+npx playwright show-report        # the last run's HTML report
+```
 
 ## Commands
 

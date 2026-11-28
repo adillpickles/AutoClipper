@@ -1,0 +1,110 @@
+# Browser smoke tests of the demo path (web/e2e/, Playwright + Chromium). Two variants of the
+# same specs: the app in in-browser mock mode, and the app against `autoclipper serve --jobs mock`.
+# See docs/development/testing.md § End-to-end tests.
+name: E2E
+
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - "src/autoclipper/api/**"
+      - "src/autoclipper/cli.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/e2e.yml"
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "src/autoclipper/api/**"
+      - "src/autoclipper/cli.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/e2e.yml"
+
+permissions:
+  contents: read
+
+# Same scheme as web.yml: superseded PR runs are cancelled, every push to main gets its own run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  e2e:
+    name: E2E (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: browser mock
+            api_origin: ""
+          - name: backend mock
+            api_origin: http://127.0.0.1:8000
+    defaults:
+      run:
+        working-directory: web
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      # Empty: the app runs in in-browser mock mode. Set: Playwright also starts the backend.
+      E2E_API_ORIGIN: ${{ matrix.api_origin }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The browser download is cached per Playwright version; the system libraries Chromium
+      # needs are installed on every run (apt), cached or not.
+      - name: Read the Playwright version
+        id: playwright
+        run: echo "version=$(npx playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-shell
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps --only-shell chromium
+
+      # Backend variant only: Python and FFmpeg (the mock server generates its sample videos).
+      - name: Install uv
+        if: matrix.api_origin != ''
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Install the Python project
+        if: matrix.api_origin != ''
+        working-directory: .
+        run: uv sync --locked
+
+      - name: Install FFmpeg
+        if: matrix.api_origin != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+
+      # Playwright builds and starts the app (and the backend) itself; see web/playwright.config.ts.
+      - name: Run the e2e tests
+        run: npm run test:e2e
+
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-${{ strategy.job-index }}
+          path: |
+            web/playwright-report/
+            web/test-results/
+          retention-days: 7
