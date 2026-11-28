@@ -35,7 +35,7 @@ The initial setup uses `autoclipper serve` on a development machine and the app 
 | nullable | `T \| None`, always serialized | `T \| null` |
 | enum | `Literal[...]` (always in request models, § 1) or `StrEnum` | string-literal union |
 
-Model names used below: `CreateJobRequest`, `Job`, `JobRenderSummary`, `JobSummary`, `JobListResponse`, `DeleteJobResponse`, `Progress`, `AnalysisWarning`, `ApiError`, `ErrorResponse`, `AnalysisResult`, `VodSummary`, `ScorerInfo`, `Candidate`, `SignalDetail`, `CandidateMedia`, `PreviewMedia`, `ExportAvailability`, `CreateExportRequest`, `Export`, `CreateHighlightsRequest`, `HighlightsSegment`, `HighlightsVideo`, `Health`, `PreflightCheck`, `PreflightReport`, `ChannelInfo`, `ChannelVod`, `ChannelVodsResponse`.
+Model names used below: `CreateJobRequest`, `VideoUpload`, `Job`, `JobRenderSummary`, `JobSummary`, `JobListResponse`, `DeleteJobResponse`, `Progress`, `AnalysisWarning`, `ApiError`, `ErrorResponse`, `AnalysisResult`, `VodSummary`, `ScorerInfo`, `Candidate`, `SignalDetail`, `CandidateMedia`, `PreviewMedia`, `ExportAvailability`, `CreateExportRequest`, `Export`, `CreateHighlightsRequest`, `HighlightsSegment`, `HighlightsVideo`, `Health`, `PreflightCheck`, `PreflightReport`, `ChannelInfo`, `ChannelVod`, `ChannelVodsResponse`.
 
 ## 2. Endpoints
 
@@ -46,6 +46,7 @@ Model names used below: `CreateJobRequest`, `Job`, `JobRenderSummary`, `JobSumma
 | `GET` | `/api/v1/channels/vods` | Resolve a channel URL or login and list recent archive VODs (§ 9.7) | `200` `ChannelVodsResponse` |
 | `POST` | `/api/v1/tools/setup` | Start downloading pinned managed tools (`ffmpeg`, `twitch_downloader`) in the background (§ 9.8) | `202` (or `200` if already running/up to date) `ToolSetupStatus` |
 | `GET` | `/api/v1/tools/setup` | Current progress and result of managed tool setup (§ 9.8) | `200` `ToolSetupStatus` |
+| `POST` | `/api/v1/uploads` | Stream an already-downloaded VOD video file to disk for a job (§ 3.1a) | `201` `VideoUpload` |
 | `GET` | `/api/v1/jobs` | List analysis jobs (newest first, paginated, optional `q` and `state` filters, § 3.7) | `200` `JobListResponse` |
 | `POST` | `/api/v1/jobs/status` | Look up current library summaries for a batch of job IDs (§ 3.7) | `200` list of `JobSummary` |
 | `POST` | `/api/v1/jobs` | Start analyzing a VOD | `201` new `Job`; `200` if the same VOD is already queued/running |
@@ -74,9 +75,10 @@ Clients never build media or file URLs; they use `PreviewMedia.url`, `Export.dow
 | Field | Type | Notes |
 |---|---|---|
 | `vod` | str | A Twitch VOD link or bare video ID, as the user typed it. Always required: chat and viewer clips come from Twitch. |
-| `video_path` | str \| null | Optional, default `null`. Absolute path on the server machine to a video file of this VOD the user already downloaded. When given, preview and export read this file instead of downloading video (§ 5). |
+| `video_path` | str \| null | Optional, default `null`. Absolute path on the server machine to a video file of this VOD the user already downloaded. Mutually exclusive with `upload_id`. When given, preview and export read this file instead of downloading video (§ 5). |
+| `upload_id` | str \| null | Optional, default `null`. Opaque upload ID returned by `POST /api/v1/uploads` (§ 3.1a). Mutually exclusive with `video_path`. Keeps `Job.video_path` as `null` so server paths are never exposed over HTTP. |
 
-The request handler validates and normalizes `vod` and checks `video_path`; it makes no Twitch calls. Whether the VOD exists, is a past broadcast and matches `video_path` is checked by the worker, and those problems arrive as job failures (§ 3.5).
+The request handler validates and normalizes `vod` and checks `video_path` or `upload_id`; it makes no Twitch calls. Whether the VOD exists, is a past broadcast and matches the video file is checked by the worker, and those problems arrive as job failures (§ 3.5). Passing both `video_path` and `upload_id` fails with `422 invalid_request`.
 
 **Accepted inputs** (anything else is `422 invalid_vod_link`). Matching is case-insensitive, after trimming surrounding whitespace:
 
@@ -89,9 +91,24 @@ The digits become `video_id`. Not accepted in v1: clip links, channel pages, oth
 ^(?:(?:https?://)?(?:www\.|m\.)?twitch\.tv/videos/([0-9]+)/?(?:[?#].*)?|([0-9]+))$
 ```
 
-**Local video file.** If `video_path` is not `null`, it must be an absolute path to an existing file that the shared media probe (#51) reads as a video with a known duration; otherwise the request fails with `422 invalid_video_path` and no job is created. The handler probes only the local file. Comparing the file with the VOD needs Twitch's duration, so the worker does it while resolving the VOD: if the file's duration differs from the VOD's `duration_s` by more than 2 s, the job fails with `video_mismatch` (§ 3.5). The pipeline may also take the VOD's audio from this file instead of downloading it (#44).
+**Local video file.** If `video_path` is not `null`, it must be an absolute path to an existing, readable file with a supported video extension (`.mp4`, `.mkv`, `.ts`, `.mts`, `.m2ts`, `.mov`, `.webm`, `.flv`, `.m4v`, `.avi`, `.mpg`, `.mpeg`, `.wmv`, `.ogv`) that the shared media probe (#51) reads as a video with a known duration; otherwise the request fails with `422 invalid_video_path` (without exposing local filesystem paths in `message`) and no job is created. If `upload_id` is not `null`, it must refer to a validated upload from `POST /api/v1/uploads`; otherwise the request fails with `422 invalid_video_upload`. Comparing the file with the VOD needs Twitch's duration, so the worker does it while resolving the VOD: if the file's duration differs from the VOD's `duration_s` by more than 2 s, the job fails with `video_mismatch` (§ 3.5). The pipeline may also take the VOD's audio from this file instead of downloading it (#44).
 
-**Responses.** `201 Created` with the new `Job` (`queued`) and `Location: /api/v1/jobs/{job_id}`. If a job with the same `video_id` and `video_path` is already `queued` or `running`, nothing new is created and that job comes back with `200 OK`, so double-clicks and reloads don't start duplicate work. A finished (`done` or `failed`) job is never reused: posting again re-analyzes. Reusing finished analyses is the "caching analyzed VODs" Should item in the [PRD](../product/prd.md#scope-at-a-glance).
+**Responses.** `201 Created` with the new `Job` (`queued`) and `Location: /api/v1/jobs/{job_id}`. If a job with the same `video_id`, `video_path`, and `upload_id` is already `queued` or `running`, nothing new is created and that job comes back with `200 OK`, so double-clicks and reloads don't start duplicate work. A finished (`done` or `failed`) job is never reused: posting again re-analyzes. Reusing finished analyses is the "caching analyzed VODs" Should item in the [PRD](../product/prd.md#scope-at-a-glance).
+
+### 3.1a Upload a VOD video file
+
+`POST /api/v1/uploads?filename=<basename>` streams a raw video file body (typically 5–20 GB for a 4–6 hour VOD) in chunks directly to disk under `<artifacts_dir>/uploads/` without buffering the whole request in memory.
+
+- **Origin check:** when `AUTOCLIPPER_CORS_ORIGINS` is configured and a browser `Origin` header is present outside the allowlist, the server rejects the request with `403 origin_not_allowed` before reading the body.
+- **Early validation and cleanup.** The only query parameter is `filename`. Missing or unknown parameters return `422 invalid_request` before streaming. The server keeps only the basename and rejects unsupported extensions or a zero `Content-Length` with `422 invalid_video_upload`. FFprobe checks that the completed file has a video stream usable as footage and a known duration. An audio file with cover art alone fails with `422 invalid_video_upload`. The server removes partial uploads after cancellation, including during validation, and after truncated uploads, invalid video or disk I/O failures.
+- **Response (`201 Created`, `Cache-Control: no-store`):** `VideoUpload`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `upload_id` | str | Opaque upload ID (`upl_<hex>`) to pass as `CreateJobRequest.upload_id` |
+| `filename` | str | Sanitized basename of the uploaded file |
+| `size_bytes` | int | Total bytes written to disk (`>= 1`) |
+| `duration_s` | float \| null | Probed media duration in seconds (`null` only when a test double replaces FFprobe) |
 
 ### 3.2 The `Job` resource
 
@@ -99,7 +116,7 @@ The digits become `video_id`. Not accepted in v1: clip links, channel pages, oth
 |---|---|---|
 | `job_id` | str | Server-generated, opaque, random, never reused (§ 1) |
 | `video_id` | str | Normalized from the request |
-| `video_path` | str \| null | As requested; `null` when video is downloaded |
+| `video_path` | str \| null | As requested. `null` when the server uses a stored upload or downloads video. |
 | `state` | `queued` \| `running` \| `done` \| `failed` | § 3.3 |
 | `progress` | `Progress` \| null | § 3.4 |
 | `warnings` | list<`AnalysisWarning`> | Degradations found so far (§ 3.5); `[]` if none |
@@ -171,7 +188,7 @@ A job **fails** only when it can't produce a meaningful result. `Job.error.code`
 |---|---|---|
 | `vod_unavailable` | Twitch has no accessible video with this ID: not found, deleted or expired, or not publicly viewable (e.g. subscriber-only) | `resolving_vod` |
 | `vod_unsupported` | The video exists but isn't a past broadcast (Helix `type` other than `archive`, e.g. a highlight or upload) | `resolving_vod` |
-| `video_mismatch` | `video_path` was given and the file's duration differs from the VOD's by more than 2 s, so it isn't this VOD (or is incomplete) | `resolving_vod` |
+| `video_mismatch` | A file supplied via `upload_id` or `video_path` differs from the VOD's duration by more than 2 s | `resolving_vod` |
 | `no_usable_signals` | Nothing to rank (chat and audio both missing, no viewer clips with VOD offsets) and none of those inputs failed transiently, so trying again won't help | `downloading_audio` (after the last input) |
 | `upstream_unavailable` | Twitch or a download tool kept failing after retries (network, rate limit, tool breakage) while resolving the VOD, or while fetching inputs that left nothing to rank. Trying again later may work. | `resolving_vod` or `downloading_audio` |
 | `interrupted` | The server stopped while the job was queued or running (§ 9.3) | any |
@@ -648,7 +665,7 @@ A VOD with no viewer clips has the same shape with `"n_viewer_clips_total": 0` a
 
 ## 5. Media (preview)
 
-Preview, export and highlights all use the VOD's video. If the job was created with a `video_path` (§ 3.1), the server reads that file and downloads no video. Otherwise it downloads what it needs with TwitchDownloader or yt-dlp ([data sources](../data/data-sources.md), #46), either the whole VOD or a segment around a candidate. Media is unavailable only for technical reasons (the reasons below), and analysis never depends on it: a job is `done` even if nothing can be previewed.
+Preview, export and highlights all use the VOD's video. If the job was created with an `upload_id` or a `video_path` (§ 3.1), the server uses that file. Otherwise it downloads what it needs with TwitchDownloader or yt-dlp ([data sources](../data/data-sources.md), #46), either the whole VOD or a segment around a candidate. Media is unavailable only for technical reasons (the reasons below), and analysis never depends on it: a job is `done` even if nothing can be previewed.
 
 When the user selects a candidate, the client calls `GET /api/v1/jobs/{job_id}/candidates/{candidate_id}/media` and gets a `CandidateMedia`. It says separately whether the candidate can be **previewed** and whether it can be **exported**, because the two can differ: preview may still be `preparing` while export is already `available` (an export obtains its own media in its first stage, § 6.3). Errors: `404 job_not_found`/`candidate_not_found`, `409 job_not_done`.
 
@@ -692,8 +709,8 @@ When the user selects a candidate, the client calls `GET /api/v1/jobs/{job_id}/c
 
 | `reason` | Meaning |
 |---|---|
-| `source_unavailable` | Twitch doesn't serve this VOD's video for download: it was deleted or expired, or it's restricted (e.g. subscriber-only). Trying again won't help; analyzing again with a `video_path` will. |
-| `local_file_missing` | The job's `video_path` file is missing or can no longer be read (moved, deleted or on a disconnected drive). |
+| `source_unavailable` | Twitch doesn't serve this VOD's video for download: it was deleted or expired, or it's restricted (e.g. subscriber-only). Trying again won't help; analyzing again with an uploaded file or a `video_path` will. |
+| `local_file_missing` | The job's uploaded or local VOD file is missing or can no longer be read (moved, deleted or on a disconnected drive). |
 | `fetch_failed` | The video download failed or the preview could not be prepared; trying again later may work. Also reported when the prepared file doesn't cover the requested moment (a local file a little shorter than `vod.duration_s`, or a downloaded segment whose measured span misses the candidate); retrying won't help then, and `message` says so. Export availability is reported separately. |
 
 **Guarantees.** `0 ≤ media_start_s < media_end_s ≤ vod.duration_s` and `0 ≤ min_start_s < max_end_s ≤ vod.duration_s`. When available, preview coverage and export bounds both contain the candidate's own `[start_s, end_s)`.
@@ -1115,6 +1132,7 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 
 | HTTP | `code` | Returned by | `details` |
 |---|---|---|---|
+| `403` | `origin_not_allowed` | `POST /tools/setup`, `POST /uploads` (browser `Origin` outside `AUTOCLIPPER_CORS_ORIGINS`) | `null` |
 | 404 | `not_found` | Unknown path | `null` |
 | 404 | `job_not_found` | `/jobs/{job_id}…` (including ZIP downloads), `POST /exports`, `POST /highlights` | `null` |
 | 404 | `result_file_missing` | `/jobs/{job_id}/result`, media, `POST /exports`, `POST /highlights` (saved result JSON removed from disk) | `null` |
@@ -1136,9 +1154,11 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 | 422 | `invalid_channel` | `GET /channels/vods` | `null` |
 | 422 | `invalid_vod_link` | `POST /jobs` | `null` |
 | 422 | `invalid_video_path` | `POST /jobs` | `null` |
+| 422 | `invalid_video_upload` | `POST /uploads`, `POST /jobs` | `null` |
 | 422 | `invalid_export_bounds` | `POST /exports` | `{ "min_start_s": …, "max_end_s": …, "max_duration_s": … }` |
 | 422 | `invalid_highlights_bounds` | `POST /highlights` | `{ "segment_index": <int or null>, "max_duration_s": …, "max_total_duration_s": … }` |
 | 500 | `delete_failed` | `DELETE /jobs/{job_id}` (one or more files couldn't be removed from disk; record kept for retry) | `null` |
+| 500 | `upload_failed` | `POST /uploads` (disk I/O failure saving upload) | `null` |
 | 500 | `internal_error` | Any | `null` |
 | 502 | `twitch_auth_failed` | `GET /channels/vods` | `null` |
 | 502 | `upstream_unavailable` | `GET /channels/vods` (Twitch server, network or response error) | `null` |

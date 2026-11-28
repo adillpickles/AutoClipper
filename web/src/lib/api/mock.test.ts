@@ -184,6 +184,45 @@ describe("createMockClient", () => {
     ).toBe("available");
   });
 
+  it("uploads a video file with progress, supports cancellation, and attaches it to a job", async () => {
+    let now = T0;
+    const client = createMockClient(() => now, 0);
+    const file = new File(["mock-mp4-bytes"], "vod.mp4", {
+      type: "video/mp4",
+    });
+
+    const badExt = new File(["text"], "notes.txt", { type: "text/plain" });
+    await expect(client.uploadVideo(badExt)).rejects.toMatchObject({
+      status: 422,
+      error: { code: "invalid_video_upload" },
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      client.uploadVideo(file, { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    const fractions: Array<number | null> = [];
+    const uploaded = await client.uploadVideo(file, {
+      onProgress: (p) => fractions.push(p.fraction),
+    });
+    expect(uploaded.upload_id).toMatch(/^upl_/);
+    expect(uploaded.filename).toBe("vod.mp4");
+    expect(fractions[0]).toBe(0);
+    expect(fractions[fractions.length - 1]).toBe(1);
+
+    const { job } = await client.createJob({
+      vod: "9000000007",
+      upload_id: uploaded.upload_id,
+    });
+    expect(job.video_path).toBeNull();
+    now += 12 * MOCK_STEP_MS;
+    expect(
+      (await client.getCandidateMedia(job.job_id, "c001")).preview.status,
+    ).toBe("available");
+  });
+
   it("answers an unknown job with job_not_found", async () => {
     const error = await createMockClient(() => T0)
       .getJob("job_missing")

@@ -25,6 +25,8 @@ import type {
   PreflightReport,
   ToolSetupRequest,
   ToolSetupStatus,
+  UploadVideoOptions,
+  VideoUpload,
 } from "@/lib/api/types";
 
 export interface ApiClient {
@@ -44,6 +46,8 @@ export interface ApiClient {
   listJobs(params?: ListJobsParams): Promise<JobListResponse>;
   /** `POST /jobs/status`: look up the current summaries of specific jobs (§ 3.7). */
   getJobStatuses(jobIds: string[]): Promise<JobSummary[]>;
+  /** `POST /uploads`: stream an already-downloaded VOD video file to the server (§ 3.1a). */
+  uploadVideo(file: File, options?: UploadVideoOptions): Promise<VideoUpload>;
   /** `POST /jobs`: `created` is false when a queued or running job for the same input came back. */
   createJob(request: CreateJobRequest): Promise<{ job: Job; created: boolean }>;
   /** `GET /jobs/{job_id}`. */

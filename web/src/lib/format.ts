@@ -56,3 +56,18 @@ export function formatViewCount(views: number): string {
   }
   return `${Math.floor(views).toLocaleString("en-US")} ${views === 1 ? "view" : "views"}`;
 }
+
+/** Format a byte count compactly for upload progress and file summaries. */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"] as const;
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const decimals = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${Number(value.toFixed(decimals))} ${units[unitIndex]}`;
+}

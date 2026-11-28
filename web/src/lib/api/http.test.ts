@@ -395,4 +395,110 @@ describe("HTTP API client", () => {
       body: JSON.stringify({ job_ids: ["job_a", "job_b"] }),
     });
   });
+
+  it("streams video uploads with progress, abort, and error mapping", async () => {
+    class FakeXhr {
+      method = "";
+      url = "";
+      headers = new Map<string, string>();
+      status = 201;
+      responseText = "";
+      sent: unknown = null;
+      aborted = false;
+      upload: { onprogress: ((e: ProgressEvent) => void) | null } = {
+        onprogress: null,
+      };
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onabort: (() => void) | null = null;
+
+      open(method: string, url: string) {
+        this.method = method;
+        this.url = url;
+      }
+
+      setRequestHeader(name: string, value: string) {
+        this.headers.set(name, value);
+      }
+
+      send(body: unknown) {
+        this.sent = body;
+      }
+
+      abort() {
+        this.aborted = true;
+        this.onabort?.();
+      }
+    }
+
+    const instances: FakeXhr[] = [];
+    const client = createHttpClient(
+      "http://127.0.0.1:8000",
+      vi.fn() as unknown as typeof fetch,
+      () => {
+        const xhr = new FakeXhr();
+        instances.push(xhr);
+        return xhr as unknown as XMLHttpRequest;
+      },
+    );
+
+    const file = new File(["video-bytes"], "my vod.mp4", { type: "video/mp4" });
+    const progressEvents: Array<number | null> = [];
+    const uploadPromise = client.uploadVideo(file, {
+      onProgress: (p) => progressEvents.push(p.fraction),
+    });
+
+    const xhr = instances[0];
+    expect(xhr.method).toBe("POST");
+    expect(xhr.url).toBe(
+      "http://127.0.0.1:8000/api/v1/uploads?filename=my%20vod.mp4",
+    );
+    expect(xhr.headers.get("Content-Type")).toBe("application/octet-stream");
+    expect(xhr.sent).toBe(file);
+
+    xhr.upload.onprogress?.({
+      lengthComputable: true,
+      loaded: 5,
+      total: 10,
+    } as ProgressEvent);
+    xhr.status = 201;
+    xhr.responseText = JSON.stringify({
+      upload_id: "upl_1234567890abcdef",
+      filename: "my vod.mp4",
+      size_bytes: 11,
+      duration_s: 3.0,
+    });
+    xhr.onload?.();
+
+    await expect(uploadPromise).resolves.toEqual({
+      upload_id: "upl_1234567890abcdef",
+      filename: "my vod.mp4",
+      size_bytes: 11,
+      duration_s: 3.0,
+    });
+    expect(progressEvents).toEqual([0, 0.5]);
+
+    const controller = new AbortController();
+    const abortedPromise = client.uploadVideo(file, {
+      signal: controller.signal,
+    });
+    controller.abort();
+    expect(instances[1].aborted).toBe(true);
+    await expect(abortedPromise).rejects.toMatchObject({ name: "AbortError" });
+
+    const errorPromise = client.uploadVideo(file);
+    instances[2].status = 422;
+    instances[2].responseText = JSON.stringify({
+      error: {
+        code: "invalid_video_upload",
+        message: "That file isn't a valid or readable video.",
+        details: null,
+      },
+    });
+    instances[2].onload?.();
+    await expect(errorPromise).rejects.toMatchObject({
+      status: 422,
+      error: { code: "invalid_video_upload" },
+    });
+  });
 });

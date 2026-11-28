@@ -58,6 +58,7 @@ __all__ = [
     "ToolSetupRequest",
     "ToolSetupState",
     "ToolSetupStatus",
+    "VideoUpload",
     "VodSummary",
     "parse_channel",
     "parse_vod",
@@ -180,11 +181,21 @@ class Progress(_Response):
     message: str
 
 
+class VideoUpload(_Response):
+    """Result of ``POST /api/v1/uploads`` (§ 3.1a)."""
+
+    upload_id: str
+    filename: str
+    size_bytes: int = Field(ge=1)
+    duration_s: FiniteFloat | None = None
+
+
 class CreateJobRequest(_Request):
     """``POST /api/v1/jobs`` (§ 3.1)."""
 
     vod: str
     video_path: str | None = None
+    upload_id: str | None = None
 
 
 class Job(_Response):

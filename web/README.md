@@ -47,7 +47,7 @@ web/
 ├── src/
 │   ├── app/                 # App Router: routes, layouts, global styles
 │   │   ├── layout.tsx       # root layout and page metadata
-│   │   ├── page.tsx         # start screen: VOD link and optional local file
+│   │   ├── page.tsx         # start screen: VOD link and optional file upload or local path
 │   │   ├── jobs/[jobId]/    # progress screen; results/ holds the results screen
 │   │   ├── icon.svg         # favicon
 │   │   └── globals.css      # Tailwind entry point and color tokens

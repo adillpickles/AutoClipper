@@ -124,3 +124,30 @@ export function looksAbsolute(path: string): boolean {
   const p = path.trim();
   return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\");
 }
+
+export const SUPPORTED_VIDEO_EXTENSIONS = [
+  ".mp4",
+  ".mkv",
+  ".ts",
+  ".mts",
+  ".m2ts",
+  ".mov",
+  ".webm",
+  ".flv",
+  ".m4v",
+  ".avi",
+  ".mpg",
+  ".mpeg",
+  ".wmv",
+  ".ogv",
+] as const;
+
+export const VIDEO_FILE_ACCEPT = `${SUPPORTED_VIDEO_EXTENSIONS.join(",")},video/*`;
+
+/** True when `filename` ends with a supported video container extension. */
+export function hasSupportedVideoExtension(filename: string): boolean {
+  const dot = filename.trim().lastIndexOf(".");
+  if (dot <= 0) return false;
+  const ext = filename.trim().slice(dot).toLowerCase();
+  return (SUPPORTED_VIDEO_EXTENSIONS as readonly string[]).includes(ext);
+}

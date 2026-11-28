@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     runner TEXT NOT NULL,
     video_id TEXT NOT NULL,
     video_path TEXT,
+    upload_id TEXT,
     state TEXT NOT NULL,
     title TEXT,
     broadcaster_id TEXT,
@@ -185,6 +186,7 @@ class StoredJobRecord:
     updated_at: datetime
     finished_at: datetime | None
     runner: Literal["mock", "pipeline"] = "mock"
+    upload_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,6 +373,10 @@ class JobStore:
             elif user_version != SCHEMA_VERSION:
                 raise _CorruptStoreError(f"unsupported job store schema version {user_version}")
             self._verify_tables(conn)
+            job_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(jobs)")}
+            if "upload_id" not in job_cols:
+                conn.execute("ALTER TABLE jobs ADD COLUMN upload_id TEXT")
+                conn.commit()
             return conn
         except Exception:
             with contextlib.suppress(Exception):
@@ -471,6 +477,7 @@ class JobStore:
             record.runner,
             record.video_id,
             record.video_path,
+            record.upload_id,
             record.state,
             record.title,
             record.broadcaster_id,
@@ -491,16 +498,17 @@ class JobStore:
             self._conn.execute(
                 """
                 INSERT INTO jobs (
-                    job_id, seq, runner, video_id, video_path, state, title, broadcaster_id,
-                    broadcaster_display_name, duration_s, thumbnail_url, candidate_count,
-                    result_path, progress_json, warnings_json, error_json,
+                    job_id, seq, runner, video_id, video_path, upload_id, state, title,
+                    broadcaster_id, broadcaster_display_name, duration_s, thumbnail_url,
+                    candidate_count, result_path, progress_json, warnings_json, error_json,
                     created_at, started_at, updated_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     seq = excluded.seq,
                     runner = excluded.runner,
                     video_id = excluded.video_id,
                     video_path = excluded.video_path,
+                    upload_id = excluded.upload_id,
                     state = excluded.state,
                     title = excluded.title,
                     broadcaster_id = excluded.broadcaster_id,
@@ -611,12 +619,17 @@ def _row_to_job(row: sqlite3.Row, base_dir: Path) -> StoredJobRecord:
     error = (
         ApiError.model_validate_json(row["error_json"]) if row["error_json"] is not None else None
     )
+    try:
+        raw_upload_id = row["upload_id"]
+    except IndexError:
+        raw_upload_id = None
     return StoredJobRecord(
         job_id=job_id,
         seq=seq,
         runner=cast(Literal["mock", "pipeline"], runner),
         video_id=video_id,
         video_path=_parse_opt_str(row["video_path"], "video_path"),
+        upload_id=_parse_opt_str(raw_upload_id, "upload_id"),
         state=cast(State, state),
         title=_parse_opt_str(row["title"], "title"),
         broadcaster_id=_parse_opt_str(row["broadcaster_id"], "broadcaster_id"),
