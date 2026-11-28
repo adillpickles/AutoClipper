@@ -5,12 +5,14 @@ values follow the contract's examples exactly, so frontend fixtures written from
 match the mock. Scores are made up and measure nothing (``scorer.kind`` is ``mock``).
 """
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final
 
 from autoclipper.analysis import (
+    Activity,
     AnalysisResult,
     AnalysisWarning,
     Candidate,
@@ -166,6 +168,65 @@ _EXAMPLE_CANDIDATES: Final = (
 )
 
 
+def mock_activity(
+    duration_s: float,
+    *,
+    chat_peaks: tuple[tuple[float, float], ...] = (),
+    loud_peaks: tuple[tuple[float, float], ...] = (),
+    chat: bool = True,
+    loudness: bool = True,
+) -> Activity:
+    """Made-up timeline activity (#213): a steady murmur with a bump at each peak.
+
+    Peaks are ``(at_s, strength)``, strength 0-1. Chat is messages per second, loudness dBFS,
+    one point per 10 s. Deterministic, so the web fixtures in ``web/src/lib/api/fixtures``
+    carry the same numbers. Measures nothing, like the rest of the mock.
+    """
+    step_s = 10.0
+    n = math.ceil(duration_s / step_s)
+
+    def bump(t: float, peaks: tuple[tuple[float, float], ...]) -> float:
+        return max((s * math.exp(-(((t - at) / 18.0) ** 2)) for at, s in peaks), default=0.0)
+
+    centres = [(i + 0.5) * step_s for i in range(n)]
+    chat_values = tuple(
+        round(
+            1.4
+            + 0.5 * abs(math.sin(i * 1.73))
+            + 0.3 * math.sin(i * 0.41)
+            + 7.0 * bump(t, chat_peaks),
+            3,
+        )
+        for i, t in enumerate(centres)
+    )
+    loud_values = tuple(
+        round(
+            min(
+                0.0,
+                -31.0
+                + 3.0 * math.sin(i * 0.9)
+                + 2.0 * math.cos(i * 2.3)
+                + 20.0 * bump(t, loud_peaks),
+            ),
+            1,
+        )
+        for i, t in enumerate(centres)
+    )
+    return Activity(
+        step_s=step_s,
+        chat=chat_values if chat else None,
+        loudness=loud_values if loudness else None,
+    )
+
+
+EXAMPLE_ACTIVITY: Final = mock_activity(
+    360.0,
+    chat_peaks=((130.0, 1.0), (50.0, 0.35)),
+    loud_peaks=((135.0, 0.85), (262.0, 1.0), (50.0, 0.3)),
+)
+"""The first § 4.7 result's activity: chat and loudness rise at its moments."""
+
+
 def _example_result(video_id: str) -> AnalysisResult:
     """The first § 4.7 result (one candidate of each source) for `video_id`."""
     return AnalysisResult(
@@ -176,6 +237,7 @@ def _example_result(video_id: str) -> AnalysisResult:
         candidates=_EXAMPLE_CANDIDATES,
         n_chat_messages=2418,
         n_windows=36,
+        activity=EXAMPLE_ACTIVITY,
     )
 
 
@@ -187,6 +249,7 @@ def scenario_for(video_id: str) -> Scenario:
             vod=_vod(video_id, 2, 360.0, datetime(2026, 10, 12, 18, 0, tzinfo=UTC)),
             scorer=MOCK_SCORER,
             n_viewer_clips_total=0,
+            activity=mock_activity(360.0, chat_peaks=((26.0, 0.8),), loud_peaks=((30.0, 0.4),)),
             candidates=(
                 Candidate(
                     candidate_id="c001",
@@ -223,6 +286,7 @@ def scenario_for(video_id: str) -> Scenario:
             n_viewer_clips_total=1,
             warnings=(CHAT_MISSING,),
             n_windows=30,
+            activity=mock_activity(300.0, loud_peaks=((87.0, 0.9), (202.0, 0.45)), chat=False),
             candidates=(
                 Candidate(
                     candidate_id="c001",

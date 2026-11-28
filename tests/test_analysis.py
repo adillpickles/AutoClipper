@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from autoclipper.analysis import (
+    Activity,
     AnalysisResult,
     AnalysisWarning,
     Candidate,
@@ -239,3 +240,53 @@ def test_pipeline_counts_are_omitted_when_unknown_and_roundtrip_when_set() -> No
     assert counted.model_dump(mode="json")["n_windows"] == 36
     with pytest.raises(ValidationError):
         result(n_chat_messages=-1)
+
+
+# --- Activity (#213) -----------------------------------------------------------------------------
+
+
+def test_activity_is_omitted_when_absent_and_old_files_load() -> None:
+    plain = result(candidate(1, 1.0))
+    assert "activity" not in plain.model_dump(mode="json")
+    old = plain.model_dump(mode="json")
+    old["schema_version"] = "1.0"
+    assert AnalysisResult.model_validate(old).activity is None
+
+
+def test_activity_roundtrips_with_gaps_and_a_missing_family() -> None:
+    activity = Activity(step_s=10.0, chat=None, loudness=(-30.5, None, *([-20.0] * 34)))
+    with_activity = result(candidate(1, 1.0), activity=activity)
+    dumped = with_activity.model_dump(mode="json")
+    assert dumped["activity"]["chat"] is None
+    assert dumped["activity"]["loudness"][1] is None
+    assert AnalysisResult.model_validate_json(with_activity.model_dump_json()) == with_activity
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"step_s": 10.0},  # neither family
+        {"step_s": 0.0, "chat": (1.0,)},
+        {"step_s": 10.0, "chat": (1.0, 2.0), "loudness": (-20.0,)},  # lengths differ
+        {"step_s": 10.0, "chat": (-1.0,)},
+        {"step_s": 10.0, "loudness": (-61.0,)},
+        {"step_s": 10.0, "loudness": (1.0,)},
+        {"step_s": 1.0, "chat": (0.0,) * 401},
+        {"step_s": 10.0, "chat": (float("nan"),)},
+    ],
+)
+def test_invalid_activity_is_rejected(fields: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        Activity.model_validate(fields)
+
+
+@pytest.mark.parametrize("n_points", [34, 35, 37])
+def test_activity_must_tile_the_vod(n_points: int) -> None:
+    # A 360 s VOD has windows starting at 0..350 s, so 36 points of 10 s; 35 lost one.
+    with pytest.raises(ValidationError, match="one point per step_s"):
+        result(activity=Activity(step_s=10.0, chat=(0.0,) * n_points))
+
+
+def test_activity_covers_the_vod_up_to_a_tail_too_short_for_a_window() -> None:
+    # A 360 s VOD: the last window starts at 350 s, so 36 points of 10 s.
+    assert result(activity=Activity(step_s=10.0, chat=(0.0,) * 36)).activity is not None

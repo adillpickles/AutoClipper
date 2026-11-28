@@ -65,6 +65,7 @@ from autoclipper.analysis import (
 from autoclipper.export.captions import DEFAULT_MODEL as DEFAULT_WHISPER_MODEL
 from autoclipper.export.captions import Transcriber
 from autoclipper.export.timeline import corrected_duration_s
+from autoclipper.features.activity import timeline_activity
 from autoclipper.features.audio import FEATURE_COLUMNS as AUDIO_FEATURE_COLUMNS
 from autoclipper.features.audio import compute_audio_features
 from autoclipper.features.chat import FEATURE_COLUMNS as CHAT_FEATURE_COLUMNS
@@ -581,6 +582,12 @@ def analyze_vod(
         candidates=tuple(candidates),
         n_chat_messages=n_chat_messages,
         n_windows=windows.height if scored is not None else None,
+        activity=_timed(
+            "activity",
+            lambda: timeline_activity(
+                windows, chat_features, audio_features, duration_s=vod.duration_s
+            ),
+        ),
     )
     path = result_path(artifacts_dir, video_id, out_path)
     _write_result(path, result)

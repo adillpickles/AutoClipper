@@ -4,9 +4,9 @@
 // PRD § 4). A scrub track spans the VOD with shaded, numbered spans for the ranked moments.
 // Hovering or dragging shows the time, the moment there and a preview frame when preview media
 // exists, and clicking a span (or pressing Enter) opens that moment's clip card below. Rank chips
-// under the track give one keyboard stop per top moment. There is no activity curve: the result
-// has no per-window chat or audio values, and drawing the model's own picks as if they were
-// measurements would mislead (AGENTS.md § 6.3).
+// under the track give one keyboard stop per top moment. Behind the spans, the result's measured
+// chat rate and loudness (`activity`, #213) are drawn with gaps where nothing was measured; an
+// older result without it shows no curve, never an invented one (AGENTS.md § 6.3).
 
 import {
   useId,
@@ -21,11 +21,13 @@ import {
 
 import { ClipCard, type ClipExport } from "@/components/clip-card";
 import { EmptyState } from "@/components/ui/empty-state";
-import type { Candidate, VodSummary } from "@/lib/api/types";
+import type { Activity, Candidate, VodSummary } from "@/lib/api/types";
 import { formatTime } from "@/lib/format";
 import { titleFor } from "@/lib/reason";
 import { layoutTimelineMarkers } from "@/lib/timeline";
 
+import { activitySummary, drawableActivity } from "./timeline/activity";
+import { ActivityCurve } from "./timeline/activity-curve";
 import {
   adjacentMomentStart,
   clamp,
@@ -77,6 +79,7 @@ export function StreamTimeline({
   onSelect,
   clips,
   onRetry,
+  activity,
 }: {
   jobId: string;
   videoId: string;
@@ -87,6 +90,8 @@ export function StreamTimeline({
   onSelect: (candidate: Candidate) => void;
   clips: Record<string, ClipExport>;
   onRetry: (candidate: Candidate) => void;
+  /** The result's chat and loudness over the stream; omitted in older results (no curve). */
+  activity?: Activity | null;
 }) {
   const headingId = useId();
   const hintId = useId();
@@ -112,6 +117,14 @@ export function StreamTimeline({
   );
   const ticks = useMemo(() => rulerTicks(duration), [duration]);
   const { sources, ensure, markFailed } = usePreviewMedia(jobId, top, duration);
+  const drawable = useMemo(
+    () => drawableActivity(activity, duration),
+    [activity, duration],
+  );
+  const summary = useMemo(
+    () => activitySummary(activity, duration),
+    [activity, duration],
+  );
 
   if (candidates.length === 0) {
     return (
@@ -345,8 +358,31 @@ export function StreamTimeline({
                 Lower-ranked moment
               </li>
             )}
+            {drawable.chat && (
+              <li className="inline-flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="h-2.5 w-3 rounded-xs border-t-2 border-signal/70 bg-signal/20"
+                />
+                Chat rate
+              </li>
+            )}
+            {drawable.loudness && (
+              <li className="inline-flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="h-px w-3 rounded-pill bg-ink-secondary/80"
+                />
+                Loudness
+              </li>
+            )}
           </ul>
         </div>
+        {summary && (
+          <p className="sr-only" data-testid="activity-summary">
+            {summary}
+          </p>
+        )}
 
         <div className="flex min-w-0 flex-col gap-1">
           {/* Time ruler on the same percentage scale as every span below. */}
@@ -434,6 +470,9 @@ export function StreamTimeline({
                     className="pointer-events-none absolute inset-y-0 w-px bg-border-subtle"
                   />
                 ))}
+
+              {/* Measured chat and loudness, under the moment spans. */}
+              <ActivityCurve activity={activity} durationS={duration} />
 
               {/* Lower-ranked moments first so the top moments paint over them. */}
               {others.map((candidate) => {

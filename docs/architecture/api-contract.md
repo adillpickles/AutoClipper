@@ -456,6 +456,17 @@ To continue browsing, pass the last page's `next_cursor` as `before`. The cursor
 | `candidates` | list<`Candidate`> | In `rank` order; 0 to 200 items |
 | `n_chat_messages` | int, optional | Chat messages read from the replay, for the progress screen's numbers (#188). Omitted when no chat replay arrived. |
 | `n_windows` | int, optional | 10 s windows scored ([labeling](../data/labeling.md)). Omitted when nothing was scored (no chat or audio, so viewer clips ranked alone). |
+| `activity` | `Activity`, optional | Chat rate and loudness over the whole stream, downsampled for the results timeline (#213). Omitted when neither chat nor audio arrived, and in results saved before it existed; the timeline then draws no curve. |
+
+`Activity` (built by `autoclipper.features.activity` from the per-window `chat_msg_rate` and `audio_rms_mean` the pipeline already computed; no new signal):
+
+| Field | Type | Notes |
+|---|---|---|
+| `step_s` | float | Seconds per point, greater than 0. The pipeline uses the smallest multiple of the 10 s window stride that keeps the series at most 300 points (10 s up to 50 minutes, 30 s for 2 hours, 80 s for 6 hours). Point `i` covers `[i * step_s, (i + 1) * step_s)`, the last one cut at `vod.duration_s`; a window belongs to the point holding its start. The series ends at the last point a window starts in, so the VOD's last few seconds (a tail shorter than half a window, which gets no window) have no point rather than a `null` one. |
+| `chat` | list<float \| null> \| null | Mean chat messages per second of the point's windows (≥ 0, 3 decimals). `null` as a whole when no chat replay arrived (`chat_missing`), never a row of zeros. A quiet chat is a measured `0`. |
+| `loudness` | list<float \| null> \| null | Mean audio frame RMS of the point's measured windows in dBFS (1 decimal), clamped to `[-60, 0]`; `-60` is the features' silence level. `null` as a whole when no audio arrived (`audio_missing`). An entry is `null` where nothing was measured: windows Twitch muted, or past the end of the audio. |
+
+At least one of `chat` and `loudness` is set, both have the same length, at most 400 points (the pipeline writes at most 300), and an entry is `null` when no window of the point was measured. Values are raw (rate and dBFS) so the client chooses the display scale: the web timeline scales chat from 0 to its 98th percentile and loudness from the 5th to the 98th percentile of its non-silent points (above -59.5 dBFS; silence is drawn at the baseline), clamping points outside, so a single spike or a few minutes of silence don't flatten the rest; it leaves gaps at `null` entries. It's a picture of the inputs, not of the score.
 
 `VodSummary`:
 
@@ -533,6 +544,7 @@ The server checks every result against these before returning it, and the CLI be
 5. At most 200 candidates. Zero is valid (e.g. a very short VOD) and the UI shows an empty state.
 6. All numbers are finite.
 7. `n_viewer_clips_total` is `null` exactly when `warnings` contains `viewer_clips_missing`, and then every candidate is `discovered`. Otherwise `n_viewer_clips ≤ n_viewer_clips_total` for every candidate.
+8. When `activity` is present, its `n` points start inside the VOD and cover it except a tail shorter than half a window (5 s), which has no window: `(n - 1) * step_s < vod.duration_s ≤ n * step_s + 5`.
 
 Candidates may overlap each other; the timeline has to cope with overlapping markers.
 
@@ -621,7 +633,12 @@ Candidates may overlap each other; the timeline has to cope with overlapping mar
     }
   ],
   "n_chat_messages": 2418,
-  "n_windows": 36
+  "n_windows": 36,
+  "activity": {
+    "step_s": 10.0,
+    "chat": [1.405, 2.069, 2.132, 3.35, 4.265, 4.284, 3.221, 2.057, 1.893, 1.472, 2.671, 4.691, 8.058, 7.875, 5.136, 2.742, 1.922, 2.057, 1.804, 2.196, 1.703, 2.108, 1.695, 1.832, 1.593, 1.514, 1.537, 1.302, 1.618, 1.26, 1.82, 1.553, 2.022, 1.904, 2.076, 2.072],
+    "loudness": [-29.0, -29.8, -27.4, -25.1, -28.7, -27.4, -29.7, -31.9, -26.7, -28.5, -29.8, -25.5, -23.0, -16.2, -17.0, -25.6, -25.8, -29.3, -34.1, -32.0, -34.1, -31.6, -26.4, -27.8, -21.2, -14.1, -16.5, -19.9, -26.9, -29.3, -26.1, -31.1, -33.0, -32.2, -35.1, -30.0]
+  }
 }
 ```
 
@@ -679,7 +696,12 @@ Degraded result for `job_8d2e6f0a9b1c4d7e` (chat missing):
       ]
     }
   ],
-  "n_windows": 30
+  "n_windows": 30,
+  "activity": {
+    "step_s": 10.0,
+    "chat": null,
+    "loudness": [-29.0, -30.0, -28.3, -28.1, -34.2, -32.2, -28.6, -21.3, -9.0, -13.9, -24.2, -28.8, -35.3, -33.2, -29.5, -30.6, -26.7, -28.5, -30.4, -24.3, -25.4, -26.3, -24.9, -29.6, -29.4, -31.3, -35.9, -31.7, -30.8, -30.0]
+  }
 }
 ```
 
@@ -1455,7 +1477,7 @@ The server validates the folder before saving: the path must be absolute, the fo
 
 ## 10. Versioning
 
-- The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` (`"1.1"`, adding `title`, `reason`, and `signal_details` on `Candidate`; `"1.0"` files without those fields remain loadable; the optional `speech_features` and `title_source` fields, and the optional result counts `n_chat_messages` and `n_windows` (#188), were added later as minor changes and are omitted when unset, so files without them load unchanged) and `Health` (`"1.1"`, adding `captions_available`).
+- The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` (`"1.1"`, adding `title`, `reason`, and `signal_details` on `Candidate`; `"1.0"` files without those fields remain loadable; the optional `speech_features` and `title_source` fields, and the optional result counts `n_chat_messages` and `n_windows` (#188), and the optional timeline `activity` (#213), were added later as minor changes and are omitted when unset, so files without them load unchanged) and `Health` (`"1.1"`, adding `captions_available`).
 - **Minor change** (same path, `1.x`): a new endpoint, a new response field, an optional request field with a default, or a new value in an **open** enum. Clients must already ignore unknown fields and handle unknown open-enum values with a default branch.
 - **Major change** (`/api/v2`): anything else, such as renaming or removing a field, changing a type, unit or meaning, adding a required request field, or adding a value to a **closed** enum.
 - **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, `PreflightCheck.name`, `PreflightCheck.source`, `SignalDetail.kind`, `Candidate.title_source`, and layouts listed in `export.layouts`. **Closed enums:** job, export and highlights `state`, `source`, `preview.status`, `export.status`, `scorer.kind`, highlights `order`, and preflight `status`. A request's `layout` must be one the server lists.

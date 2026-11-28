@@ -92,6 +92,10 @@ Computed from 16 kHz mono audio with librosa/NumPy. Frame-level values are aggre
 - `audio_rms_max_z` and `audio_rms_rz` divide by the standard deviation floored at −60 dBFS (`STD_FLOOR_RMS`) instead of zeroing below a tiny epsilon: near-constant stretches (muted or paused audio) would otherwise turn the next sound into a z-score in the thousands. A VOD where every window is alike still scores 0. Lead/lag columns are neighbouring windows' `audio_rms_max_z`, 0 past the edges.
 - Runtime: about 2 s per 30 minutes of audio here (peak memory under 400 MB), so well under a minute for a 6-hour VOD.
 
+## Timeline activity (display only, #213)
+
+Not a model feature. `autoclipper.features.activity.timeline_activity` downsamples two columns the pipeline already computed, `chat_msg_rate` and `audio_rms_mean`, into the `activity` of the `AnalysisResult` ([API contract § 4.1](../architecture/api-contract.md#41-analysisresult)) so the results timeline can show the stream's chat and loudness behind the ranked moments. Points are `step_s` apart, the smallest multiple of the 10 s stride that keeps at most 300 points; the series ends at the last point a window starts in (the under-half-a-window tail gets no point); each point is the mean of the windows starting inside it (chat in messages per second, loudness as mean frame RMS in dBFS clamped to [−60, 0]). A window counts as unmeasured for loudness when it overlaps a Twitch-muted segment (`audio_is_muted`) or has no audio frames (`audio_rms_mean` and `audio_silence_frac` both 0, which real silence never gives); a point without a measured window is `null`, and a family that didn't arrive is `null` as a whole.
+
 ## Phase 2 features (after the MVP works)
 
 | Name | Definition | Notes |
