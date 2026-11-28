@@ -4,7 +4,6 @@
 // it unset (or set `NEXT_PUBLIC_API_MODE=mock`) to stay in browser mock mode (#33).
 
 import { createHttpClient } from "@/lib/api/http";
-import { createMockClient } from "@/lib/api/mock";
 import type {
   AnalysisResult,
   ArchiveKind,
@@ -129,7 +128,31 @@ export function createApiClient(
   const origin = resolveApiOrigin(config);
   return origin !== null
     ? createHttpClient(origin, fetchImpl)
-    : createMockClient();
+    : createLazyMockClient();
+}
+
+/**
+ * The in-browser mock client, loaded in its own chunk on first use (#241): it and its fixtures
+ * would otherwise ship on every page of a build that talks to a real backend. Every method
+ * except `resolveUrl` returns a promise, so each one waits for the module and then calls it.
+ */
+function createLazyMockClient(): ApiClient {
+  const loaded = import("@/lib/api/mock").then((m) => m.createMockClient());
+  // Don't let a failed chunk load surface as an unhandled rejection; calls still reject.
+  loaded.catch(() => {});
+  return new Proxy({} as ApiClient, {
+    get(_target, key) {
+      if (key === "resolveUrl") return (url: string) => url;
+      if (typeof key !== "string" || key === "then") return undefined;
+      return (...args: unknown[]) =>
+        loaded.then((client) => {
+          const method = client[key as keyof ApiClient] as (
+            ...a: unknown[]
+          ) => unknown;
+          return method.apply(client, args);
+        });
+    },
+  });
 }
 
 let client: ApiClient | null = null;
