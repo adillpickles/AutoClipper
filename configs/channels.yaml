@@ -6,7 +6,11 @@
 # A channel can carry a `stacked_layout` preset (#68) for vertical 9:16 exports that
 # stack the streamer's facecam over the gameplay: normalized [x, y, width, height] regions
 # from the top-left corner and the top pane's share of the 1920 px frame (`facecam_fraction`).
-# A channel without one gets `stacked` only through AUTOCLIPPER_EXPORT_FACECAM_REGION.
+# `autoclipper export --layout stacked` detects the facecam in each clip (#191) and uses the
+# preset (`--channel`) only when no facecam is found, keeping the preset's gameplay region and
+# facecam_fraction when one is; AUTOCLIPPER_EXPORT_FACECAM_REGION or --facecam-region override
+# both. A channel without a preset still gets `stacked` through detection on the CLI; the API
+# lists `stacked` only for channels with a preset or with the env region set.
 channels:
   - login: caseoh_
     reason: Just Chatting / variety, very large audience

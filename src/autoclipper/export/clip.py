@@ -7,6 +7,11 @@ API contract and whether to burn in captions. It turns that into an exact, unpad
 It reports its stages (§ 6.3) through `on_stage`, so the API can show progress, and it refuses
 an export that couldn't cover exactly the requested interval instead of quietly delivering a
 shorter clip.
+
+The ``stacked`` layout picks its facecam region in this order (#191): an explicit region
+(``--facecam-region``, ``AUTOCLIPPER_EXPORT_FACECAM_REGION``, or a `StackedLayout` the caller
+passes), then the overlay `autoclipper.export.facecam` detects in the clip, then the channel
+preset (`ClipSpec.stacked_fallback`). With none of them it renders ``center_crop`` and warns.
 """
 
 import logging
@@ -19,14 +24,16 @@ from autoclipper.export.captions import Stage, Transcriber, export_clip_with_cap
 from autoclipper.export.cut import Interval
 from autoclipper.export.encode import EncodeSettings, ExportRequest, ExportResult, export_clip
 from autoclipper.export.errors import ExportError
+from autoclipper.export.facecam import FacecamDetection, detect_facecam
 from autoclipper.export.reframe import (
+    DEFAULT_FACECAM_FRACTION,
     CenterCrop,
     Layout,
     StackedLayout,
     layout_from_settings,
     stacked_layout_from_region,
 )
-from autoclipper.ffmpeg import Runner
+from autoclipper.ffmpeg import FFmpegError, Runner
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +42,9 @@ type LayoutName = Literal["center_crop", "configured_region", "stacked"]
 LAYOUT_NAMES: Final[tuple[LayoutName, ...]] = ("center_crop", "configured_region", "stacked")
 # The longest clip (api-contract.md § 5 `max_duration_s`, labeling.md § 2 export preset).
 MAX_CLIP_DURATION_S: Final = 90.0
+
+# Finds the facecam overlay in a source over an interval (file times); tests pass a fake.
+type FacecamDetector = Callable[[Path, Interval], FacecamDetection]
 
 
 class ClipTooLongError(ExportError):
@@ -68,8 +78,11 @@ class ClipSpec:
         layout: ``center_crop``, ``configured_region``, or ``stacked`` (#68).
         captions: Burn in captions of the speech.
         overwrite: Replace an existing file at `output`.
-        stacked_layout: Optional explicit `StackedLayout` (e.g. from a channel preset) used
-            when `layout` is ``"stacked"``.
+        stacked_layout: An explicit `StackedLayout` for ``stacked``, used as is (no detection).
+        stacked_fallback: A `StackedLayout` for ``stacked`` used only when facecam detection
+            finds no face (a channel preset, #191).
+        detect_facecam: Look for the facecam in the clip for ``stacked`` when no explicit
+            layout is given.
     """
 
     source: Path
@@ -79,6 +92,8 @@ class ClipSpec:
     captions: bool = False
     overwrite: bool = False
     stacked_layout: StackedLayout | None = None
+    stacked_fallback: StackedLayout | None = None
+    detect_facecam: bool = True
 
 
 def available_layouts(
@@ -130,6 +145,53 @@ def layout_named(
     return layout_from_settings(region)
 
 
+def _detected_stacked_layout(
+    spec: ClipSpec,
+    detector: FacecamDetector,
+    on_warning: Callable[[str], None] | None,
+) -> Layout:
+    """The stacked layout from facecam detection, else the fallback preset, else center crop.
+
+    Raises:
+        NoFacecamConfiguredError: Detection is off and there is no fallback preset.
+    """
+
+    def warn(message: str) -> None:
+        log.warning("stacked export source=%s: %s", spec.source, message)
+        if on_warning is not None:
+            on_warning(message)
+
+    if not spec.detect_facecam:
+        if spec.stacked_fallback is not None:
+            return spec.stacked_fallback
+        return layout_named("stacked", None)
+    try:
+        detection = detector(spec.source, spec.interval)
+    except FFmpegError as exc:
+        detection = None
+        reason = f"facecam detection couldn't read frames ({exc})"
+    else:
+        reason = f"no facecam detected: {detection.message}"
+    if detection is not None and detection.region is not None:
+        base = spec.stacked_fallback
+        return stacked_layout_from_region(
+            detection.region,
+            gameplay_region=None if base is None else _region_tuple(base),
+            facecam_fraction=DEFAULT_FACECAM_FRACTION if base is None else base.facecam_fraction,
+        )
+    full_camera = detection is not None and detection.status == "full_camera"
+    if spec.stacked_fallback is not None and not full_camera:
+        warn(f"{reason}; using the channel's stacked_layout preset")
+        return spec.stacked_fallback
+    warn(f"{reason}; rendering center_crop instead of stacked")
+    return CenterCrop()
+
+
+def _region_tuple(layout: StackedLayout) -> tuple[float, float, float, float]:
+    g = layout.gameplay
+    return (g.x, g.y, g.width, g.height)
+
+
 def render_clip(
     spec: ClipSpec,
     *,
@@ -141,6 +203,8 @@ def render_clip(
     max_duration_s: float = MAX_CLIP_DURATION_S,
     settings: EncodeSettings | None = None,
     runner: Runner | None = None,
+    facecam_detector: FacecamDetector | None = None,
+    on_warning: Callable[[str], None] | None = None,
 ) -> ExportResult:
     """Render `spec` as a 1080x1920 H.264/AAC MP4 covering exactly its interval.
 
@@ -148,13 +212,17 @@ def render_clip(
         spec: What to render.
         region: ``Settings.export_region``, for the ``configured_region`` layout.
         facecam_region: ``Settings.export_facecam_region``, for the ``stacked`` layout (#68).
-        stacked_layout: Explicit `StackedLayout` (e.g. from a channel preset) for ``stacked``.
+        stacked_layout: An explicit `StackedLayout` for ``stacked``, used as is.
         transcriber: For captions; defaults to faster-whisper with the configured model.
         on_stage: Called with ``transcribing`` when transcription starts (captions only) and
             ``rendering`` when cutting and encoding starts.
         max_duration_s: The longest interval allowed.
         settings: Encoder settings.
         runner: Executes FFmpeg and FFprobe.
+        facecam_detector: Finds the facecam for ``stacked`` (module docs); defaults to
+            `detect_facecam` with the process-wide cache.
+        on_warning: Called with a sentence when ``stacked`` falls back to the channel preset or
+            to ``center_crop``; the fallback is also logged.
 
     Raises:
         ClipTooLongError: The interval is longer than `max_duration_s`.
@@ -171,12 +239,16 @@ def render_clip(
         )
     if not spec.source.is_file():
         raise SourceMissingError(f"video file not found: {spec.source}")
-    layout = layout_named(
-        spec.layout,
-        region,
-        facecam_region=facecam_region,
-        stacked_layout=spec.stacked_layout or stacked_layout,
-    )
+    explicit = spec.stacked_layout or stacked_layout
+    if spec.layout == "stacked" and explicit is None and facecam_region is None:
+        detector = facecam_detector or (
+            lambda source, interval: detect_facecam(source, interval, runner=runner)
+        )
+        layout = _detected_stacked_layout(spec, detector, on_warning)
+    else:
+        layout = layout_named(
+            spec.layout, region, facecam_region=facecam_region, stacked_layout=explicit
+        )
     request = ExportRequest(spec.source, interval, spec.output, layout, overwrite=spec.overwrite)
     tolerance_s = 1.0 / (settings or EncodeSettings()).frame_rate
 
