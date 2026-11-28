@@ -187,7 +187,7 @@ The table covers every file in the data directory except the runner's empty lock
 | Peak memory model (least squares) | 577 MiB + 4.90 KiB per chat message |
 <!-- END pilot-report:performance -->
 
-Phase times come from the ingest log lines of each run, and memory comes from the runner's measurement of the whole process tree. Peak memory grows with chat size, because the parser reads the whole replay into memory: the fitted model predicts about 5.2 GiB for a one-million-message chat. The busiest pilot chat had 131,631 messages. The lowest free memory (4.00 GiB) was during the second run, before the 7 GiB start rule; with the rule, every run kept at least 6.3 GiB free. The audio download speed varied about 5× between VODs and dominates the run time.
+Phase times come from the ingest log lines of each run, and memory comes from the runner's measurement of the whole process tree. Peak memory grows with chat size, because the parser reads the whole replay into memory: the fitted model predicts about 5.2 GiB for a one-million-message chat. (Measured before #115, which decodes the replay one comment at a time and cut the per-message cost on a synthetic replay from about 3.9 to 1.6 KiB.) The busiest pilot chat had 131,631 messages. The lowest free memory (4.00 GiB) was during the second run, before the 7 GiB start rule; with the rule, every run kept at least 6.3 GiB free. The audio download speed varied about 5× between VODs and dominates the run time.
 
 ## 10. Implications for #36 and #38
 
