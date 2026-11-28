@@ -416,15 +416,15 @@ def export(
         str | None,
         typer.Option(
             help="Facecam x,y,width,height fractions (0-1) for --layout stacked; overrides "
-            "AUTOCLIPPER_EXPORT_FACECAM_REGION and --channel.",
+            "detection, AUTOCLIPPER_EXPORT_FACECAM_REGION and --channel.",
             show_default=False,
         ),
     ] = None,
     channel: Annotated[
         str | None,
         typer.Option(
-            help="Pilot channel login from --channels (default configs/channels.yaml) for "
-            "--layout stacked.",
+            help="Pilot channel login from --channels (default configs/channels.yaml) whose "
+            "stacked_layout preset --layout stacked uses when no facecam is detected.",
             show_default=False,
         ),
     ] = None,
@@ -432,6 +432,13 @@ def export(
         Path,
         typer.Option(help="Channels YAML file with per-channel stacked_layout presets."),
     ] = Path("configs/channels.yaml"),
+    detect_facecam: Annotated[
+        bool,
+        typer.Option(
+            help="For --layout stacked without a region, find the facecam in the clip; "
+            "results are cached in <artifacts dir>/cache/facecam."
+        ),
+    ] = True,
     captions: Annotated[
         bool,
         typer.Option(help="Burn in captions of the speech (needs `uv sync --extra captions`)."),
@@ -451,13 +458,20 @@ def export(
     from autoclipper.export.clip import ClipSpec, render_clip
     from autoclipper.export.cut import Interval
     from autoclipper.export.errors import ExportError
-    from autoclipper.export.reframe import stacked_layout_for_channel, stacked_layout_from_region
+    from autoclipper.export.facecam import FacecamCache
+    from autoclipper.export.facecam import detect_facecam as find_facecam
+    from autoclipper.export.reframe import (
+        StackedLayout,
+        stacked_layout_for_channel,
+        stacked_layout_from_region,
+    )
 
     if end <= start:
         typer.echo("Error: --end must be after --start", err=True)
         raise typer.Exit(ExitCode.USER_ERROR)
     settings = get_settings()
     stacked = None
+    preset = None
     if facecam_region is not None:
         try:
             stacked = stacked_layout_from_region(_parse_region_option(facecam_region))
@@ -466,11 +480,11 @@ def export(
             raise typer.Exit(ExitCode.USER_ERROR) from None
     elif channel is not None:
         try:
-            stacked = stacked_layout_for_channel(channel, channels_path=channels)
+            preset = stacked_layout_for_channel(channel, channels_path=channels)
         except ExportError as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(ExitCode.USER_ERROR) from None
-        if stacked is None:
+        if preset is None:
             typer.echo(
                 f"Error: no stacked_layout preset found for channel {channel!r} in {channels}",
                 err=True,
@@ -485,12 +499,17 @@ def export(
         captions=captions,
         overwrite=overwrite,
         stacked_layout=stacked,
+        stacked_fallback=preset,
+        detect_facecam=detect_facecam,
     )
+    cache = FacecamCache(settings.artifacts_dir / "cache" / "facecam")
     try:
         result = render_clip(
             spec,
             region=settings.export_region,
             facecam_region=settings.export_facecam_region,
+            facecam_detector=lambda source, interval: find_facecam(source, interval, cache=cache),
+            on_warning=lambda warning: typer.echo(f"Warning: {warning.message}", err=True),
         )
     except CaptioningError as exc:  # a missing install or a failing model: an external tool
         typer.echo(f"Error: {exc}", err=True)
@@ -504,6 +523,9 @@ def export(
     except FFmpegError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(ExitCode.EXTERNAL_FAILURE) from None
+    if isinstance(result.layout, StackedLayout):
+        cam = result.layout.facecam
+        typer.echo(f"Facecam region: {cam.x:.4g},{cam.y:.4g},{cam.width:.4g},{cam.height:.4g}")
     typer.echo(f"Wrote {result.output} ({result.duration_s:.2f} s, {result.width}x{result.height})")
 
 

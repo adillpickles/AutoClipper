@@ -29,7 +29,12 @@ from autoclipper.api.app import create_app
 from autoclipper.api.service import MockService, SampleMedia, ensure_sample_media
 from autoclipper.config import TwitchCredentials
 from autoclipper.export.captions import CaptioningError, Stage, Transcriber, Word
-from autoclipper.export.clip import ClipSpec, IntervalOutsideMediaError, SourceMissingError
+from autoclipper.export.clip import (
+    ClipSpec,
+    IntervalOutsideMediaError,
+    LayoutWarning,
+    SourceMissingError,
+)
 from autoclipper.export.cut import IntervalTooShortError
 from autoclipper.export.errors import ExportError
 from autoclipper.export.highlights import (
@@ -84,6 +89,7 @@ class FakeRenderer:
         region: tuple[float, float, float, float] | None,
         transcriber: Transcriber | None,
         on_stage: Callable[[Stage], None],
+        on_warning: object = None,
     ) -> object:
         self.specs.append(spec)
         self.regions.append(region)
@@ -653,7 +659,8 @@ def test_candidate_media_is_the_sample_video_with_full_bounds(client: TestClient
         "min_start_s": 0.0,
         "max_end_s": 360.0,
         "max_duration_s": 90.0,
-        "layouts": ["center_crop"],  # configured_region needs AUTOCLIPPER_EXPORT_REGION
+        # configured_region needs AUTOCLIPPER_EXPORT_REGION; stacked detects the facecam (#191)
+        "layouts": ["center_crop", "stacked"],
     }
     file = client.get(preview["url"])
     assert file.status_code == 200
@@ -732,7 +739,10 @@ def test_an_integer_bound_is_accepted_and_strict_types_are_enforced(client: Test
     ok = client.post(f"{API}/exports", json=export_body(job["job_id"], start_s=115))
     text = client.post(f"{API}/exports", json=export_body(job["job_id"], start_s="115.5"))
     yes = client.post(f"{API}/exports", json=export_body(job["job_id"], captions="yes"))
-    layout = client.post(f"{API}/exports", json=export_body(job["job_id"], layout="stacked"))
+    # A layout the server doesn't offer: no AUTOCLIPPER_EXPORT_REGION is set.
+    layout = client.post(
+        f"{API}/exports", json=export_body(job["job_id"], layout="configured_region")
+    )
 
     assert ok.status_code == 201
     assert error_code(text) == "invalid_request"
@@ -945,7 +955,7 @@ def test_configured_region_is_offered_and_passed_on_when_set(
         f"{API}/exports", json=export_body(job["job_id"], layout="configured_region")
     )
 
-    assert media["export"]["layouts"] == ["center_crop", "configured_region"]
+    assert media["export"]["layouts"] == ["center_crop", "configured_region", "stacked"]
     assert created.status_code == 201
     assert renderer.specs[0].layout == "configured_region"
     assert renderer.regions == [region]
@@ -1029,6 +1039,39 @@ def test_a_video_path_removed_after_the_analysis_is_local_file_missing(
     assert response.json()["error"]["details"] == {"reason": "local_file_missing"}
 
 
+@pytest.mark.parametrize(
+    ("layout", "setting", "before", "after"),
+    [
+        ("stacked", "export_facecam_region", (0.0, 0.6, 0.3, 0.4), (0.7, 0.6, 0.3, 0.4)),
+        ("configured_region", "export_region", (0.25, 0.0, 0.5, 1.0), (0.0, 0.0, 0.5, 1.0)),
+    ],
+)
+def test_the_same_export_with_a_different_resolved_region_renders_again(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    layout: str,
+    setting: str,
+    before: tuple[float, float, float, float],
+    after: tuple[float, float, float, float],
+) -> None:
+    client, service = make_client(
+        synchronous=False, step_s=0.05, render=FakeRenderer(delay_s=0.5), **{setting: before}
+    )
+    job = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()
+    wait_until(lambda: client.get(f"{API}/jobs/{job['job_id']}").json()["state"] == "done")
+    body = export_body(job["job_id"], layout=layout)
+
+    first = client.post(f"{API}/exports", json=body)
+    same = client.post(f"{API}/exports", json=body)
+    setattr(service, setting, after)
+    changed = client.post(f"{API}/exports", json=body)
+
+    assert first.status_code == 201
+    assert (same.status_code, same.json()["export_id"]) == (200, first.json()["export_id"])
+    # The region the layout resolves from changed (#191), so the old render isn't reused.
+    assert changed.status_code == 201
+    assert changed.json()["export_id"] != first.json()["export_id"]
+
+
 def test_a_running_export_dedupes_and_its_file_isnt_ready(
     make_client: Callable[..., tuple[TestClient, MockService]],
 ) -> None:
@@ -1083,6 +1126,23 @@ def test_an_identical_export_reuses_the_finished_render(client: TestClient, tmp_
     redo = client.post(f"{API}/exports", json=export_body(job["job_id"]))
     assert redo.status_code == 201
     assert redo.json()["export_id"] not in (first.json()["export_id"], other.json()["export_id"])
+
+
+def test_an_export_whose_facecam_detection_errored_isnt_reused(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    client, _ = make_client(render=DetectionErrorRenderer())
+    job = done_job(client)
+    body = export_body(job["job_id"], layout="stacked")
+
+    first = client.post(f"{API}/exports", json=body)
+    again = client.post(f"{API}/exports", json=body)
+
+    # Detection raised rather than finding nothing, so the next request tries again (#191).
+    assert first.status_code == 201
+    assert client.get(f"{API}/exports/{first.json()['export_id']}").json()["state"] == "done"
+    assert again.status_code == 201
+    assert again.json()["export_id"] != first.json()["export_id"]
 
 
 def test_a_failed_export_is_retried_with_a_new_render(
@@ -1387,6 +1447,24 @@ def test_a_highlights_video_of_a_job_without_its_local_file_is_rejected(
 # --- ZIP downloads (§ 7.6) ---------------------------------------------------------------------
 
 
+class DetectionErrorRenderer(FakeRenderer):
+    """Renders, reporting that facecam detection raised (#191)."""
+
+    def __call__(
+        self,
+        spec: ClipSpec,
+        /,
+        *,
+        region: tuple[float, float, float, float] | None,
+        transcriber: Transcriber | None,
+        on_stage: Callable[[Stage], None],
+        on_warning: object = None,
+    ) -> object:
+        assert callable(on_warning)
+        on_warning(LayoutWarning("facecam detection failed", detection_failed=True))
+        return super().__call__(spec, region=region, transcriber=transcriber, on_stage=on_stage)
+
+
 class FailUncaptionedRenderer(FakeRenderer):
     """Renders captioned clips and fails uncaptioned ones, so one job has both outcomes."""
 
@@ -1398,6 +1476,7 @@ class FailUncaptionedRenderer(FakeRenderer):
         region: tuple[float, float, float, float] | None,
         transcriber: Transcriber | None,
         on_stage: Callable[[Stage], None],
+        on_warning: object = None,
     ) -> object:
         if not spec.captions:
             raise ExportError("bad layout")
@@ -3710,6 +3789,7 @@ def test_preview_invalidation_defers_while_parallel_export_uses_segment(
         region: tuple[float, float, float, float] | None,
         transcriber: Transcriber | None,
         on_stage: Callable[[Stage], None],
+        on_warning: object = None,
     ) -> object:
         entered.set()
         assert resume.wait(timeout=10.0)
@@ -4028,7 +4108,9 @@ def test_stacked_layout_resolves_channel_preset_by_broadcaster_id_and_login(
         json=export_body(job["job_id"], layout="stacked", captions=False),
     )
     assert made.status_code == 201
-    assert renderer.specs[0].stacked_layout == preset
+    # The preset is the fallback; the facecam detected in the clip comes first (#191).
+    assert renderer.specs[0].stacked_layout is None
+    assert renderer.specs[0].stacked_fallback == preset
 
 
 @pytest.mark.parametrize(
@@ -4363,7 +4445,9 @@ def test_stacked_layout_resolves_on_fresh_data_dir_when_display_name_differs_fro
     )
     assert made.status_code == 201, made.text
     assert client.get(f"{API}/exports/{made.json()['export_id']}").json()["state"] == "done"
-    assert renderer.specs[0].stacked_layout == preset
+    # The preset is the fallback; the facecam detected in the clip comes first (#191).
+    assert renderer.specs[0].stacked_layout is None
+    assert renderer.specs[0].stacked_fallback == preset
 
 
 def _make_forward_jump_ts(tmp_path: Path, *, audio_codec: str = "aac") -> Path:

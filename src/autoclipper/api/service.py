@@ -55,6 +55,7 @@ from autoclipper.export.clip import (
     MAX_CLIP_DURATION_S,
     ClipSpec,
     IntervalOutsideMediaError,
+    LayoutWarning,
     SourceMissingError,
     available_layouts,
     render_clip,
@@ -67,6 +68,7 @@ from autoclipper.export.cut import (
 )
 from autoclipper.export.encode import EncodeSettings, encode_timeout_s
 from autoclipper.export.errors import ExportError
+from autoclipper.export.facecam import DETECTOR_VERSION
 from autoclipper.export.filenames import (
     build_archive_filename,
     build_clip_filename,
@@ -247,6 +249,7 @@ class ClipRenderer(Protocol):
         region: tuple[float, float, float, float] | None,
         transcriber: Transcriber | None,
         on_stage: Callable[[Stage], None],
+        on_warning: Callable[[LayoutWarning], None] | None = None,
     ) -> object:
         """Write `spec.output` or raise."""
         ...
@@ -477,6 +480,9 @@ class _RenderRecord:
     file: Path | None = None
     duration_s: float | None = None
     filename: str | None = None
+    # What the export's layout resolves from when it renders (`_layout_key`), saved in the
+    # library database; None for renders saved before #191.
+    layout_key: str | None = None
 
     def export_model(self, *, filename: str | None = None) -> Export:
         assert self.request is not None
@@ -567,6 +573,7 @@ class _RenderRecord:
             updated_at=self.times.updated_at,
             finished_at=self.times.finished_at,
             filename=self.filename,
+            layout_key=self.layout_key,
         )
 
 
@@ -837,6 +844,7 @@ class MockService:
                 file=stored_render.file,
                 duration_s=stored_render.duration_s,
                 filename=stored_render.filename,
+                layout_key=stored_render.layout_key,
             )
             if render.state in ("queued", "running"):
                 render.state = "failed"
@@ -1531,11 +1539,14 @@ class MockService:
                 )
             # Identical requests reuse the queued, running or finished render (#186), so a page
             # that asks for its top clips again doesn't render them twice. A failed render, or a
-            # finished one whose file was removed, is retried with a new export.
+            # finished one whose file was removed, is retried with a new export, and so is one
+            # whose layout region changed (#191).
+            layout_key = self._layout_key(job, request.layout)
             for record in self._renders.values():
                 if (
                     record.kind == "export"
                     and record.request == request
+                    and _same_layout(record.layout_key, layout_key, request.layout)
                     and (
                         record.state in ("queued", "running")
                         or (
@@ -1556,6 +1567,7 @@ class MockService:
                 request.captions,
                 _Timestamps(now, now),
                 request=request,
+                layout_key=layout_key,
             )
             self._persist_render(record)
             self._renders[record.render_id] = record
@@ -2004,7 +2016,10 @@ class MockService:
         )
 
     def _stacked_layout_for(self, job: _JobRecord) -> StackedLayout | None:
-        """Return the channel preset or global facecam stacked layout for `job`, if any (#68)."""
+        """The channel's stacked_layout preset for `job`, if any (#68).
+
+        It is the fallback when no facecam is detected in the clip (#191).
+        """
         if self.channel_layouts and job.result is not None:
             vod = job.result.vod
             layouts = {k.strip().lower(): v for k, v in self.channel_layouts.items()}
@@ -2021,8 +2036,6 @@ class MockService:
                 preset = layouts.get(key)
                 if preset is not None:
                     return preset
-        if self.export_facecam_region is not None:
-            return stacked_layout_from_region(self.export_facecam_region)
         return None
 
     def _broadcaster_login(self, broadcaster_id: str) -> str | None:
@@ -2036,12 +2049,24 @@ class MockService:
         except Exception:
             return None
 
+    def _layout_key(self, job: _JobRecord, layout: str) -> str:
+        """What `layout` resolves from at render time, so a changed region isn't reused.
+
+        ``stacked`` resolves from the env facecam region, the facecam detected in the clip (the
+        same for the same media and detector version) and the channel preset (#191);
+        ``configured_region`` from the env region.
+        """
+        if layout == "stacked":
+            preset = self._stacked_layout_for(job)
+            return f"stacked:v{DETECTOR_VERSION}:{self.export_facecam_region!r}:{preset!r}"
+        if layout == "configured_region":
+            return f"configured_region:{self.export_region!r}"
+        return layout
+
     def _layouts_for(self, job: _JobRecord) -> tuple[str, ...]:
-        return available_layouts(
-            self.export_region,
-            facecam_region=self.export_facecam_region,
-            stacked_layout=self._stacked_layout_for(job),
-        )
+        # `stacked` needs no configuration: the facecam is detected in the clip, with the
+        # channel preset or center_crop as fallbacks (#191).
+        return available_layouts(self.export_region, facecam_detection=True)
 
     def _whole_vod_export(self, job: _JobRecord, duration_s: float) -> ExportAvailability:
         """Export availability over a source that covers the whole VOD."""
@@ -3334,16 +3359,25 @@ class MockService:
                 output=target,
                 layout=request.layout,
                 captions=request.captions,
+                # An explicit facecam region wins; otherwise the facecam is detected in the clip
+                # and the channel preset is the fallback (#191).
                 stacked_layout=(
+                    stacked_layout_from_region(self.export_facecam_region)
+                    if request.layout == "stacked" and self.export_facecam_region is not None
+                    else None
+                ),
+                stacked_fallback=(
                     self._stacked_layout_for(job) if request.layout == "stacked" else None
                 ),
             )
+            warnings: list[LayoutWarning] = []
             try:
                 self.render(
                     spec,
                     region=self.export_region,
                     transcriber=self.transcriber,
                     on_stage=lambda stage: self._set_render_stage(record, stage),
+                    on_warning=warnings.append,
                 )
             except CaptioningError as exc:
                 log.warning("export captions failed id=%s: %s", record.render_id, exc)
@@ -3371,6 +3405,11 @@ class MockService:
             self._release_segment_path(leased_path)
         if not target.is_file():  # a renderer that returned without writing is a bug
             raise RuntimeError(f"the renderer wrote no file for {record.render_id}")
+        if any(warning.detection_failed for warning in warnings):
+            # Facecam detection errored, so this render isn't what an identical request would
+            # get next time; don't reuse it (#191).
+            with self._lock:
+                record.layout_key = f"{record.layout_key}:detect-error"
         self._finish_render(record, file=target)
 
 
@@ -3406,6 +3445,15 @@ def _job_key(record: _JobRecord) -> tuple[str, str | None, str | None]:
 def _job_sort_key(record: _JobRecord) -> tuple[datetime, int, str]:
     """Library order key: `created_at`, creation sequence, then `job_id` (§ 3.7)."""
     return record.times.created_at, record.seq, record.job_id
+
+
+def _same_layout(recorded: str | None, current: str, layout: str) -> bool:
+    """Whether a render's layout matches a new request's (`MockService._layout_key`).
+
+    A render saved before #191 has no key; only ``center_crop``, which reads no configuration,
+    can be reused then.
+    """
+    return recorded == current or (recorded is None and layout == "center_crop")
 
 
 def _is_within(path: Path, root: Path) -> bool:

@@ -714,7 +714,7 @@ When the user selects a candidate, the client calls `GET /api/v1/jobs/{job_id}/c
 | `min_start_s` | float \| null | Earliest export `start_s` allowed; non-null iff `available` |
 | `max_end_s` | float \| null | Latest export `end_s` allowed; non-null iff `available` |
 | `max_duration_s` | float \| null | Longest export allowed (`end_s - start_s`); non-null iff `available`. Server-configured; default 90 s, the export preset in [labeling § 2](../data/labeling.md#2-from-clips-to-moments). |
-| `layouts` | list<str> | Layouts the server can render now (§ 6.1); `[]` iff `unavailable`. `configured_region` is listed only when `AUTOCLIPPER_EXPORT_REGION` is set; `stacked` is listed when `AUTOCLIPPER_EXPORT_FACECAM_REGION` or a channel preset in `configs/channels.yaml` applies (#68). Clients ignore values they don't know. |
+| `layouts` | list<str> | Layouts the server can render now (§ 6.1); `[]` iff `unavailable`. `configured_region` is listed only when `AUTOCLIPPER_EXPORT_REGION` is set; `stacked` is always listed: the server detects the facecam in the clip, falling back to the channel preset in `configs/channels.yaml` or to a center crop (#68, #191). Clients ignore values they don't know. |
 
 `MediaUnavailableReason` (open enum):
 
@@ -759,7 +759,7 @@ When the user selects a candidate, the client calls `GET /api/v1/jobs/{job_id}/c
     "min_start_s": 0.0,
     "max_end_s": 360.0,
     "max_duration_s": 90.0,
-    "layouts": ["center_crop", "configured_region"]
+    "layouts": ["center_crop", "configured_region", "stacked"]
   }
 }
 ```
@@ -825,13 +825,13 @@ Layouts ([PRD § Export](../product/prd.md#export), #20, #68):
 
 - `center_crop`: the central 9:16 region of the 16:9 source, scaled to 1080×1920.
 - `configured_region`: one fixed 9:16 source region set in server configuration (e.g. where a streamer's layout puts the action). It isn't chosen per request in v1.
-- `stacked`: facecam region stacked above gameplay inside 1080×1920, listed when `AUTOCLIPPER_EXPORT_FACECAM_REGION` or a per-channel `stacked_layout` preset in `configs/channels.yaml` applies (#68).
+- `stacked`: facecam region stacked above gameplay inside 1080×1920 (#68), always listed. The facecam region is `AUTOCLIPPER_EXPORT_FACECAM_REGION` when set, otherwise the webcam overlay detected in the clip, otherwise the channel's `stacked_layout` preset in `configs/channels.yaml`; a full-screen camera, or no facecam and no preset, renders a center crop instead (#191). The export still succeeds in those cases; the fallback is logged on the server.
 
 Further layouts (e.g. automatic smart crop, optional polish) would be added as new values (§ 10).
 
 **Exact trim.** The export covers exactly `[start_s, end_s)` of the source as sent, to within one video frame. The server adds **no chat-lag shift and no padding**; a user who wants context trims wider ([overview § 4.6](overview.md#46-export), [labeling § 5](../data/labeling.md#5-chat-lag)). The interval may extend beyond the candidate's own bounds but must satisfy `export.min_start_s ≤ start_s < end_s ≤ export.max_end_s` and `0.5 s ≤ end_s - start_s ≤ export.max_duration_s` (matching the default cutter minimum in [overview § 4.6](overview.md#46-export); otherwise `422 invalid_export_bounds`). Output is always an MP4, H.264/AAC, 1080×1920 ([PRD § Export](../product/prd.md#export)).
 
-**Responses.** `201 Created` with the new `Export` (`queued`) and `Location: /api/v1/exports/{export_id}`. If an export with the same six request fields is `queued` or `running`, or `done` with its file still on disk, it comes back with `200 OK` instead, so opening a results page again never renders its clips twice (#186). A `failed` export, or a `done` one whose file was removed, is never reused: posting again renders a new one. Errors: `404 job_not_found` or `candidate_not_found`, `409 job_not_done`, `409 media_unavailable` (export isn't available now; `details.reason` holds the `MediaUnavailableReason`), `422 invalid_request` (including a layout not in `export.layouts`) or `invalid_export_bounds`. Checks run in this order and the first failure is returned: the body's shape and types (`422 invalid_request`), the job (`404 job_not_found`, then `409 job_not_done`), the candidate (`404 candidate_not_found`), export availability (`409 media_unavailable`), the layout (`422 invalid_request`), then the bounds (`422 invalid_export_bounds`). So when export is unavailable, an empty `export.layouts` and null bounds never produce a `422`.
+**Responses.** `201 Created` with the new `Export` (`queued`) and `Location: /api/v1/exports/{export_id}`. If an export with the same six request fields is `queued` or `running`, or `done` with its file still on disk, it comes back with `200 OK` instead, so opening a results page again never renders its clips twice (#186). The region its layout resolves from must also be unchanged: for `stacked` the `AUTOCLIPPER_EXPORT_FACECAM_REGION`, the channel preset and the facecam detector version, for `configured_region` the `AUTOCLIPPER_EXPORT_REGION` (#191); otherwise a new export is rendered. This fingerprint is saved with the render, so reuse survives a server restart; renders saved before #191 have none and are reused only for `center_crop`. A `stacked` export whose facecam detection raised an error (rather than finding no facecam) is never reused. A `failed` export, or a `done` one whose file was removed, is never reused: posting again renders a new one. Errors: `404 job_not_found` or `candidate_not_found`, `409 job_not_done`, `409 media_unavailable` (export isn't available now; `details.reason` holds the `MediaUnavailableReason`), `422 invalid_request` (including a layout not in `export.layouts`) or `invalid_export_bounds`. Checks run in this order and the first failure is returned: the body's shape and types (`422 invalid_request`), the job (`404 job_not_found`, then `409 job_not_done`), the candidate (`404 candidate_not_found`), export availability (`409 media_unavailable`), the layout (`422 invalid_request`), then the bounds (`422 invalid_export_bounds`). So when export is unavailable, an empty `export.layouts` and null bounds never produce a `422`.
 
 ### 6.2 The `Export` resource
 
@@ -1221,7 +1221,7 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 ### 9.2 Duplicates
 
 - `POST /jobs` for a `video_id`, `video_path` and `upload_id` that already have a `done` job with its result, or a `queued` or `running` one, returns that job (`200`, § 3.1). Failed jobs are retried.
-- `POST /exports` with the same six fields as an export that's `queued`, `running` or `done` with its file on disk returns it (`200`, § 6.1). Failed exports are retried.
+- `POST /exports` with the same six fields as an export that's `queued`, `running` or `done` with its file on disk returns it (`200`, § 6.1), unless the region its layout resolves from changed. Failed exports are retried.
 - `POST /highlights` with the same `job_id`, resolved `segments`, `order` and `captions` as a highlights video that's `queued` or `running` returns it (`200`).
 - `GET` requests are safe and idempotent. There's no `Idempotency-Key` header: matching on content is enough for one local user.
 

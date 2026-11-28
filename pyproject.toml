@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.28.1",
     "lightgbm>=4.7.0",
     "numpy>=2.5.4",
+    "opencv-python-headless>=4.12,<5",
     "polars>=2.1.0",
     "pyarrow>=26.0.0",
     "pydantic-settings>=2.16.0",
