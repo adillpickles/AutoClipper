@@ -25,6 +25,7 @@ __all__ = [
     "AnalysisResult",
     "AnalysisWarning",
     "ApiError",
+    "AppSettings",
     "ArchiveKind",
     "ArchiveOmission",
     "ArchiveStatus",
@@ -47,6 +48,7 @@ __all__ = [
     "JobListResponse",
     "JobRenderSummary",
     "JobSummary",
+    "OutputCopy",
     "PreflightCheck",
     "PreflightReport",
     "PreflightStatus",
@@ -58,6 +60,7 @@ __all__ = [
     "ToolSetupRequest",
     "ToolSetupState",
     "ToolSetupStatus",
+    "UpdateSettingsRequest",
     "VideoUpload",
     "VodSummary",
     "parse_channel",
@@ -490,6 +493,30 @@ class ToolSetupRequest(_Request):
 
     tools: Annotated[list[ToolSetupName], Field(min_length=1, max_length=2)] | None = None
     force: bool = False
+
+
+class OutputCopy(_Response):
+    """The latest copy of a finished render into the output folder (§ 9.9)."""
+
+    render_id: str
+    kind: Literal["export", "highlights"]
+    state: Literal["copied", "failed"]
+    filename: str | None
+    message: str | None
+    finished_at: UtcDatetime
+
+
+class AppSettings(_Response):
+    """``GET``/``PUT /api/v1/settings`` (§ 9.9)."""
+
+    output_folder: str | None
+    last_copy: OutputCopy | None
+
+
+class UpdateSettingsRequest(_Request):
+    """``PUT /api/v1/settings``: ``output_folder`` null or blank turns copying off."""
+
+    output_folder: Annotated[str, Field(max_length=4096)] | None
 
 
 class ToolSetupItem(_Response):

@@ -6,6 +6,7 @@ import inspect
 import io
 import itertools
 import json
+import os
 import shutil
 import threading
 import time
@@ -1492,6 +1493,315 @@ def test_a_zip_of_real_renders_holds_playable_mp4s(
                 assert info.compress_type == zipfile.ZIP_STORED
                 video = probe(Path(archive.extract(info, tmp_path / kind))).video_streams[0]
                 assert (video.width, video.height) == size
+
+
+# --- Settings and the output folder (§ 9.9) -----------------------------------------------------
+
+
+def set_folder(client: TestClient, folder: object, **headers: str) -> httpx2.Response:
+    return client.put(
+        f"{API}/settings",
+        json={"output_folder": None if folder is None else str(folder)},
+        headers=headers,
+    )
+
+
+def test_the_output_folder_is_validated_saved_and_survives_a_restart(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    client, _ = make_client()
+    folder = tmp_path / "My Clips" / "AutoClipper"
+
+    before = client.get(f"{API}/settings")
+    saved = set_folder(client, folder)
+
+    assert before.json() == {"output_folder": None, "last_copy": None}
+    assert before.headers["cache-control"] == "no-store"
+    assert saved.status_code == 200
+    assert saved.json() == {"output_folder": str(folder), "last_copy": None}
+    assert folder.is_dir()  # created on save
+    # A new server over the same library database still has it.
+    restarted, _ = make_client()
+    assert restarted.get(f"{API}/settings").json()["output_folder"] == str(folder)
+
+    cleared = set_folder(restarted, None)
+    assert cleared.json()["output_folder"] is None
+    assert make_client()[0].get(f"{API}/settings").json()["output_folder"] is None
+
+
+@pytest.mark.parametrize(
+    ("make", "reason"),
+    [
+        (lambda tmp: "clips", "not_absolute"),
+        (lambda tmp: tmp / "notes.txt", "not_a_directory"),
+        (lambda tmp: tmp / "notes.txt" / "clips", "not_a_directory"),
+    ],
+    ids=["relative", "a-file", "below-a-file"],
+)
+def test_an_unusable_output_folder_is_a_422_that_names_no_path(
+    client: TestClient, tmp_path: Path, make: Callable[[Path], object], reason: str
+) -> None:
+    (tmp_path / "notes.txt").write_text("not a folder")
+
+    response = set_folder(client, make(tmp_path))
+
+    assert response.status_code == 422
+    assert error_code(response) == "invalid_output_folder"
+    assert response.json()["error"]["details"] == {"reason": reason}
+    assert str(tmp_path) not in response.text
+    assert client.get(f"{API}/settings").json()["output_folder"] is None
+
+
+def test_settings_reject_other_browser_origins_and_bad_bodies(
+    client: TestClient, tmp_path: Path
+) -> None:
+    foreign = set_folder(client, tmp_path, origin="https://evil.example")
+    local = set_folder(client, tmp_path, origin="http://localhost:3000")
+    preflight = client.options(
+        f"{API}/settings",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "PUT",
+            "Access-Control-Request-Headers": "Content-Type",
+        },
+    )
+    extra = client.put(f"{API}/settings", json={"output_folder": None, "other": 1})
+
+    assert (foreign.status_code, error_code(foreign)) == (403, "origin_not_allowed")
+    assert local.status_code == 200
+    assert preflight.status_code == 200
+    assert "PUT" in preflight.headers["access-control-allow-methods"]
+    assert (extra.status_code, error_code(extra)) == (422, "invalid_request")
+
+
+def test_finished_exports_and_highlights_are_copied_under_unique_download_names(
+    client: TestClient, tmp_path: Path
+) -> None:
+    folder = tmp_path / "out"
+    assert set_folder(client, folder).status_code == 200
+    job_id = done_job(client)["job_id"]
+    name = "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55.mp4"
+    (folder / name).write_bytes(b"the user's own file")  # already in the folder
+
+    export_id = client.post(f"{API}/exports", json=export_body(job_id)).json()["export_id"]
+    export = client.get(f"{API}/exports/{export_id}").json()
+    after_export = client.get(f"{API}/settings").json()["last_copy"]
+    highlights_id = client.post(f"{API}/highlights", json={"job_id": job_id}).json()[
+        "highlights_id"
+    ]
+    after_highlights = client.get(f"{API}/settings").json()["last_copy"]
+
+    assert export["filename"] == name  # the download name is unchanged
+    assert (folder / name).read_bytes() == b"the user's own file"
+    copied = folder / "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-55_2.mp4"
+    assert copied.read_bytes() == b"rendered clip"
+    assert after_export["render_id"] == export_id
+    assert (after_export["kind"], after_export["state"]) == ("export", "copied")
+    assert (after_export["filename"], after_export["message"]) == (copied.name, None)
+    assert (folder / "user_001_2026-10-12_highlights.mp4").read_bytes() == b"rendered highlights"
+    assert after_highlights["render_id"] == highlights_id
+    assert after_highlights["kind"] == "highlights"
+    assert sorted(p.name for p in folder.iterdir()) == sorted(
+        [name, copied.name, "user_001_2026-10-12_highlights.mp4"]
+    )
+
+
+def test_no_folder_means_no_copies_and_a_lost_folder_fails_only_the_copy(
+    client: TestClient, tmp_path: Path
+) -> None:
+    job_id = done_job(client)["job_id"]
+    client.post(f"{API}/exports", json=export_body(job_id))
+    assert client.get(f"{API}/settings").json()["last_copy"] is None
+
+    folder = tmp_path / "usb-drive"
+    set_folder(client, folder)
+    shutil.rmtree(folder)  # the drive was unplugged
+    export_id = client.post(f"{API}/exports", json=export_body(job_id, start_s=120.0)).json()[
+        "export_id"
+    ]
+
+    assert client.get(f"{API}/exports/{export_id}").json()["state"] == "done"
+    last_copy = client.get(f"{API}/settings").json()["last_copy"]
+    assert (last_copy["state"], last_copy["filename"]) == ("failed", None)
+    assert "output folder is missing" in last_copy["message"]
+    assert str(tmp_path) not in json.dumps(last_copy)
+    assert not folder.exists()  # a copy never recreates a folder that went away
+
+
+def test_a_slow_copy_never_holds_up_the_render_worker(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autoclipper.api import service as service_module
+
+    release = threading.Event()
+    copying = threading.Event()
+    real_copy = service_module.copy_into_folder
+
+    def slow_copy(source: Path, folder: Path, filename: str, **kwargs: Any) -> Path:  # noqa: ANN401
+        copying.set()
+        assert release.wait(timeout=10)
+        return real_copy(source, folder, filename, **kwargs)
+
+    monkeypatch.setattr(service_module, "copy_into_folder", slow_copy)
+    client, _ = make_client(synchronous=False, step_s=0.0)
+    folder = tmp_path / "out"
+    set_folder(client, folder)
+    job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+    wait_until(lambda: client.get(f"{API}/jobs/{job_id}").json()["state"] == "done")
+
+    first = client.post(f"{API}/exports", json=export_body(job_id)).json()["export_id"]
+    second = client.post(f"{API}/exports", json=export_body(job_id, start_s=120.0)).json()[
+        "export_id"
+    ]
+    assert copying.wait(timeout=10)
+    # The first copy is stuck, yet the second render finishes and the API answers.
+    wait_until(lambda: client.get(f"{API}/exports/{second}").json()["state"] == "done")
+    assert client.get(f"{API}/health").status_code == 200
+    assert list(folder.iterdir()) == []
+
+    release.set()
+    wait_until(lambda: len(list(folder.iterdir())) == 2)
+    last_copy = client.get(f"{API}/settings").json()["last_copy"]
+    assert last_copy["render_id"] in (first, second)
+
+
+def test_clearing_the_folder_drops_copies_still_waiting(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autoclipper.api import service as service_module
+
+    release = threading.Event()
+    copying = threading.Event()
+    real_copy = service_module.copy_into_folder
+
+    def slow_copy(source: Path, folder: Path, filename: str, **kwargs: Any) -> Path:  # noqa: ANN401
+        copying.set()
+        assert release.wait(timeout=10)
+        return real_copy(source, folder, filename, **kwargs)
+
+    monkeypatch.setattr(service_module, "copy_into_folder", slow_copy)
+    client, _ = make_client(synchronous=False, step_s=0.0)
+    folder = tmp_path / "out"
+    set_folder(client, folder)
+    job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+    wait_until(lambda: client.get(f"{API}/jobs/{job_id}").json()["state"] == "done")
+    first = client.post(f"{API}/exports", json=export_body(job_id)).json()["export_id"]
+    assert copying.wait(timeout=10)
+    second = client.post(f"{API}/exports", json=export_body(job_id, start_s=120.0)).json()[
+        "export_id"
+    ]
+    wait_until(lambda: client.get(f"{API}/exports/{second}").json()["state"] == "done")
+
+    set_folder(client, None)  # while the second copy is still waiting
+    release.set()
+
+    wait_until(lambda: client.get(f"{API}/settings").json()["last_copy"] is not None)
+    time.sleep(0.2)  # give a wrongly kept second copy time to land
+    assert client.get(f"{API}/settings").json()["last_copy"]["render_id"] == first
+    assert [p.name for p in folder.iterdir()] == [
+        client.get(f"{API}/exports/{first}").json()["filename"]
+    ]
+
+
+def test_shutting_down_mid_copy_leaves_no_partial_file(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autoclipper.api import service as service_module
+
+    copying = threading.Event()
+    real_copy = service_module.copy_into_folder
+
+    def copy_until_stopped(
+        source: Path, folder: Path, filename: str, *, stop: threading.Event
+    ) -> Path:
+        copying.set()
+        assert stop.wait(timeout=10)  # close() asks the copy to stop
+        return real_copy(source, folder, filename, stop=stop)
+
+    monkeypatch.setattr(service_module, "copy_into_folder", copy_until_stopped)
+    client, service = make_client(synchronous=False, step_s=0.0)
+    folder = tmp_path / "out"
+    set_folder(client, folder)
+    job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+    wait_until(lambda: client.get(f"{API}/jobs/{job_id}").json()["state"] == "done")
+    client.post(f"{API}/exports", json=export_body(job_id))
+    assert copying.wait(timeout=10)
+
+    started = time.monotonic()
+    service.close()
+
+    assert time.monotonic() - started < 3.0
+    assert list(folder.iterdir()) == []  # the real copy started, saw the stop and cleaned up
+
+
+def test_startup_removes_partial_copies_a_crash_left_behind(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    from autoclipper.export.output_folder import STALE_PARTIAL_AGE_S
+
+    folder = tmp_path / "out"
+    set_folder(make_client()[0], folder)
+    stale = folder / ".autoclipper-crashed.part"
+    stale.write_bytes(b"\0" * 1000)
+    old = time.time() - STALE_PARTIAL_AGE_S - 60
+    os.utime(stale, (old, old))
+
+    make_client(synchronous=False, step_s=0.0)  # the next server start
+
+    wait_until(lambda: not stale.exists())
+
+
+def test_a_render_file_gone_before_its_copy_gets_its_own_message(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    client, service = make_client()
+    folder = tmp_path / "out"
+    set_folder(client, folder)
+    job_id = done_job(client)["job_id"]
+    export_id = client.post(f"{API}/exports", json=export_body(job_id)).json()["export_id"]
+    (tmp_path / "artifacts" / "exports" / f"{export_id}.mp4").unlink()
+
+    service._run_copy_safely((export_id, folder))  # pyright: ignore[reportPrivateUsage]
+
+    last_copy = client.get(f"{API}/settings").json()["last_copy"]
+    assert (last_copy["state"], last_copy["render_id"]) == ("failed", export_id)
+    assert "no longer on disk" in last_copy["message"]
+    assert "free space" not in last_copy["message"]
+    assert _partials(folder) == []
+
+
+def _partials(folder: Path) -> list[str]:
+    return sorted(p.name for p in folder.iterdir() if p.name.endswith(".part"))
+
+
+@pytest.mark.ffmpeg
+def test_a_real_export_is_copied_to_the_output_folder_as_a_playable_mp4(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    samples = ensure_sample_media(tmp_path / "media", preview_duration_s=6.0)
+    client, _ = make_client(samples=samples, render=_real_render())
+    folder = tmp_path / "out"
+    set_folder(client, folder)
+    job_id = done_job(client)["job_id"]
+
+    body = export_body(job_id, start_s=1.0, end_s=3.5, captions=False)
+    export_id = client.post(f"{API}/exports", json=body).json()["export_id"]
+    export = client.get(f"{API}/exports/{export_id}").json()
+
+    copied = folder / export["filename"]
+    assert (
+        copied.read_bytes()
+        == (tmp_path / "artifacts" / "exports" / f"{export_id}.mp4").read_bytes()
+    )
+    info = probe(copied)
+    assert (info.video_streams[0].width, info.video_streams[0].height) == (1080, 1920)
+    assert info.duration_s == pytest.approx(2.5, abs=0.05)
 
 
 def test_cors_allows_the_local_frontend_only(client: TestClient) -> None:

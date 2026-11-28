@@ -145,6 +145,12 @@ CREATE TABLE IF NOT EXISTS renders (
 CREATE INDEX IF NOT EXISTS idx_renders_job ON renders (job_id, created_at DESC, render_id DESC);
 """
 
+# App settings (key → JSON value). Created on every open, so stores from before settings existed
+# gain the table without a schema version bump that older builds would reject.
+_SETTINGS_DDL: Final = (
+    "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+)
+
 
 class _CorruptStoreError(Exception):
     """The SQLite database file is confirmed corrupt or has an incomplete/unsupported schema."""
@@ -377,6 +383,8 @@ class JobStore:
             if "upload_id" not in job_cols:
                 conn.execute("ALTER TABLE jobs ADD COLUMN upload_id TEXT")
                 conn.commit()
+            conn.execute(_SETTINGS_DDL)
+            conn.commit()
             return conn
         except Exception:
             with contextlib.suppress(Exception):
@@ -583,6 +591,30 @@ class JobStore:
                 """,
                 params,
             )
+
+    def get_setting(self, key: str) -> object | None:
+        """The JSON value saved under `key`, or None if unset or unreadable."""
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["value"])
+        except (TypeError, ValueError):
+            log.warning("ignoring unreadable setting key=%s", key)
+            return None
+
+    def set_setting(self, key: str, value: object | None) -> None:
+        """Save `value` (JSON-serializable) under `key`; None removes it."""
+        with self._lock, self._conn:
+            if value is None:
+                self._conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+            else:
+                self._conn.execute(
+                    "INSERT INTO settings (key, value) VALUES (?, ?) "
+                    "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    (key, json.dumps(value)),
+                )
 
     def delete_job(self, job_id: str) -> bool:
         """Delete a job and (via foreign key cascade) its render rows."""

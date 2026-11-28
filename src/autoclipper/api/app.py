@@ -23,6 +23,7 @@ from starlette.types import Receive, Scope, Send
 
 from autoclipper.analysis import AnalysisResult
 from autoclipper.api.channels import HelixFactory, register_channel_routes
+from autoclipper.api.origins import OriginCheck, origin_forbidden
 from autoclipper.api.service import ApiException, MockService
 from autoclipper.api.tools import ToolSetupManager, create_tools_router
 from autoclipper.api.uploads import create_uploads_router
@@ -31,6 +32,7 @@ from autoclipper.export.archive import stream_archive
 from autoclipper.preflight import run_preflight
 from autoclipper.schemas import (
     ApiError,
+    AppSettings,
     ArchiveKind,
     ArchiveStatus,
     CandidateMedia,
@@ -48,6 +50,7 @@ from autoclipper.schemas import (
     JobSummary,
     PreflightReport,
     State,
+    UpdateSettingsRequest,
 )
 
 log = logging.getLogger(__name__)
@@ -201,7 +204,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(cors_origins),
-        allow_methods=["GET", "POST", "DELETE"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Content-Type"],
         allow_credentials=False,
         expose_headers=["Location", "Content-Disposition"],
@@ -257,6 +260,19 @@ def create_app(
     app.include_router(
         create_uploads_router(service, prefix=API_PREFIX, allowed_origins=cors_origins)
     )
+
+    settings_origins = OriginCheck(cors_origins)
+
+    @app.get(f"{API_PREFIX}/settings", response_model=AppSettings)
+    def get_app_settings() -> Response:
+        return _json(service.get_settings(), headers=_NO_STORE)
+
+    @app.put(f"{API_PREFIX}/settings", response_model=AppSettings)
+    def update_app_settings(http_request: Request, request: UpdateSettingsRequest) -> Response:
+        # A page on another origin must not point exports at a folder of its choosing.
+        if not settings_origins.allows(http_request):
+            return origin_forbidden("Settings changes from this browser origin are not allowed.")
+        return _json(service.update_settings(request), headers=_NO_STORE)
 
     @app.get(f"{API_PREFIX}/jobs", response_model=JobListResponse)
     def list_jobs(query: Annotated[_ListJobsQuery, Query()]) -> Response:

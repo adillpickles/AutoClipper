@@ -47,6 +47,8 @@ Model names used below: `CreateJobRequest`, `VideoUpload`, `Job`, `JobRenderSumm
 | `POST` | `/api/v1/tools/setup` | Start downloading pinned managed tools (`ffmpeg`, `twitch_downloader`) in the background (§ 9.8) | `202` (or `200` if already running/up to date) `ToolSetupStatus` |
 | `GET` | `/api/v1/tools/setup` | Current progress and result of managed tool setup (§ 9.8) | `200` `ToolSetupStatus` |
 | `POST` | `/api/v1/uploads` | Stream an already-downloaded VOD video file to disk for a job (§ 3.1a) | `201` `VideoUpload` |
+| `GET` | `/api/v1/settings` | App settings: the output folder and the latest copy into it (§ 9.9) | `200` `AppSettings` |
+| `PUT` | `/api/v1/settings` | Set or clear the output folder finished renders are copied to (§ 9.9) | `200` `AppSettings` |
 | `GET` | `/api/v1/jobs` | List analysis jobs (newest first, paginated, optional `q` and `state` filters, § 3.7) | `200` `JobListResponse` |
 | `POST` | `/api/v1/jobs/status` | Look up current library summaries for a batch of job IDs (§ 3.7) | `200` list of `JobSummary` |
 | `POST` | `/api/v1/jobs` | Start analyzing a VOD | `201` new `Job`; `200` if the same VOD is already queued/running |
@@ -1144,6 +1146,7 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 | 404 | `highlights_file_missing` | Highlights file | `null` |
 | 404 | `media_not_found` | `/media/{media_id}` | `null` |
 | 404 | `channel_not_found` | `GET /channels/vods` | `null` |
+| 403 | `origin_not_allowed` | `POST /tools/setup`, `PUT /settings` from a browser origin outside `AUTOCLIPPER_CORS_ORIGINS` | `null` |
 | 405 | `method_not_allowed` | Known path, wrong method | `null` |
 | 409 | `job_not_done` | Result, media, `POST /exports`, `POST /highlights` | `{ "state": "<job state>" }` |
 | 409 | `job_in_progress` | `DELETE /jobs/{job_id}` (job or one of its renders is `queued` or `running`) | `null` |
@@ -1156,6 +1159,7 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 | 422 | `invalid_vod_link` | `POST /jobs` | `null` |
 | 422 | `invalid_video_path` | `POST /jobs` | `null` |
 | 422 | `invalid_video_upload` | `POST /uploads`, `POST /jobs` | `null` |
+| 422 | `invalid_output_folder` | `PUT /settings` (§ 9.9) | `{ "reason": "not_absolute" \| "not_a_directory" \| "not_creatable" \| "not_writable" }` |
 | 422 | `invalid_export_bounds` | `POST /exports` | `{ "min_start_s": …, "max_end_s": …, "max_duration_s": … }` |
 | 422 | `invalid_highlights_bounds` | `POST /highlights` | `{ "segment_index": <int or null>, "max_duration_s": …, "max_total_duration_s": … }` |
 | 500 | `delete_failed` | `DELETE /jobs/{job_id}` (one or more files couldn't be removed from disk; record kept for retry) | `null` |
@@ -1225,7 +1229,7 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 
 ### 9.4 CORS and local setup
 
-- The API allows cross-origin requests from a configured list of origins, by default the local Next.js dev server (`http://localhost:3000` and `http://127.0.0.1:3000`): methods `GET`, `POST` and `DELETE`, request header `Content-Type`, no credentials. It exposes the `Location` and `Content-Disposition` headers. Ports in this doc are examples; #28 and #33 set the real ones.
+- The API allows cross-origin requests from a configured list of origins, by default the local Next.js dev server (`http://localhost:3000` and `http://127.0.0.1:3000`): methods `GET`, `POST`, `PUT` and `DELETE`, request header `Content-Type`, no credentials. It exposes the `Location` and `Content-Disposition` headers. Ports in this doc are examples; #28 and #33 set the real ones.
 - The frontend reads the API origin (scheme, host and port, no path) from an environment variable (#33) and resolves every returned URL against it (§ 1). A Next.js rewrite of `/api/v1/*` to the API is an acceptable alternative: the API origin is then the app's own origin, and returned URLs still work because they're root-relative.
 - The initial unauthenticated server binds to `127.0.0.1` by default. Hosted deployment can add authentication, configured origins and an upload or media-reference route for remote inputs ([delivery defaults](../decisions/0011-data-sources-and-local-delivery.md)); a browser's local path is not a path on a remote server.
 
@@ -1395,6 +1399,31 @@ Responses:
 | `bytes_total` | int \| null | Expected total archive bytes when known |
 | `fraction` | float \| null | Progress in `[0, 1]` when known |
 | `error` | `ApiError` \| null | Per-tool error when `stage` is `failed` |
+
+### 9.9 Settings and the output folder
+
+The user can pick a folder on this computer where every finished render is also saved. Settings live in the server's library database (`autoclipper.api.store`, a `settings` table next to jobs and renders), so they survive restarts. The pipeline and mock runners use separate databases (§ 9.3), so each has its own settings.
+
+`GET /api/v1/settings` returns `200` `AppSettings` (`Cache-Control: no-store`). `PUT /api/v1/settings` with `UpdateSettingsRequest` sets or clears the folder and returns the new `AppSettings`.
+
+`UpdateSettingsRequest`:
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `output_folder` | str (≤ 4096 chars) \| null | yes | An absolute path (`~` is expanded). `null` or blank turns copying off |
+
+The server validates the folder before saving: the path must be absolute, the folder must exist or be creatable (it's created, with parents), and a test file must be writable in it. Otherwise: `422 invalid_output_folder` with `details.reason` one of `not_absolute`, `not_a_directory`, `not_creatable`, `not_writable`; the message never contains the path (§ 1; the server logs it). A browser `Origin` outside `AUTOCLIPPER_CORS_ORIGINS` gets `403 origin_not_allowed`, as for tool setup (§ 9.8).
+
+`AppSettings`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `output_folder` | str \| null | The saved absolute folder, as the user set it |
+| `last_copy` | `OutputCopy` \| null | The most recent copy since the server started |
+
+`OutputCopy`: `render_id`, `kind` (`export` \| `highlights`), `state` (`copied` \| `failed`), `filename` (the name the copy got in the folder, `null` if it failed), `message` (path-free reason when `failed`, else `null`), `finished_at`.
+
+**Copying.** When an export or highlights video finishes (`done`), the server queues a copy of its MP4 into the folder set at that moment. A dedicated copy worker does the copying, so a large highlights video never delays the next render or a request. If the folder is cleared or changed before a queued copy starts, that copy is dropped. The copy keeps the download name (§ 6.4, § 7.4). It's written to a temporary `.autoclipper-*.part` file in the folder first and then linked or renamed into place, so a half-written MP4 never appears under its final name and an existing file is never replaced: a name already in the folder (compared case-insensitively) gets `_2`, `_3`, ... A missing folder (for example an unplugged drive) is not recreated. When the server shuts down mid-copy, the copy stops and removes its `.part` file. A `.part` file left by a crash or power loss is deleted once it's an hour old, at the next server start or before the next copy into that folder. A failed copy never changes the render's state; it's logged and reported in `last_copy`. Renders that finished before a folder was set aren't copied, and deleting a job (§ 3.8) never touches the copies.
 
 ## 10. Versioning
 

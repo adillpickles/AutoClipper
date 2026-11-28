@@ -78,3 +78,23 @@ describe("SiteHeader", () => {
     expect(libraryLinks[0].getAttribute("aria-current")).toBe("page");
   });
 });
+
+describe("SiteHeader settings link", () => {
+  afterEach(() => {
+    cleanup();
+    state.pathname = "/";
+  });
+
+  it("links to Settings and marks it active on the settings page", () => {
+    state.mockMode = true;
+    state.pathname = "/settings";
+    render(<SiteHeader />);
+
+    const links = screen.getAllByRole("link", { name: "Settings" });
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      "/settings",
+      "/settings",
+    ]);
+    expect(links[0].getAttribute("aria-current")).toBe("page");
+  });
+});

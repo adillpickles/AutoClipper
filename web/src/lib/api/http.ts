@@ -5,6 +5,7 @@
 import type { ApiClient } from "@/lib/api/client";
 import { ApiRequestError } from "@/lib/api/errors";
 import type {
+  AppSettings,
   AnalysisResult,
   CandidateMedia,
   ChannelVodsResponse,
@@ -26,6 +27,7 @@ import type {
   ToolSetupStatus,
   UploadVideoOptions,
   VideoUpload,
+  UpdateSettingsRequest,
 } from "@/lib/api/types";
 
 const API_PREFIX = "/api/v1";
@@ -127,6 +129,15 @@ export function createHttpClient(
         init,
       );
       return { setup: data, started: status === 202 };
+    },
+
+    async getSettings(): Promise<AppSettings> {
+      return (await request<AppSettings>("/settings")).data;
+    },
+
+    async updateSettings(body: UpdateSettingsRequest): Promise<AppSettings> {
+      const init: RequestInit = { method: "PUT", body: JSON.stringify(body) };
+      return (await request<AppSettings>("/settings", init)).data;
     },
 
     async getChannelVods(
