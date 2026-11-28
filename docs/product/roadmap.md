@@ -25,13 +25,13 @@ Tasks are GitHub issues. Each issue lists what it depends on; anything whose dep
 - **Pipeline:** windows, chat and audio features, baselines, candidates, evaluation and the training command (synthetic data). The `analyze` command and real jobs in the app.
 - **Output:** vertical export with captions and the stacked facecam layout (#68, #191), and the highlights video.
 - **App:** timeline (#67, #189, #213), library and channel browser, one-command setup (#193), the landing page (#194) and the UI redesign (#190 parts 1–2).
-- **Polish:** explanations and titles (#65), pause snapping (#66), audio-event and speech features (opt-in, #63, #64), top-10 ranking rules (#192, answer-spam rule still off), sharing (#196) and browser end-to-end tests (#211).
+- **Polish:** explanations and titles (#65), pause snapping (#66), audio-event detection (#63) and opt-in speech features (#64, module built, issue open), top-10 ranking rules (#192, answer-spam rule still off), sharing (#196) and browser end-to-end tests (#211).
 
 **Left:**
 
 - **Data and models (critical path):** dataset v1 from the pilot VODs (#40), baselines on it (#41), logistic regression (#42), LightGBM (#43) and the best scorer in the app (#47). Until then the app ranks with the `chat_loudness` baseline plus the #192 rules.
 - **Demo:** results write-up against the baselines (#49), blind taste test (#69), demo prep and rehearsal (#50).
-- **Small app items:** clip-editor loading and error states (#117), the webcam in the stacked gameplay pane (#229) and reusing an identical highlights render (#230).
+- **Small app items:** UI primitives and loading/error states in the results screen, clip editor and highlights dialog (#117, partly done in #224), the webcam in the stacked gameplay pane (#229) and reusing an identical highlights render (#230).
 
 ## The plan in one picture
 
