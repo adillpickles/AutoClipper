@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS renders (
     error_json TEXT,
     file_path TEXT,
     filename TEXT,
+    layout_key TEXT,
     duration_s REAL,
     created_at TEXT NOT NULL,
     started_at TEXT,
@@ -217,6 +218,8 @@ class StoredRenderRecord:
     updated_at: datetime
     finished_at: datetime | None
     filename: str | None = None
+    # What an export's layout resolved from (service `_layout_key`, #191); None before #191.
+    layout_key: str | None = None
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -382,6 +385,11 @@ class JobStore:
             job_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(jobs)")}
             if "upload_id" not in job_cols:
                 conn.execute("ALTER TABLE jobs ADD COLUMN upload_id TEXT")
+                conn.commit()
+            # Renders from before #191 have no layout fingerprint; their rows read it as NULL.
+            render_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(renders)")}
+            if "layout_key" not in render_cols:
+                conn.execute("ALTER TABLE renders ADD COLUMN layout_key TEXT")
                 conn.commit()
             conn.execute(_SETTINGS_DDL)
             conn.commit()
@@ -556,6 +564,7 @@ class JobStore:
             error_json,
             _encode_path(record.file),
             record.filename,
+            record.layout_key,
             record.duration_s,
             _iso(record.created_at),
             _iso(record.started_at),
@@ -567,9 +576,9 @@ class JobStore:
                 """
                 INSERT INTO renders (
                     render_id, job_id, kind, video_id, captions, request_json, segments_json,
-                    sort_order, state, progress_json, error_json, file_path, filename, duration_s,
-                    created_at, started_at, updated_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sort_order, state, progress_json, error_json, file_path, filename, layout_key,
+                    duration_s, created_at, started_at, updated_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(render_id) DO UPDATE SET
                     job_id = excluded.job_id,
                     kind = excluded.kind,
@@ -583,6 +592,7 @@ class JobStore:
                     error_json = excluded.error_json,
                     file_path = excluded.file_path,
                     filename = excluded.filename,
+                    layout_key = excluded.layout_key,
                     duration_s = excluded.duration_s,
                     created_at = excluded.created_at,
                     started_at = excluded.started_at,
@@ -739,4 +749,5 @@ def _row_to_render(row: sqlite3.Row, base_dir: Path) -> StoredRenderRecord:
         updated_at=_parse_dt(row["updated_at"]),
         finished_at=_parse_opt_dt(row["finished_at"]),
         filename=_parse_opt_str(row["filename"], "filename"),
+        layout_key=_parse_opt_str(row["layout_key"], "layout_key"),
     )

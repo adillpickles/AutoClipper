@@ -478,8 +478,8 @@ class _RenderRecord:
     file: Path | None = None
     duration_s: float | None = None
     filename: str | None = None
-    # What the export's layout resolves from when it renders (`_layout_key`); None when unknown
-    # (a render restored from the library database).
+    # What the export's layout resolves from when it renders (`_layout_key`), saved in the
+    # library database; None for renders saved before #191.
     layout_key: str | None = None
 
     def export_model(self, *, filename: str | None = None) -> Export:
@@ -571,6 +571,7 @@ class _RenderRecord:
             updated_at=self.times.updated_at,
             finished_at=self.times.finished_at,
             filename=self.filename,
+            layout_key=self.layout_key,
         )
 
 
@@ -841,6 +842,7 @@ class MockService:
                 file=stored_render.file,
                 duration_s=stored_render.duration_s,
                 filename=stored_render.filename,
+                layout_key=stored_render.layout_key,
             )
             if render.state in ("queued", "running"):
                 render.state = "failed"
@@ -3439,8 +3441,8 @@ def _job_sort_key(record: _JobRecord) -> tuple[datetime, int, str]:
 def _same_layout(recorded: str | None, current: str, layout: str) -> bool:
     """Whether a render's layout matches a new request's (`MockService._layout_key`).
 
-    A render restored from the database has no key; only ``center_crop``, which reads no
-    configuration, can be reused then.
+    A render saved before #191 has no key; only ``center_crop``, which reads no configuration,
+    can be reused then.
     """
     return recorded == current or (recorded is None and layout == "center_crop")
 

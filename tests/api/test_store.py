@@ -230,6 +230,87 @@ def test_store_round_trips_jobs_and_renders(tmp_path: Path) -> None:
         reopened.close()
 
 
+def test_store_adds_layout_key_to_a_renders_table_from_before_191(tmp_path: Path) -> None:
+    db_path = tmp_path / "artifacts" / DEFAULT_DB_NAME
+    job = _sample_job("job_1", seq=1)
+    request = CreateExportRequest(
+        job_id="job_1",
+        candidate_id="c001",
+        start_s=10.0,
+        end_s=35.0,
+        layout="stacked",
+        captions=False,
+    )
+    render = StoredRenderRecord(
+        render_id="exp_1",
+        job_id="job_1",
+        kind="export",
+        video_id="9000000001",
+        captions=False,
+        request=request,
+        segments=(),
+        order="chronological",
+        state="done",
+        progress=None,
+        error=None,
+        file=None,
+        duration_s=25.0,
+        created_at=job.created_at,
+        started_at=job.created_at,
+        updated_at=job.created_at,
+        finished_at=job.created_at,
+        layout_key="stacked:v2:None:None",
+    )
+    store = JobStore(db_path)
+    store.upsert_job(job)
+    store.upsert_render(render)
+    store.close()
+    # Recreate the renders table as it was before #191: same schema version, no layout_key.
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("ALTER TABLE renders DROP COLUMN layout_key")
+        conn.commit()
+    finally:
+        conn.close()
+
+    migrated = JobStore(db_path)
+    try:
+        _, renders = migrated.load_all()
+        assert renders == [dataclasses.replace(render, layout_key=None)]
+        migrated.upsert_render(render)
+        assert migrated.load_all()[1] == [render]
+    finally:
+        migrated.close()
+
+
+def test_an_identical_stacked_export_is_reused_after_a_restart(tmp_path: Path) -> None:
+    region = (0.0, 0.6, 0.3, 0.4)
+    body = {
+        "candidate_id": "c001",
+        "start_s": 118.0,
+        "end_s": 148.0,
+        "layout": "stacked",
+        "captions": False,
+    }
+    with TestClient(create_app(_make_service(tmp_path, export_facecam_region=region))) as client:
+        job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+        first = client.post(f"{API}/exports", json={"job_id": job_id, **body})
+        assert first.status_code == 201
+
+    # The layout fingerprint is saved with the render (#191), so a restart still reuses it.
+    with TestClient(create_app(_make_service(tmp_path, export_facecam_region=region))) as client:
+        again = client.post(f"{API}/exports", json={"job_id": job_id, **body})
+        assert again.status_code == 200
+        assert again.json()["export_id"] == first.json()["export_id"]
+
+    # A different facecam region after the restart renders again.
+    moved = (0.7, 0.6, 0.3, 0.4)
+    with TestClient(create_app(_make_service(tmp_path, export_facecam_region=moved))) as client:
+        changed = client.post(f"{API}/exports", json={"job_id": job_id, **body})
+        assert changed.status_code == 201
+        assert changed.json()["export_id"] != first.json()["export_id"]
+
+
 def test_store_adds_upload_id_to_a_jobs_table_from_before_uploads(tmp_path: Path) -> None:
     db_path = tmp_path / "artifacts" / DEFAULT_DB_NAME
     job = _sample_job("job_1", seq=1)
