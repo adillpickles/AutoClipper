@@ -85,6 +85,24 @@ describe("HTTP API client", () => {
     expect(init?.cache).toBe("no-store");
   });
 
+  it("re-analyzes a job through its own endpoint (#187)", async () => {
+    const job = { job_id: "job_2", video_id: "9000000001", state: "queued" };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(job, 201))
+      .mockResolvedValueOnce(jsonResponse(job, 200));
+    const client = createHttpClient("http://127.0.0.1:8000", fetchMock);
+
+    expect(await client.reanalyzeJob("job_1")).toEqual({ job, created: true });
+    expect((await client.reanalyzeJob("job_1")).created).toBe(false);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe(
+      "http://127.0.0.1:8000/api/v1/jobs/job_1/reanalyze",
+    );
+    expect(init?.method).toBe("POST");
+  });
+
   it("distinguishes 201 created from 200 deduplicated on POST endpoints", async () => {
     const job = { job_id: "job_1", video_id: "9000000001", state: "queued" };
     const exp = { export_id: "exp_1", state: "queued" };

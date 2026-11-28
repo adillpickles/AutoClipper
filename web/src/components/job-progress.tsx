@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { Button, ButtonLink } from "@/components/ui/button";
@@ -175,6 +175,7 @@ function JobStatus({
     { pace: knownStages && paceOnOpen && job.state !== "failed" },
   );
   const reducedMotion = usePrefersReducedMotion();
+  const router = useRouter();
   // "Skip to the results" moves focus to the first action of the finished screen, which
   // replaces the button that had focus.
   const doneActions = useRef<HTMLDivElement>(null);
@@ -223,6 +224,22 @@ function JobStatus({
     if (index === shown) return job.state === "failed" ? "failed" : "current";
     return "pending";
   }
+
+  // A job this screen watched finish, or one just requested or just finished, opens its results
+  // by itself once the stepper's replay is done or skipped (#187); its top 10 are already
+  // rendering on the server. An old finished job opened again stays here with "See the clips",
+  // so Back from the results never bounces forward again; `replace` keeps this page out of the
+  // history for the same reason.
+  const opensResults =
+    paceOnOpen &&
+    job.state === "done" &&
+    finished &&
+    result !== null &&
+    result.candidates.length > 0;
+  const resultsHref = `/jobs/${job.job_id}/results`;
+  useEffect(() => {
+    if (opensResults) router.replace(resultsHref);
+  }, [opensResults, resultsHref, router]);
 
   // Each number appears once the stepper has passed the stage that produced it.
   const counts = result
@@ -414,13 +431,10 @@ function JobStatus({
               >
                 Found {result.candidates.length}{" "}
                 {result.candidates.length === 1 ? "moment" : "moments"}.
+                {opensResults && " Opening the clips…"}
               </p>
               <div className="flex flex-wrap items-center gap-3">
-                <ButtonLink
-                  href={`/jobs/${job.job_id}/results`}
-                  variant="primary"
-                  size="lg"
-                >
+                <ButtonLink href={resultsHref} variant="primary" size="lg">
                   See the clips
                 </ButtonLink>
                 <ButtonLink href="/" variant="secondary" size="lg">

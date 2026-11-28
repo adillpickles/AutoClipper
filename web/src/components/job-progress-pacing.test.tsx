@@ -21,10 +21,12 @@ import { markJustRequested, MIN_STAGE_MS } from "@/lib/stage-pacing";
 const state = vi.hoisted(() => ({
   getJob: vi.fn(),
   getResult: vi.fn(),
+  router: { replace: vi.fn() },
 }));
 
 vi.mock("next/navigation", () => ({
   useParams: () => ({ jobId: "job_1" }),
+  useRouter: () => state.router,
 }));
 
 vi.mock("@/lib/api/client", async () => {
@@ -166,6 +168,8 @@ describe("JobProgress stage pacing", () => {
     await advance(MIN_STAGE_MS * 2);
     expect(heading()).toBe("Step 6 of 6: Scoring and picking the top moments");
     expect(screen.queryByRole("link", { name: "See the clips" })).toBeNull();
+    // The results open only after the replay (#187).
+    expect(state.router.replace).not.toHaveBeenCalled();
 
     await advance(MIN_STAGE_MS);
     expect(heading()).toBe("Analysis finished");
@@ -174,7 +178,45 @@ describe("JobProgress stage pacing", () => {
     expect(
       screen.getByRole("link", { name: "See the clips" }).getAttribute("href"),
     ).toBe("/jobs/job_1/results");
-    expect(screen.getByRole("status").textContent).toBe("Found 3 moments.");
+    expect(screen.getByRole("status").textContent).toBe(
+      "Found 3 moments. Opening the clips…",
+    );
+    expect(state.router.replace).toHaveBeenCalledTimes(1);
+    expect(state.router.replace).toHaveBeenCalledWith("/jobs/job_1/results");
+  });
+
+  it("opens the results by itself when a watched job finishes", async () => {
+    let finished = false;
+    state.getJob.mockImplementation(async () =>
+      finished
+        ? doneJob("2026-11-20T12:00:11Z")
+        : makeJob({ progress: stage(6) }),
+    );
+    render(<JobProgress />);
+    await flush();
+    await advance(MIN_STAGE_MS * 6);
+    expect(heading()).toBe("Step 6 of 6: Scoring and picking the top moments");
+    expect(state.router.replace).not.toHaveBeenCalled();
+
+    // The next poll sees the job done; once the stepper is through, the results open.
+    finished = true;
+    await advance(2100 + MIN_STAGE_MS);
+    expect(heading()).toBe("Analysis finished");
+    expect(state.router.replace).toHaveBeenCalledWith("/jobs/job_1/results");
+  });
+
+  it("stays on a finished job with no moments", async () => {
+    state.getResult.mockResolvedValue({
+      ...(exampleResult as AnalysisResult),
+      candidates: [],
+    });
+    state.getJob.mockResolvedValue(doneJob("2026-11-20T12:00:09Z"));
+    render(<JobProgress />);
+    await flush();
+    await advance(MIN_STAGE_MS * 7);
+
+    expect(heading()).toBe("Analysis finished");
+    expect(state.router.replace).not.toHaveBeenCalled();
   });
 
   it("announces a replay once, then the result", async () => {
@@ -218,6 +260,8 @@ describe("JobProgress stage pacing", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("link", { name: "See the clips" }),
     );
+    // Skipping the replay opens the results too (#187).
+    expect(state.router.replace).toHaveBeenCalledWith("/jobs/job_1/results");
   });
 
   it("shortens large counts on narrow screens but keeps the exact number readable", async () => {
@@ -249,12 +293,17 @@ describe("JobProgress stage pacing", () => {
     render(<JobProgress />);
     await flush();
     expect(heading()).toBe("Step 1 of 6: Looking up the VOD");
+    // After the replay, the results open (#187).
+    await advance(MIN_STAGE_MS * 6);
+    expect(state.router.replace).toHaveBeenCalledWith("/jobs/job_1/results");
+    state.router.replace.mockClear();
 
-    // The mark is used up: reopening the page shows the finished job at once.
+    // The mark is used up: reopening the page shows the finished job at once, and stays.
     cleanup();
     render(<JobProgress />);
     await flush();
     expect(heading()).toBe("Analysis finished");
+    expect(state.router.replace).not.toHaveBeenCalled();
   });
 
   it("shows an old finished job at once", async () => {
@@ -265,6 +314,8 @@ describe("JobProgress stage pacing", () => {
     expect(heading()).toBe("Analysis finished");
     expect(number("Chat messages read")).toBe("2,418");
     expect(screen.getByRole("link", { name: "See the clips" })).toBeTruthy();
+    // Reopening an old job keeps its page, so Back from the results doesn't bounce forward.
+    expect(state.router.replace).not.toHaveBeenCalled();
   });
 
   it("shows a failure at once, at the stage where it stopped", async () => {

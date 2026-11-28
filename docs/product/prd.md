@@ -59,7 +59,7 @@ Inspired by tools like Opus Clip: the analysis is a black box to the user; the o
 
 1. **Start.** Paste a Twitch VOD link for metadata, chat and viewer clips. If you already downloaded the VOD, upload or drop the video file, or paste its absolute path when the server runs on the same computer.
 2. **Wait.** A progress screen: "Downloading chat… Listening to audio… Finding moments… Rendering clips (4 of 10)".
-3. **Results.** A grid of 10 clip cards, ranked 1–10. Each card shows the vertical clip (playable), its rank and score bar, the time in the stream, and a one-line reason, e.g. "Chat exploded to 9× normal and the streamer screamed".
+3. **Results.** When analysis finishes, the app opens the results by itself. A grid of 10 clip cards, ranked 1–10. Each card shows the vertical clip (playable), its rank and score bar, the time in the stream, and a one-line reason, e.g. "Chat exploded to 9× normal and the streamer screamed".
 4. **Adjust.** Open a card to nudge start/end and re-render, or toggle captions.
 5. **Download** one clip or all of them.
 6. **Highlights video.** A "Make highlights video" button joins the top moments (all 10 by default; untick any you don't want; uses your trims) in stream order into one 16:9 video, then offers it for download.
@@ -109,7 +109,8 @@ A whole-stream timeline with the top moments highlighted is a Should, as a secon
 The cutting rules are in [architecture § Export](../architecture/overview.md#46-export); the API is in the [API contract](../architecture/api-contract.md).
 
 - **Vertical clips.** Cut the selected interval from the source video exactly as trimmed (times are already aligned; no extra chat-lag shift). Reframe to 9:16 by center crop or a configured region (smart crop is a Could). Burn in captions from speech-to-text (faster-whisper). Output H.264/AAC MP4, 1080×1920, at most 90 s.
-- **Auto-render.** When analysis finishes, the app requests clip exports for the top 10 candidates (center crop, captions on when `/health` reports `captions_available`, falling back to uncaptioned exports when captioning isn't available on the server or fails for a clip) and fills in the cards as they finish.
+- **Auto-render.** When analysis finishes, the server queues clip exports for the top 10 candidates (center crop, captions on when `/health` reports `captions_available`), before anyone opens the results (#187). The results page asks for the same exports, gets those renders back instead of new ones, falls back to uncaptioned exports when captioning fails for a clip, and fills in the cards as they finish.
+- **Re-analyze.** Analyzing a VOD again reuses its finished analysis. A "Re-analyze" action on the results page (with a confirm) runs a fresh analysis of the same VOD and video source, which then replaces the old one in the Library (#187).
 - **Highlights video.** On request, join the chosen moments (default: the top 10 with their current trims) in stream order into one H.264/AAC MP4 at 1920×1080, original framing, with a 0.5 s fade between moments, captions optional (off by default), at most 15 minutes.
 
 ### Interface

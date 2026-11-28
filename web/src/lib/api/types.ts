@@ -48,6 +48,8 @@ export interface CreateJobRequest {
   vod: string;
   video_path?: string | null;
   upload_id?: string | null;
+  /** Always start a new analysis instead of reusing one for the same input (§ 3.1, #187). */
+  reanalyze?: boolean;
 }
 
 export interface Job {

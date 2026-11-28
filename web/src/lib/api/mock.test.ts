@@ -147,6 +147,46 @@ describe("createMockClient", () => {
     expect(local.created).toBe(true);
   });
 
+  it("re-analyzes a VOD as a new job that replaces the old one (#187)", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const first = await client.createJob({
+      vod: "9000000011",
+      video_path: "/videos/vod.mp4",
+    });
+    now += 60_000;
+
+    const fresh = await client.reanalyzeJob(first.job.job_id);
+    expect(fresh.created).toBe(true);
+    expect(fresh.job.job_id).not.toBe(first.job.job_id);
+    expect(fresh.job.video_path).toBe("/videos/vod.mp4");
+    expect(fresh.job.state).toBe("queued");
+    // A second click while it runs returns the same re-analysis.
+    const again = await client.reanalyzeJob(first.job.job_id);
+    expect(again).toEqual({ job: fresh.job, created: false });
+    // The Library row and a plain post both use the new analysis, even while it runs.
+    const listed = await client.listJobs();
+    expect(listed.items.map((item) => item.job_id)).toEqual([fresh.job.job_id]);
+    const plain = await client.createJob({
+      vod: "9000000011",
+      video_path: "/videos/vod.mp4",
+    });
+    expect(plain.job.job_id).toBe(fresh.job.job_id);
+
+    // The flag on POST /jobs always creates another one.
+    const forced = await client.createJob({
+      vod: "9000000011",
+      video_path: "/videos/vod.mp4",
+      reanalyze: true,
+    });
+    expect(forced.created).toBe(true);
+    expect(forced.job.job_id).not.toBe(fresh.job.job_id);
+    await expect(client.reanalyzeJob("job_missing")).rejects.toMatchObject({
+      status: 404,
+      error: { code: "job_not_found" },
+    });
+  });
+
   it("retries a failed analysis instead of reusing it", async () => {
     let now = T0;
     const client = createMockClient(() => now);

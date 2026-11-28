@@ -12,10 +12,12 @@ const state = vi.hoisted(() => ({
   jobId: "job_1",
   getJob: vi.fn(),
   getResult: vi.fn(),
+  router: { replace: vi.fn() },
 }));
 
 vi.mock("next/navigation", () => ({
   useParams: () => ({ jobId: state.jobId }),
+  useRouter: () => state.router,
 }));
 
 vi.mock("@/lib/api/client", async () => {
