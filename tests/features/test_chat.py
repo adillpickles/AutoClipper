@@ -61,7 +61,7 @@ def test_output_has_one_float_row_per_window_and_a_feature_version(lexicon: Lexi
     assert frame.columns == ["window_id", *FEATURE_COLUMNS, "feature_version"]
     assert frame["window_id"].to_list() == ["v:0", "v:1", "v:2"]
     assert all(frame.schema[c] == pl.Float64 for c in FEATURE_COLUMNS)
-    assert frame["feature_version"].unique().to_list() == ["chat-v1+lexicon-v1"]
+    assert frame["feature_version"].unique().to_list() == ["chat-v2+lexicon-v2"]
 
 
 def test_rates_are_per_second_of_the_window(lexicon: Lexicon) -> None:
@@ -342,6 +342,93 @@ def test_invalid_inputs_are_rejected(lexicon: Lexicon) -> None:
         compute_chat_features(duplicated, messages(), lexicon=lexicon)
 
 
+# --- Participation: greetings, farewells and answer spam (#192) ---------------------------------
+
+
+def test_greetings_and_farewells_are_counted_apart_from_reactions(lexicon: Lexicon) -> None:
+    greetings = ["hi", "HELLO chat", "LATE", "im late", "hiii", "heyyy", "first"]
+    farewells = ["bye", "byeee", "gn chat", "good night", "cya", "peepoBye"]
+    frame = features(
+        lexicon,
+        20.0,
+        *[(float(i), f"g{i}", text) for i, text in enumerate(greetings)],
+        *[(10.0 + i, f"f{i}", text) for i, text in enumerate(farewells)],
+    )
+
+    assert column(frame, "chat_greeting_rate") == pytest.approx([len(greetings) / 10, 0.0])
+    assert column(frame, "chat_farewell_rate") == pytest.approx([0.0, len(farewells) / 10])
+    # Ordinary words that merely contain a greeting are not one.
+    other = features(lexicon, 10.0, (1.0, "a", "this"), (2.0, "b", "he's late again lol"))
+    assert column(other, "chat_greeting_rate") == [0.0]
+
+
+def test_answer_spam_differs_from_reaction_spam(lexicon: Lexicon) -> None:
+    # A guessing game: everyone types a different short answer.
+    answers = ["brazil", "argentina", "chile", "peru maybe", "its mexico", "spain", "42", "1999"]
+    # A shared reaction: the same few emotes and words, repeated.
+    reactions = ["KEKW", "KEKW", "LMAO", "KEKW KEKW", "lol", "KEKW", "OMEGALUL", "LMAO"]
+    frame = features(
+        lexicon,
+        20.0,
+        *[(float(i), f"a{i}", text) for i, text in enumerate(answers)],
+        *[(10.0 + i, f"r{i}", text) for i, text in enumerate(reactions)],
+    )
+
+    answer_frac = column(frame, "chat_answer_frac")
+    distinct_frac = column(frame, "chat_distinct_frac")
+    assert answer_frac == pytest.approx([1.0, 0.0])
+    assert distinct_frac[0] == 1.0
+    assert distinct_frac[1] == pytest.approx(5 / 8)  # kekw, lmao, kekw kekw, lol, omegalul
+
+
+def test_repeated_or_long_messages_are_not_answers(lexicon: Lexicon) -> None:
+    frame = features(
+        lexicon,
+        10.0,
+        (1.0, "a", "brazil"),
+        (2.0, "b", "Brazil"),  # the same answer as someone else: a shared reaction
+        (3.0, "c", "this is definitely not a short answer"),
+        (4.0, "d", "???"),  # no letter or digit (and a shock reaction)
+        (5.0, "e", "Pog"),  # an emote
+        (6.0, "f", "france"),
+    )
+
+    assert column(frame, "chat_answer_frac") == pytest.approx([1 / 6])
+    assert column(frame, "chat_distinct_frac") == pytest.approx([5 / 6])
+
+
+def test_empty_windows_have_zero_participation_features(lexicon: Lexicon) -> None:
+    frame = features(lexicon, 20.0, (1.0, "a", "hi"))
+
+    for name in ("chat_greeting_rate", "chat_distinct_frac", "chat_answer_frac"):
+        assert frame[name][1] == 0.0
+
+
+def test_lexicon_without_participation_sections_counts_none(tmp_path: Path) -> None:
+    lexicon = load_lexicon(write_lexicon(tmp_path, minimal_lexicon()))
+    frame = compute_chat_features(
+        make_windows("v", 10.0), messages((1.0, "a", "hi"), (2.0, "b", "bye")), lexicon=lexicon
+    )
+
+    assert lexicon.participation == {}
+    assert column(frame, "chat_greeting_rate") == [0.0]
+    assert column(frame, "chat_farewell_rate") == [0.0]
+    assert column(frame, "chat_answer_frac") == [1.0]  # "hi" and "bye" are plain short words now
+
+
+def test_answer_limits_come_from_the_lexicon(tmp_path: Path) -> None:
+    data = {**minimal_lexicon(), "answers": {"max_tokens": 1, "max_chars": 6}}
+    lexicon = load_lexicon(write_lexicon(tmp_path, data))
+    frame = compute_chat_features(
+        make_windows("v", 10.0),
+        messages((1.0, "a", "peru"), (2.0, "b", "peru maybe"), (3.0, "c", "argentina")),
+        lexicon=lexicon,
+    )
+
+    assert (lexicon.answer_max_tokens, lexicon.answer_max_chars) == (1, 6)
+    assert column(frame, "chat_answer_frac") == pytest.approx([1 / 3])
+
+
 # --- Lexicon -----------------------------------------------------------------------------------
 
 
@@ -364,14 +451,17 @@ def minimal_lexicon() -> dict[str, object]:
 def test_lexicon_version_is_part_of_the_feature_version(tmp_path: Path) -> None:
     lexicon = load_lexicon(write_lexicon(tmp_path, minimal_lexicon()))
 
-    assert lexicon.feature_version == "chat-v1+lexicon-v2"
+    assert lexicon.feature_version == "chat-v2+lexicon-v2"
 
 
 @pytest.mark.parametrize(
     ("change", "message"),
     [
         ({"version": "1"}, "version"),
-        ({"categories": {"laugh": {"words": ["x"]}}}, "exactly"),
+        ({"categories": {"laugh": {"words": ["x"]}}}, "must hold"),
+        ({"categories": {"x": {"words": ["x"]}}}, "must hold"),
+        ({"answers": {"max_tokens": 0}}, "positive integer"),
+        ({"answers": {"max_words": 3}}, "mapping of max_tokens"),
         ({"events": {"patterns": ["(unclosed"]}}, "doesn't compile"),
         ({"clip_filter": {"words": [""]}}, "non-blank"),
         ({"events": {}}, "no entries"),

@@ -9,9 +9,22 @@
 #   words:    words or phrases, any case, on word boundaries ("lol", "lets go")
 #   patterns: regular expressions (Rust regex syntax, as Polars uses), any case unless the
 #             pattern says otherwise
-version: 1
+version: 2
 
+# `laugh`, `hype`, `shock` and `keyword` are reactions (chat_<category>_rate). `greeting` and
+# `farewell` (optional sections) are participation, not reactions: "hi", "LATE", "bye" waves at
+# a stream's start and end look like hype by volume alone (chat_greeting_rate,
+# chat_farewell_rate; docs/ml/features.md).
 categories:
+  greeting:
+    emotes: [HeyGuys, VoHiYo, peepoHey, peepoHi, HiHi]
+    words: [hi, hello, hey, hiya, howdy, yo chat, hi chat, hey chat, good morning, gm, wassup, whats up, sup chat]
+    # Whole-message "late" / "early" / "first" / "here" check-ins, and stretched greetings.
+    patterns: ['^\W*(?:i''?m\s+|im\s+)?(?:late|early|first|here)\W*$', '\bhi{2,}\b', '\bhe+y{2,}\b', '\bhel{2,}o+\b']
+  farewell:
+    emotes: [peepoBye, Bye, ByeBye]
+    words: [bye, goodbye, good night, goodnight, gn, gn chat, cya, see ya, see you, see you tomorrow, peace out, bye chat]
+    patterns: ['\bby+e{2,}\b', '\bba+i+\b']
   laugh:
     emotes: [KEKW, OMEGALUL, LUL, LULW, KEKL, ICANT, "😂", "🤣"]
     words: [lol, lmao, lmfao, rofl, haha, hahaha]
@@ -29,6 +42,12 @@ categories:
     emotes: [OMEGALUL, KEKW, W, Pog]
     words: [clip it, clip that, clipped, lol, lets go]
     patterns: []
+
+# Answer spam (chat_answer_frac): a message of at most this many whitespace tokens and characters,
+# with no reaction, emote, greeting/farewell or event, that nobody else sent in the same window.
+answers:
+  max_tokens: 3
+  max_chars: 25
 
 # Chat events (subs, gifted subs, raids), counted in chat_event_count. Cheers come from the
 # `bits` column instead.
