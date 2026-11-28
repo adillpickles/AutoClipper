@@ -713,7 +713,7 @@ When the user selects a candidate, the client calls `GET /api/v1/jobs/{job_id}/c
 | `reason` | Meaning |
 |---|---|
 | `source_unavailable` | Twitch doesn't serve this VOD's video for download: it was deleted or expired, or it's restricted (e.g. subscriber-only). Trying again won't help; analyzing again with an uploaded file or a `video_path` will. |
-| `local_file_missing` | The job's uploaded or local VOD file is missing or can no longer be read (moved, deleted or on a disconnected drive). |
+| `local_file_missing` | The job's uploaded or local VOD file is missing or can no longer be read (moved, deleted or on a disconnected drive). The server checks again on every request, so putting the file back works without a restart. |
 | `fetch_failed` | The video download failed or the preview could not be prepared; trying again later may work. Also reported when the prepared file doesn't cover the requested moment (a local file a little shorter than `vod.duration_s`, or a downloaded segment whose measured span misses the candidate); retrying won't help then, and `message` says so. Export availability is reported separately. |
 
 **Guarantees.** `0 ≤ media_start_s < media_end_s ≤ vod.duration_s` and `0 ≤ min_start_s < max_end_s ≤ vod.duration_s`. When available, preview coverage and export bounds both contain the candidate's own `[start_s, end_s)`.
