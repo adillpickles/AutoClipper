@@ -1,4 +1,5 @@
-// Poster frames for the results screen's clip cards (#217). A `<video preload="metadata">`
+// Poster frames for finished videos: the results screen's clip cards (#217), the clip editor's
+// rendered clip and the highlights player (`usePosterFrame`). A `<video preload="metadata">`
 // shows black until the browser decodes a frame, and over HTTP/1.1 a browser opens only about
 // six connections per host: ten preloading videos can starve each other (and the export polls),
 // leaving the last cards black. Instead each card's video stays `preload="none"` with a poster
@@ -44,7 +45,7 @@ const limit = createLimiter(2);
 const posters = new Map<string, Promise<string>>();
 
 /** Grab one frame of `url` as a JPEG data URL. Rejects on any load, CORS or decode problem. */
-function capture(url: string): Promise<string> {
+function capture(url: string, maxWidth: number): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const video = document.createElement("video");
     video.crossOrigin = "anonymous";
@@ -72,7 +73,7 @@ function capture(url: string): Promise<string> {
     });
     video.addEventListener("seeked", () => {
       try {
-        const width = Math.min(POSTER_WIDTH, video.videoWidth || POSTER_WIDTH);
+        const width = Math.min(maxWidth, video.videoWidth || maxWidth);
         const height = Math.round(
           (width * (video.videoHeight || 16)) / (video.videoWidth || 9),
         );
@@ -91,14 +92,21 @@ function capture(url: string): Promise<string> {
   });
 }
 
-/** The poster for a finished clip, captured once per URL and shared by every card showing it. */
-export function clipPoster(url: string): Promise<string> {
-  let poster = posters.get(url);
+/**
+ * The poster for a finished video, captured once per URL (and width) and shared by every view
+ * showing it. `width` caps the frame's width in pixels (default 360, enough for a clip card).
+ */
+export function clipPoster(
+  url: string,
+  { width = POSTER_WIDTH }: { width?: number } = {},
+): Promise<string> {
+  const key = `${width} ${url}`;
+  let poster = posters.get(key);
   if (!poster) {
-    poster = limit(() => capture(url));
-    // A failure isn't cached: the next card mount may try again.
-    poster.catch(() => posters.delete(url));
-    posters.set(url, poster);
+    poster = limit(() => capture(url, width));
+    // A failure isn't cached: the next mount may try again.
+    poster.catch(() => posters.delete(key));
+    posters.set(key, poster);
   }
   return poster;
 }

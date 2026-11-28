@@ -8,6 +8,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HighlightsDialog, sequenceFor } from "@/components/highlights-dialog";
+import { focusableWithin } from "@/components/ui/dialog";
 import type { Candidate } from "@/lib/api/types";
 import { rememberTrim } from "@/lib/job-state";
 
@@ -38,6 +39,16 @@ const api = vi.hoisted(() => ({
   createHighlights: vi.fn(),
   getHighlights: vi.fn(),
   resolveUrl: vi.fn((url: string) => url),
+}));
+
+// jsdom can't decode video: the player's poster frame is stubbed.
+const poster = vi.hoisted(() => ({
+  clipPoster: vi.fn(() => Promise.resolve("data:image/jpeg;base64,DDDD")),
+}));
+
+vi.mock("@/lib/clip-poster", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  clipPoster: poster.clipPoster,
 }));
 
 vi.mock("@/lib/api/client", async (importOriginal) => ({
@@ -177,7 +188,7 @@ describe("HighlightsDialog", () => {
     );
     await screen.findByText(/Waiting in render queue/);
     rerender(dialog(() => undefined));
-    await screen.findByText(/Step 1 of 3: Getting the video/);
+    await screen.findByText("Getting the video");
     unmount();
 
     const calls = api.getHighlights.mock.calls.length;
@@ -257,10 +268,15 @@ describe("HighlightsDialog", () => {
       }),
     );
 
-    expect(await screen.findByText("Rendering")).toBeTruthy();
+    // The step goes in the badge and the stage message is said once, not prefixed with
+    // another "Rendering"; the header doesn't repeat it either.
+    expect(await screen.findByText("Step 3 of 3")).toBeTruthy();
+    expect(screen.queryByText(/Step 3 of 3:/)).toBeNull();
+    expect(screen.queryByText("Rendering")).toBeNull();
     expect(
-      screen.getByText("Step 3 of 3: Rendering the highlights video"),
+      screen.getByText("Rendering the highlights video", { selector: "p" }),
     ).toBeTruthy();
+    expect(screen.getByText("Rendering your highlights video.")).toBeTruthy();
     const bar = screen.getByRole("progressbar");
     expect(bar.getAttribute("aria-valuenow")).toBe("65");
   });
@@ -414,9 +430,56 @@ describe("HighlightsDialog focus", () => {
 
     // When the video is ready, Download takes focus.
     await screen.findByText(/The highlights video is ready/);
-    expect(document.activeElement).toBe(
-      screen.getByRole("link", { name: "Download" }),
+    const download = screen.getByRole("link", { name: "Download" });
+    expect(document.activeElement).toBe(download);
+  });
+
+  it("plays the finished video in the dialog, with a poster frame, inside the focus trap", async () => {
+    api.createHighlights.mockResolvedValue({
+      highlights: video("queued"),
+      created: true,
+    });
+    api.getHighlights.mockResolvedValue(
+      video("done", {
+        download_url: "/mock-media/highlights.mp4",
+        duration_s: 77,
+      }),
     );
+    render(dialog(() => undefined));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Make highlights video" }),
+    );
+    await screen.findByText(/The highlights video is ready/);
+
+    // A 16:9 player with native controls, a sharp poster grabbed from inside the video and
+    // Download / Share / Back still there.
+    const player = screen.getByLabelText(
+      "Highlights video",
+    ) as HTMLVideoElement;
+    expect(player.tagName).toBe("VIDEO");
+    expect(player.getAttribute("src")).toBe("/mock-media/highlights.mp4");
+    expect(player.hasAttribute("controls")).toBe(true);
+    expect(player.parentElement?.className).toContain("aspect-video");
+    expect(poster.clipPoster).toHaveBeenCalledWith(
+      "/mock-media/highlights.mp4",
+      { width: 960 },
+    );
+    await vi.waitFor(() =>
+      expect(player.getAttribute("poster")).toBe("data:image/jpeg;base64,DDDD"),
+    );
+    expect(screen.getByRole("link", { name: "Download" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /share/i })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Back to the results" }),
+    ).toBeTruthy();
+
+    // Download keeps the initial focus, and the player is in the trap's Tab order, before it
+    // (browsers make `video[controls]` a Tab stop; jsdom doesn't move focus, so check the order).
+    const download = screen.getByRole("link", { name: "Download" });
+    expect(document.activeElement).toBe(download);
+    const order = focusableWithin(screen.getByRole("dialog"));
+    expect(order).toContain(player);
+    expect(order.indexOf(player)).toBeLessThan(order.indexOf(download));
   });
 
   it("focuses Try again when the render fails", async () => {

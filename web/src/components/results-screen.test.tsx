@@ -489,9 +489,7 @@ describe("ResultsScreen with exports queued when the analysis finished (#187)", 
 
     render(<ResultsScreen />);
 
-    expect(
-      await screen.findByText(/Rendering… Rendering the clip/),
-    ).toBeTruthy();
+    expect(await screen.findByText(/^Rendering the clip$/)).toBeTruthy();
     // Field for field the request the server auto-queued, so it reuses that render.
     expect(api.createExport).toHaveBeenCalledTimes(1);
     expect(api.createExport).toHaveBeenCalledWith(queued);

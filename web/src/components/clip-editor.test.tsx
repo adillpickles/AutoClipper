@@ -17,6 +17,16 @@ const api = vi.hoisted(() => ({
   resolveUrl: vi.fn((url: string) => url),
 }));
 
+// jsdom can't decode video: the rendered clip's poster frame is stubbed.
+const poster = vi.hoisted(() => ({
+  clipPoster: vi.fn(() => Promise.resolve("data:image/jpeg;base64,CCCC")),
+}));
+
+vi.mock("@/lib/clip-poster", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  clipPoster: poster.clipPoster,
+}));
+
 vi.mock("next/navigation", () => ({
   useParams: () => params,
 }));
@@ -210,6 +220,19 @@ describe("ClipEditor", () => {
 
     const download = await screen.findByRole("link", { name: "Download clip" });
     expect(download.getAttribute("href")).toBe("/mock-media/clip.mp4");
+    // The rendered clip shows a frame from inside it, not a black box, before it plays.
+    const rendered = screen.getByLabelText(
+      "Rendered vertical clip",
+    ) as HTMLVideoElement;
+    expect(rendered.getAttribute("preload")).toBe("none");
+    expect(poster.clipPoster).toHaveBeenCalledWith("/mock-media/clip.mp4", {
+      width: undefined,
+    });
+    await vi.waitFor(() =>
+      expect(rendered.getAttribute("poster")).toBe(
+        "data:image/jpeg;base64,CCCC",
+      ),
+    );
     expect(api.createExport).toHaveBeenCalledWith({
       job_id: "job_1",
       candidate_id: "c001",

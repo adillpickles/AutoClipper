@@ -106,11 +106,14 @@ describe("Dialog", () => {
       <div inert><button>c</button></div>
       <a href="/x">d</a>
       <span tabindex="-1">e</span>
+      <video controls aria-label="f"></video>
+      <video aria-label="g"></video>
     `;
-    expect(focusableWithin(root).map((el) => el.textContent)).toEqual([
-      "a",
-      "d",
-    ]);
+    expect(
+      focusableWithin(root).map(
+        (el) => el.textContent || el.getAttribute("aria-label"),
+      ),
+    ).toEqual(["a", "d", "f"]);
   });
 });
 

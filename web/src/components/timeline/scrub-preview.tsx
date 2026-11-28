@@ -7,8 +7,20 @@
 // is), so hovering again reuses the loaded file instead of fetching it anew. Its source changes only
 // when a different preview file is needed, and it is unloaded on unmount. Seeks are throttled to
 // one in flight and at most one per `SEEK_INTERVAL_MS`, so scrubbing never queues up seeks.
+//
+// The label floats above the track, but never past the top of the timeline card (`boundsRef`):
+// where the card has too little room above the track it is clamped to the card's top edge and
+// moved beside the playhead (`popoverPlacement`), so it never covers the controls above the card.
 
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
+
+import { popoverPlacement } from "./geometry";
 
 import type { PreviewSource } from "./use-preview-media";
 
@@ -35,6 +47,7 @@ export function ScrubPreview({
   source,
   timeS,
   onSourceError,
+  boundsRef,
 }: {
   /** Whether the label is shown; the video element stays mounted either way. */
   visible: boolean;
@@ -47,7 +60,10 @@ export function ScrubPreview({
   source: PreviewSource | null;
   timeS: number;
   onSourceError: (url: string) => void;
+  /** The box the label must stay inside (the timeline card); unset, it just floats above. */
+  boundsRef?: RefObject<HTMLElement | null>;
 }) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingRef = useRef<number | null>(null);
   const lastSeekRef = useRef(Number.NEGATIVE_INFINITY);
@@ -97,6 +113,32 @@ export function ScrubPreview({
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
+  // Runs after every render: the label's height changes with the frame and the moment text.
+  // Written straight to the element so measuring never costs another render.
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    const track = root?.offsetParent;
+    const bounds = boundsRef?.current;
+    if (!root || !visible || !bounds || !(track instanceof HTMLElement)) return;
+    const { topPx, beside } = popoverPlacement({
+      trackTop: track.getBoundingClientRect().top,
+      boundsTop: bounds.getBoundingClientRect().top,
+      height: root.offsetHeight,
+      cursorPct: leftPct,
+    });
+    root.style.top = `${topPx}px`;
+    root.style.bottom = "auto";
+    root.style.marginBottom = "0px";
+    // Beside the playhead, 12 px clear of it; otherwise the `align` class decides.
+    root.style.translate =
+      beside === "right"
+        ? "12px 0"
+        : beside === "left"
+          ? "calc(-100% - 12px) 0"
+          : "";
+    root.dataset.placement = beside ? `beside-${beside}` : "above";
+  });
+
   const translate =
     align === "start"
       ? "translate-x-0"
@@ -106,6 +148,7 @@ export function ScrubPreview({
 
   return (
     <div
+      ref={rootRef}
       data-testid="scrub-preview"
       data-visible={visible ? "true" : "false"}
       aria-hidden="true"

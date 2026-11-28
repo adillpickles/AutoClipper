@@ -121,3 +121,62 @@ describe("ScrubPreview seek throttle", () => {
     expect(video.getAttribute("src")).toBe("/media/whole.mp4");
   });
 });
+
+describe("ScrubPreview placement", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  /** Render inside a card whose top is `cardTop` px above the track (viewport y 500). */
+  function placeIn(cardTop: number, height: number, leftPct = 50) {
+    const card = document.createElement("section");
+    const track = document.createElement("div");
+    card.appendChild(track);
+    document.body.appendChild(card);
+    vi.spyOn(card, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ x: 0, y: cardTop, width: 800, height: 400 }),
+    );
+    vi.spyOn(track, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ x: 0, y: 500, width: 800, height: 96 }),
+    );
+    // jsdom has no layout: give the label its height and the track as its offset parent.
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(
+      height,
+    );
+    vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockReturnValue(
+      track,
+    );
+    render(
+      <ScrubPreview
+        visible
+        leftPct={leftPct}
+        align="center"
+        timeLabel="3:00"
+        momentLabel={null}
+        hint={null}
+        source={null}
+        timeS={180}
+        onSourceError={vi.fn()}
+        boundsRef={{ current: card }}
+      />,
+      { container: track },
+    );
+    return screen.getByTestId("scrub-preview");
+  }
+
+  it("sits above the track when the card has room", () => {
+    const label = placeIn(300, 120);
+    expect(label.dataset.placement).toBe("above");
+    expect(label.style.top).toBe("-128px");
+    expect(label.style.translate).toBe("");
+  });
+
+  it("stays inside the card, beside the playhead, when there isn't room above", () => {
+    const label = placeIn(420, 137, 30);
+    expect(label.dataset.placement).toBe("beside-right");
+    // 8 px below the card's top: nothing above the timeline card is covered.
+    expect(label.style.top).toBe("-72px");
+    expect(label.style.translate).toMatch(/^12px( 0(px)?)?$/);
+  });
+});

@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 
+import { PosterVideo } from "@/components/poster-video";
 import { ShareMenu } from "@/components/share-menu";
 import { buttonClasses } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
@@ -33,6 +34,7 @@ import {
   rememberedTrim,
 } from "@/lib/job-state";
 import { reasonFor, signalDetailsFor, titleFor } from "@/lib/reason";
+import { renderProgressText } from "@/lib/render-progress";
 import {
   clampTrim,
   MIN_TRIM_DURATION_S,
@@ -1121,14 +1123,14 @@ export function ClipEditor() {
                 Clip ready ({formatTime(render.export.start_s)}–
                 {formatTime(render.export.end_s)})
               </p>
-              <video
-                src={render.url}
-                controls
-                playsInline
-                preload="metadata"
-                className="mx-auto aspect-[9/16] max-h-72 rounded-lg bg-black"
-                aria-label="Rendered vertical clip"
-              />
+              {/* `key`: a re-render gets a fresh poster for the new file. */}
+              <div className="relative mx-auto aspect-[9/16] h-72 self-center overflow-hidden rounded-lg bg-black">
+                <PosterVideo
+                  key={render.url}
+                  src={render.url}
+                  label="Rendered vertical clip"
+                />
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 <a
                   href={render.url}
@@ -1159,18 +1161,22 @@ function ExportProgressPanel({ exportRecord }: { exportRecord: Export }) {
   const progress = exportRecord.progress;
   const current = progress?.stage_index ?? 0;
   const fraction = progress?.stage_fraction ?? null;
+  const { label, step } = renderProgressText(progress, "Starting the render…");
 
   return (
     <div
       aria-live="polite"
       className="flex flex-col gap-3 rounded-card border border-border-subtle bg-surface-elevated p-4"
     >
-      <p className="text-sm font-medium">
-        {exportRecord.state === "queued"
-          ? "Waiting in render queue…"
-          : progress
-            ? `Step ${progress.stage_index} of ${progress.stage_count}: ${progress.message}`
-            : "Rendering…"}
+      <p className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-sm font-medium">
+        <span>
+          {exportRecord.state === "queued" ? "Waiting in render queue…" : label}
+        </span>
+        {exportRecord.state !== "queued" && step && (
+          <span className="font-mono text-xs font-normal text-ink-tertiary tabular-nums">
+            {step}
+          </span>
+        )}
       </p>
       {fraction !== null && progress && (
         <div

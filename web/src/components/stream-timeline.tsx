@@ -99,6 +99,8 @@ export function StreamTimeline({
   const pressRef = useRef<{ x: number; dragged: boolean } | null>(null);
   // Set when a press ended a drag, so the click the browser fires after it doesn't open a moment.
   const suppressClickRef = useRef(false);
+  // The timeline card: the scrub label is kept inside it (see ScrubPreview).
+  const cardRef = useRef<HTMLElement | null>(null);
   const [cursorS, setCursorS] = useState<number | null>(null);
   const [scrubVia, setScrubVia] = useState<ScrubVia | null>(null);
   // The rank chip being hovered or focused: its moment names the label even where it overlaps a
@@ -321,6 +323,7 @@ export function StreamTimeline({
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <section
+        ref={cardRef}
         aria-labelledby={headingId}
         className="flex min-w-0 flex-col gap-4 rounded-panel border border-border-subtle bg-surface-panel p-4 shadow-panel sm:p-5"
       >
@@ -429,6 +432,7 @@ export function StreamTimeline({
               source={previewSource}
               timeS={sliderS}
               onSourceError={markFailed}
+              boundsRef={cardRef}
             />
             <div
               role="slider"

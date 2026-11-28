@@ -135,6 +135,35 @@ export function rankLabelAnchor(
   return "center";
 }
 
+/**
+ * Where the scrub popover goes, so it never covers content outside the timeline card (the
+ * "Download all clips" row above it, say). It sits `gap` px above the track when that fits
+ * inside the card (`inset` px from its top edge). Otherwise it is clamped to the card's top and
+ * moved beside the playhead, on the side with more room, so it overlaps the track without
+ * hiding the spot being previewed. Vertical inputs are viewport pixels; `topPx` is the
+ * popover's `top` relative to the track.
+ */
+export function popoverPlacement({
+  trackTop,
+  boundsTop,
+  height,
+  cursorPct,
+  gap = 8,
+  inset = 8,
+}: {
+  trackTop: number;
+  boundsTop: number;
+  height: number;
+  cursorPct: number;
+  gap?: number;
+  inset?: number;
+}): { topPx: number; beside: "left" | "right" | null } {
+  const above = trackTop - gap - height;
+  const min = boundsTop + inset;
+  if (above >= min) return { topPx: above - trackTop, beside: null };
+  return { topPx: min - trackTop, beside: cursorPct < 50 ? "right" : "left" };
+}
+
 /** Which way a floating label anchored at `pct` should extend so it stays inside the track. */
 export function popoverAlign(pct: number): "start" | "center" | "end" {
   if (pct < 18) return "start";

@@ -5,6 +5,7 @@ import {
   momentAt,
   pctOf,
   popoverAlign,
+  popoverPlacement,
   rankLabelAnchor,
   rulerTicks,
   spanGeometry,
@@ -89,6 +90,48 @@ describe("timeline geometry", () => {
     expect(sixHours.at(-1)?.pct).toBe(100);
     // An interior tick too close to the end label is dropped.
     expect(rulerTicks(250).map((t) => t.seconds)).toEqual([0, 120, 250]);
+  });
+
+  it("floats the scrub popover above the track when the card has room for it", () => {
+    // 175 px between the card's top and the track (a 375 px wide screen).
+    expect(
+      popoverPlacement({
+        trackTop: 672,
+        boundsTop: 498,
+        height: 119,
+        cursorPct: 50,
+      }),
+    ).toEqual({ topPx: -127, beside: null });
+  });
+
+  it("never lets the scrub popover past the card's top edge, moving it beside the playhead", () => {
+    // 97 px of room at 1440 px wide but a 137 px popover: pinned 8 px below the card's top,
+    // overlapping the track beside the playhead instead of covering the row above the card.
+    const left = popoverPlacement({
+      trackTop: 522,
+      boundsTop: 425,
+      height: 137,
+      cursorPct: 30,
+    });
+    expect(left).toEqual({ topPx: -89, beside: "right" });
+    expect(522 + left.topPx).toBeGreaterThanOrEqual(425);
+    expect(
+      popoverPlacement({
+        trackTop: 522,
+        boundsTop: 425,
+        height: 137,
+        cursorPct: 70,
+      }).beside,
+    ).toBe("left");
+    // A card shorter than the popover still keeps its top edge.
+    expect(
+      popoverPlacement({
+        trackTop: 100,
+        boundsTop: 95,
+        height: 300,
+        cursorPct: 50,
+      }).topPx,
+    ).toBe(3);
   });
 
   it("keeps floating labels inside the track near its edges", () => {
