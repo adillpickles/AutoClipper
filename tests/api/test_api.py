@@ -749,11 +749,18 @@ class GatedRenderer(FakeRenderer):
         region: tuple[float, float, float, float] | None,
         transcriber: Transcriber | None,
         on_stage: Callable[[Stage], None],
+        on_warning: object = None,
     ) -> object:
         if not self.started.is_set():
             self.started.set()
             assert self.release.wait(timeout=10)
-        return super().__call__(spec, region=region, transcriber=transcriber, on_stage=on_stage)
+        return super().__call__(
+            spec,
+            region=region,
+            transcriber=transcriber,
+            on_stage=on_stage,
+            on_warning=on_warning,
+        )
 
     def order(self) -> list[str]:
         """The export IDs in the order they rendered."""
@@ -855,7 +862,7 @@ def test_waiting_auto_exports_are_capped_newest_jobs_first(
     renderer = GatedRenderer()
     client, _ = make_client(
         render=renderer,
-        auto_export_top=10,
+        auto_export_top=2,  # two clips per job, two may wait: one job's worth
         max_queued_auto_exports=2,
         captions_supported=True,
         synchronous=False,
@@ -866,8 +873,10 @@ def test_waiting_auto_exports_are_capped_newest_jobs_first(
     second = _finished_job(client, "9000000003")
     wait_until(lambda: len(_exports_of(client, second)) == 2)
 
-    # Only the newest job's two clips wait; the older job keeps the clip already rendering.
-    assert set(_exports_of(client, first)) == {"c001"}
+    # The older job's top clip is rendering, its second was waiting. When the newer job finishes,
+    # only its two clips wait: the older job keeps the clip already rendering. (The drop runs
+    # just after the newest job's exports are queued.)
+    wait_until(lambda: set(_exports_of(client, first)) == {"c001"})
     assert {r["state"] for r in _exports_of(client, second).values()} == {"queued"}
     # The dropped clips render when their results page asks for them.
     reopened = client.post(

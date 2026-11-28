@@ -3193,6 +3193,8 @@ class MockService:
             # second queue entry (#187).
             if record is None or record.state != "queued":
                 return
+            # Claim it in the same step: once running, a drop or a job delete leaves it alone.
+            self._set_render_stage_locked(record, "obtaining_media")
         if record.kind == "export":
             self._run_export(record)
             return
@@ -3462,27 +3464,31 @@ class MockService:
         self._finish_render(record, file=result.output, duration_s=result.duration_s)
 
     def _set_render_stage(self, record: _RenderRecord, stage: str) -> None:
+        with self._lock:
+            self._set_render_stage_locked(record, stage)
+
+    def _set_render_stage_locked(self, record: _RenderRecord, stage: str) -> None:
+        """Report `stage` (and enter `running` with it); call with the service lock held."""
         index = RENDER_STAGES.index(stage) + 1
         final = (
             "Rendering the clip" if record.kind == "export" else "Rendering the highlights video"
         )
         message = _RENDER_MESSAGES.get(stage, final)
-        with self._lock:
-            if record.render_id not in self._renders:
-                return
-            now = self.clock()
-            if record.state == "queued":  # running and its first progress together (§ 3.4)
-                record.state = "running"
-                record.times.started_at = now
-            record.progress = Progress(
-                stage=stage,
-                stage_index=index,
-                stage_count=len(RENDER_STAGES),
-                stage_fraction=None,
-                message=message,
-            )
-            record.times.updated_at = now
-            self._persist_render(record)
+        if record.render_id not in self._renders:
+            return
+        now = self.clock()
+        if record.state == "queued":  # running and its first progress together (§ 3.4)
+            record.state = "running"
+            record.times.started_at = now
+        record.progress = Progress(
+            stage=stage,
+            stage_index=index,
+            stage_count=len(RENDER_STAGES),
+            stage_fraction=None,
+            message=message,
+        )
+        record.times.updated_at = now
+        self._persist_render(record)
 
     def _finish_render(
         self,
