@@ -1,4 +1,5 @@
-// Pure layout helpers for the whole-stream timeline view (#67, api-contract.md § 4.5).
+// Pure layout helpers for the whole-stream timeline view (#67, api-contract.md § 4.5). The
+// scrubbable timeline (#189) uses them to pack the top moments' rank chips into rows.
 
 import type { Candidate } from "@/lib/api/types";
 
@@ -156,50 +157,4 @@ export function layoutTimelineMarkers(
   }
 
   return { markers, laneCount: laneEnds.length, ticks };
-}
-
-/**
- * Compute normalized `[0, 1]` candidate-activity intensity bins across `[0, durationS]` from
- * selected candidate intervals and scores only (blank bins mean no candidate fell in that span,
- * not that the stream had zero chat or audio activity).
- */
-export function buildActivityBins(
-  candidates: readonly Candidate[],
-  durationS: number,
-  binCount = 48,
-): number[] {
-  const count = Math.max(1, Math.floor(binCount));
-  const bins = new Array<number>(count).fill(0);
-  if (
-    candidates.length === 0 ||
-    !Number.isFinite(durationS) ||
-    durationS <= 0
-  ) {
-    return bins;
-  }
-
-  const scores = candidates.map((c) => c.score);
-  const low = Math.min(...scores);
-  const high = Math.max(...scores);
-  const weight = (score: number) =>
-    high > low ? 0.25 + (0.75 * (score - low)) / (high - low) : 1;
-
-  const binWidth = durationS / count;
-  for (const candidate of candidates) {
-    const startBin = clamp(
-      Math.floor(candidate.start_s / binWidth),
-      0,
-      count - 1,
-    );
-    const endBin = clamp(
-      Math.ceil(candidate.end_s / binWidth) - 1,
-      startBin,
-      count - 1,
-    );
-    const w = weight(candidate.score);
-    for (let i = startBin; i <= endBin; i += 1) {
-      bins[i] = Math.max(bins[i], w);
-    }
-  }
-  return bins;
 }
