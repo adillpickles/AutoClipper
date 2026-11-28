@@ -2651,6 +2651,72 @@ def test_a_null_segments_request_dedupes_with_its_explicit_equivalent(
     assert second.json()["highlights_id"] == first.json()["highlights_id"]
 
 
+HIGHLIGHTS_SEGMENTS = [
+    {"candidate_id": "c001", "start_s": 115.5, "end_s": 150.0},
+    {"candidate_id": "c002", "start_s": 251.5, "end_s": 276.5},
+]
+
+
+def test_an_identical_highlights_request_reuses_the_finished_video(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    fake = FakeHighlightsRenderer()
+    client, _ = make_client(highlights_render=fake)
+    job_id = done_job(client)["job_id"]
+    body = {"job_id": job_id, "segments": HIGHLIGHTS_SEGMENTS, "captions": False}
+
+    first = client.post(f"{API}/highlights", json=body)
+    again = client.post(f"{API}/highlights", json=body)
+
+    # Pressing "Make highlights video" again gets the finished video, rendered once (#230).
+    assert first.status_code == 201
+    assert again.status_code == 200
+    assert "location" not in again.headers
+    assert again.json()["highlights_id"] == first.json()["highlights_id"]
+    assert again.json()["state"] == "done"
+    assert again.json()["filename"] == "user_001_2026-10-12_highlights.mp4"
+    assert again.json()["download_url"] is not None
+    assert len(fake.requests) == 1
+
+    # Another trim, order, captions choice or moment list is a new video.
+    trimmed = [{**HIGHLIGHTS_SEGMENTS[0], "end_s": 149.0}, HIGHLIGHTS_SEGMENTS[1]]
+    others = [
+        {**body, "segments": trimmed},
+        {**body, "order": "rank"},
+        {**body, "captions": True},
+        {**body, "segments": HIGHLIGHTS_SEGMENTS[:1]},
+    ]
+    ids = {first.json()["highlights_id"]}
+    for other in others:
+        response = client.post(f"{API}/highlights", json=other)
+        assert response.status_code == 201, other
+        ids.add(response.json()["highlights_id"])
+    assert len(ids) == 1 + len(others)
+
+    # A finished video whose file was removed is rendered again.
+    (tmp_path / "artifacts" / "highlights" / f"{first.json()['highlights_id']}.mp4").unlink()
+    redo = client.post(f"{API}/highlights", json=body)
+    assert redo.status_code == 201
+    assert redo.json()["highlights_id"] not in ids
+
+
+def test_a_failed_highlights_video_isnt_reused(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    client, _ = make_client(highlights_render=FakeHighlightsRenderer(ExportError("boom")))
+    job_id = done_job(client)["job_id"]
+    body = {"job_id": job_id, "segments": HIGHLIGHTS_SEGMENTS}
+
+    first = client.post(f"{API}/highlights", json=body)
+    again = client.post(f"{API}/highlights", json=body)
+
+    assert client.get(f"{API}/highlights/{first.json()['highlights_id']}").json()["state"] == (
+        "failed"
+    )
+    assert again.status_code == 201
+    assert again.json()["highlights_id"] != first.json()["highlights_id"]
+
+
 def test_closing_drops_queued_work_and_returns_promptly(
     make_client: Callable[..., tuple[TestClient, MockService]],
 ) -> None:

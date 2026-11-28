@@ -17,7 +17,9 @@ Layouts:
 - `StackedLayout` (``"stacked"`` in the API contract, #68): stacks a facecam region on top and
   a gameplay region below inside 1080x1920, cropping each pane to fill its share of the frame.
   The facecam pane is trimmed around the region's center, or, when the layout knows where the
-  face is (a detected facecam, #191), around the face so the trim never cuts it.
+  face is (a detected facecam, #191), around the face so the trim never cuts it. The gameplay
+  pane is moved off the facecam, which is already in the top pane, as far as its region allows
+  (#229).
 
 Pixel geometry uses the stored frame size from `probe`. Crop offsets and sizes are rounded down to
 even numbers, which yuv420p needs, so odd source sizes (e.g. 321x181) lose at most one pixel row or
@@ -27,7 +29,7 @@ the encoder tells FFmpeg not to apply rotation so its frames match the probed si
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import ClassVar, Final, Literal, overload
 
@@ -45,6 +47,14 @@ MIN_CROP_PX = 16
 DEFAULT_FACECAM_FRACTION: Final = 0.35
 MIN_FACECAM_FRACTION: Final = 0.15
 MAX_FACECAM_FRACTION: Final = 0.70
+
+# How the stacked layout's panes are planned. Bump it when the same layout renders differently,
+# so the API doesn't reuse stacked renders made the old way (its layout key includes it).
+# 2: the gameplay pane is moved off the facecam (#229).
+STACKED_PLAN_VERSION: Final = 2
+# Margin kept between the facecam overlay and the gameplay pane, as a fraction of the source
+# width and height, so the overlay's border or a slightly tight detection doesn't show (#229).
+FACECAM_CLEARANCE: Final = 0.005
 
 # Allows normalized regions that end at 1.0 after floating-point arithmetic (0.7 + 0.3).
 _EDGE_EPSILON = 1e-9
@@ -398,6 +408,20 @@ def plan_reframe(layout: Layout, source_width: int, source_height: int) -> AnyRe
             layout.facecam, source_width, source_height, OUTPUT_WIDTH, top_h, focus=focus
         )
         bottom = _plan_region(layout.gameplay, source_width, source_height, OUTPUT_WIDTH, bot_h)
+        if layout.gameplay.fit == "crop":
+            # The facecam is already in the top pane; keep it out of the bottom one (#229).
+            gameplay_rect = _region_pixels(layout.gameplay, source_width, source_height)
+            facecam_rect = _region_pixels(layout.facecam, source_width, source_height)
+            # Clear the webcam with a margin if the pane fits beside it, else at least clear
+            # the webcam itself; if no position clears it, the pane stays where it was.
+            crop = _avoid(
+                bottom.crop,
+                gameplay_rect,
+                _padded(facecam_rect, source_width, source_height),
+            )
+            if crop == bottom.crop:
+                crop = _avoid(bottom.crop, gameplay_rect, facecam_rect)
+            bottom = replace(bottom, crop=crop)
         return StackedReframePlan(
             top=top, bottom=bottom, output_width=OUTPUT_WIDTH, output_height=OUTPUT_HEIGHT
         )
@@ -476,6 +500,51 @@ def _crop_to_aspect(
     else:
         y = _anchored(rect.y, rect.height, height, focus[1] + focus[3] / 2)
     return PixelRect(rect.x, y, rect.width, height)
+
+
+def _padded(rect: PixelRect, source_width: int, source_height: int) -> PixelRect:
+    """`rect` grown by `FACECAM_CLEARANCE` on every side, clipped to the frame, even."""
+    dx = _even(round(FACECAM_CLEARANCE * source_width))
+    dy = _even(round(FACECAM_CLEARANCE * source_height))
+    left, top = max(0, rect.x - dx), max(0, rect.y - dy)
+    right = min(_even(source_width), rect.x + rect.width + dx)
+    bottom = min(_even(source_height), rect.y + rect.height + dy)
+    return PixelRect(left, top, right - left, bottom - top)
+
+
+def _overlap(a: PixelRect, b: PixelRect) -> int:
+    """The area `a` and `b` share, in pixels."""
+    w = min(a.x + a.width, b.x + b.width) - max(a.x, b.x)
+    h = min(a.y + a.height, b.y + b.height) - max(a.y, b.y)
+    return max(0, w) * max(0, h)
+
+
+def _avoid(crop: PixelRect, bounds: PixelRect, obstacle: PixelRect) -> PixelRect:
+    """Move `crop` inside `bounds` to the nearest position that doesn't touch `obstacle`.
+
+    The crop keeps its size. If no position inside `bounds` clears `obstacle`, the crop stays
+    where it was: sliding it to a frame edge to show a little less webcam would push the
+    middle of the gameplay (an FPS crosshair, say) out of the pane. All inputs are even, so
+    every candidate offset, and the result, is even.
+    """
+    if _overlap(crop, obstacle) == 0:
+        return crop
+
+    def offsets(pos: int, start: int, span: int, size: int, lo: int, length: int) -> set[int]:
+        last = start + span - size
+        wanted = (pos, start, last, lo + length, lo - size)  # stay, either end, either side
+        return {min(max(value, start), last) for value in wanted}
+
+    xs = offsets(crop.x, bounds.x, bounds.width, crop.width, obstacle.x, obstacle.width)
+    ys = offsets(crop.y, bounds.y, bounds.height, crop.height, obstacle.y, obstacle.height)
+    clear = [
+        candidate
+        for candidate in (PixelRect(x, y, crop.width, crop.height) for x in xs for y in ys)
+        if _overlap(candidate, obstacle) == 0
+    ]
+    if not clear:
+        return crop
+    return min(clear, key=lambda c: (abs(c.x - crop.x) + abs(c.y - crop.y), c.x, c.y))
 
 
 def _anchored(start: int, length: int, size: int, center: float) -> int:

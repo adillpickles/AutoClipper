@@ -93,7 +93,11 @@ from autoclipper.export.output_folder import (
     remove_stale_partials,
     validate_output_folder,
 )
-from autoclipper.export.reframe import StackedLayout, stacked_layout_from_region
+from autoclipper.export.reframe import (
+    STACKED_PLAN_VERSION,
+    StackedLayout,
+    stacked_layout_from_region,
+)
 from autoclipper.export.seek import (
     covered_span,
     probe_media_and_times,
@@ -1706,7 +1710,7 @@ class MockService:
     # --- Highlights ----------------------------------------------------------------------------
 
     def create_highlights(self, request: CreateHighlightsRequest) -> tuple[HighlightsVideo, bool]:
-        """Create a highlights video, or return an identical queued/running one."""
+        """Create a highlights video, or return an identical queued, running or finished one."""
         with self._lock:
             job = self._done_job(request.job_id)
             if job.job_id in self._deleting:
@@ -1762,6 +1766,9 @@ class MockService:
                     {"segment_index": None, **limits},
                 )
             resolved = tuple(ordered)
+            # Like exports (§ 6.1, #186), an identical request reuses the queued, running or
+            # finished render, so pressing "Make highlights video" again renders nothing new
+            # (#230). A failed render, or a finished one whose file was removed, renders again.
             for record in self._renders.values():
                 if (
                     record.kind == "highlights"
@@ -1769,9 +1776,18 @@ class MockService:
                     and record.segments == resolved
                     and record.order == request.order
                     and record.captions == request.captions
-                    and record.state in ("queued", "running")
+                    and (
+                        record.state in ("queued", "running")
+                        or (
+                            record.state == "done"
+                            and record.file is not None
+                            and record.file.is_file()
+                        )
+                    )
                 ):
-                    return record.highlights_model(), False
+                    done = record.state == "done"
+                    filename = self._render_filename(record) if done else None
+                    return record.highlights_model(filename=filename), False
             now = self.clock()
             record = _RenderRecord(
                 "highlights",
@@ -2167,12 +2183,16 @@ class MockService:
         """What `layout` resolves from at render time, so a changed region isn't reused.
 
         ``stacked`` resolves from the env facecam region, the facecam detected in the clip (the
-        same for the same media and detector version) and the channel preset (#191);
+        same for the same media and detector version), the channel preset (#191) and the
+        stacked planner version (#229);
         ``configured_region`` from the env region.
         """
         if layout == "stacked":
             preset = self._stacked_layout_for(job)
-            return f"stacked:v{DETECTOR_VERSION}:{self.export_facecam_region!r}:{preset!r}"
+            return (
+                f"stacked:v{DETECTOR_VERSION}:plan{STACKED_PLAN_VERSION}:"
+                f"{self.export_facecam_region!r}:{preset!r}"
+            )
         if layout == "configured_region":
             return f"configured_region:{self.export_region!r}"
         return layout
