@@ -9,7 +9,7 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
 > [!IMPORTANT]
-> **Project status: pre-alpha.** The local CLI pipeline (`ingest`, `analyze`, `export`, `highlights`, `doctor`, `serve`) and Next.js web app are wired up and tested on synthetic data, but there is no real Twitch dataset or model trained on real data yet. See [`docs/project/status.md`](docs/project/status.md) for what exists today.
+> **Project status: pre-alpha.** The local CLI pipeline (`ingest`, `analyze`, `export`, `highlights`, `doctor`, `serve`) and the Next.js web app run end to end on a real two-hour Twitch VOD. There is no real labeled dataset or model trained on real data yet, so ranking uses chat activity and loudness. See [`docs/project/status.md`](docs/project/status.md) for what exists today.
 
 ---
 
@@ -201,16 +201,16 @@ Twitch VOD URL
    └─▶ 6. App            ranked clip cards: preview, nudge start/end, download
 ```
 
-Viewer clips double as **noisy training labels**: roughly, a stretch of the VOD that viewers clipped counts as a good moment ([modeling plan](docs/ml/modeling-plan.md#0-the-plan-in-plain-english)). The model is evaluated on streamers it never trained on and compared against simple baselines (random, biggest chat spike, loudest audio, and chat + loudness combined). Results get reported honestly, even if a baseline wins. See [evaluation](docs/ml/evaluation.md). The training and evaluation code is built and tested on synthetic data; a real dataset and a model trained on it don't exist yet.
+Viewer clips double as **noisy training labels**: roughly, a stretch of the VOD that viewers clipped counts as a good moment ([modeling plan](docs/ml/modeling-plan.md#0-the-plan-in-plain-english)). The model is evaluated on streamers it never trained on and compared against simple baselines (random, biggest chat spike, loudest audio, and chat + loudness combined). Results get reported honestly, even if a baseline wins. See [evaluation](docs/ml/evaluation.md). The training and evaluation code is built and tested on synthetic data. The 25-VOD pilot collection exists, but the labeled dataset built from it and a model trained on that dataset don't exist yet.
 
 ## Tech stack
 
 | Layer | Choice | Why | Background |
 |---|---|---|---|
 | Pipeline and ML | Python 3.12, uv, pandas/Polars, scikit-learn, LightGBM | All the ML is Python. uv gives one-command, reproducible setup. LightGBM learns combinations of tabular signals. | [Tooling](docs/decisions/0002-language-and-tooling.md) |
-| Signals | Twitch Helix API, TwitchDownloader (chat), yt-dlp + librosa (audio) | Chat and audio are cheap per-second signals that run on a laptop. Video is only downloaded for clips we export. | [Build order](docs/decisions/0004-staged-scope-chat-and-audio-first.md) |
+| Signals | Twitch Helix API, TwitchDownloader (chat), yt-dlp + NumPy (audio) | Chat and audio are cheap per-second signals that run on a laptop. Video is only downloaded for clips we export. | [Build order](docs/decisions/0004-staged-scope-chat-and-audio-first.md) |
 | Data storage | Parquet files + DuckDB | Fast analytics on a laptop with no database server to run | [Storage](docs/decisions/0005-local-storage-parquet-duckdb.md) |
-| Export | FFmpeg, faster-whisper | Standard tool for cutting, cropping and burning in captions; Whisper captions run on CPU | [Architecture § Export](docs/architecture/overview.md#46-export) |
+| Export | FFmpeg, faster-whisper, OpenCV | Standard tool for cutting, cropping and burning in captions; Whisper captions run on CPU; OpenCV finds the facecam for the stacked layout | [Architecture § Export](docs/architecture/overview.md#46-export) |
 | Backend | FastAPI + background worker | Same language as the ML. Processing a VOD takes minutes, so jobs run outside the request. | [App stack](docs/decisions/0007-web-application-stack.md) |
 | Frontend | Next.js + TypeScript + Tailwind | The team knows it; supports a polished UI with a custom highlight timeline | [App stack](docs/decisions/0007-web-application-stack.md) |
 | Quality | Ruff, Pyright, pytest, pre-commit, GitHub Actions | Fast, deterministic feedback for humans and agents. Actions is free for this public repo. | [Tooling](docs/decisions/0002-language-and-tooling.md) |

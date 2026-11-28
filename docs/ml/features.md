@@ -69,7 +69,7 @@ Ordinary reactions such as "clip it" remain eligible signals. Do not remove all 
 
 ## Audio features (`features_audio`)
 
-Computed from 16 kHz mono audio with librosa/NumPy. Frame-level values are aggregated per window.
+Computed from 16 kHz mono audio with NumPy. Frame-level values are aggregated per window.
 
 | Name | Definition | Notes |
 |---|---|---|
@@ -77,7 +77,7 @@ Computed from 16 kHz mono audio with librosa/NumPy. Frame-level values are aggre
 | `audio_rms_max` | Max RMS energy | Spikes (yelling, explosions) |
 | `audio_rms_max_z` | `_z` of `audio_rms_max` | |
 | `audio_rms_std` | Std of RMS | Dynamics |
-| `audio_onset_rate` | Onsets per second (librosa onset detection) | Busy-ness |
+| `audio_onset_rate` | Onsets per second (spectral-flux onset detection) | Busy-ness |
 | `audio_spectral_centroid_mean` | Mean spectral centroid | Brightness (screams and laughter are brighter) |
 | `audio_zcr_mean` | Mean zero-crossing rate | Noisiness |
 | `audio_silence_frac` | Fraction of frames below an energy threshold | Near 1 = digital silence. Helix reports no muted segments for the pilot VODs, so music muted out of a VOD shows up only here ([pilot report § 10](../data/pilot-report.md#10-implications-for-36-and-38)); the default ranking down-weights such windows (#192) |
