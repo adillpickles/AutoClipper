@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ChangeEvent,
@@ -84,15 +85,55 @@ export function StartForm() {
     filledFromExample && isVodFormatExample(vod) && !isMockMode();
   const uploadError = selectionError ?? requestError;
 
-  useEffect(() => {
+  // Clears the in-flight markers (button label, disabled controls, upload
+  // bar). The typed link, chosen file and path are kept so the user can start
+  // again with the same input.
+  function resetPending() {
+    setSubmitting(false);
+    setUploading(false);
+    setUploadProgress(null);
+    setIsDragging(false);
+  }
+
+  // The form stays "Starting…" after a successful submit so a second click
+  // can't start another job before the job page opens. With cacheComponents,
+  // Next keeps this page in a hidden <Activity> instead of unmounting it, so
+  // that state would still be there when the user comes back (#184). Effect
+  // cleanup runs when the page is hidden (and on a real unmount): abort any
+  // request still running and reset before the page can be shown again.
+  // useLayoutEffect makes the reset land before the page is visible again.
+  useLayoutEffect(() => {
     return () => {
       const controller = abortControllerRef.current;
       abortControllerRef.current = null;
       controller?.abort();
+      resetPending();
     };
   }, []);
 
+  // A full-page back/forward cache restore brings the page back without
+  // running effects again, so reset there too.
+  useEffect(() => {
+    function handlePageShow(event: PageTransitionEvent) {
+      if (!event.persisted) return;
+      const controller = abortControllerRef.current;
+      abortControllerRef.current = null;
+      controller?.abort();
+      resetPending();
+    }
+    window.addEventListener("pageshow", handlePageShow);
+    return () => window.removeEventListener("pageshow", handlePageShow);
+  }, []);
+
+  // Editing the input means the user wants a fresh start. Only a stale state
+  // is cleared: a request still in flight keeps its controller and stays
+  // pending until it settles or is cancelled.
+  function clearStalePending() {
+    if (abortControllerRef.current === null && submitting) resetPending();
+  }
+
   function selectFile(file: File) {
+    clearStalePending();
     setSelectionError(null);
     setRequestError(null);
     setUploadNotice(null);
@@ -327,6 +368,7 @@ export function StartForm() {
           placeholder="https://www.twitch.tv/videos/2345678901"
           value={vod}
           onChange={(event) => {
+            clearStalePending();
             setVod(event.target.value);
             setFilledFromExample(false);
             setVodError(null);
@@ -627,6 +669,7 @@ export function StartForm() {
               placeholder="/Users/you/Videos/vod.mp4"
               value={videoPath}
               onChange={(event) => {
+                clearStalePending();
                 setVideoPath(event.target.value);
                 setPathError(null);
               }}
