@@ -8,6 +8,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { Activity } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StartForm } from "@/components/start-form";
@@ -62,6 +63,76 @@ function submit() {
   fireEvent.click(
     screen.getByRole("button", { name: "Find the best moments" }),
   );
+}
+
+function vodInput() {
+  return screen.getByLabelText("Twitch VOD link") as HTMLInputElement;
+}
+
+function submitButton() {
+  return screen.getByRole("button", {
+    name: /Find the best moments|Starting…|Uploading video…/,
+  }) as HTMLButtonElement;
+}
+
+// Next.js (cacheComponents) keeps a page it navigates away from inside a
+// hidden <Activity> and shows the same instance again on Back (#184).
+function renderInActivity() {
+  const view = render(
+    <Activity mode="visible">
+      <StartForm />
+    </Activity>,
+  );
+  return {
+    hide: () =>
+      view.rerender(
+        <Activity mode="hidden">
+          <StartForm />
+        </Activity>,
+      ),
+    show: () =>
+      view.rerender(
+        <Activity mode="visible">
+          <StartForm />
+        </Activity>,
+      ),
+  };
+}
+
+function dispatchPageShow(persisted: boolean) {
+  const event = new Event("pageshow");
+  Object.defineProperty(event, "persisted", { value: persisted });
+  act(() => {
+    window.dispatchEvent(event);
+  });
+}
+
+type StartMode = "link" | "path" | "upload";
+
+function fillForm(mode: StartMode) {
+  if (mode === "upload") {
+    selectVideo();
+    return;
+  }
+  if (mode === "path") {
+    fireEvent.click(
+      screen.getByRole("button", { name: "Use file path on this computer" }),
+    );
+    fireEvent.change(screen.getByLabelText(/VOD file on this computer/), {
+      target: { value: "/Users/you/Videos/vod.mp4" },
+    });
+  }
+  fireEvent.change(vodInput(), { target: { value: "9000000001" } });
+}
+
+function expectedJobRequest(mode: StartMode) {
+  if (mode === "upload") {
+    return { vod: "9000000001", video_path: null, upload_id: "upl_abc123" };
+  }
+  return {
+    vod: "9000000001",
+    video_path: mode === "path" ? "/Users/you/Videos/vod.mp4" : null,
+  };
 }
 
 describe("StartForm", () => {
@@ -392,5 +463,163 @@ describe("StartForm", () => {
 
     await act(async () => complete({ job: { job_id: "job_abandoned" } }));
     expect(state.push).not.toHaveBeenCalled();
+  });
+
+  describe("returning to the start page (#184)", () => {
+    it.each<StartMode>(["link", "path", "upload"])(
+      "is usable again after a %s start and Back navigation",
+      async (mode) => {
+        state.uploadVideo.mockResolvedValue(uploaded);
+        state.createJob
+          .mockResolvedValueOnce({ job: { job_id: "job_first" } })
+          .mockResolvedValueOnce({ job: { job_id: "job_second" } });
+
+        const page = renderInActivity();
+        fillForm(mode);
+        submit();
+        await waitFor(() =>
+          expect(state.push).toHaveBeenCalledWith("/jobs/job_first"),
+        );
+        // Until the job page opens, the form stays locked.
+        expect(submitButton().textContent).toBe("Starting…");
+        expect(submitButton().disabled).toBe(true);
+
+        page.hide();
+        page.show();
+
+        expect(submitButton().textContent).toBe("Find the best moments");
+        expect(submitButton().disabled).toBe(false);
+        expect(vodInput().disabled).toBe(false);
+        expect(vodInput().value).toBe("9000000001");
+        expect(screen.queryByRole("progressbar")).toBeNull();
+
+        submit();
+        await waitFor(() =>
+          expect(state.push).toHaveBeenCalledWith("/jobs/job_second"),
+        );
+        expect(state.createJob).toHaveBeenCalledTimes(2);
+        expect(state.createJob).toHaveBeenNthCalledWith(
+          2,
+          expectedJobRequest(mode),
+        );
+        // A verified upload is reused rather than sent again.
+        expect(state.uploadVideo).toHaveBeenCalledTimes(
+          mode === "upload" ? 1 : 0,
+        );
+      },
+    );
+
+    it("accepts a new link after coming back", async () => {
+      state.createJob
+        .mockResolvedValueOnce({ job: { job_id: "job_first" } })
+        .mockResolvedValueOnce({ job: { job_id: "job_second" } });
+      const page = renderInActivity();
+      fillForm("link");
+      submit();
+      await waitFor(() => expect(state.push).toHaveBeenCalledOnce());
+
+      page.hide();
+      page.show();
+      fireEvent.change(vodInput(), { target: { value: "9000000003" } });
+      submit();
+
+      await waitFor(() =>
+        expect(state.push).toHaveBeenCalledWith("/jobs/job_second"),
+      );
+      expect(state.createJob).toHaveBeenLastCalledWith({
+        vod: "9000000003",
+        video_path: null,
+      });
+    });
+
+    it("resets an upload that was still running when the page was left", async () => {
+      let signal: AbortSignal | undefined;
+      state.uploadVideo.mockImplementationOnce(
+        (_file: File, options: UploadVideoOptions) => {
+          signal = options.signal;
+          options.onProgress?.({ loaded: 6, total: 12, fraction: 0.5 });
+          return new Promise(() => {});
+        },
+      );
+
+      const page = renderInActivity();
+      fillForm("upload");
+      submit();
+      await screen.findByRole("progressbar");
+      expect(submitButton().textContent).toBe("Uploading video…");
+
+      page.hide();
+      expect(signal?.aborted).toBe(true);
+      page.show();
+
+      expect(submitButton().textContent).toBe("Find the best moments");
+      expect(submitButton().disabled).toBe(false);
+      expect(screen.queryByRole("progressbar")).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Cancel upload" }),
+      ).toBeNull();
+      expect(screen.getByText("vod.mp4")).toBeTruthy();
+      expect(state.createJob).not.toHaveBeenCalled();
+    });
+
+    it("is usable again after a back/forward cache restore", async () => {
+      state.createJob.mockResolvedValue({ job: { job_id: "job_first" } });
+      render(<StartForm />);
+      fillForm("link");
+      submit();
+      await waitFor(() => expect(state.push).toHaveBeenCalledOnce());
+      expect(submitButton().disabled).toBe(true);
+
+      // A first load (not restored from the cache) changes nothing.
+      dispatchPageShow(false);
+      expect(submitButton().textContent).toBe("Starting…");
+
+      dispatchPageShow(true);
+      expect(submitButton().textContent).toBe("Find the best moments");
+      expect(submitButton().disabled).toBe(false);
+    });
+
+    it("clears a stale Starting… state when the link changes", async () => {
+      state.createJob.mockResolvedValue({ job: { job_id: "job_first" } });
+      render(<StartForm />);
+      fillForm("link");
+      submit();
+      await waitFor(() => expect(state.push).toHaveBeenCalledOnce());
+      expect(submitButton().textContent).toBe("Starting…");
+
+      fireEvent.change(vodInput(), { target: { value: "9000000003" } });
+
+      expect(submitButton().textContent).toBe("Find the best moments");
+      expect(submitButton().disabled).toBe(false);
+    });
+
+    it("keeps a request still in flight pending when the input changes", () => {
+      state.createJob.mockReturnValue(new Promise(() => {}));
+      render(<StartForm />);
+      fillForm("link");
+      submit();
+
+      fireEvent.change(vodInput(), { target: { value: "9000000003" } });
+
+      expect(submitButton().textContent).toBe("Starting…");
+      expect(submitButton().disabled).toBe(true);
+    });
+  });
+
+  it("starts only one job on a double click or a resubmit before the job page opens", async () => {
+    state.createJob.mockResolvedValue({ job: { job_id: "job_once" } });
+    render(<StartForm />);
+    fillForm("link");
+
+    const button = submitButton();
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await waitFor(() => expect(state.push).toHaveBeenCalledOnce());
+
+    // Enter in a field still submits the form while the button is disabled.
+    fireEvent.submit(button.closest("form")!);
+    await act(async () => {});
+    expect(state.createJob).toHaveBeenCalledOnce();
+    expect(state.push).toHaveBeenCalledOnce();
   });
 });
