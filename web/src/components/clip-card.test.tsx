@@ -3,8 +3,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ClipCard } from "@/components/clip-card";
-import type { Candidate } from "@/lib/api/types";
+import { ClipCard, type ClipExport } from "@/components/clip-card";
+import type { Candidate, Export } from "@/lib/api/types";
 
 const RICH_CANDIDATE: Candidate = {
   candidate_id: "c001",
@@ -190,5 +190,134 @@ describe("ClipCard explanations", () => {
     expect(link.getAttribute("download")).toBe(
       "user_001_2026-10-12_Loud-audio-laughing-chat_00-01-58.mp4",
     );
+  });
+});
+
+function exportIn(
+  state: Export["state"],
+  overrides: Partial<Export> = {},
+): Export {
+  return {
+    export_id: "exp_1",
+    job_id: "job_1",
+    candidate_id: "c001",
+    video_id: "9000000001",
+    start_s: 118,
+    end_s: 148,
+    layout: "center_crop",
+    captions: true,
+    state,
+    progress: null,
+    error: null,
+    download_url: state === "done" ? "/api/v1/exports/exp_1/file" : null,
+    created_at: "2026-10-19T15:05:00Z",
+    started_at: null,
+    updated_at: "2026-10-19T15:05:00Z",
+    finished_at: null,
+    ...overrides,
+  };
+}
+
+function renderCard(clip: ClipExport) {
+  return render(
+    <ul>
+      <ClipCard
+        jobId="job_1"
+        candidate={RICH_CANDIDATE}
+        scoreFraction={1}
+        clip={clip}
+        videoId="9000000001"
+        onRetry={vi.fn()}
+      />
+    </ul>,
+  );
+}
+
+describe("ClipCard media (#185)", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("plays the finished vertical export, letterboxed rather than cropped", () => {
+    const { container } = renderCard({
+      kind: "export",
+      export: exportIn("done"),
+      url: "http://127.0.0.1:8000/api/v1/exports/exp_1/file",
+    });
+
+    const video = container.querySelector("video");
+    expect(video).not.toBeNull();
+    expect(video?.getAttribute("src")).toBe(
+      "http://127.0.0.1:8000/api/v1/exports/exp_1/file",
+    );
+    // An author object-fit wins over the browser's fullscreen default, so `object-cover` would
+    // crop the 9:16 clip to a landscape band in fullscreen.
+    expect(video?.classList.contains("object-contain")).toBe(true);
+    expect(video?.classList.contains("object-cover")).toBe(false);
+  });
+
+  it.each<[string, ClipExport, RegExp]>([
+    ["no export yet", { kind: "pending" }, /Waiting to render/],
+    [
+      "a queued export",
+      { kind: "export", export: exportIn("queued"), url: null },
+      /Waiting to render/,
+    ],
+    [
+      "a running export",
+      {
+        kind: "export",
+        export: exportIn("running", {
+          progress: {
+            stage: "rendering",
+            stage_index: 3,
+            stage_count: 3,
+            stage_fraction: null,
+            message: "Rendering clip",
+          },
+        }),
+        url: null,
+      },
+      /Rendering… Rendering clip/,
+    ],
+    [
+      "a failed export",
+      {
+        kind: "export",
+        export: exportIn("failed", {
+          error: {
+            code: "render_failed",
+            message: "FFmpeg failed.",
+            details: null,
+          },
+        }),
+        url: null,
+      },
+      /FFmpeg failed\./,
+    ],
+    [
+      "unavailable media",
+      { kind: "unavailable", message: "Export isn't available." },
+      /Export isn't available\./,
+    ],
+    [
+      "a request error",
+      { kind: "error", message: "Couldn't start the export." },
+      /Couldn't start the export\./,
+    ],
+    [
+      "a done export without a file URL",
+      {
+        kind: "export",
+        export: exportIn("done", { download_url: null }),
+        url: null,
+      },
+      /Rendering…/,
+    ],
+  ])("shows a status instead of any video for %s", (_name, clip, text) => {
+    const { container } = renderCard(clip);
+
+    expect(container.querySelector("video")).toBeNull();
+    expect(screen.getByText(text)).toBeTruthy();
   });
 });
