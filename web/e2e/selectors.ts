@@ -19,18 +19,13 @@ export function startPage(page: Page) {
   };
 }
 
-export function progressPage(page: Page) {
-  return {
-    /** Shown once the analysis is done, e.g. "Found 3 moments." */
-    foundMoments: page
-      .getByRole("status")
-      .filter({ hasText: /found \d+ moments?/i }),
-    seeClips: page.getByRole("link", { name: /see the clips/i }),
-  };
-}
-
 export function resultsPage(page: Page) {
   return {
+    /** "Top N moments" above the clip cards. */
+    momentsHeading: page.getByRole("heading", {
+      level: 2,
+      name: /top \d+ moments?/i,
+    }),
     /** One "Edit clip N" link per clip card. */
     editLinks: page.getByRole("link", { name: /^edit clip \d+/i }),
     editClip: (rank: number) =>
@@ -77,10 +72,10 @@ export function libraryPage(page: Page) {
   };
 }
 
-/** Parse the moment count out of "Found N moments." on the progress screen. */
+/** Parse the moment count out of "Top N moments" on the results screen. */
 export async function readMomentCount(page: Page): Promise<number> {
-  const text = (await progressPage(page).foundMoments.textContent()) ?? "";
-  const match = /found (\d+) moments?/i.exec(text);
+  const text = (await resultsPage(page).momentsHeading.textContent()) ?? "";
+  const match = /top (\d+) moments?/i.exec(text);
   if (!match) throw new Error(`No moment count in ${JSON.stringify(text)}`);
   return Number(match[1]);
 }

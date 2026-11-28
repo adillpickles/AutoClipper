@@ -7,7 +7,6 @@ import {
   RESULTS_URL,
   editorPage,
   highlightsDialog,
-  progressPage,
   readMomentCount,
   resultsPage,
   siteHeader,
@@ -32,17 +31,15 @@ test("demo VOD: analyze, review clips, open highlights, edit a clip, start again
   await page.goto("/");
   await startAnalysis(page, DEMO_VOD_URL);
 
-  // Progress: the job runs through its stages and reports how many moments it found.
-  const progress = progressPage(page);
-  await expect(progress.seeClips).toBeVisible({ timeout: 90_000 });
-  const momentCount = await readMomentCount(page);
-  expect(momentCount).toBeGreaterThan(0);
-
-  // Results: one clip card per moment.
-  await progress.seeClips.click();
-  await page.waitForURL(RESULTS_URL);
+  // Progress: the job runs through its stages, then the results open by themselves (#187).
+  await page.waitForURL(RESULTS_URL, { timeout: 90_000 });
   const resultsUrl = page.url();
   const results = resultsPage(page);
+
+  // Results: one clip card per moment.
+  await expect(results.momentsHeading).toBeVisible();
+  const momentCount = await readMomentCount(page);
+  expect(momentCount).toBeGreaterThan(0);
   await expect(results.editLinks).toHaveCount(momentCount);
 
   // The highlights dialog opens with every moment listed, and closes again.
