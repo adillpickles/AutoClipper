@@ -21,6 +21,7 @@ import {
   getApiClient,
   POLL_INTERVAL_MS,
 } from "@/lib/api/client";
+import { schedulePoll } from "@/lib/poll";
 import { JOB_STAGES } from "@/lib/api/stages";
 import type { AnalysisResult, Job } from "@/lib/api/types";
 import {
@@ -62,7 +63,7 @@ export function JobProgress() {
 
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer: (() => void) | undefined;
     let failingSince: number | null = null;
     let backoff = FIRST_BACKOFF_MS;
     const client = getApiClient();
@@ -79,7 +80,7 @@ export function JobProgress() {
         if (cancelled) return;
         setView({ kind: "job", job, result });
         if (job.state === "queued" || job.state === "running") {
-          timer = setTimeout(poll, POLL_INTERVAL_MS);
+          timer = schedulePoll(poll, POLL_INTERVAL_MS);
         }
       } catch (error) {
         if (cancelled) return;
@@ -97,7 +98,7 @@ export function JobProgress() {
           setView({ kind: "offline" });
           return;
         }
-        timer = setTimeout(poll, backoff);
+        timer = schedulePoll(poll, backoff);
         backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
       }
     }
@@ -105,7 +106,7 @@ export function JobProgress() {
     void poll();
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      timer?.();
     };
   }, [jobId, attempt]);
 

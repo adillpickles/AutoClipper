@@ -1260,6 +1260,7 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 - Poll `GET /jobs/{job_id}`, `GET /exports/{export_id}` and `GET /highlights/{highlights_id}` every 2 s while `queued` or `running`, and stop at `done` or `failed`. Then fetch the result (jobs) or offer the download (exports and highlights).
 - The Library polls `POST /jobs/status` every 2 s with the IDs of loaded jobs that have a queued or running analysis or render. It updates those rows in place and reloads the loaded range if a tracked job disappears or leaves the current filter. Polling stops when the loaded list is idle.
 - Poll the media endpoint every 2 s while `preview.status` is `preparing`.
+- In a hidden browser tab the web app polls these endpoints at most every 10 s, and polls again as soon as the tab is shown (#241).
 - On network errors, back off (e.g. 2, 4, 8 s, capped at 10 s). After about a minute of failures, show "Can't reach the server" with a retry button.
 - Status responses send `Cache-Control: no-store`.
 - Keeping `job_id` in the page URL lets a reload resume polling.

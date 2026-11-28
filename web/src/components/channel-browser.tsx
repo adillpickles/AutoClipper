@@ -41,6 +41,7 @@ import {
   getApiClient,
   POLL_INTERVAL_MS,
 } from "@/lib/api/client";
+import { schedulePoll } from "@/lib/poll";
 import type { ChannelVod, ChannelVodsResponse } from "@/lib/api/types";
 import { parseVod } from "@/lib/api/vod";
 import { formatBroadcastDate, formatTime, formatViewCount } from "@/lib/format";
@@ -409,7 +410,7 @@ export function ChannelBrowser() {
   useEffect(() => {
     if (!activeJobIdsKey) return;
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer: (() => void) | undefined;
     let failingSince: number | null = null;
     let backoff = FIRST_BACKOFF_MS;
     const activeIds = activeJobIdsKey.split(",");
@@ -501,7 +502,7 @@ export function ChannelBrowser() {
         }
         const delay = backoff;
         backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
-        timer = setTimeout(() => {
+        timer = schedulePoll(() => {
           void pollOnce();
         }, delay);
         return;
@@ -510,18 +511,18 @@ export function ChannelBrowser() {
       failingSince = null;
       backoff = FIRST_BACKOFF_MS;
       setPollOffline(false);
-      timer = setTimeout(() => {
+      timer = schedulePoll(() => {
         void pollOnce();
       }, POLL_INTERVAL_MS);
     }
 
-    timer = setTimeout(() => {
+    timer = schedulePoll(() => {
       void pollOnce();
     }, POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      timer?.();
     };
   }, [activeJobIdsKey, pollAttempt]);
 

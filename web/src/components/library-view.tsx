@@ -23,6 +23,7 @@ import {
   getApiClient,
   POLL_INTERVAL_MS,
 } from "@/lib/api/client";
+import { schedulePoll as pollAfter } from "@/lib/poll";
 import type { JobSummary, ListJobsParams, State } from "@/lib/api/types";
 import { formatDateTime, formatTime, localFileName } from "@/lib/format";
 
@@ -273,13 +274,13 @@ export function LibraryView() {
   useEffect(() => {
     if (!hasActive) return;
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer: (() => void) | undefined;
     let failingSince: number | null = null;
     let backoff = FIRST_BACKOFF_MS;
     const params = listFilters(appliedQuery, stateFilter);
 
     function schedulePoll(delay = POLL_INTERVAL_MS) {
-      timer = setTimeout(() => void pollOnce(), delay);
+      timer = pollAfter(() => void pollOnce(), delay);
     }
 
     async function pollOnce() {
@@ -343,7 +344,7 @@ export function LibraryView() {
     schedulePoll();
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      timer?.();
     };
   }, [
     hasActive,
