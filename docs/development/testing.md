@@ -71,6 +71,7 @@ uv run autoclipper build-dataset --data-dir data/synthetic/pilot-seed-1 --datase
 - Test **behavior, not implementation**. A refactor that keeps behavior shouldn't break tests.
 - Bug fixes come with a regression test that fails before the fix.
 - Live tests are deselected by default: a hook in `tests/conftest.py` adds `and not live` to every `-m` expression that doesn't name `live` (a marker alone doesn't exclude anything, and an `addopts` default would be replaced by any `-m` on the command line). So `-m "not slow"` still skips them; only an expression that names `live`, such as `-m live`, can select them. `tests/test_pytest_config.py` checks this. Explicit live runs need configured credentials and tools and never run in ordinary CI.
+- **Testing pytest itself** (`pytester`): run the throwaway session with `runpytest_subprocess`, never `inline_run` or the in-process `runpytest`. An in-process session shares the outer run's garbage collector, warning filters and unraisable-exception hook, so an unclosed file left behind by an unrelated earlier test can be collected during it and fail it under `filterwarnings = ["error"]`. That fails only in full-suite runs (#225). `_run_pytest` in `tests/test_pytest_config.py` also turns the cache provider off, sets a timeout, keeps `PYTEST_ADDOPTS` and `CI` out of the child, and reads outcomes from a JUnit report.
 
 ## Configuration
 
