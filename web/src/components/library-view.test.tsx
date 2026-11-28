@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LibraryView } from "@/components/library-view";
 import { ApiRequestError, POLL_INTERVAL_MS } from "@/lib/api/client";
+import { createMockClient, resetMockStore } from "@/lib/api/mock";
 import type {
   DeleteJobResponse,
   JobListResponse,
@@ -249,6 +250,43 @@ describe("LibraryView", () => {
     expect(
       screen.getByRole("link", { name: "View details" }).getAttribute("href"),
     ).toBe("/jobs/job_int");
+  });
+
+  it("lists a VOD analyzed twice once, with one set of exports (#186)", async () => {
+    resetMockStore();
+    let now = Date.UTC(2026, 10, 28, 12, 0, 0);
+    const mock = createMockClient(() => now);
+    const first = await mock.createJob({ vod: "9000000001" });
+    now += 60_000;
+    const exportRequest = {
+      job_id: first.job.job_id,
+      candidate_id: "c001",
+      start_s: 115.5,
+      end_s: 150.0,
+      layout: "center_crop" as const,
+      captions: false,
+    };
+    await mock.createExport(exportRequest);
+    now += 60_000;
+    // Analyze the same VOD again and open its results again.
+    const second = await mock.createJob({ vod: "twitch.tv/videos/9000000001" });
+    await mock.createExport(exportRequest);
+    expect(second.job.job_id).toBe(first.job.job_id);
+    state.listJobs.mockImplementation((params) => mock.listJobs(params));
+
+    render(<LibraryView />);
+
+    const list = await screen.findByRole("list", { name: "Analysis jobs" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+    expect(
+      within(list).getByText(
+        (_, el) =>
+          el?.tagName === "SPAN" && el.textContent === "1 exported clip",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "Open results" }).getAttribute("href"),
+    ).toBe(`/jobs/${first.job.job_id}/results`);
   });
 
   it("polls only while jobs are running and stops once all jobs finish", async () => {

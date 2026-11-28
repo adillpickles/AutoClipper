@@ -115,7 +115,9 @@ export function ResultsScreen() {
 
   // Request the top 10 exports once the result is in, then poll each until it finishes.
   // Export IDs are remembered per job, so coming back to the page shows the same clips instead of
-  // rendering them all again. `renderRef` lets a card's Retry button run the same flow.
+  // rendering them all again. Without a remembered ID (another browser, cleared storage) the
+  // server returns the identical finished render instead of a new one (§ 6.1, #186).
+  // `renderRef` lets a card's Retry button run the same flow.
   const renderRef = useRef<
     ((candidate: Candidate, fresh: boolean) => Promise<void>) | null
   >(null);

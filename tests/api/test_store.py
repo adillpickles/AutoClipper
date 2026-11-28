@@ -710,9 +710,10 @@ def test_list_jobs_cursor_survives_deleting_a_loaded_job(tmp_path: Path, delete_
     # Identical timestamps make creation sequence the pagination tie-breaker.
     service = _make_service(tmp_path, clock=_FakeClock(step_s=0.0))
     with TestClient(create_app(service)) as client:
+        # Distinct VODs: analyzing the same VOD again reuses its job (#186).
         jobs = [
-            client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
-            for _ in range(25)
+            client.post(f"{API}/jobs", json={"vod": f"91000000{index:02d}"}).json()["job_id"]
+            for index in range(25)
         ][::-1]
         first = client.get(f"{API}/jobs", params={"q": "stream 1", "state": "done"}).json()
         assert [job["job_id"] for job in first["items"]] == jobs[:20]
@@ -731,6 +732,52 @@ def test_list_jobs_cursor_survives_deleting_a_loaded_job(tmp_path: Path, delete_
             invalid = client.get(f"{API}/jobs", params=params)
             assert invalid.status_code == 422
             assert invalid.json()["error"]["code"] == "invalid_request"
+
+
+def test_the_library_collapses_duplicate_analyses_left_by_older_versions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    export = {
+        "candidate_id": "c001",
+        "start_s": 118.0,
+        "end_s": 148.0,
+        "layout": "center_crop",
+        "captions": False,
+    }
+    # Before #186 every analysis of a VOD was a new job: simulate that library.
+    with monkeypatch.context() as patch:
+        patch.setattr(MockService, "_reusable_job", lambda self, key: None)
+        with TestClient(create_app(_make_service(tmp_path))) as client:
+            jobs = [
+                client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+                for _ in range(3)
+            ]
+            for job_id in jobs[:2]:
+                created = client.post(f"{API}/exports", json={"job_id": job_id, **export})
+                assert created.status_code == 201
+            other = client.post(f"{API}/jobs", json={"vod": "9000000003"}).json()["job_id"]
+
+    # After the upgrade and a restart, the Library lists each VOD once without deleting anything.
+    with TestClient(create_app(_make_service(tmp_path))) as client:
+        listed = client.get(f"{API}/jobs").json()
+        assert [item["job_id"] for item in listed["items"]] == [other, jobs[2]]
+        assert listed["total"] == 2
+        assert (
+            client.get(f"{API}/jobs", params={"state": "done", "q": "9000000001"}).json()["total"]
+            == 1
+        )
+        assert client.get(f"{API}/jobs/{jobs[0]}").status_code == 200
+        assert client.get(f"{API}/jobs/{jobs[0]}/result").status_code == 200
+
+        # Analyzing the VOD again reuses the newest finished job.
+        again = client.post(f"{API}/jobs", json={"vod": "9000000001"})
+        assert (again.status_code, again.json()["job_id"]) == (200, jobs[2])
+
+        # Deleting the shown row reveals the next one, with its own exports.
+        assert client.delete(f"{API}/jobs/{jobs[2]}").status_code == 200
+        listed = client.get(f"{API}/jobs").json()
+        assert [item["job_id"] for item in listed["items"]] == [other, jobs[1]]
+        assert listed["items"][1]["export_count"] == 1
 
 
 def test_list_jobs_includes_progress_while_running_and_clears_when_done(tmp_path: Path) -> None:
@@ -798,8 +845,9 @@ def test_job_status_checks_render_files_only_for_requested_jobs(
     with TestClient(create_app(_make_service(tmp_path))) as client:
         job_ids: list[str] = []
         export_ids: list[str] = []
-        for _ in range(3):
-            job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+        for index in range(3):
+            vod = f"91000000{index:02d}"
+            job_id = client.post(f"{API}/jobs", json={"vod": vod}).json()["job_id"]
             job_ids.append(job_id)
             export = client.post(
                 f"{API}/exports",

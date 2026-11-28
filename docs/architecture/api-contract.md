@@ -51,13 +51,13 @@ Model names used below: `CreateJobRequest`, `VideoUpload`, `Job`, `JobRenderSumm
 | `PUT` | `/api/v1/settings` | Set or clear the output folder finished renders are copied to (§ 9.9) | `200` `AppSettings` |
 | `GET` | `/api/v1/jobs` | List analysis jobs (newest first, paginated, optional `q` and `state` filters, § 3.7) | `200` `JobListResponse` |
 | `POST` | `/api/v1/jobs/status` | Look up current library summaries for a batch of job IDs (§ 3.7) | `200` list of `JobSummary` |
-| `POST` | `/api/v1/jobs` | Start analyzing a VOD | `201` new `Job`; `200` if the same VOD is already queued/running |
+| `POST` | `/api/v1/jobs` | Start analyzing a VOD | `201` new `Job`; `200` if the same VOD and video source is already analyzed or queued/running |
 | `GET` | `/api/v1/jobs/{job_id}` | Job status and progress (poll this) | `200` `Job` |
 | `DELETE` | `/api/v1/jobs/{job_id}` | Remove a finished job from the library index and optionally delete its rendered files (§ 3.8) | `200` `DeleteJobResponse` |
 | `GET` | `/api/v1/jobs/{job_id}/result` | Ranked candidates of a `done` job | `200` `AnalysisResult` |
 | `GET` | `/api/v1/jobs/{job_id}/candidates/{candidate_id}/media` | Preview and export availability for one candidate | `200` `CandidateMedia` |
 | `GET` | `/api/v1/media/{media_id}` | Preview video file, reached only through `PreviewMedia.url` (§ 5.1) | `200`/`206` `video/mp4` |
-| `POST` | `/api/v1/exports` | Start exporting a trimmed candidate | `201` new `Export`; `200` if an identical export is queued/running |
+| `POST` | `/api/v1/exports` | Start exporting a trimmed candidate | `201` new `Export`; `200` if an identical export is queued/running or finished with its file on disk |
 | `GET` | `/api/v1/exports/{export_id}` | Export status (poll this) | `200` `Export` |
 | `GET` | `/api/v1/exports/{export_id}/file` | Download the finished MP4 | `200` `video/mp4` |
 | `POST` | `/api/v1/highlights` | Start rendering a highlights video from chosen candidates | `201` new `HighlightsVideo`; `200` if an identical one is queued/running |
@@ -95,7 +95,7 @@ The digits become `video_id`. Not accepted in v1: clip links, channel pages, oth
 
 **Local video file.** If `video_path` is not `null`, it must be an absolute path to an existing, readable file with a supported video extension (`.mp4`, `.mkv`, `.ts`, `.mts`, `.m2ts`, `.mov`, `.webm`, `.flv`, `.m4v`, `.avi`, `.mpg`, `.mpeg`, `.wmv`, `.ogv`) that the shared media probe (#51) reads as a video with a known duration; otherwise the request fails with `422 invalid_video_path` (without exposing local filesystem paths in `message`) and no job is created. If `upload_id` is not `null`, it must refer to a validated upload from `POST /api/v1/uploads`; otherwise the request fails with `422 invalid_video_upload`. Comparing the file with the VOD needs Twitch's duration, so the worker does it while resolving the VOD: if the file's duration differs from the VOD's `duration_s` by more than 2 s, the job fails with `video_mismatch` (§ 3.5). The pipeline may also take the VOD's audio from this file instead of downloading it (#44).
 
-**Responses.** `201 Created` with the new `Job` (`queued`) and `Location: /api/v1/jobs/{job_id}`. If a job with the same `video_id`, `video_path`, and `upload_id` is already `queued` or `running`, nothing new is created and that job comes back with `200 OK`, so double-clicks and reloads don't start duplicate work. A finished (`done` or `failed`) job is never reused: posting again re-analyzes. Reusing finished analyses is the "caching analyzed VODs" Should item in the [PRD](../product/prd.md#scope-at-a-glance).
+**Responses.** `201 Created` with the new `Job` (`queued`) and `Location: /api/v1/jobs/{job_id}`. If a job with the same `video_id`, `video_path`, and `upload_id` (the same VOD and video source) already exists, nothing new is created and that job comes back with `200 OK` (no `Location`), so double-clicks, reloads and analyzing a VOD again don't start duplicate work or add a second Library entry (#186). The newest `done` job whose saved result is still on disk wins; otherwise a `queued` or `running` one. A `failed` job, or a `done` job whose result file is gone, is never reused: posting again re-analyzes. This is the "caching analyzed VODs" Should item in the [PRD](../product/prd.md#scope-at-a-glance). To re-analyze a VOD from scratch (e.g. after training a new model), delete its job (§ 3.8) and post again. A new upload has a new `upload_id`, so it counts as a new source.
 
 ### 3.1a Upload a VOD video file
 
@@ -349,6 +349,8 @@ HTTP errors for jobs use the envelope from § 8:
 ### 3.7 List jobs (Library)
 
 `GET /api/v1/jobs` returns a paginated `JobListResponse` with `Cache-Control: no-store`, ordered by `created_at`, creation sequence, and `job_id`, all descending.
+
+The list has **one row per VOD and video source** (`video_id`, `video_path`, `upload_id`). Libraries from before #186 can hold several jobs for the same source; the list shows only the newest `done` job whose result is on disk, or the newest job if none is. The others are hidden, not deleted: they and their renders still answer by ID (`GET /jobs/{job_id}`, `POST /jobs/status`, result and file downloads), and deleting the shown row (§ 3.8) reveals the next one. Collapsing happens before the `q` and `state` filters, and `total` counts rows, not jobs.
 
 Query parameters (unknown or out-of-range values return `422 invalid_request`):
 
@@ -823,7 +825,7 @@ Further layouts (e.g. automatic smart crop, optional polish) would be added as n
 
 **Exact trim.** The export covers exactly `[start_s, end_s)` of the source as sent, to within one video frame. The server adds **no chat-lag shift and no padding**; a user who wants context trims wider ([overview § 4.6](overview.md#46-export), [labeling § 5](../data/labeling.md#5-chat-lag)). The interval may extend beyond the candidate's own bounds but must satisfy `export.min_start_s ≤ start_s < end_s ≤ export.max_end_s` and `0.5 s ≤ end_s - start_s ≤ export.max_duration_s` (matching the default cutter minimum in [overview § 4.6](overview.md#46-export); otherwise `422 invalid_export_bounds`). Output is always an MP4, H.264/AAC, 1080×1920 ([PRD § Export](../product/prd.md#export)).
 
-**Responses.** `201 Created` with the new `Export` (`queued`) and `Location: /api/v1/exports/{export_id}`. If an export with the same six request fields is `queued` or `running`, it comes back with `200 OK` instead. Errors: `404 job_not_found` or `candidate_not_found`, `409 job_not_done`, `409 media_unavailable` (export isn't available now; `details.reason` holds the `MediaUnavailableReason`), `422 invalid_request` (including a layout not in `export.layouts`) or `invalid_export_bounds`. Checks run in this order and the first failure is returned: the body's shape and types (`422 invalid_request`), the job (`404 job_not_found`, then `409 job_not_done`), the candidate (`404 candidate_not_found`), export availability (`409 media_unavailable`), the layout (`422 invalid_request`), then the bounds (`422 invalid_export_bounds`). So when export is unavailable, an empty `export.layouts` and null bounds never produce a `422`.
+**Responses.** `201 Created` with the new `Export` (`queued`) and `Location: /api/v1/exports/{export_id}`. If an export with the same six request fields is `queued` or `running`, or `done` with its file still on disk, it comes back with `200 OK` instead, so opening a results page again never renders its clips twice (#186). A `failed` export, or a `done` one whose file was removed, is never reused: posting again renders a new one. Errors: `404 job_not_found` or `candidate_not_found`, `409 job_not_done`, `409 media_unavailable` (export isn't available now; `details.reason` holds the `MediaUnavailableReason`), `422 invalid_request` (including a layout not in `export.layouts`) or `invalid_export_bounds`. Checks run in this order and the first failure is returned: the body's shape and types (`422 invalid_request`), the job (`404 job_not_found`, then `409 job_not_done`), the candidate (`404 candidate_not_found`), export availability (`409 media_unavailable`), the layout (`422 invalid_request`), then the bounds (`422 invalid_export_bounds`). So when export is unavailable, an empty `export.layouts` and null bounds never produce a `422`.
 
 ### 6.2 The `Export` resource
 
@@ -1212,8 +1214,8 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 
 ### 9.2 Duplicates
 
-- `POST /jobs` for a `video_id` and `video_path` that are already `queued` or `running` returns that job (`200`).
-- `POST /exports` with the same six fields as an export that's `queued` or `running` returns it (`200`).
+- `POST /jobs` for a `video_id`, `video_path` and `upload_id` that already have a `done` job with its result, or a `queued` or `running` one, returns that job (`200`, § 3.1). Failed jobs are retried.
+- `POST /exports` with the same six fields as an export that's `queued`, `running` or `done` with its file on disk returns it (`200`, § 6.1). Failed exports are retried.
 - `POST /highlights` with the same `job_id`, resolved `segments`, `order` and `captions` as a highlights video that's `queued` or `running` returns it (`200`).
 - `GET` requests are safe and idempotent. There's no `Idempotency-Key` header: matching on content is enough for one local user.
 
