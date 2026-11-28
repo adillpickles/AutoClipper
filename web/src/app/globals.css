@@ -1,162 +1,123 @@
 @import "tailwindcss";
 
 /*
- * AutoClipper Design System ("Broadcast Edit Bay")
- * Light and dark tokens follow the OS color scheme and target WCAG AA (>= 4.5:1)
- * text contrast on every surface pairing.
+ * AutoClipper design system: "Broadcast Edit Bay".
+ *
+ * The app is an edit suite: one dark theme (shared with the landing page in site/), quiet
+ * hairline surfaces, Broadcast Violet for the one action that matters on a screen and Peak
+ * Amber for signal (peaks, live work, warnings). Space Grotesk carries headings, Plus Jakarta
+ * Sans the body, and JetBrains Mono only timecodes, durations and file names.
+ *
+ * Every text/surface pairing targets WCAG AA (>= 4.5:1). Token names are a public contract:
+ * screens use them through Tailwind (bg-surface-panel, text-ink-secondary, ...).
  */
-:root {
-  /* Surfaces */
-  --surface-canvas: #f6f7fa;
-  --surface-panel: #ffffff;
-  --surface-elevated: #eef1f6;
-  --surface-subtle: #e3e7f0;
-  --surface-media: #0d0f15;
 
-  /* Borders */
-  --border-subtle: #dce1ec;
-  --border-strong: #bcc5d6;
+/* Legacy `dark:` classes in older screens always apply: the app has one, dark theme. */
+@custom-variant dark (&:where(:root, :root *));
+
+:root {
+  /* Surfaces, darkest to lightest */
+  --surface-canvas: #0b0d12;
+  --surface-panel: #11141c;
+  --surface-elevated: #181c27;
+  --surface-subtle: #212635;
+  --surface-media: #06070a;
+
+  /* Borders: hairlines, not boxes */
+  --border-subtle: #222838;
+  --border-strong: #343c52;
 
   /* Ink (text) */
-  --ink-primary: #10131a;
-  --ink-secondary: #464f66;
-  --ink-tertiary: #59637a;
+  --ink-primary: #f2f4f9;
+  --ink-secondary: #aab3c6;
+  --ink-tertiary: #8f9ab0;
 
-  /* Primary brand accent — Broadcast Violet (7.8:1 white on #6d28d9) */
-  --accent: #6d28d9;
-  --accent-hover: #5b21b6;
-  --accent-ink: #ffffff;
-  --accent-soft: #ede9fe;
-  --accent-soft-ink: #4c1d95;
-  --accent-border: #c4b5fd;
+  /* Broadcast Violet: the primary action (8.5:1 canvas ink on #a78bfa) */
+  --accent: #a78bfa;
+  --accent-hover: #c4b5fd;
+  --accent-ink: #0b0d12;
+  --accent-soft: rgb(167 139 250 / 0.14);
+  --accent-soft-ink: #ddd6fe;
+  --accent-border: rgb(167 139 250 / 0.38);
 
-  /* Secondary energy/signal accent — Peak Amber */
-  --signal: #d97706;
-  --signal-soft: #fef3c7;
-  --signal-soft-ink: #78350f;
-  --signal-border: #fcd34d;
+  /* Peak Amber: signal, live work and warnings */
+  --signal: #f5a524;
+  --signal-ink: #120c02;
+  --signal-soft: rgb(245 165 36 / 0.13);
+  --signal-soft-ink: #fde3a7;
+  --signal-border: rgb(245 165 36 / 0.36);
 
-  /* Candidate source semantics (all >= 4.5:1) */
-  --source-both: #047857;
-  --source-both-hover: #065f46;
-  --source-both-ink: #ffffff;
-  --source-both-soft: #d1fae5;
-  --source-both-soft-ink: #065f46;
-  --source-both-border: #6ee7b7;
+  /* Candidate source semantics */
+  --source-both: #34d399;
+  --source-both-hover: #6ee7b7;
+  --source-both-ink: #07140f;
+  --source-both-soft: rgb(52 211 153 / 0.13);
+  --source-both-soft-ink: #a7f3d0;
+  --source-both-border: rgb(52 211 153 / 0.34);
 
-  --source-discovered: #0369a1;
-  --source-discovered-hover: #075985;
-  --source-discovered-ink: #ffffff;
-  --source-discovered-soft: #e0f2fe;
-  --source-discovered-soft-ink: #075985;
-  --source-discovered-border: #7dd3fc;
+  --source-discovered: #38bdf8;
+  --source-discovered-hover: #7dd3fc;
+  --source-discovered-ink: #06131c;
+  --source-discovered-soft: rgb(56 189 248 / 0.13);
+  --source-discovered-soft-ink: #bae6fd;
+  --source-discovered-border: rgb(56 189 248 / 0.34);
 
-  --source-viewer: #7e22ce;
-  --source-viewer-hover: #6b21a8;
-  --source-viewer-ink: #ffffff;
-  --source-viewer-soft: #f3e8ff;
-  --source-viewer-soft-ink: #581c87;
-  --source-viewer-border: #d8b4fe;
+  --source-viewer: #c084fc;
+  --source-viewer-hover: #d8b4fe;
+  --source-viewer-ink: #14081f;
+  --source-viewer-soft: rgb(192 132 252 / 0.14);
+  --source-viewer-soft-ink: #e9d5ff;
+  --source-viewer-border: rgb(192 132 252 / 0.34);
+
+  /* Success (done, installed, saved) */
+  --success: #34d399;
+  --success-soft: rgb(52 211 153 / 0.12);
+  --success-soft-ink: #a7f3d0;
+  --success-border: rgb(52 211 153 / 0.32);
 
   /* Danger / error */
-  --danger: #b91c1c;
-  --danger-ink: #ffffff;
-  --danger-soft: #fef2f2;
-  --danger-soft-ink: #991b1b;
-  --danger-border: #fecaca;
+  --danger: #f87171;
+  --danger-ink: #1a0707;
+  --danger-soft: rgb(239 68 68 / 0.12);
+  --danger-soft-ink: #fecaca;
+  --danger-border: rgb(248 113 113 / 0.36);
 
   /* Focus ring */
-  --focus-ring: #6d28d9;
+  --focus-ring: #c4b5fd;
   --focus-ring-media: #c4b5fd;
 
-  /* Radii & elevation */
-  --radius-panel: 1.25rem;
-  --radius-card: 1rem;
-  --radius-control: 0.625rem;
+  /* Overlay behind dialogs */
+  --scrim: rgb(4 5 8 / 0.72);
+
+  /* Radii: panels > cards > controls, so nesting reads */
+  --radius-panel: 1rem;
+  --radius-card: 0.75rem;
+  --radius-control: 0.5rem;
   --radius-pill: 9999px;
 
   --shadow-panel:
-    0 1px 2px rgb(16 19 26 / 0.04), 0 8px 24px -12px rgb(16 19 26 / 0.08);
+    0 1px 0 rgb(255 255 255 / 0.035) inset, 0 18px 40px -24px rgb(0 0 0 / 0.75);
   --shadow-card:
-    0 1px 2px rgb(16 19 26 / 0.05), 0 4px 12px -6px rgb(16 19 26 / 0.07);
+    0 1px 0 rgb(255 255 255 / 0.03) inset, 0 8px 22px -14px rgb(0 0 0 / 0.6);
+  --shadow-dialog:
+    0 1px 0 rgb(255 255 255 / 0.05) inset, 0 32px 80px -24px rgb(0 0 0 / 0.85);
 
-  /* Type scale */
-  --type-display: clamp(2rem, 4vw, 3.125rem);
-  --type-title: clamp(1.5rem, 2.5vw, 2rem);
-  --type-heading: 1.125rem;
+  /* Type scale (major third from 15px body) */
+  --type-display: clamp(2.25rem, 5.2vw, 3.75rem);
+  --type-title: clamp(1.625rem, 3vw, 2.25rem);
+  --type-heading: 1.1875rem;
   --type-body: 0.9375rem;
   --type-caption: 0.8125rem;
   --type-micro: 0.75rem;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 
   /* Legacy aliases retained for components not yet migrated to surface/ink tokens */
   --background: var(--surface-canvas);
   --foreground: var(--ink-primary);
 
-  color-scheme: light dark;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --surface-canvas: #0b0d12;
-    --surface-panel: #131620;
-    --surface-elevated: #1a1e2b;
-    --surface-subtle: #232838;
-    --surface-media: #07090d;
-
-    --border-subtle: #252b3b;
-    --border-strong: #374058;
-
-    --ink-primary: #f4f6fb;
-    --ink-secondary: #a8b2c7;
-    --ink-tertiary: #94a0b8;
-
-    /* Bright Broadcast Violet on dark surfaces (8.5:1 dark ink on #a78bfa) */
-    --accent: #a78bfa;
-    --accent-hover: #c4b5fd;
-    --accent-ink: #0b0d12;
-    --accent-soft: rgb(167 139 250 / 0.16);
-    --accent-soft-ink: #ddd6fe;
-    --accent-border: rgb(167 139 250 / 0.35);
-
-    --signal: #f59e0b;
-    --signal-soft: rgb(245 158 11 / 0.15);
-    --signal-soft-ink: #fde68a;
-    --signal-border: rgb(245 158 11 / 0.35);
-
-    --source-both: #34d399;
-    --source-both-hover: #6ee7b7;
-    --source-both-ink: #07140f;
-    --source-both-soft: rgb(52 211 153 / 0.15);
-    --source-both-soft-ink: #a7f3d0;
-    --source-both-border: rgb(52 211 153 / 0.35);
-
-    --source-discovered: #38bdf8;
-    --source-discovered-hover: #7dd3fc;
-    --source-discovered-ink: #06131c;
-    --source-discovered-soft: rgb(56 189 248 / 0.15);
-    --source-discovered-soft-ink: #bae6fd;
-    --source-discovered-border: rgb(56 189 248 / 0.35);
-
-    --source-viewer: #c084fc;
-    --source-viewer-hover: #d8b4fe;
-    --source-viewer-ink: #14081f;
-    --source-viewer-soft: rgb(192 132 252 / 0.16);
-    --source-viewer-soft-ink: #e9d5ff;
-    --source-viewer-border: rgb(192 132 252 / 0.35);
-
-    --danger: #f87171;
-    --danger-ink: #1a0707;
-    --danger-soft: rgb(239 68 68 / 0.14);
-    --danger-soft-ink: #fecaca;
-    --danger-border: rgb(248 113 113 / 0.35);
-
-    --focus-ring: #c4b5fd;
-
-    --shadow-panel:
-      0 1px 0 rgb(255 255 255 / 0.04) inset, 0 12px 32px -16px rgb(0 0 0 / 0.6);
-    --shadow-card:
-      0 1px 0 rgb(255 255 255 / 0.04) inset, 0 6px 20px -10px rgb(0 0 0 / 0.5);
-  }
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -184,6 +145,7 @@
   --color-accent-border: var(--accent-border);
 
   --color-signal: var(--signal);
+  --color-signal-ink: var(--signal-ink);
   --color-signal-soft: var(--signal-soft);
   --color-signal-soft-ink: var(--signal-soft-ink);
   --color-signal-border: var(--signal-border);
@@ -209,6 +171,11 @@
   --color-source-viewer-soft-ink: var(--source-viewer-soft-ink);
   --color-source-viewer-border: var(--source-viewer-border);
 
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-soft-ink: var(--success-soft-ink);
+  --color-success-border: var(--success-border);
+
   --color-danger: var(--danger);
   --color-danger-ink: var(--danger-ink);
   --color-danger-soft: var(--danger-soft);
@@ -217,6 +184,7 @@
 
   --color-focus-ring: var(--focus-ring);
   --color-focus-ring-media: var(--focus-ring-media);
+  --color-scrim: var(--scrim);
 
   --font-display:
     "Space Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
@@ -225,6 +193,13 @@
   --font-mono:
     "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
 
+  --text-display: var(--type-display);
+  --text-display--line-height: 1.02;
+  --text-display--letter-spacing: -0.035em;
+  --text-title: var(--type-title);
+  --text-title--line-height: 1.1;
+  --text-title--letter-spacing: -0.025em;
+
   --radius-panel: var(--radius-panel);
   --radius-card: var(--radius-card);
   --radius-control: var(--radius-control);
@@ -232,6 +207,48 @@
 
   --shadow-panel: var(--shadow-panel);
   --shadow-card: var(--shadow-card);
+  --shadow-dialog: var(--shadow-dialog);
+
+  --ease-out: var(--ease-out);
+
+  --animate-signal-rise: signal-rise 700ms var(--ease-out) both;
+  --animate-dialog-in: dialog-in 220ms var(--ease-out) both;
+  --animate-scrim-in: scrim-in 180ms ease-out both;
+
+  @keyframes signal-rise {
+    from {
+      transform: scaleY(0.04);
+      opacity: 0.2;
+    }
+    to {
+      transform: scaleY(1);
+      opacity: 1;
+    }
+  }
+
+  @keyframes dialog-in {
+    from {
+      transform: translateY(10px) scale(0.985);
+      opacity: 0;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+
+  @keyframes scrim-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+}
+
+html {
+  background: var(--surface-canvas);
 }
 
 body {
@@ -240,6 +257,7 @@ body {
   font-family: var(--font-sans);
   font-size: var(--type-body);
   text-rendering: optimizeLegibility;
+  overflow-x: clip;
 }
 
 ::selection {
@@ -308,6 +326,12 @@ body {
   .stage-anim-grow {
     animation: stage-grow 1.4s ease-out infinite alternate;
   }
+}
+
+/* Native controls (checkboxes, radios, number spinners) follow the accent. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
 }
 
 @media (prefers-reduced-motion: reduce) {
