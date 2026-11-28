@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Candidate } from "@/lib/api/types";
-import {
-  buildActivityBins,
-  layoutTimelineMarkers,
-  MIN_MARKER_WIDTH_PCT,
-} from "@/lib/timeline";
+import { layoutTimelineMarkers, MIN_MARKER_WIDTH_PCT } from "@/lib/timeline";
 
 function candidate(
   id: string,
@@ -122,18 +118,5 @@ describe("timeline layout helpers", () => {
     );
     expect(layout.markers[0].scoreFraction).toBeCloseTo(1.0);
     expect(layout.markers[1].scoreFraction).toBeCloseTo(0.15);
-  });
-
-  it("builds candidate activity bins concentrated over candidate intervals", () => {
-    const bins = buildActivityBins(
-      [candidate("c001", 1, 180, 210, 5.0)],
-      360,
-      12,
-    );
-
-    expect(bins).toHaveLength(12);
-    expect(bins[0]).toBe(0);
-    expect(bins[6]).toBe(1); // 180..210 falls in bin 6 of 12 (30 s per bin)
-    expect(bins[11]).toBe(0);
   });
 });

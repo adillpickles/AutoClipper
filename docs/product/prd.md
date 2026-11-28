@@ -64,7 +64,7 @@ Inspired by tools like Opus Clip: the analysis is a black box to the user; the o
 5. **Download** one clip or all of them.
 6. **Highlights video.** A "Make highlights video" button joins the top moments (all 10 by default; untick any you don't want; uses your trims) in stream order into one 16:9 video, then offers it for download.
 
-A whole-stream timeline with the top moments highlighted is a Should, as a secondary view.
+A whole-stream timeline with the top moments highlighted is a Should, as a secondary view. It works like a video editor's timeline: a scrub bar across the VOD with shaded and numbered spans for the ranked moments, hover or drag to see the time, the moment there and a preview frame when the video is available, and click to open that moment.
 
 ## 5. Delivery
 
