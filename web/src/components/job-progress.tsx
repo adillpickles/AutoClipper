@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { Button, ButtonLink } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -45,6 +45,16 @@ export function JobProgress() {
   const { jobId } = useParams<{ jobId: string }>();
   const [view, setView] = useState<View>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
+
+  // With cacheComponents, Next keeps this page in a hidden <Activity> when the user leaves it
+  // (as for the start form, #184), so coming back would show the old screen with its replay
+  // already done, and open the results at once (#187). That happens when the same VOD is
+  // analyzed again and the server returns this job. Effect cleanup runs when the page is
+  // hidden: go back to loading, so the next visit polls and decides afresh whether to replay
+  // the stages and open the results. useLayoutEffect lands it before the page shows again.
+  useLayoutEffect(() => {
+    return () => setView({ kind: "loading" });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

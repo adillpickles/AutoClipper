@@ -11,6 +11,7 @@ import {
   screen,
   within,
 } from "@testing-library/react";
+import { Activity } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JobProgress } from "@/components/job-progress";
@@ -202,6 +203,34 @@ describe("JobProgress stage pacing", () => {
     finished = true;
     await advance(2100 + MIN_STAGE_MS);
     expect(heading()).toBe("Analysis finished");
+    expect(state.router.replace).toHaveBeenCalledWith("/jobs/job_1/results");
+  });
+
+  it("starts afresh when Next shows the kept page again for a re-requested job", async () => {
+    // With cacheComponents, Next hides a page in <Activity> instead of unmounting it (#184).
+    state.getJob.mockResolvedValue(doneJob("2026-11-20T12:00:09Z"));
+    const page = (mode: "visible" | "hidden") => (
+      <Activity mode={mode}>
+        <JobProgress />
+      </Activity>
+    );
+    const { rerender } = render(page("visible"));
+    await flush();
+    await advance(MIN_STAGE_MS * 6);
+    expect(state.router.replace).toHaveBeenCalledTimes(1);
+
+    // The user analyzes the same VOD again later; the server returns this job (#186).
+    rerender(page("hidden"));
+    state.router.replace.mockClear();
+    vi.setSystemTime(Date.parse("2026-11-20T13:00:00Z"));
+    markJustRequested("job_1");
+    rerender(page("visible"));
+    await flush();
+
+    // The replay runs again instead of the old finished screen opening the results at once.
+    expect(heading()).toBe("Step 1 of 6: Looking up the VOD");
+    expect(state.router.replace).not.toHaveBeenCalled();
+    await advance(MIN_STAGE_MS * 6);
     expect(state.router.replace).toHaveBeenCalledWith("/jobs/job_1/results");
   });
 
