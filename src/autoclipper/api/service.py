@@ -950,9 +950,9 @@ class MockService:
         ):
             return None
         candidate = (self.uploads_dir / stored_name).resolve()
-        if not _is_within(candidate, self.uploads_dir) or not candidate.is_file():
-            return None
-        return candidate
+        # Cached even when the file is gone: every caller checks `is_file()`, so a file put
+        # back while the server runs is found again without a restart.
+        return candidate if _is_within(candidate, self.uploads_dir) else None
 
     def _resolve_upload_path(self, upload_id: str) -> Path | None:
         """Resolve an opaque `upload_id` to its stored file path, or None if missing/invalid.

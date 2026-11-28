@@ -443,6 +443,46 @@ def test_job_upload_id_validation_dedup_and_restart_persistence(
         restarted.close()
 
 
+def test_an_upload_missing_at_startup_is_found_again_when_put_back(
+    make_upload_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+    samples: SampleMedia,
+) -> None:
+    client, service = make_upload_client()
+    upload_id = client.post(f"{API}/uploads?filename=vod.mp4", content=b"video-bytes").json()[
+        "upload_id"
+    ]
+    job_id = client.post(f"{API}/jobs", json={"vod": "9000000007", "upload_id": upload_id}).json()[
+        "job_id"
+    ]
+    assert client.get(f"{API}/jobs/{job_id}").json()["state"] == "done"
+    stored = service.uploads_dir / f"{upload_id}.mp4"
+    moved = tmp_path / "moved-away.mp4"
+    stored.replace(moved)  # the user moves the file away while the server is stopped
+    client.__exit__(None, None, None)
+
+    restarted = MockService(
+        samples=samples,
+        output_dir=tmp_path / "artifacts",
+        step_s=0.0,
+        synchronous=True,
+        probe_video=lambda path: path.suffix == ".mp4",
+    )
+    try:
+        with TestClient(create_app(restarted)) as restarted_client:
+            media_url = f"{API}/jobs/{job_id}/candidates/c001/media"
+            missing = restarted_client.get(media_url).json()
+            assert missing["export"]["status"] == "unavailable"
+            assert missing["export"]["reason"] == "local_file_missing"
+
+            moved.replace(stored)  # put back while the server runs
+
+            found = restarted_client.get(media_url).json()
+            assert found["export"]["status"] == "available"
+    finally:
+        restarted.close()
+
+
 def test_local_video_path_rejects_bad_extensions_and_never_leaks_paths(
     make_upload_client: Callable[..., tuple[TestClient, MockService]],
     tmp_path: Path,

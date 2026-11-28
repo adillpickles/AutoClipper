@@ -7,6 +7,7 @@ chunk or on disk. Each member records its size up front, so a reel over 4 GiB ge
 """
 
 import io
+import logging
 from collections.abc import Buffer, Generator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,8 @@ from typing import Final
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
 from autoclipper.schemas import ArchiveOmission
+
+log = logging.getLogger(__name__)
 
 CHUNK_BYTES: Final = 256 * 1024
 MISSING_NOTE_NAME: Final = "missing.txt"
@@ -72,8 +75,14 @@ def stream_archive(plan: ArchivePlan) -> Generator[bytes]:
                 # Size and mtime from the file; zipfile switches to ZIP64 only when it's needed.
                 info = ZipInfo.from_file(member.path, member.filename, strict_timestamps=False)
                 source = member.path.open("rb")
-            except OSError:
-                # The file was removed after the plan was built.
+            except OSError as exc:
+                # Usually the file was removed after the plan was built; missing.txt says so.
+                log.warning(
+                    "archive member could not be opened, listing it in %s file=%s: %s",
+                    MISSING_NOTE_NAME,
+                    member.path.name,
+                    exc,
+                )
                 notes.append(member.missing_note)
                 continue
             info.compress_type = ZIP_STORED
