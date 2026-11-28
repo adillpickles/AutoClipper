@@ -68,6 +68,10 @@ export function ClipCard({
   return (
     <li className="flex min-w-0 flex-col overflow-hidden rounded-card border border-border-subtle bg-surface-panel shadow-card transition-colors hover:border-border-strong">
       <div className="relative aspect-[9/16] w-full bg-surface-media">
+        {/* The card plays only the finished 1080x1920 export, never the 16:9 preview. It must
+            use `object-contain`: an author `object-fit` overrides the browser's fullscreen
+            default, and `object-cover` would crop the vertical clip to a landscape band of the
+            screen in fullscreen (#185). In the 9:16 box, contain and cover look the same. */}
         {ready && !videoFailed ? (
           <video
             src={clip.url ?? undefined}
@@ -75,7 +79,7 @@ export function ClipCard({
             playsInline
             preload="metadata"
             onError={() => setVideoFailed(true)}
-            className="absolute inset-0 size-full object-cover"
+            className="absolute inset-0 size-full object-contain"
             aria-label={`Clip ${candidate.rank}, ${span} in the stream`}
           />
         ) : (
