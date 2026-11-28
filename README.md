@@ -24,7 +24,14 @@ Start with the task guide and current state, then read what's relevant:
 
 ## First local run
 
-**Windows shortcut:** with uv and Node.js installed, `powershell -ExecutionPolicy Bypass -File scripts/demo.ps1` does steps 2–4 in one go: installs dependencies and tools, fills in `.env` (including a generated chat hash salt) and `web/.env.local`, runs `autoclipper doctor`, starts the backend and web app in their own windows and opens the browser. Without Twitch credentials in `.env` it starts in mock mode; `-Mock` forces it and `-SkipInstall` skips the installs.
+**One command:** with uv and Node.js installed (step 1), this does steps 2–5 and opens the app in your browser:
+
+```bash
+bash scripts/demo.sh                                           # macOS, Linux (Ctrl+C stops it)
+powershell -ExecutionPolicy Bypass -File scripts/demo.ps1      # Windows (close its two windows to stop)
+```
+
+It installs dependencies and tools, creates `.env` with a generated chat hash salt, writes `web/.env.local`, runs `autoclipper doctor` and starts the backend and web app. Without Twitch credentials in `.env` it starts in mock mode. Re-running is safe. Flags: `--mock` / `-Mock`, `--skip-install` / `-SkipInstall`, `--api-port` / `-ApiPort`, `--web-port` / `-WebPort`, `--demo-vod` / `-DemoVod`.
 
 ### 1. Prerequisites
 
