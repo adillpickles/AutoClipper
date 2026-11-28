@@ -1,10 +1,32 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ClipCard, type ClipExport } from "@/components/clip-card";
 import type { Candidate, Export } from "@/lib/api/types";
+
+// jsdom can't decode video: by default the poster never arrives.
+const poster = vi.hoisted(() => ({
+  clipPoster: vi.fn((url: string) => {
+    void url;
+    return new Promise<string>(() => {});
+  }),
+}));
+
+vi.mock("@/lib/clip-poster", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/clip-poster")>(
+      "@/lib/clip-poster",
+    );
+  return { ...actual, clipPoster: poster.clipPoster };
+});
 
 const RICH_CANDIDATE: Candidate = {
   candidate_id: "c001",
@@ -236,6 +258,58 @@ function renderCard(clip: ClipExport) {
 describe("ClipCard media (#185)", () => {
   afterEach(() => {
     cleanup();
+    poster.clipPoster.mockReset();
+  });
+
+  it("shows a frame of the clip before it plays instead of a black box (#217)", async () => {
+    let resolvePoster: (url: string) => void = () => {};
+    poster.clipPoster.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolvePoster = resolve;
+      }),
+    );
+    const url = "http://127.0.0.1:8000/api/v1/exports/exp_1/file";
+    const { container } = renderCard({
+      kind: "export",
+      export: exportIn("done"),
+      url,
+    });
+
+    const video = container.querySelector("video");
+    // The card never preloads the video itself: a placeholder covers it until the poster is in.
+    expect(video?.getAttribute("preload")).toBe("none");
+    expect(poster.clipPoster).toHaveBeenCalledWith(url);
+    expect(screen.getByTestId("clip-frame-placeholder")).toBeTruthy();
+
+    await act(async () => resolvePoster("data:image/jpeg;base64,AAAA"));
+    expect(video?.getAttribute("poster")).toBe("data:image/jpeg;base64,AAAA");
+    expect(screen.queryByTestId("clip-frame-placeholder")).toBeNull();
+  });
+
+  it("falls back to preloading the video and seeking to a frame when no poster can be made", async () => {
+    poster.clipPoster.mockRejectedValue(new Error("tainted canvas"));
+    const load = vi
+      .spyOn(HTMLMediaElement.prototype, "load")
+      .mockImplementation(() => {});
+    const { container } = renderCard({
+      kind: "export",
+      export: exportIn("done"),
+      url: "http://127.0.0.1:8000/api/v1/exports/exp_1/file",
+    });
+    const video = container.querySelector("video") as HTMLVideoElement;
+    await act(async () => {});
+    expect(video.getAttribute("preload")).toBe("metadata");
+
+    Object.defineProperty(video, "duration", { value: 30 });
+    fireEvent.loadedMetadata(video);
+    expect(video.currentTime).toBe(1.5);
+    fireEvent.seeked(video);
+    expect(screen.queryByTestId("clip-frame-placeholder")).toBeNull();
+    // The first play starts at the beginning of the clip, not at the thumbnail frame.
+    fireEvent.play(video);
+    expect(video.currentTime).toBe(0);
+    expect(load).toHaveBeenCalled();
+    load.mockRestore();
   });
 
   it("plays the finished vertical export, letterboxed rather than cropped", () => {

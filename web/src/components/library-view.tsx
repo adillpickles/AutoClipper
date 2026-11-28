@@ -9,9 +9,14 @@ import {
   type FormEvent,
 } from "react";
 
+import { Badge, type BadgeTone } from "@/components/ui/badge";
 import { Button, ButtonLink } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
+import { Input } from "@/components/ui/input";
+import { Notice } from "@/components/ui/notice";
+import { PageHeader } from "@/components/ui/page-header";
+import { ProgressBar } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   ApiRequestError,
@@ -70,37 +75,35 @@ function jobDisplayTitle(job: JobSummary): string {
 
 function stateBadge(job: JobSummary): {
   label: string;
-  className: string;
-  pulse?: boolean;
+  tone: BadgeTone;
+  live?: boolean;
+  /** The row's left edge: a tally light for the job's state. */
+  edge: string;
 } {
   if (job.state === "done") {
-    return {
-      label: "Done",
-      className:
-        "border-source-both-border bg-source-both-soft text-source-both-soft-ink",
-    };
+    return { label: "Done", tone: "success", edge: "bg-success" };
   }
   if (job.state === "failed") {
     return {
       label: job.error?.code === "interrupted" ? "Interrupted" : "Failed",
-      className: "border-danger-border bg-danger-soft text-danger-soft-ink",
+      tone: "danger",
+      edge: "bg-danger",
     };
   }
   if (job.state === "running") {
     const label = job.progress
       ? `Step ${job.progress.stage_index} of ${job.progress.stage_count}`
       : "Running";
-    return {
-      label,
-      className: "border-accent-border bg-accent-soft text-accent-soft-ink",
-      pulse: true,
-    };
+    return { label, tone: "accent", live: true, edge: "bg-accent" };
   }
-  return {
-    label: "Queued",
-    className: "border-border-subtle bg-surface-elevated text-ink-secondary",
-  };
+  return { label: "Queued", tone: "neutral", edge: "bg-border-strong" };
 }
+
+const STAT_CLASS =
+  "inline-flex items-center gap-1 rounded-pill border border-border-subtle bg-surface-elevated px-2.5 py-0.5";
+
+const ROW_CLASS =
+  "relative flex flex-col gap-4 overflow-hidden rounded-card border border-border-subtle bg-surface-panel py-4 pr-4 pl-5 shadow-card transition-colors hover:border-border-strong sm:py-5 sm:pr-5 sm:pl-6";
 
 function LibrarySkeleton({ label = "Loading library…" }: { label?: string }) {
   return (
@@ -113,8 +116,9 @@ function LibrarySkeleton({ label = "Loading library…" }: { label?: string }) {
           <div
             key={index}
             aria-hidden="true"
-            className="flex flex-col gap-3 rounded-card border border-border-subtle bg-surface-panel p-5 shadow-card sm:flex-row sm:items-center sm:justify-between"
+            className={`${ROW_CLASS} sm:flex-row sm:items-center sm:justify-between`}
           >
+            <span className="absolute inset-y-0 left-0 w-[3px] bg-border-subtle" />
             <div className="flex flex-1 flex-col gap-2">
               <div className="flex items-center gap-2">
                 <Skeleton className="h-5 w-20 rounded-pill" />
@@ -470,47 +474,56 @@ export function LibraryView() {
 
   return (
     <div className="flex flex-col gap-6 sm:gap-8">
-      <section className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div className="flex flex-col gap-2">
-          <p className="text-xs font-semibold tracking-[0.14em] text-accent uppercase">
-            Library
-          </p>
-          <h1 className="font-display text-3xl font-bold tracking-tight text-balance text-ink-primary sm:text-4xl">
-            Past and running analyses
-          </h1>
-          <p className="max-w-2xl text-base/7 text-pretty text-ink-secondary">
-            Reopen finished results, check running jobs, or remove old analyses
-            from your local library.
-          </p>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
+      <PageHeader
+        title="Library"
+        description="Past and running analyses. Reopen finished results, check on running jobs, or remove old analyses from this computer."
+        actions={
           <ButtonLink href="/" variant="primary" size="md">
             Analyze a VOD
           </ButtonLink>
-        </div>
-      </section>
+        }
+      />
 
       <section
         aria-label="Filter library"
-        className="flex flex-col gap-4 rounded-panel border border-border-subtle bg-surface-panel p-4 shadow-card sm:p-5"
+        className="flex flex-col gap-3 rounded-panel border border-border-subtle bg-surface-panel p-3 shadow-panel sm:p-4"
       >
         <form
           onSubmit={handleSearchSubmit}
-          className="flex flex-col gap-2.5 sm:flex-row"
+          className="flex flex-col gap-2 sm:flex-row"
         >
           <label htmlFor={searchInputId} className="sr-only">
             Search by VOD title, channel, or VOD ID
           </label>
-          <input
-            id={searchInputId}
-            type="search"
-            value={searchInput}
-            onChange={(event) => setSearchInput(event.target.value)}
-            placeholder="Search title, channel, or VOD ID"
-            className="min-w-0 flex-1 rounded-control border border-border-strong bg-surface-elevated px-3.5 py-2.5 text-sm text-ink-primary transition-colors placeholder:text-ink-tertiary focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"
-          />
+          <div className="relative min-w-0 flex-1">
+            <svg
+              viewBox="0 0 20 20"
+              fill="none"
+              aria-hidden="true"
+              className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-tertiary"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+            >
+              <circle cx="9" cy="9" r="5.5" />
+              <path d="M13.2 13.2L17 17" />
+            </svg>
+            <Input
+              id={searchInputId}
+              type="search"
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder="Search title, channel, or VOD ID"
+              className="pl-10"
+            />
+          </div>
           <div className="flex items-center gap-2">
-            <Button type="submit" variant="secondary" size="md">
+            <Button
+              type="submit"
+              variant="secondary"
+              size="md"
+              className="min-h-11 flex-1 sm:flex-none"
+            >
               Search
             </Button>
             {hasFilters && (
@@ -518,6 +531,7 @@ export function LibraryView() {
                 type="button"
                 variant="ghost"
                 size="md"
+                className="min-h-11"
                 onClick={handleClearFilters}
               >
                 Clear
@@ -530,26 +544,28 @@ export function LibraryView() {
           <div
             role="group"
             aria-label="Filter by status"
-            className="flex flex-wrap items-center gap-1.5"
+            className="-mx-1 flex max-w-full overflow-x-auto px-1 py-0.5"
           >
-            {STATE_FILTERS.map((option) => {
-              const active = stateFilter === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => triggerReload(appliedQuery, option.value)}
-                  className={`inline-flex min-h-8 items-center rounded-pill border px-3 py-1 text-xs font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none ${
-                    active
-                      ? "border-accent bg-accent text-accent-ink"
-                      : "border-border-subtle bg-surface-elevated text-ink-secondary hover:border-border-strong hover:text-ink-primary"
-                  }`}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
+            <div className="inline-flex rounded-control border border-border-subtle bg-surface-canvas p-1">
+              {STATE_FILTERS.map((option) => {
+                const active = stateFilter === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => triggerReload(appliedQuery, option.value)}
+                    className={`inline-flex min-h-8 items-center rounded-[0.375rem] px-3 text-xs font-semibold whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${
+                      active
+                        ? "bg-surface-subtle text-ink-primary shadow-card"
+                        : "text-ink-tertiary hover:text-ink-primary"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <div className="flex items-center gap-3">
@@ -559,11 +575,23 @@ export function LibraryView() {
               </p>
             )}
             <Button
-              variant="subtle"
+              variant="ghost"
               size="sm"
               disabled={view.kind === "loading"}
               onClick={() => triggerReload(appliedQuery, stateFilter)}
             >
+              <svg
+                viewBox="0 0 16 16"
+                fill="none"
+                aria-hidden="true"
+                className="size-3.5"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M13 8a5 5 0 1 1-1.46-3.54M13 2.5v2.75h-2.75" />
+              </svg>
               Refresh
             </Button>
           </div>
@@ -571,25 +599,25 @@ export function LibraryView() {
       </section>
 
       {pollOffline && (
-        <div
+        <Notice
           role="alert"
-          className="flex flex-wrap items-center justify-between gap-3 rounded-card border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger-soft-ink"
+          tone="danger"
+          action={
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setPollOffline(false);
+                setPollAttempt((n) => n + 1);
+              }}
+            >
+              Retry
+            </Button>
+          }
         >
-          <p className="font-medium">
-            Can&apos;t reach the server to refresh running jobs. Check that
-            AutoClipper is running, then try again.
-          </p>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => {
-              setPollOffline(false);
-              setPollAttempt((n) => n + 1);
-            }}
-          >
-            Retry
-          </Button>
-        </div>
+          Can&apos;t reach the server to refresh running jobs. Check that
+          AutoClipper is running, then try again.
+        </Notice>
       )}
 
       {view.kind === "loading" && <LibrarySkeleton />}
@@ -668,30 +696,28 @@ export function LibraryView() {
                   : null;
 
               return (
-                <li
-                  key={job.job_id}
-                  className="flex flex-col gap-4 rounded-card border border-border-subtle bg-surface-panel p-4 shadow-card sm:p-5"
-                >
+                <li key={job.job_id} className={ROW_CLASS}>
+                  <span
+                    aria-hidden="true"
+                    className={`absolute inset-y-0 left-0 w-[3px] ${badge.edge}`}
+                  />
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex min-w-0 flex-1 flex-col gap-1.5">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span
-                          className={`inline-flex shrink-0 items-center gap-1.5 rounded-pill border px-2.5 py-0.5 font-mono text-xs font-medium ${badge.className}`}
+                        <Badge
+                          tone={badge.tone}
+                          live={badge.live}
+                          dot={!badge.live}
+                          mono
                         >
-                          {badge.pulse && (
-                            <span
-                              aria-hidden="true"
-                              className="size-1.5 rounded-full bg-accent motion-safe:animate-pulse"
-                            />
-                          )}
                           {badge.label}
-                        </span>
+                        </Badge>
 
                         {job.warning_count > 0 && job.state === "done" && (
-                          <span className="inline-flex items-center rounded-pill border border-signal-border bg-signal-soft px-2.5 py-0.5 font-mono text-xs font-medium text-signal-soft-ink">
+                          <Badge tone="signal" mono>
                             {job.warning_count}{" "}
                             {job.warning_count === 1 ? "warning" : "warnings"}
-                          </span>
+                          </Badge>
                         )}
 
                         <span className="font-mono text-xs text-ink-tertiary">
@@ -699,7 +725,7 @@ export function LibraryView() {
                         </span>
                       </div>
 
-                      <h2 className="font-display text-base font-semibold break-words text-ink-primary sm:text-lg">
+                      <h2 className="font-display text-base font-semibold tracking-[-0.01em] break-words text-ink-primary sm:text-lg">
                         {title}
                       </h2>
 
@@ -709,7 +735,7 @@ export function LibraryView() {
                         job.duration_s !== null) && (
                         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-secondary">
                           {job.broadcaster_display_name && (
-                            <span className="font-medium text-ink-primary">
+                            <span className="font-semibold text-ink-primary">
                               {job.broadcaster_display_name}
                             </span>
                           )}
@@ -739,7 +765,7 @@ export function LibraryView() {
                       )}
 
                       {job.state === "running" && job.progress && (
-                        <div className="mt-1 flex flex-col gap-1.5">
+                        <div className="mt-1 flex max-w-md flex-col gap-1.5">
                           <div className="flex items-center justify-between gap-2 text-xs text-ink-secondary">
                             <span>{job.progress.message}</span>
                             {fraction !== null && (
@@ -749,19 +775,11 @@ export function LibraryView() {
                             )}
                           </div>
                           {fraction !== null && (
-                            <div
-                              role="progressbar"
-                              aria-label={`${title}: ${job.progress.message}`}
-                              aria-valuemin={0}
-                              aria-valuemax={100}
-                              aria-valuenow={fraction}
-                              className="h-1.5 w-full overflow-hidden rounded-pill bg-surface-subtle"
-                            >
-                              <div
-                                className="h-full rounded-pill bg-accent transition-[width] duration-300"
-                                style={{ width: `${fraction}%` }}
-                              />
-                            </div>
+                            <ProgressBar
+                              value={fraction}
+                              label={`${title}: ${job.progress.message}`}
+                              size="sm"
+                            />
                           )}
                         </div>
                       )}
@@ -769,7 +787,7 @@ export function LibraryView() {
                       {job.state === "failed" && (
                         <p
                           role="alert"
-                          className="text-xs font-medium text-danger"
+                          className="text-xs leading-5 font-medium text-danger"
                         >
                           {job.error?.message ??
                             "This analysis stopped before finishing."}
@@ -777,9 +795,9 @@ export function LibraryView() {
                       )}
 
                       {job.state === "done" && (
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-0.5 text-xs text-ink-secondary">
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs text-ink-secondary">
                           {job.candidate_count !== null && (
-                            <span>
+                            <span className={STAT_CLASS}>
                               <strong className="font-semibold text-ink-primary tabular-nums">
                                 {job.candidate_count}
                               </strong>{" "}
@@ -788,7 +806,7 @@ export function LibraryView() {
                           )}
                           {(job.export_count > 0 ||
                             job.missing_export_count > 0) && (
-                            <span>
+                            <span className={STAT_CLASS}>
                               <strong className="font-semibold text-ink-primary tabular-nums">
                                 {job.export_count}
                               </strong>{" "}
@@ -802,7 +820,7 @@ export function LibraryView() {
                           )}
                           {(job.highlights_count > 0 ||
                             job.missing_highlights_count > 0) && (
-                            <span>
+                            <span className={STAT_CLASS}>
                               <strong className="font-semibold text-ink-primary tabular-nums">
                                 {job.highlights_count}
                               </strong>{" "}
@@ -827,7 +845,7 @@ export function LibraryView() {
                       {job.state === "done" && job.result_available && (
                         <ButtonLink
                           href={`/jobs/${job.job_id}/results`}
-                          variant="primary"
+                          variant="secondary"
                           size="sm"
                         >
                           Open results
@@ -864,7 +882,7 @@ export function LibraryView() {
                       {(job.state === "done" || job.state === "failed") &&
                         !deletion && (
                           <Button
-                            variant="subtle"
+                            variant="ghost"
                             size="sm"
                             disabled={!canDelete}
                             title={
@@ -890,12 +908,16 @@ export function LibraryView() {
                     <div
                       role="region"
                       aria-label={`Confirm deleting ${title}`}
-                      className="flex flex-col gap-3 rounded-control border border-danger-border bg-danger-soft p-4 text-xs text-danger-soft-ink"
+                      className="relative flex flex-col gap-3 overflow-hidden rounded-control border border-danger-border bg-danger-soft py-3.5 pr-4 pl-5 text-xs text-danger-soft-ink"
                     >
-                      <p className="text-sm font-semibold">
+                      <span
+                        aria-hidden="true"
+                        className="absolute inset-y-0 left-0 w-[3px] bg-danger"
+                      />
+                      <p className="font-display text-sm font-semibold text-ink-primary">
                         Delete this analysis?
                       </p>
-                      <p className="leading-5">
+                      <p className="leading-5 text-pretty">
                         This removes the job from the library index and deletes
                         its saved analysis result JSON on disk.{" "}
                         {renderFilesCount === 0
@@ -906,7 +928,7 @@ export function LibraryView() {
                       </p>
 
                       {renderFilesCount > 0 && (
-                        <label className="flex cursor-pointer items-start gap-2.5 rounded-control border border-danger-border/70 bg-surface-panel px-3 py-2.5 text-xs text-ink-primary">
+                        <label className="flex cursor-pointer items-start gap-2.5 rounded-control border border-border-subtle bg-surface-panel px-3 py-2.5 text-xs text-ink-primary transition-colors hover:border-border-strong">
                           <input
                             type="checkbox"
                             checked={deletion.deleteExports}
@@ -939,7 +961,7 @@ export function LibraryView() {
                       )}
 
                       {deletion.error && (
-                        <p role="alert" className="font-medium text-danger">
+                        <p role="alert" className="font-semibold text-danger">
                           {deletion.error}
                         </p>
                       )}
@@ -975,12 +997,9 @@ export function LibraryView() {
           </ol>
 
           {loadMoreError && (
-            <p
-              role="alert"
-              className="rounded-control border border-danger-border bg-danger-soft px-4 py-3 text-xs font-medium text-danger-soft-ink"
-            >
+            <Notice role="alert" tone="danger">
               {loadMoreError}
-            </p>
+            </Notice>
           )}
 
           {nextCursor && (

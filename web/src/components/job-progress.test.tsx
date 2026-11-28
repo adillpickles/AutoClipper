@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { JobProgress } from "@/components/job-progress";
 import { ApiRequestError } from "@/lib/api/errors";
 import emptyResult from "@/lib/api/fixtures/result-empty.json";
+import exampleResult from "@/lib/api/fixtures/result-example.json";
 import type { AnalysisResult, Job } from "@/lib/api/types";
 
 const state = vi.hoisted(() => ({
@@ -171,5 +172,55 @@ describe("JobProgress", () => {
         .getByRole("link", { name: "See the results" })
         .getAttribute("href"),
     ).toBe("/jobs/job_1/results");
+  });
+
+  it("hides the numbers row for results from before the counts existed (#217)", async () => {
+    const old = { ...(exampleResult as AnalysisResult) };
+    delete old.n_chat_messages;
+    delete old.n_windows;
+    state.getJob.mockResolvedValue(
+      makeJob({
+        state: "done",
+        progress: null,
+        finished_at: "2026-11-20T12:01:00Z",
+      }),
+    );
+    state.getResult.mockResolvedValue(old);
+
+    render(<JobProgress />);
+
+    expect(
+      await screen.findByRole("link", { name: "See the clips" }),
+    ).toBeTruthy();
+    expect(screen.queryByLabelText("Analysis numbers")).toBeNull();
+    expect(screen.queryByText("–")).toBeNull();
+  });
+
+  it("says how many moments were scored and that the top 10 were picked (#217)", async () => {
+    const base = exampleResult as AnalysisResult;
+    const many: AnalysisResult = {
+      ...base,
+      candidates: Array.from({ length: 82 }, (_, i) => ({
+        ...base.candidates[0],
+        candidate_id: `c${i}`,
+        rank: i + 1,
+      })),
+    };
+    state.getJob.mockResolvedValue(
+      makeJob({
+        state: "done",
+        progress: null,
+        finished_at: "2026-11-20T12:01:00Z",
+      }),
+    );
+    state.getResult.mockResolvedValue(many);
+
+    render(<JobProgress />);
+
+    expect(
+      await screen.findByText("Scored 82 moments · picked the top 10."),
+    ).toBeTruthy();
+    const moments = screen.getByText("Moments scored", { selector: "dt" });
+    expect(moments.nextElementSibling?.textContent).toBe("82");
   });
 });
