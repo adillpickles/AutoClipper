@@ -213,18 +213,22 @@ export function ClipCard({
             )}
           </div>
         )}
-        <div className="mt-auto grid grid-cols-[1fr_auto] gap-2 pt-1">
+        <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
           {ready ? (
             <a
               href={clip.url ?? undefined}
               download={filename}
-              className={buttonClasses({ variant: "secondary", size: "md" })}
+              className={buttonClasses({
+                variant: "secondary",
+                size: "md",
+                className: "flex-1",
+              })}
             >
               <DownloadGlyph />
               Download<span className="sr-only"> clip {candidate.rank}</span>
             </a>
           ) : (
-            <Button variant="secondary" size="md" disabled>
+            <Button variant="secondary" size="md" disabled className="flex-1">
               <DownloadGlyph />
               Download
               <span className="sr-only">
