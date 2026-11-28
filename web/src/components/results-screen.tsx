@@ -1,13 +1,12 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import { ArchiveDownloads } from "@/components/archive-downloads";
 import { ClipCard, type ClipExport } from "@/components/clip-card";
-import { HighlightsDialog } from "@/components/highlights-dialog";
 import { ReanalyzeAction } from "@/components/reanalyze-action";
-import { StreamTimeline } from "@/components/stream-timeline";
 import { Button, ButtonLink } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
@@ -26,6 +25,7 @@ import type {
   ExportAvailability,
   Layout,
 } from "@/lib/api/types";
+import { sameClipExport } from "@/lib/clip-export";
 import { formatTime } from "@/lib/format";
 import {
   isTrimReset,
@@ -35,9 +35,53 @@ import {
   rememberedTrims,
   type SavedTrim,
 } from "@/lib/job-state";
+import { waitForPoll } from "@/lib/poll";
 import { TOP_CLIPS } from "@/lib/top-clips";
 
 export { TOP_CLIPS } from "@/lib/top-clips";
+
+// The timeline view and the highlights dialog aren't on screen when the results first show, so
+// they load in their own chunks (#241), fetched once the browser is idle so opening them stays
+// instant.
+const loadTimeline = () =>
+  import("@/components/stream-timeline").then((m) => m.StreamTimeline);
+const loadHighlights = () =>
+  import("@/components/highlights-dialog").then((m) => m.HighlightsDialog);
+const StreamTimeline = dynamic(loadTimeline, { ssr: false });
+const HighlightsDialog = dynamic(loadHighlights, { ssr: false });
+
+function preloadWhenIdle(): () => void {
+  const preload = () => {
+    void loadTimeline();
+    void loadHighlights();
+  };
+  if (typeof window.requestIdleCallback === "function") {
+    const id = window.requestIdleCallback(preload, { timeout: 3000 });
+    return () => window.cancelIdleCallback(id);
+  }
+  const id = setTimeout(preload, 1000);
+  return () => clearTimeout(id);
+}
+
+const PENDING: ClipExport = { kind: "pending" };
+
+// One clip card on the results grid. Memoized so an export poll re-renders only the card whose
+// export changed (#241); `retry` is stable across renders.
+const ResultClipCard = memo(function ResultClipCard({
+  candidate,
+  retry,
+  ...props
+}: Omit<Parameters<typeof ClipCard>[0], "onRetry"> & {
+  retry: (candidate: Candidate) => void;
+}) {
+  return (
+    <ClipCard
+      {...props}
+      candidate={candidate}
+      onRetry={() => retry(candidate)}
+    />
+  );
+});
 
 // Back off on network errors (2, 4, 8 s, capped at 10 s) and give up after about a minute (§ 9.1).
 const FIRST_BACKOFF_MS = 2000;
@@ -134,11 +178,17 @@ export function ResultsScreen() {
     const timers: ReturnType<typeof setTimeout>[] = [];
     const client = getApiClient();
     const set = (candidateId: string, clip: ClipExport) => {
-      if (!cancelled)
-        setClips((current) => ({ ...current, [candidateId]: clip }));
+      if (cancelled) return;
+      // A poll that brings back the same export changes nothing, so nothing re-renders.
+      setClips((current) =>
+        sameClipExport(current[candidateId], clip)
+          ? current
+          : { ...current, [candidateId]: clip },
+      );
     };
+    const cancels: (() => void)[] = [];
     const wait = (ms: number) =>
-      new Promise<void>((resolve) => timers.push(setTimeout(resolve, ms)));
+      waitForPoll(ms, (cancel) => cancels.push(cancel));
 
     // Check `/health` once (bounded by a timeout so a hung health endpoint never blocks
     // automatic exports) so servers without captioning export cleanly without captions.
@@ -365,16 +415,22 @@ export function ResultsScreen() {
       cancelled = true;
       renderRef.current = null;
       timers.forEach(clearTimeout);
+      cancels.forEach((cancel) => cancel());
     };
   }, [result, jobId]);
 
-  const retry = (candidate: Candidate) => {
+  useEffect(() => {
+    if (!result) return;
+    return preloadWhenIdle();
+  }, [result]);
+
+  const retry = useCallback((candidate: Candidate) => {
     setClips((current) => ({
       ...current,
       [candidate.candidate_id]: { kind: "pending" },
     }));
     void renderRef.current?.(candidate, true);
-  };
+  }, []);
 
   if (view.kind === "loading") {
     return <ClipListSkeleton heading="h1" label="Loading the results…" />;
@@ -604,13 +660,13 @@ export function ResultsScreen() {
               className="grid grid-cols-1 gap-5 min-[480px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
             >
               {top.map((candidate) => (
-                <ClipCard
+                <ResultClipCard
                   key={candidate.candidate_id}
                   jobId={jobId}
                   candidate={candidate}
                   scoreFraction={scale(candidate.score)}
-                  clip={clips[candidate.candidate_id] ?? { kind: "pending" }}
-                  onRetry={() => retry(candidate)}
+                  clip={clips[candidate.candidate_id] ?? PENDING}
+                  retry={retry}
                   videoId={vod.video_id}
                   vod={vod}
                 />
