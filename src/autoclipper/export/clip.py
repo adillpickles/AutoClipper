@@ -28,6 +28,7 @@ from autoclipper.export.facecam import FacecamDetection, detect_facecam
 from autoclipper.export.reframe import (
     DEFAULT_FACECAM_FRACTION,
     CenterCrop,
+    FixedRegion,
     Layout,
     StackedLayout,
     layout_from_settings,
@@ -157,10 +158,11 @@ def _detected_stacked_layout(
 ) -> Layout:
     """The stacked layout from facecam detection, else the fallback preset, else center crop.
 
-    A detected overlay (``found``) beats the preset; a box estimated around a borderless
-    webcam (``found_padded``) loses to it. A full-screen camera renders ``center_crop`` even
-    with a preset. Any error while detecting (FFmpeg, OpenCV missing or failing, the file
-    vanishing) is logged and treated as no detection.
+    A detected overlay (``found``) beats the preset. A box estimated around a borderless
+    webcam (``found_padded``) loses to it when the face's center is inside the preset's facecam
+    region, and wins (with a warning) when the face is elsewhere. A full-screen camera renders
+    ``center_crop`` even with a preset. Any error while detecting (FFmpeg, OpenCV missing or
+    failing, the file vanishing) is logged and treated as no detection.
 
     Raises:
         NoFacecamConfiguredError: Detection is off and there is no fallback preset.
@@ -189,10 +191,18 @@ def _detected_stacked_layout(
     if detection.status == "found" and detection.region is not None:
         return _stacked_from_detection(detection.region, preset)
     if detection.status == "found_padded" and detection.region is not None:
-        # A box estimated around a borderless webcam is a guess; a measured preset is better.
-        if preset is not None:
+        # A box estimated around a borderless webcam is a guess; a measured preset is better,
+        # but only when the face is in it. Streamers move the camera between scenes.
+        if preset is not None and _face_in(detection.face, preset.facecam):
             return preset
-        warn(f"{detection.message}; using that estimate")
+        if preset is not None:
+            message = (
+                f"{detection.message}; the face isn't in the channel's stacked_layout preset, "
+                "so using that estimate"
+            )
+        else:
+            message = f"{detection.message}; using that estimate"
+        warn(message)
         return _stacked_from_detection(detection.region, None)
     reason = f"no facecam detected: {detection.message}"
     if preset is not None and detection.status != "full_camera":
@@ -200,6 +210,14 @@ def _detected_stacked_layout(
         return preset
     warn(f"{reason}; rendering center_crop instead of stacked")
     return CenterCrop()
+
+
+def _face_in(face: tuple[float, float, float, float] | None, region: FixedRegion) -> bool:
+    """Whether the center of `face` (normalized) lies inside `region`."""
+    if face is None:
+        return False
+    cx, cy = face[0] + face[2] / 2, face[1] + face[3] / 2
+    return region.x <= cx <= region.x + region.width and region.y <= cy <= region.y + region.height
 
 
 def _stacked_from_detection(

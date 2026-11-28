@@ -444,12 +444,32 @@ def test_a_full_screen_camera_ignores_the_preset(
     assert isinstance(layout, CenterCrop)
 
 
-def test_a_padded_box_loses_to_the_channel_preset(
+def _padded(face: Region) -> FacecamDetection:
+    return FacecamDetection("found_padded", (0.64, 0.52, 0.36, 0.48), face, 7, 7, "padded")
+
+
+def test_a_padded_box_loses_to_a_preset_that_holds_the_face(
     tmp_path: Path, rendered: list[ExportRequest]
 ) -> None:
-    padded = _detection("found_padded", (0.64, 0.52, 0.36, 0.48))
+    # PRESET's facecam is the top-right corner (0.76, 0.04, 0.22, 0.28).
+    in_preset = _padded((0.82, 0.08, 0.1, 0.18))
 
-    assert _render(tmp_path, rendered, lambda *_: padded, stacked_fallback=PRESET) == PRESET
+    assert _render(tmp_path, rendered, lambda *_: in_preset, stacked_fallback=PRESET) == PRESET
+
+
+def test_a_padded_box_beats_a_preset_elsewhere_with_a_warning(
+    tmp_path: Path, rendered: list[ExportRequest]
+) -> None:
+    warnings: list[str] = []
+    bottom_right = _padded((0.82, 0.68, 0.12, 0.2))
+
+    layout = _render(
+        tmp_path, rendered, lambda *_: bottom_right, warnings=warnings, stacked_fallback=PRESET
+    )
+
+    assert isinstance(layout, StackedLayout)
+    assert (layout.facecam.x, layout.facecam.y) == pytest.approx((0.64, 0.52))
+    assert "isn't in the channel's stacked_layout preset" in warnings[0]
 
 
 def test_without_a_preset_the_padded_box_is_used_with_a_warning(
