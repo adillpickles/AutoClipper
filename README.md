@@ -31,7 +31,7 @@ bash scripts/demo.sh                                           # macOS, Linux (C
 powershell -ExecutionPolicy Bypass -File scripts/demo.ps1      # Windows (close its two windows to stop)
 ```
 
-It installs dependencies and tools, creates `.env` with a generated chat hash salt, writes `web/.env.local`, runs `autoclipper doctor` and starts the backend and web app. Without Twitch credentials in `.env` it starts in mock mode. Re-running is safe. Flags: `--mock` / `-Mock`, `--skip-install` / `-SkipInstall`, `--api-port` / `-ApiPort`, `--web-port` / `-WebPort`, `--demo-vod` / `-DemoVod`.
+Run `demo.sh` with `bash`, not `sh`. It installs dependencies and tools, creates `.env` with a generated chat hash salt, writes `web/.env.local`, runs `autoclipper doctor` and starts the backend and web app. Without Twitch credentials in `.env` it starts in mock mode. Where the captions extra has no wheel (Intel Macs, macOS 13 or older, Windows on ARM) it installs without captions and says so. Re-running is safe. Flags: `--mock` / `-Mock`, `--skip-install` / `-SkipInstall`, `--api-port` / `-ApiPort`, `--web-port` / `-WebPort`, `--demo-vod` / `-DemoVod`.
 
 ### 1. Prerequisites
 
