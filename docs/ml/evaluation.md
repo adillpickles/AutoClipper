@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Current. Start with § 0; the later sections are the fuller protocol to grow into. |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-28 |
 
 > **No results exist yet.** This doc defines how results will be produced. Never put numbers in docs unless they come from a run recorded in `experiments/`.
 
@@ -13,7 +13,7 @@
 
 **Step 2: sharper.** NDCG@10 with relevance from relative clip views; rotate the test streamer across all five folds; 95% bootstrap intervals over VODs; the small-streamer simulation (§ 6).
 
-**Step 3: people.** Blind taste test: classmates rate our clips and the chat-spike baseline's clips from 1 to 5 (§ 7).
+**Step 3: people.** Blind taste test: classmates compare our clips with the chat-spike baseline's side by side, without knowing which is which, and may also rate each from 1 to 5 (§ 7).
 
 Build step 1 first. Everything below is the fuller version.
 
@@ -90,7 +90,42 @@ This tests how much the scorer depends on viewer clips being available. It is **
 
 ## 7. Blind taste test
 
-Observed clips are incomplete and may be poor standalone highlights, so people judge too. Take a shuffled sample of our top clips and the chat-spike baseline's top clips from held-out VODs, rendered identically, with the method hidden. At least two classmates rate each clip from 1 to 5 on "would you watch/post this as a short?". Record the sampling, duplicate handling and inter-rater agreement. Report the mean rating per method with a 95% bootstrap CI, separately from observed-clip agreement.
+Observed clips are incomplete and may be poor standalone highlights, so people judge too. Raters see one clip of our scorer and one of the comparison method (normally the chat-spike baseline) side by side, rendered identically, with the method hidden and the sides shuffled. They pick the better one ("would you rather watch or post this as a short?": A, B or about the same), may rate each clip from 1 to 5 and may leave a note. Report our **win rate** (wins over wins plus losses) with a 95% interval per comparison, the mean 1-5 ratings when given, and the checks below, separately from observed-clip agreement.
+
+**Pairing.** Per held-out VOD, take each method's top 10. A moment both methods picked (temporal IoU ≥ 0.5) says nothing about which is better, so it is left out of both lists and counted. The rest are paired by rank: our best unshared moment against the baseline's best unshared moment, and so on.
+
+**Statistics.** Per comparison: the Wilson 95% interval and an exact two-sided sign test on the decisive judgments (ties left out), the win rate with ties counted as half, and a 95% bootstrap interval that resamples pairs (1,000 resamples, seeded). Several raters judging the same pair aren't independent, so the Wilson interval is too narrow when raters overlap; quote the pair bootstrap next to it. Also report position bias (how often A was picked; about 50% expected) and inter-rater agreement (mean pairwise percent agreement over pairs rated at least twice). At least 10 raters, each rating every pair, is the target (#69).
+
+**Success criterion (set before rating):** ours is better if the lower bounds of both its win-rate intervals (Wilson and pair bootstrap) are above 50%, worse if both upper bounds are below 50%, and otherwise inconclusive.
+
+### Running a taste test
+
+Code: `autoclipper.eval.taste_test` and `scripts/taste_test.py`. Everything it writes under `artifacts/` stays out of git.
+
+1. **Analyze each VOD with both methods**, writing two result files:
+
+   ```bash
+   uv run autoclipper analyze <vod link> --video <vod.mp4> --model artifacts/models/<run_id> --out artifacts/analysis/<id>-ours.json
+   uv run autoclipper analyze <vod link> --video <vod.mp4> --scorer chat_spike --out artifacts/analysis/<id>-chat_spike.json
+   ```
+
+2. **Build the test.** Repeat `--ours`, `--baseline` and `--video` once per VOD, in the same order. The seed fixes the pair order and the A/B sides. The test ID is shown to raters, so it must not hint at the methods.
+
+   ```bash
+   uv run python scripts/taste_test.py build --test-id tt-1 --seed 7        --ours artifacts/analysis/<id>-ours.json --baseline artifacts/analysis/<id>-chat_spike.json --video <vod.mp4>
+   ```
+
+   Clips are rendered like `autoclipper export` (default `center_crop`, no captions; `--layout` and `--captions` apply to every clip) into the cache `artifacts/taste-tests/clips/`, and later builds reuse them. The test's folder `artifacts/taste-tests/tt-1/` gets `page/` (the rating page `index.html` and the clips as `media/pair-NN-a.mp4`) and `key.json`, the private map from A/B to methods.
+
+3. **Send raters the `page/` folder** (zipped), never `key.json`. A rater opens `index.html` in a browser, with no server or install, enters a name or initials, and goes through the pairs. Answers are saved in the browser as they go; *Download answers* saves `answers-tt-1-<name>.json` to send back. Put the files in `artifacts/taste-tests/tt-1/answers/`. A rater who sends two files counts once, with the later one.
+
+4. **Score** into a new experiment folder (`exp-NNN`, [experiments](experiments.md)):
+
+   ```bash
+   uv run python scripts/taste_test.py score --key artifacts/taste-tests/tt-1/key.json        --answers artifacts/taste-tests/tt-1/answers --out experiments/exp-NNN-blind-taste-test
+   ```
+
+   This writes `summary.json` (every number above, the key's SHA-256 and the build settings), `summary.md` (the tables for the README) and `ratings.csv` (one row per judgment, raters as `rater_1`, `rater_2`, ...), from which the README's numbers can be reproduced. Names and notes never reach `experiments/`: notes go to `notes.md` next to the key. Write the README from the [template](experiments.md#results-readme-template) and record the VODs, the number of shared moments left out, the raters and how they were recruited.
 
 ## 8. Reporting format
 
