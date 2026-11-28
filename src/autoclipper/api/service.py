@@ -84,8 +84,10 @@ from autoclipper.export.highlights import (
     Stage as HighlightsStage,
 )
 from autoclipper.export.output_folder import (
+    CopyCancelled,
     OutputFolderError,
     copy_into_folder,
+    remove_stale_partials,
     validate_output_folder,
 )
 from autoclipper.export.reframe import StackedLayout, stacked_layout_from_region
@@ -171,6 +173,9 @@ _COPY_FOLDER_GONE: Final = (
 )
 _COPY_FAILED: Final = (
     "Couldn't copy this file into the output folder. Check that the drive has free space."
+)
+_COPY_SOURCE_GONE: Final = (
+    "This file is no longer on disk, so it couldn't be copied. Export it again to save a copy."
 )
 _PREPARING_MESSAGE: Final = "Fetching the video for this moment…"
 _PREPARING_LOCAL_MESSAGE: Final = "Preparing the video for playback…"
@@ -713,6 +718,8 @@ class MockService:
         default_factory=queue.Queue, init=False
     )
     _output_folder: Path | None = field(default=None, init=False)
+    # Set by close(): a copy in progress stops at its next chunk and removes its partial file.
+    _copy_stop: threading.Event = field(default_factory=threading.Event, init=False)
     _last_copy: OutputCopy | None = field(default=None, init=False)
     _threads: list[threading.Thread] = field(default_factory=list, init=False)
 
@@ -859,6 +866,7 @@ class MockService:
 
     def close(self) -> None:
         """Stop the workers: queued work is dropped, the work in hand finishes."""
+        self._copy_stop.set()
         if not self.synchronous:
             queues = (self._analysis_queue, self._render_queue, self._fetch_queue, self._copy_queue)
             for work in queues:
@@ -2374,6 +2382,10 @@ class MockService:
             self._run_render_safely(render_id)
 
     def _run_copies(self) -> None:
+        with self._lock:
+            folder = self._output_folder
+        if folder is not None:  # partial copies a crash or power loss left behind
+            remove_stale_partials(folder)
         while (item := self._copy_queue.get()) is not None:
             self._run_copy_safely(item)
 
@@ -2381,6 +2393,8 @@ class MockService:
         """Copy a finished render into the output folder it finished under; never raises."""
         render_id, folder = item
         with self._lock:
+            if self._output_folder != folder:
+                return  # cleared or changed since the render finished: the copy is dropped
             record = self._renders.get(render_id)
             if record is None or record.state != "done" or record.file is None:
                 return  # deleted with its job before the copy started
@@ -2389,11 +2403,17 @@ class MockService:
         copied: Path | None = None
         message: str | None = None
         try:
-            copied = copy_into_folder(source, folder, filename)
+            copied = copy_into_folder(source, folder, filename, stop=self._copy_stop)
             log.info("copied render id=%s to %s", render_id, copied)
+        except CopyCancelled:
+            log.info("stopped copying render id=%s: the server is shutting down", render_id)
+            return
         except OutputFolderError as exc:
             log.warning("couldn't copy render id=%s into %s: %s", render_id, folder, exc.reason)
             message = _COPY_FOLDER_GONE if exc.reason == "not_creatable" else exc.message
+        except FileNotFoundError:  # the folder was checked first, so this is the render's file
+            log.warning("couldn't copy render id=%s: its file %s is gone", render_id, source)
+            message = _COPY_SOURCE_GONE
         except OSError as exc:
             log.warning("couldn't copy render id=%s into %s: %s", render_id, folder, exc)
             message = _COPY_FAILED

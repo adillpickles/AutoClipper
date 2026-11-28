@@ -6,6 +6,7 @@ import inspect
 import io
 import itertools
 import json
+import os
 import shutil
 import threading
 import time
@@ -1638,10 +1639,10 @@ def test_a_slow_copy_never_holds_up_the_render_worker(
     copying = threading.Event()
     real_copy = service_module.copy_into_folder
 
-    def slow_copy(source: Path, folder: Path, filename: str) -> Path:
+    def slow_copy(source: Path, folder: Path, filename: str, **kwargs: Any) -> Path:  # noqa: ANN401
         copying.set()
         assert release.wait(timeout=10)
-        return real_copy(source, folder, filename)
+        return real_copy(source, folder, filename, **kwargs)
 
     monkeypatch.setattr(service_module, "copy_into_folder", slow_copy)
     client, _ = make_client(synchronous=False, step_s=0.0)
@@ -1664,6 +1665,119 @@ def test_a_slow_copy_never_holds_up_the_render_worker(
     wait_until(lambda: len(list(folder.iterdir())) == 2)
     last_copy = client.get(f"{API}/settings").json()["last_copy"]
     assert last_copy["render_id"] in (first, second)
+
+
+def test_clearing_the_folder_drops_copies_still_waiting(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autoclipper.api import service as service_module
+
+    release = threading.Event()
+    copying = threading.Event()
+    real_copy = service_module.copy_into_folder
+
+    def slow_copy(source: Path, folder: Path, filename: str, **kwargs: Any) -> Path:  # noqa: ANN401
+        copying.set()
+        assert release.wait(timeout=10)
+        return real_copy(source, folder, filename, **kwargs)
+
+    monkeypatch.setattr(service_module, "copy_into_folder", slow_copy)
+    client, _ = make_client(synchronous=False, step_s=0.0)
+    folder = tmp_path / "out"
+    set_folder(client, folder)
+    job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+    wait_until(lambda: client.get(f"{API}/jobs/{job_id}").json()["state"] == "done")
+    first = client.post(f"{API}/exports", json=export_body(job_id)).json()["export_id"]
+    assert copying.wait(timeout=10)
+    second = client.post(f"{API}/exports", json=export_body(job_id, start_s=120.0)).json()[
+        "export_id"
+    ]
+    wait_until(lambda: client.get(f"{API}/exports/{second}").json()["state"] == "done")
+
+    set_folder(client, None)  # while the second copy is still waiting
+    release.set()
+
+    wait_until(lambda: client.get(f"{API}/settings").json()["last_copy"] is not None)
+    time.sleep(0.2)  # give a wrongly kept second copy time to land
+    assert client.get(f"{API}/settings").json()["last_copy"]["render_id"] == first
+    assert [p.name for p in folder.iterdir()] == [
+        client.get(f"{API}/exports/{first}").json()["filename"]
+    ]
+
+
+def test_shutting_down_mid_copy_leaves_no_partial_file(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autoclipper.api import service as service_module
+
+    copying = threading.Event()
+    real_copy = service_module.copy_into_folder
+
+    def copy_until_stopped(
+        source: Path, folder: Path, filename: str, *, stop: threading.Event
+    ) -> Path:
+        copying.set()
+        assert stop.wait(timeout=10)  # close() asks the copy to stop
+        return real_copy(source, folder, filename, stop=stop)
+
+    monkeypatch.setattr(service_module, "copy_into_folder", copy_until_stopped)
+    client, service = make_client(synchronous=False, step_s=0.0)
+    folder = tmp_path / "out"
+    set_folder(client, folder)
+    job_id = client.post(f"{API}/jobs", json={"vod": "9000000001"}).json()["job_id"]
+    wait_until(lambda: client.get(f"{API}/jobs/{job_id}").json()["state"] == "done")
+    client.post(f"{API}/exports", json=export_body(job_id))
+    assert copying.wait(timeout=10)
+
+    started = time.monotonic()
+    service.close()
+
+    assert time.monotonic() - started < 3.0
+    assert list(folder.iterdir()) == []  # the real copy started, saw the stop and cleaned up
+
+
+def test_startup_removes_partial_copies_a_crash_left_behind(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    from autoclipper.export.output_folder import STALE_PARTIAL_AGE_S
+
+    folder = tmp_path / "out"
+    set_folder(make_client()[0], folder)
+    stale = folder / ".autoclipper-crashed.part"
+    stale.write_bytes(b"\0" * 1000)
+    old = time.time() - STALE_PARTIAL_AGE_S - 60
+    os.utime(stale, (old, old))
+
+    make_client(synchronous=False, step_s=0.0)  # the next server start
+
+    wait_until(lambda: not stale.exists())
+
+
+def test_a_render_file_gone_before_its_copy_gets_its_own_message(
+    make_client: Callable[..., tuple[TestClient, MockService]], tmp_path: Path
+) -> None:
+    client, service = make_client()
+    folder = tmp_path / "out"
+    set_folder(client, folder)
+    job_id = done_job(client)["job_id"]
+    export_id = client.post(f"{API}/exports", json=export_body(job_id)).json()["export_id"]
+    (tmp_path / "artifacts" / "exports" / f"{export_id}.mp4").unlink()
+
+    service._run_copy_safely((export_id, folder))  # pyright: ignore[reportPrivateUsage]
+
+    last_copy = client.get(f"{API}/settings").json()["last_copy"]
+    assert (last_copy["state"], last_copy["render_id"]) == ("failed", export_id)
+    assert "no longer on disk" in last_copy["message"]
+    assert "free space" not in last_copy["message"]
+    assert _partials(folder) == []
+
+
+def _partials(folder: Path) -> list[str]:
+    return sorted(p.name for p in folder.iterdir() if p.name.endswith(".part"))
 
 
 @pytest.mark.ffmpeg
