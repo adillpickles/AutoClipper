@@ -19,6 +19,7 @@ AutoClipper uses TwitchDownloader and yt-dlp for VOD media and chat. These stora
 - The chat parser replaces user IDs with salted hashes (enough for unique-chatter counts) and redacts `@mentions`. Reuse its output for features.
 - The raw chat download is deleted after parsing. The pseudonymized messages are kept in `data/interim/chat/` so features can be recomputed after the VOD expires.
 - Features are per-window totals (message rate, emotes, unique chatters).
+- **What leaves the machine for titles, and when:** nothing by default. Only when `AUTOCLIPPER_TITLE_LLM_BASE_URL` and `AUTOCLIPPER_TITLE_LLM_MODEL` are both set does the optional title polisher (`autoclipper.models.title_polish`, #65) send one request per analysis to that OpenAI-compatible endpoint, which can be a local server. It holds, for each of the top 20 moments, a positional ID, the deterministic title and reason, its duration and viewer-clip count, and the peak per-window aggregate numbers from `autoclipper.models.explain.ALLOWED_FEATURE_COLUMNS` (chat rates and z-scores, reaction-category rates, emote and caps fractions, loudness and audio-event scores). It never holds chat text, usernames, hashed IDs, the VOD title or channel, file paths or audio. The key (`AUTOCLIPPER_TITLE_LLM_API_KEY`) and URL are never logged or returned by the API.
 
 ## 3. Downloading
 

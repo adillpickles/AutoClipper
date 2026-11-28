@@ -88,7 +88,8 @@ from autoclipper.labels.windows import make_windows
 from autoclipper.models.base import Scorer, ScorerError, load_scorer, make_scorer
 from autoclipper.models.baselines import ChatLoudness, ChatSpike, Loudness
 from autoclipper.models.candidates import MomentInput, generate_candidates
-from autoclipper.models.explain import explain_candidates
+from autoclipper.models.explain import candidate_stats, explain_candidates
+from autoclipper.models.title_polish import TitlePolisherConfig, polish_titles
 
 log = logging.getLogger(__name__)
 
@@ -161,6 +162,7 @@ def analyze_vod(
     speech_model: str = DEFAULT_WHISPER_MODEL,
     speech_keywords: SpeechKeywords | None = None,
     speech_transcriber: Transcriber | None = None,
+    title_polisher: TitlePolisherConfig | None = None,
 ) -> AnalysisResult:
     """Run the whole pipeline for one VOD and write its ranked candidates.
 
@@ -194,6 +196,10 @@ def analyze_vod(
         speech_model: faster-whisper model name used for speech features (default ``base``).
         speech_keywords: Compiled spoken reaction keywords (defaults to built-in v1 list).
         speech_transcriber: Optional `Transcriber` override (tests pass a fake).
+        title_polisher: Optional LLM title polisher configuration
+            (`autoclipper.models.title_polish.title_polisher_config`). None, the default, keeps
+            the deterministic titles and makes no network call; when set, one request rewords
+            the top titles and any failure falls back to the deterministic ones.
 
     Returns:
         The written `AnalysisResult`, ranked candidates first.
@@ -519,6 +525,12 @@ def analyze_vod(
             audio_path=audio_wav,
         ),
     )
+    if title_polisher is not None:
+        stats = candidate_stats(candidates, windows=windows, features=features)
+        explained = candidates
+        candidates = _timed(
+            "polish_titles", lambda: polish_titles(explained, stats, title_polisher)
+        )
     result = AnalysisResult(
         generated_at=clock(),
         vod=VodSummary(

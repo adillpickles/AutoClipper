@@ -170,6 +170,16 @@ class Settings(BaseSettings):
         twitch_downloader_path: ``AUTOCLIPPER_TWITCH_DOWNLOADER_PATH``: optional explicit path to
             the ``TwitchDownloaderCLI`` executable. When set, takes precedence over the managed
             tools folder and ``PATH``.
+        title_llm_base_url: ``AUTOCLIPPER_TITLE_LLM_BASE_URL``: base URL of an OpenAI-compatible
+            API (``http://`` or ``https://``, e.g. ``http://localhost:11434/v1``) for the
+            optional title polisher (`autoclipper.models.title_polish`). None (the default)
+            turns the polisher off; there is no default provider.
+        title_llm_model: ``AUTOCLIPPER_TITLE_LLM_MODEL``: the model name sent to that API. The
+            polisher runs only when both the base URL and the model are set.
+        title_llm_api_key: ``AUTOCLIPPER_TITLE_LLM_API_KEY``: optional bearer token for that API
+            (local servers usually need none).
+        title_llm_timeout_s: ``AUTOCLIPPER_TITLE_LLM_TIMEOUT_S``: total time the one polishing
+            request per analysis may take, 1-60 s. Defaults to 10.
 
     Both directories are absolute. A relative value, including the defaults, is taken relative to
     the working directory at the time the settings are loaded (the directory ``.env`` is read
@@ -232,8 +242,26 @@ class Settings(BaseSettings):
     twitch_downloader_path: Path | None = Field(
         default=None, validation_alias="AUTOCLIPPER_TWITCH_DOWNLOADER_PATH"
     )
+    title_llm_base_url: str | None = Field(
+        default=None, validation_alias="AUTOCLIPPER_TITLE_LLM_BASE_URL"
+    )
+    title_llm_model: str | None = Field(
+        default=None, validation_alias="AUTOCLIPPER_TITLE_LLM_MODEL"
+    )
+    title_llm_api_key: SecretStr | None = Field(
+        default=None, validation_alias="AUTOCLIPPER_TITLE_LLM_API_KEY"
+    )
+    title_llm_timeout_s: float = Field(
+        default=10.0, ge=1.0, le=60.0, validation_alias="AUTOCLIPPER_TITLE_LLM_TIMEOUT_S"
+    )
 
-    @field_validator("twitch_client_id", "twitch_client_secret", "chat_hash_salt", mode="before")
+    @field_validator(
+        "twitch_client_id",
+        "twitch_client_secret",
+        "chat_hash_salt",
+        "title_llm_api_key",
+        mode="before",
+    )
     @classmethod
     def _blank_secret_is_unset(cls, value: object) -> object:
         # Empty values never reach here (env_ignore_empty). A whitespace-only value is no more
@@ -241,6 +269,21 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("title_llm_base_url", "title_llm_model", mode="before")
+    @classmethod
+    def _check_title_llm_text(cls, value: object, info: ValidationInfo) -> object:
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return None  # whitespace only: unset, like an empty value
+        if any(ord(char) < 0x20 or ord(char) == 0x7F for char in text) or " " in text:
+            raise ValueError("must not contain spaces or control characters")
+        if info.field_name == "title_llm_base_url" and not text.startswith(("http://", "https://")):
+            # The message leaves the value out: a base URL can carry a token.
+            raise ValueError("must start with http:// or https://")
+        return text
 
     @field_validator(
         "data_dir",

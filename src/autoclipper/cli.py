@@ -814,6 +814,7 @@ def analyze(
     from autoclipper.ingest.twitch_api import HelixClient
     from autoclipper.ingest.vod import IngestTools
     from autoclipper.models.base import ScorerError
+    from autoclipper.models.title_polish import title_polisher_config
     from autoclipper.schemas import parse_vod
 
     video_id = parse_vod(vod)
@@ -867,6 +868,7 @@ def analyze(
             speech_top_n=speech_top_n if speech_top_n is not None else settings.speech_top_n,
             speech_model=settings.whisper_model,
             speech_keywords=loaded_speech_keywords,
+            title_polisher=title_polisher_config(settings),
         )
     except AnalyzeError as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -1183,6 +1185,15 @@ def serve(
             tools_for=tools_for,
             segment_fetcher=fetch_segment,
         )
+        from autoclipper.models.title_polish import title_polisher_config
+
+        polisher = title_polisher_config(settings)
+        if polisher is not None:
+            import functools
+
+            from autoclipper.analyze import analyze_vod
+
+            options["analyze"] = functools.partial(analyze_vod, title_polisher=polisher)
     from autoclipper.export.reframe import load_channel_stacked_layouts
 
     service = MockService(

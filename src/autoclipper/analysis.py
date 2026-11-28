@@ -28,6 +28,8 @@ MAX_CANDIDATES: Final = 200
 type SchemaVersion = Literal["1.0", "1.1"]
 type Source = Literal["viewer_clips", "discovered", "both"]
 type ScorerKind = Literal["heuristic", "trained_model", "mock"]
+# Where a candidate's `title` came from when it isn't the deterministic one (open enum).
+type TitleSource = Literal["llm"]
 
 
 def _aware_utc(value: datetime) -> datetime:
@@ -124,6 +126,8 @@ class Candidate(_Model):
     reason: str | None = None
     signal_details: tuple[SignalDetail, ...] = ()
     speech_features: SpeechFeatures | None = Field(default=None, exclude_if=lambda v: v is None)
+    # "llm" when the optional title polisher rewrote `title`; omitted for the deterministic one.
+    title_source: TitleSource | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @field_validator("title", "reason")
     @classmethod
@@ -145,6 +149,8 @@ class Candidate(_Model):
             raise ValueError("end_s must be after start_s")
         if (self.n_viewer_clips == 0) != (self.source == "discovered"):
             raise ValueError("n_viewer_clips is 0 exactly when source is 'discovered'")
+        if self.title_source is not None and self.title is None:
+            raise ValueError("title_source is set only together with a title")
         return self
 
 

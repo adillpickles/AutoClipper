@@ -474,6 +474,7 @@ To continue browsing, pass the last page's `next_cursor` as `before`. The cursor
 | `reason` | str \| null | Deterministic plain-English one-line "why this moment" explanation from aggregate signals (chat rate/reaction categories, audio loudness lookback, viewer clip counts, optional audio events, pause-snapped edges), e.g. `"Chat jumped to 6× its usual rate with lots of laugh reactions; loudest moment in the last 20 minutes; 3 viewer clips"`. Never alters rank or score; never contains raw chat text or usernames. `null` only on older `"1.0"` results or raw pre-explanation candidates. |
 | `signal_details` | list<`SignalDetail`> | Structured contributing signals behind `reason`, for UI "why" tooltips/expanders. Always present; `[]` when no explanation details are attached. |
 | `speech_features` | `SpeechFeatures` \| omitted | Optional Phase 2 shortlist Whisper features (`speech_word_rate`, `speech_exclaim_density`, `speech_question_density`, `speech_keyword_rate`, `speech_frac`, `speech_peak_loudness_align`; [features § Phase 2](../ml/features.md#phase-2-features-after-the-mvp-works), #64). Omitted from JSON when opt-in speech features were not computed for this candidate. |
+| `title_source` | `"llm"` \| omitted | Omitted when `title` is the deterministic one. `"llm"` when the optional, off-by-default title polisher (`autoclipper.models.title_polish`, #65) reworded `title`; `reason`, `signal_details`, ranking and scores are never changed by it. Open enum: show an unknown value like an omitted one. |
 
 `SignalDetail`:
 
@@ -1397,10 +1398,10 @@ Responses:
 
 ## 10. Versioning
 
-- The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` (`"1.1"`, adding `title`, `reason`, and `signal_details` on `Candidate`; `"1.0"` files without those fields remain loadable) and `Health` (`"1.1"`, adding `captions_available`).
+- The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` (`"1.1"`, adding `title`, `reason`, and `signal_details` on `Candidate`; `"1.0"` files without those fields remain loadable; the optional `speech_features` and `title_source` fields were added later as minor changes and are omitted when unset, so files without them load unchanged) and `Health` (`"1.1"`, adding `captions_available`).
 - **Minor change** (same path, `1.x`): a new endpoint, a new response field, an optional request field with a default, or a new value in an **open** enum. Clients must already ignore unknown fields and handle unknown open-enum values with a default branch.
 - **Major change** (`/api/v2`): anything else, such as renaming or removing a field, changing a type, unit or meaning, adding a required request field, or adding a value to a **closed** enum.
-- **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, `PreflightCheck.name`, `PreflightCheck.source`, `SignalDetail.kind`, and layouts listed in `export.layouts`. **Closed enums:** job, export and highlights `state`, `source`, `preview.status`, `export.status`, `scorer.kind`, highlights `order`, and preflight `status`. A request's `layout` must be one the server lists.
+- **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, `PreflightCheck.name`, `PreflightCheck.source`, `SignalDetail.kind`, `Candidate.title_source`, and layouts listed in `export.layouts`. **Closed enums:** job, export and highlights `state`, `source`, `preview.status`, `export.status`, `scorer.kind`, highlights `order`, and preflight `status`. A request's `layout` must be one the server lists.
 - Update this doc, its examples and [data model § candidates](data-model.md#candidates-apicli-output-json) with the implementation in the same PR ([AGENTS.md § 6](../../AGENTS.md#6-engineering-basics), rule 4).
 
 ## 11. Mock scenarios (#28)
