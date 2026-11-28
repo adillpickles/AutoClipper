@@ -127,9 +127,30 @@ random_hex() {
     echo
 }
 
-# True when something accepts TCP connections on 127.0.0.1:PORT.
+# True when something accepts TCP connections on 127.0.0.1:PORT or [::1]:PORT, the two
+# addresses `localhost` can mean. On macOS Node may listen on ::1 only. Not every bash build
+# opens /dev/tcp to ::1, so curl and then nc are tried for it too.
 port_open() {
-    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && return 0
+    (exec 3<>"/dev/tcp/::1/$1") 2>/dev/null && return 0
+    if have curl; then
+        # The port is taken when curl got any reply (0), a non-HTTP or cut-off one (8, 18, 52,
+        # 56), or connected and then timed out waiting (a nonzero connect time). A timeout
+        # alone isn't enough: Windows retries a refused connect until curl gives up.
+        rc=0
+        connect_s=$(curl -s -o /dev/null --max-time 2 -w '%{time_connect}' \
+            "http://[::1]:$1/" 2>/dev/null) || rc=$?
+        case "$rc" in
+            0 | 8 | 18 | 52 | 56) return 0 ;;
+        esac
+        case "$connect_s" in
+            *[1-9]*) return 0 ;; # "0.000000" (or empty) means it never connected
+        esac
+    fi
+    if have nc; then
+        nc -z -w 2 ::1 "$1" >/dev/null 2>&1 && return 0
+    fi
+    return 1
 }
 
 url_ok() {
@@ -221,10 +242,27 @@ if [ "$MOCK" -eq 1 ]; then JOBS=mock; else JOBS=pipeline; fi
 # 3. Dependencies and tools --------------------------------------------------
 if [ "$SKIP_INSTALL" -eq 0 ]; then
     step "Installing Python dependencies (uv sync --extra captions)"
-    if ! uv sync --extra captions; then
+    mkdir -p "$ROOT/artifacts/demo-logs"
+    SYNC_LOG="$ROOT/artifacts/demo-logs/uv-sync.log"
+    # tee keeps uv's output on screen; PIPESTATUS (bash 3.2 has it) is uv's own exit code.
+    uv sync --extra captions 2>&1 | tee "$SYNC_LOG"
+    sync_rc=${PIPESTATUS[0]}
+    if [ "$sync_rc" -ne 0 ]; then
         # The captions extra (faster-whisper/onnxruntime) has no wheel for some platforms, e.g.
-        # Intel Macs and macOS 13 or older. Everything else works without it.
-        warn "Captions unavailable on this platform; installing without them (exports work with captions off)."
+        # Intel Macs and macOS 13 or older. Everything else works without it. Any other error
+        # (network, lockfile, disk) is shown as is, since it isn't about the platform.
+        if grep -qiE "wheel for the current platform|only has wheels for|has no wheels|no matching wheel" "$SYNC_LOG"; then
+            warn "Captions unavailable on this platform; installing without them (exports work with captions off)."
+        else
+            warn "uv sync --extra captions failed (exit $sync_rc):"
+            sync_errors=$(grep -iE "^ *(error|caused by|hint)" "$SYNC_LOG" | tail -n 15 || true)
+            if [ -n "$sync_errors" ]; then
+                printf '%s\n' "$sync_errors" >&2
+            else
+                tail -n 15 "$SYNC_LOG" >&2
+            fi
+            warn "Full output: $SYNC_LOG. Trying again without captions (exports work with captions off)."
+        fi
         uv sync || fail "uv sync failed."
     fi
 

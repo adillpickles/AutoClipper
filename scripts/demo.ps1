@@ -117,11 +117,24 @@ $Jobs = if ($Mock) { "mock" } else { "pipeline" }
 # 3. Dependencies and tools --------------------------------------------------
 if (-not $SkipInstall) {
     Write-Step "Installing Python dependencies (uv sync --extra captions)"
-    uv sync --extra captions
-    if ($LASTEXITCODE -ne 0) {
+    # cmd merges uv's stderr into stdout itself: Windows PowerShell 5.1 would wrap each stderr
+    # line in an error record, which stops the script under $ErrorActionPreference = "Stop".
+    cmd /c "uv sync --extra captions 2>&1" | Tee-Object -Variable SyncOutput
+    $SyncExit = $LASTEXITCODE
+    if ($SyncExit -ne 0) {
         # The captions extra (faster-whisper/onnxruntime) has no wheel for some platforms, e.g.
-        # Windows on ARM. Everything else works without it.
-        Write-Host "Captions unavailable on this platform; installing without them (exports work with captions off)." -ForegroundColor Yellow
+        # Windows on ARM. Everything else works without it. Any other error (network, lockfile,
+        # disk) is shown as is, since it isn't about the platform.
+        $SyncText = ($SyncOutput | Out-String)
+        if ($SyncText -match "wheel for the current platform|only has wheels for|has no wheels|no matching wheel") {
+            Write-Host "Captions unavailable on this platform; installing without them (exports work with captions off)." -ForegroundColor Yellow
+        } else {
+            Write-Host "uv sync --extra captions failed (exit $SyncExit):" -ForegroundColor Yellow
+            $SyncErrors = @($SyncOutput | Where-Object { "$_" -match "^\s*(error|caused by|hint)" } | Select-Object -Last 15)
+            if ($SyncErrors.Count -eq 0) { $SyncErrors = @($SyncOutput | Select-Object -Last 15) }
+            $SyncErrors | ForEach-Object { Write-Host "$_" }
+            Write-Host "Trying again without captions (exports work with captions off)." -ForegroundColor Yellow
+        }
         uv sync
         if ($LASTEXITCODE -ne 0) { Fail "uv sync failed." }
     }
