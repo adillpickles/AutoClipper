@@ -5,7 +5,6 @@ bodies with the contract's envelope (§ 8), allows the configured browser origin
 marks status responses ``Cache-Control: no-store`` (§ 9.1).
 """
 
-import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Sequence
 from contextlib import asynccontextmanager
@@ -115,8 +114,10 @@ class _ClosingStreamingResponse(StreamingResponse):
             await run_in_threadpool(self._close_source)
 
     def _close_source(self) -> None:
-        with contextlib.suppress(ValueError):  # still running in a worker thread
+        try:
             self._source.close()
+        except ValueError:  # still running in a worker thread; its file stays open until it ends
+            log.warning("could not close a streamed download: its generator is still running")
 
 
 def _json(model: BaseModel, status: int = 200, headers: dict[str, str] | None = None) -> Response:
