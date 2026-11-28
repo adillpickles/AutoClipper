@@ -523,7 +523,14 @@ def test_a_padded_box_loses_to_a_preset_that_holds_the_face(
     # PRESET's facecam is the top-right corner (0.76, 0.04, 0.22, 0.28).
     in_preset = _padded((0.82, 0.08, 0.1, 0.18))
 
-    assert _render(tmp_path, rendered, lambda *_: in_preset, stacked_fallback=PRESET) == PRESET
+    layout = _render(tmp_path, rendered, lambda *_: in_preset, stacked_fallback=PRESET)
+
+    assert isinstance(layout, StackedLayout)
+    assert layout.facecam == PRESET.facecam
+    assert layout.gameplay == PRESET.gameplay
+    assert layout.facecam_fraction == PRESET.facecam_fraction
+    # The detected face comes along, so the preset's pane is trimmed around it.
+    assert layout.face == in_preset.face
 
 
 def test_a_padded_box_beats_a_preset_elsewhere_with_a_warning(

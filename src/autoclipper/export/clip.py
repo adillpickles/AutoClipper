@@ -18,7 +18,7 @@ face instead of the overlay's center and never cuts it off.
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Literal
 
@@ -210,7 +210,8 @@ def _detected_stacked_layout(
         # A box estimated around a borderless webcam is a guess; a measured preset is better,
         # but only when the face is in it. Streamers move the camera between scenes.
         if preset is not None and _face_in(detection.face, preset.facecam):
-            return preset
+            # The face is known here, so trim the preset's pane around it too.
+            return replace(preset, face=detection.face)
         if preset is not None:
             message = (
                 f"{detection.message}; the face isn't in the channel's stacked_layout preset, "
