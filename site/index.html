@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AutoClipper: Twitch VODs to ranked, ready-to-post clips</title>
+    <meta
+      name="description"
+      content="AutoClipper reads a Twitch VOD's chat and audio, ranks the moments that popped, and hands back captioned 9:16 clips and a 16:9 highlights video."
+    />
+    <meta name="theme-color" content="#0b0d12" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="canonical" href="https://adillpickles.github.io/AutoClipper/" />
+    <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+
+    <!-- Open Graph / social previews -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="AutoClipper" />
+    <meta property="og:title" content="AutoClipper: Twitch VODs to ranked, ready-to-post clips" />
+    <meta
+      property="og:description"
+      content="Turn a long Twitch VOD into ranked, captioned, ready-to-post vertical clips, or one highlights video. A CUNY Tech Prep project."
+    />
+    <meta property="og:url" content="https://adillpickles.github.io/AutoClipper/" />
+    <meta property="og:image" content="https://adillpickles.github.io/AutoClipper/assets/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="AutoClipper: a stream's chat activity with its three biggest peaks marked as ranked clips."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <link
+      rel="preload"
+      href="assets/fonts/space-grotesk-latin-wght-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/plus-jakarta-sans-latin-wght-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="wrap header-row">
+        <a class="brand" href="#top" aria-label="AutoClipper, back to top">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="var(--accent)" />
+            <rect x="7" y="15" width="4" height="10" rx="2" fill="var(--canvas)" opacity=".55" />
+            <rect x="14" y="7" width="4" height="18" rx="2" fill="var(--canvas)" />
+            <rect x="21" y="12" width="4" height="13" rx="2" fill="var(--canvas)" opacity=".55" />
+          </svg>
+          <span>AutoClipper</span>
+        </a>
+        <nav aria-label="Sections">
+          <ul class="nav-list">
+            <li><a href="#how">How it works</a></li>
+            <li><a href="#screens">Screens</a></li>
+            <li><a href="#get">Get it</a></li>
+            <li>
+              <a class="nav-gh" href="https://github.com/adillpickles/AutoClipper">GitHub</a>
+            </li>
+          </ul>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- Hero -->
+      <section class="hero" id="top">
+        <div class="wrap hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow">
+              <span class="live-dot" aria-hidden="true"></span>
+              Twitch VOD → clips &nbsp;·&nbsp; CUNY Tech Prep
+            </p>
+            <h1>Turn a long Twitch&nbsp;VOD into clips worth&nbsp;posting.</h1>
+            <p class="lede">
+              AutoClipper reads the chat and the audio, ranks the moments that popped, and hands
+              back the top&nbsp;10 as <strong>captioned 9:16 clips</strong>, or one
+              <strong>16:9 highlights video</strong> for anyone who missed the stream.
+            </p>
+            <div class="cta-row">
+              <a class="btn btn-primary" href="#get">Get it</a>
+              <a class="btn btn-ghost" href="https://github.com/adillpickles/AutoClipper">
+                View on GitHub
+                <span aria-hidden="true">↗</span>
+              </a>
+            </div>
+            <p class="for-who">
+              For <span>clippers</span>, <span>small streamers</span> and
+              <span>viewers who missed it</span>.
+            </p>
+          </div>
+
+          <figure class="signal-card" aria-labelledby="signal-caption">
+            <div class="signal-head">
+              <span class="mono">chat msgs / 10s</span>
+              <span class="mono muted">4:12:07 VOD</span>
+            </div>
+            <div class="signal-plot">
+              <svg
+                viewBox="0 0 600 140"
+                preserveAspectRatio="none"
+                role="img"
+                aria-label="Illustration: chat activity across a stream, with three spikes marked as the top three moments."
+              >
+                <rect class="b" x="1.0" y="114.4" width="4.2" height="25.6" rx="1.5"/>
+                <rect class="b" x="7.2" y="113.3" width="4.2" height="26.7" rx="1.5"/>
+                <rect class="b" x="13.5" y="105.8" width="4.2" height="34.2" rx="1.5"/>
+                <rect class="b" x="19.8" y="109.0" width="4.2" height="31.0" rx="1.5"/>
+                <rect class="b" x="26.0" y="102.3" width="4.2" height="37.7" rx="1.5"/>
+                <rect class="b" x="32.2" y="102.2" width="4.2" height="37.8" rx="1.5"/>
+                <rect class="b" x="38.5" y="104.0" width="4.2" height="36.0" rx="1.5"/>
+                <rect class="b" x="44.8" y="98.8" width="4.2" height="41.2" rx="1.5"/>
+                <rect class="b" x="51.0" y="103.2" width="4.2" height="36.8" rx="1.5"/>
+                <rect class="b" x="57.2" y="99.7" width="4.2" height="40.3" rx="1.5"/>
+                <rect class="b" x="63.5" y="104.2" width="4.2" height="35.8" rx="1.5"/>
+                <rect class="b" x="69.8" y="105.4" width="4.2" height="34.6" rx="1.5"/>
+                <rect class="b" x="76.0" y="104.0" width="4.2" height="36.0" rx="1.5"/>
+                <rect class="b" x="82.2" y="102.3" width="4.2" height="37.7" rx="1.5"/>
+                <rect class="b" x="88.5" y="111.7" width="4.2" height="28.3" rx="1.5"/>
+                <rect class="b" x="94.8" y="113.4" width="4.2" height="26.6" rx="1.5"/>
+                <rect class="b" x="101.0" y="112.2" width="4.2" height="27.8" rx="1.5"/>
+                <rect class="b" x="107.2" y="111.2" width="4.2" height="28.8" rx="1.5"/>
+                <rect class="b" x="113.5" y="113.8" width="4.2" height="26.2" rx="1.5"/>
+                <rect class="b hot" x="119.8" y="103.7" width="4.2" height="36.3" rx="1.5"/>
+                <rect class="b hot" x="126.0" y="66.6" width="4.2" height="73.4" rx="1.5"/>
+                <rect class="b hot" x="132.2" y="32.6" width="4.2" height="107.4" rx="1.5"/>
+                <rect class="b hot" x="138.5" y="3.5" width="4.2" height="136.5" rx="1.5"/>
+                <rect class="b hot" x="144.8" y="31.9" width="4.2" height="108.1" rx="1.5"/>
+                <rect class="b hot" x="151.0" y="78.1" width="4.2" height="61.9" rx="1.5"/>
+                <rect class="b hot" x="157.2" y="111.3" width="4.2" height="28.7" rx="1.5"/>
+                <rect class="b" x="163.5" y="122.6" width="4.2" height="17.4" rx="1.5"/>
+                <rect class="b" x="169.8" y="119.7" width="4.2" height="20.3" rx="1.5"/>
+                <rect class="b" x="176.0" y="124.6" width="4.2" height="15.4" rx="1.5"/>
+                <rect class="b" x="182.2" y="118.4" width="4.2" height="21.6" rx="1.5"/>
+                <rect class="b" x="188.5" y="115.3" width="4.2" height="24.7" rx="1.5"/>
+                <rect class="b" x="194.8" y="115.1" width="4.2" height="24.9" rx="1.5"/>
+                <rect class="b" x="201.0" y="110.6" width="4.2" height="29.4" rx="1.5"/>
+                <rect class="b" x="207.2" y="112.6" width="4.2" height="27.4" rx="1.5"/>
+                <rect class="b" x="213.5" y="110.1" width="4.2" height="29.9" rx="1.5"/>
+                <rect class="b" x="219.8" y="106.4" width="4.2" height="33.6" rx="1.5"/>
+                <rect class="b" x="226.0" y="99.8" width="4.2" height="40.2" rx="1.5"/>
+                <rect class="b" x="232.2" y="100.8" width="4.2" height="39.2" rx="1.5"/>
+                <rect class="b" x="238.5" y="101.0" width="4.2" height="39.0" rx="1.5"/>
+                <rect class="b" x="244.8" y="97.9" width="4.2" height="42.1" rx="1.5"/>
+                <rect class="b" x="251.0" y="99.3" width="4.2" height="40.7" rx="1.5"/>
+                <rect class="b" x="257.2" y="101.5" width="4.2" height="38.5" rx="1.5"/>
+                <rect class="b" x="263.5" y="97.9" width="4.2" height="42.1" rx="1.5"/>
+                <rect class="b" x="269.8" y="100.5" width="4.2" height="39.5" rx="1.5"/>
+                <rect class="b" x="276.0" y="107.0" width="4.2" height="33.0" rx="1.5"/>
+                <rect class="b" x="282.2" y="106.2" width="4.2" height="33.8" rx="1.5"/>
+                <rect class="b" x="288.5" y="109.3" width="4.2" height="30.7" rx="1.5"/>
+                <rect class="b" x="294.8" y="108.7" width="4.2" height="31.3" rx="1.5"/>
+                <rect class="b" x="301.0" y="112.9" width="4.2" height="27.1" rx="1.5"/>
+                <rect class="b" x="307.2" y="119.9" width="4.2" height="20.1" rx="1.5"/>
+                <rect class="b" x="313.5" y="115.6" width="4.2" height="24.4" rx="1.5"/>
+                <rect class="b" x="319.8" y="126.2" width="4.2" height="13.8" rx="1.5"/>
+                <rect class="b" x="326.0" y="125.0" width="4.2" height="15.0" rx="1.5"/>
+                <rect class="b" x="332.2" y="122.5" width="4.2" height="17.5" rx="1.5"/>
+                <rect class="b" x="338.5" y="125.8" width="4.2" height="14.2" rx="1.5"/>
+                <rect class="b hot" x="344.8" y="109.8" width="4.2" height="30.2" rx="1.5"/>
+                <rect class="b hot" x="351.0" y="83.0" width="4.2" height="57.0" rx="1.5"/>
+                <rect class="b hot" x="357.2" y="34.9" width="4.2" height="105.1" rx="1.5"/>
+                <rect class="b hot" x="363.5" y="12.1" width="4.2" height="127.9" rx="1.5"/>
+                <rect class="b hot" x="369.8" y="32.6" width="4.2" height="107.4" rx="1.5"/>
+                <rect class="b hot" x="376.0" y="68.6" width="4.2" height="71.4" rx="1.5"/>
+                <rect class="b hot" x="382.2" y="102.5" width="4.2" height="37.5" rx="1.5"/>
+                <rect class="b" x="388.5" y="109.1" width="4.2" height="30.9" rx="1.5"/>
+                <rect class="b" x="394.8" y="110.7" width="4.2" height="29.3" rx="1.5"/>
+                <rect class="b" x="401.0" y="108.6" width="4.2" height="31.4" rx="1.5"/>
+                <rect class="b" x="407.2" y="107.2" width="4.2" height="32.8" rx="1.5"/>
+                <rect class="b" x="413.5" y="101.1" width="4.2" height="38.9" rx="1.5"/>
+                <rect class="b" x="419.8" y="98.0" width="4.2" height="42.0" rx="1.5"/>
+                <rect class="b" x="426.0" y="100.9" width="4.2" height="39.1" rx="1.5"/>
+                <rect class="b" x="432.2" y="97.9" width="4.2" height="42.1" rx="1.5"/>
+                <rect class="b" x="438.5" y="103.1" width="4.2" height="36.9" rx="1.5"/>
+                <rect class="b" x="444.8" y="96.8" width="4.2" height="43.2" rx="1.5"/>
+                <rect class="b" x="451.0" y="97.7" width="4.2" height="42.3" rx="1.5"/>
+                <rect class="b" x="457.2" y="95.3" width="4.2" height="44.7" rx="1.5"/>
+                <rect class="b" x="463.5" y="98.5" width="4.2" height="41.5" rx="1.5"/>
+                <rect class="b" x="469.8" y="105.2" width="4.2" height="34.8" rx="1.5"/>
+                <rect class="b" x="476.0" y="103.6" width="4.2" height="36.4" rx="1.5"/>
+                <rect class="b hot" x="482.2" y="92.3" width="4.2" height="47.7" rx="1.5"/>
+                <rect class="b hot" x="488.5" y="75.3" width="4.2" height="64.7" rx="1.5"/>
+                <rect class="b hot" x="494.8" y="38.9" width="4.2" height="101.1" rx="1.5"/>
+                <rect class="b hot" x="501.0" y="27.2" width="4.2" height="112.8" rx="1.5"/>
+                <rect class="b hot" x="507.2" y="47.6" width="4.2" height="92.4" rx="1.5"/>
+                <rect class="b hot" x="513.5" y="85.3" width="4.2" height="54.7" rx="1.5"/>
+                <rect class="b hot" x="519.8" y="106.5" width="4.2" height="33.5" rx="1.5"/>
+                <rect class="b" x="526.0" y="125.4" width="4.2" height="14.6" rx="1.5"/>
+                <rect class="b" x="532.2" y="128.1" width="4.2" height="11.9" rx="1.5"/>
+                <rect class="b" x="538.5" y="127.7" width="4.2" height="12.3" rx="1.5"/>
+                <rect class="b" x="544.8" y="123.0" width="4.2" height="17.0" rx="1.5"/>
+                <rect class="b" x="551.0" y="130.1" width="4.2" height="9.9" rx="1.5"/>
+                <rect class="b" x="557.2" y="125.3" width="4.2" height="14.7" rx="1.5"/>
+                <rect class="b" x="563.5" y="122.7" width="4.2" height="17.3" rx="1.5"/>
+                <rect class="b" x="569.8" y="117.4" width="4.2" height="22.6" rx="1.5"/>
+                <rect class="b" x="576.0" y="115.7" width="4.2" height="24.3" rx="1.5"/>
+                <rect class="b" x="582.2" y="112.6" width="4.2" height="27.4" rx="1.5"/>
+                <rect class="b" x="588.5" y="115.6" width="4.2" height="24.4" rx="1.5"/>
+                <rect class="b" x="594.8" y="111.4" width="4.2" height="28.6" rx="1.5"/>
+              </svg>
+              <span class="pin pin-1" style="left: 61%">#1</span>
+              <span class="pin pin-2" style="left: 83.9%">#2</span>
+              <span class="pin pin-3" style="left: 23.4%">#3</span>
+            </div>
+            <ol class="signal-list">
+              <li>
+                <span class="rank">1</span>
+                <span class="what">Loud audio &amp; laughing chat</span>
+                <span class="mono muted">2:33:48</span>
+              </li>
+              <li>
+                <span class="rank">2</span>
+                <span class="what">Chat spike after the clutch</span>
+                <span class="mono muted">3:31:32</span>
+              </li>
+              <li>
+                <span class="rank">3</span>
+                <span class="what">Viewer-clipped moment</span>
+                <span class="mono muted">0:59:00</span>
+              </li>
+            </ol>
+            <figcaption id="signal-caption" class="sr-only">
+              An illustration of how AutoClipper sees a stream: chat activity over time, with the
+              three biggest spikes ranked as clips.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- How it works -->
+      <section class="section" id="how" aria-labelledby="how-title">
+        <div class="wrap">
+          <p class="kicker">How it works</p>
+          <h2 id="how-title">Chat explodes right after something happens. We listen for it.</h2>
+          <ol class="steps">
+            <li class="step">
+              <span class="step-num mono">01</span>
+              <h3>Read the signals</h3>
+              <p>
+                Give it a VOD link. It pulls the chat replay, the audio and the clips viewers
+                already made, then measures chat rate, laugh reactions and loudness for every few
+                seconds of stream.
+              </p>
+              <div class="chips" aria-hidden="true">
+                <span>chat rate</span><span>LUL / KEKW</span><span>loudness</span>
+              </div>
+            </li>
+            <li class="step">
+              <span class="step-num mono">02</span>
+              <h3>Score every moment</h3>
+              <p>
+                A model trained on viewer clips (logistic regression, then LightGBM) scores each
+                window, and has to beat simple baselines like "biggest chat spike" to earn its keep.
+                Each pick comes with a one-line reason.
+              </p>
+              <div class="chips" aria-hidden="true">
+                <span>ranked top 10</span><span>why this moment</span>
+              </div>
+            </li>
+            <li class="step">
+              <span class="step-num mono">03</span>
+              <h3>Cut, caption, post</h3>
+              <p>
+                The top moments come back as vertical 9:16 clips with burned-in captions. Nudge the
+                start or end, download, or join them into one 16:9 highlights video to watch.
+              </p>
+              <div class="chips" aria-hidden="true">
+                <span>9:16 clips</span><span>captions</span><span>16:9 highlights</span>
+              </div>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <!-- Screens -->
+      <section class="section" id="screens" aria-labelledby="screens-title">
+        <div class="wrap">
+          <p class="kicker">The app</p>
+          <h2 id="screens-title">Paste a link. Get a shortlist. Trim and export.</h2>
+          <p class="section-sub">
+            Screens from the web app, shown with its built-in sample data and test-pattern video.
+          </p>
+
+          <div class="gallery">
+            <figure class="shot shot-tall">
+              <img
+                src="assets/screen-start.webp"
+                width="752"
+                height="1290"
+                loading="lazy"
+                decoding="async"
+                alt="AutoClipper start screen: the headline 'Find the moments worth posting', four steps, and a form with a Twitch VOD link field and a 'Find the best moments' button."
+              />
+              <figcaption><span class="mono">01</span> Start: paste a VOD link</figcaption>
+            </figure>
+            <figure class="shot">
+              <img
+                src="assets/screen-results.webp"
+                width="1248"
+                height="1064"
+                loading="lazy"
+                decoding="async"
+                alt="Results screen: ranked clip cards, each with a vertical preview, a source tag, a title, a one-line reason, a score bar, and Download and Edit buttons."
+              />
+              <figcaption><span class="mono">02</span> Results: ranked clips with reasons</figcaption>
+            </figure>
+            <figure class="shot">
+              <img
+                src="assets/screen-editor.webp"
+                width="1248"
+                height="700"
+                loading="lazy"
+                decoding="async"
+                alt="Clip editor: a video preview beside a Trim and export panel with start and end controls, a 9:16 center-crop layout option, a burn-in captions checkbox and a Re-render clip button."
+              />
+              <figcaption><span class="mono">03</span> Clip editor: nudge start and end</figcaption>
+            </figure>
+          </div>
+
+          <!--
+            Demo video slot. To add the demo later, replace the <div class="demo-placeholder">
+            below with either:
+              - a YouTube embed: <iframe src="https://www.youtube-nocookie.com/embed/VIDEO_ID"
+                title="AutoClipper demo" allowfullscreen loading="lazy"></iframe>
+              - or a small, compressed clip committed as site/assets/demo.mp4 (keep it under ~5 MB):
+                <video src="assets/demo.mp4" controls muted playsinline preload="metadata"
+                poster="assets/screen-results.webp"></video>
+          -->
+          <figure class="demo" aria-labelledby="demo-caption">
+            <div class="demo-frame">
+              <div class="demo-placeholder">
+                <span class="play" aria-hidden="true"></span>
+                <p>Demo video coming soon</p>
+              </div>
+            </div>
+            <figcaption id="demo-caption" class="muted">
+              A short walkthrough: VOD link in, ranked clips out.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- Get it -->
+      <section class="section" id="get" aria-labelledby="get-title">
+        <div class="wrap get-grid">
+          <div>
+            <p class="kicker">Get it</p>
+            <h2 id="get-title">Runs on your machine. One command to start.</h2>
+            <p class="section-sub">
+              AutoClipper runs locally: the app opens in your browser and your VODs stay on your
+              computer. You need <a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a>,
+              <a href="https://nodejs.org/">Node.js 24</a> and
+              <a href="https://git-scm.com/">git</a>. The script fetches FFmpeg and the other
+              tools for you, and the
+              <a href="https://github.com/adillpickles/AutoClipper#first-local-run">setup guide</a>
+              shows where your Twitch API keys go.
+            </p>
+            <p class="note">
+              <strong>Pre-alpha.</strong> The full pipeline works end to end; models trained on
+              real Twitch data are still in progress.
+            </p>
+            <div class="cta-row">
+              <a class="btn btn-primary" href="https://github.com/adillpickles/AutoClipper">
+                Open the repo <span aria-hidden="true">↗</span>
+              </a>
+              <a
+                class="btn btn-ghost"
+                href="https://github.com/adillpickles/AutoClipper#first-local-run"
+                >Full setup guide</a
+              >
+            </div>
+          </div>
+
+          <ol class="terminal-steps">
+            <li>
+              <p class="term-label"><span class="mono">1</span> Clone the repo</p>
+              <div class="term">
+                <pre><code>git clone https://github.com/adillpickles/AutoClipper.git
+cd AutoClipper</code></pre>
+                <button class="copy" type="button" data-copy hidden>Copy</button>
+              </div>
+            </li>
+            <li>
+              <p class="term-label"><span class="mono">2</span> Start it, on Windows (PowerShell)</p>
+              <div class="term">
+                <pre><code>powershell -ExecutionPolicy Bypass -File scripts/demo.ps1</code></pre>
+                <button class="copy" type="button" data-copy hidden>Copy</button>
+              </div>
+            </li>
+            <li>
+              <p class="term-label"><span class="mono">2</span> or on macOS / Linux</p>
+              <div class="term">
+                <pre><code>bash scripts/demo.sh</code></pre>
+                <button class="copy" type="button" data-copy hidden>Copy</button>
+              </div>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <!-- Stack + team -->
+      <section class="section" aria-label="Tech stack and team">
+        <div class="wrap duo">
+          <div class="panel">
+            <h2 class="h-small" id="stack-title">Built with</h2>
+            <dl class="stack">
+              <div>
+                <dt>Data &amp; ML</dt>
+                <dd>Python 3.12 · Polars · scikit-learn · LightGBM</dd>
+              </div>
+              <div>
+                <dt>Media</dt>
+                <dd>FFmpeg · faster-whisper captions · TwitchDownloaderCLI</dd>
+              </div>
+              <div>
+                <dt>App</dt>
+                <dd>FastAPI · Next.js · React · TypeScript · Tailwind CSS</dd>
+              </div>
+              <div>
+                <dt>Data source</dt>
+                <dd>Twitch API: VODs, chat replays and viewer clips</dd>
+              </div>
+            </dl>
+          </div>
+          <div class="panel">
+            <h2 class="h-small" id="team-title">The team</h2>
+            <ul class="team">
+              <li><span class="avatar" aria-hidden="true">A</span>Adil</li>
+              <li><span class="avatar" aria-hidden="true">H</span>Harrison</li>
+              <li><span class="avatar" aria-hidden="true">R</span>Rashen</li>
+              <li><span class="avatar" aria-hidden="true">S</span>Shahad</li>
+            </ul>
+            <p class="muted team-note">
+              Built for the <a href="https://www.cunytechprep.org/">CUNY Tech Prep</a> data science
+              fellowship.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap footer-row">
+        <p>AutoClipper · MIT License</p>
+        <p>
+          <a href="https://github.com/adillpickles/AutoClipper">Source on GitHub</a>
+          ·
+          <a href="https://github.com/adillpickles/AutoClipper/issues">Issues</a>
+        </p>
+      </div>
+    </footer>
+
+    <script src="main.js" defer></script>
+  </body>
+</html>

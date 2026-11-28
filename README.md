@@ -3,6 +3,8 @@
 > **Find the highlights in a long Twitch stream.**
 > Paste a Twitch VOD link, get its best moments ranked, preview and trim them, and export vertical, captioned clips ready to post, or one highlights video to watch.
 
+**Website:** [adillpickles.github.io/AutoClipper](https://adillpickles.github.io/AutoClipper/), what it does, screenshots and how to get it.
+
 ![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-lightgrey)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
