@@ -411,12 +411,17 @@ def plan_reframe(layout: Layout, source_width: int, source_height: int) -> AnyRe
         if layout.gameplay.fit == "crop":
             # The facecam is already in the top pane; keep it out of the bottom one (#229).
             gameplay_rect = _region_pixels(layout.gameplay, source_width, source_height)
-            facecam_rect = _padded(
-                _region_pixels(layout.facecam, source_width, source_height),
-                source_width,
-                source_height,
+            facecam_rect = _region_pixels(layout.facecam, source_width, source_height)
+            # Clear the webcam with a margin if the pane fits beside it, else at least clear
+            # the webcam itself; if no position clears it, the pane stays where it was.
+            crop = _avoid(
+                bottom.crop,
+                gameplay_rect,
+                _padded(facecam_rect, source_width, source_height),
             )
-            bottom = replace(bottom, crop=_avoid(bottom.crop, gameplay_rect, facecam_rect))
+            if crop == bottom.crop:
+                crop = _avoid(bottom.crop, gameplay_rect, facecam_rect)
+            bottom = replace(bottom, crop=crop)
         return StackedReframePlan(
             top=top, bottom=bottom, output_width=OUTPUT_WIDTH, output_height=OUTPUT_HEIGHT
         )
@@ -515,11 +520,12 @@ def _overlap(a: PixelRect, b: PixelRect) -> int:
 
 
 def _avoid(crop: PixelRect, bounds: PixelRect, obstacle: PixelRect) -> PixelRect:
-    """Move `crop` inside `bounds` so it shares as little as possible with `obstacle`.
+    """Move `crop` inside `bounds` to the nearest position that doesn't touch `obstacle`.
 
-    The crop keeps its size. Among the positions that share the least area with `obstacle`
-    (none, when the crop fits beside, above or below it), it takes the one closest to where it
-    was. All inputs are even, so every candidate offset, and the result, is even.
+    The crop keeps its size. If no position inside `bounds` clears `obstacle`, the crop stays
+    where it was: sliding it to a frame edge to show a little less webcam would push the
+    middle of the gameplay (an FPS crosshair, say) out of the pane. All inputs are even, so
+    every candidate offset, and the result, is even.
     """
     if _overlap(crop, obstacle) == 0:
         return crop
@@ -531,11 +537,14 @@ def _avoid(crop: PixelRect, bounds: PixelRect, obstacle: PixelRect) -> PixelRect
 
     xs = offsets(crop.x, bounds.x, bounds.width, crop.width, obstacle.x, obstacle.width)
     ys = offsets(crop.y, bounds.y, bounds.height, crop.height, obstacle.y, obstacle.height)
-    candidates = [PixelRect(x, y, crop.width, crop.height) for x in xs for y in ys]
-    return min(
-        candidates,
-        key=lambda c: (_overlap(c, obstacle), abs(c.x - crop.x) + abs(c.y - crop.y), c.x, c.y),
-    )
+    clear = [
+        candidate
+        for candidate in (PixelRect(x, y, crop.width, crop.height) for x in xs for y in ys)
+        if _overlap(candidate, obstacle) == 0
+    ]
+    if not clear:
+        return crop
+    return min(clear, key=lambda c: (abs(c.x - crop.x) + abs(c.y - crop.y), c.x, c.y))
 
 
 def _anchored(start: int, length: int, size: int, center: float) -> int:

@@ -212,6 +212,8 @@ def _least_overlap(crop: PixelRect, bounds: PixelRect, cam: PixelRect) -> int:
 
 
 FULL_FRAME: Box = (0.0, 0.0, 1.0, 1.0)
+# A tiny webcam in the top-right corner, clear of a centered gameplay pane.
+FAR_CORNER: Box = (0.9, 0.0, 0.1, 0.1)
 
 
 @pytest.mark.parametrize(
@@ -256,17 +258,30 @@ def test_a_gameplay_pane_already_clear_of_the_facecam_stays_centered() -> None:
     assert clear.bottom.crop == PixelRect(492, 0, 934, 1080)
 
 
-def test_an_unavoidable_facecam_overlaps_the_gameplay_pane_as_little_as_possible() -> None:
-    # A webcam over the left 60 % of the frame: no 934 px wide pane can miss it.
-    cam: Box = (0.0, 0.0, 0.6, 1.0)
+@pytest.mark.parametrize(
+    "cam",
+    [
+        pytest.param((0.0, 0.0, 0.6, 1.0), id="left-60-percent"),
+        # A mid-edge webcam: clearing it would push the frame's centre out of the pane.
+        pytest.param((0.45, 0.0, 0.1, 0.2), id="top-centre"),
+        pytest.param((0.4, 0.7, 0.2, 0.3), id="bottom-centre"),
+    ],
+)
+def test_an_unavoidable_facecam_leaves_the_gameplay_pane_centered(cam: Box) -> None:
     crop = plan_reframe(stacked_layout_from_region(cam), 1920, 1080).bottom.crop
-    cam_px = _box_px(cam, 1920, 1080)
-    frame = PixelRect(0, 0, 1920, 1080)
 
-    assert _overlap(crop, cam_px) > 0
-    assert _overlap(crop, cam_px) == _least_overlap(crop, frame, cam_px)
-    assert crop.x == 1920 - 934  # as far right as the frame allows
-    _assert_even_and_inside(crop, frame)
+    assert _least_overlap(crop, PixelRect(0, 0, 1920, 1080), _box_px(cam, 1920, 1080)) > 0
+    assert crop == PixelRect(492, 0, 934, 1080)
+
+
+def test_a_pane_that_fits_beside_the_webcam_but_not_its_margin_still_clears_the_webcam() -> None:
+    # The pane is exactly as wide as the space right of the webcam, so the 0.5 % margin
+    # can't fit, but the webcam itself can still be kept out.
+    frame_w, pane_w = 1920, 934
+    cam: Box = (0.0, 0.6, (frame_w - pane_w) / frame_w, 0.4)
+    crop = plan_reframe(stacked_layout_from_region(cam), frame_w, 1080).bottom.crop
+
+    assert _overlap(crop, _box_px(cam, frame_w, 1080)) == 0
 
 
 @pytest.mark.parametrize("size", [(1921, 1081), (1280, 720), (321, 181), (1080, 1920)])
@@ -274,16 +289,22 @@ def test_an_unavoidable_facecam_overlaps_the_gameplay_pane_as_little_as_possible
     "cam",
     [(0.0, 0.606, 0.297, 0.394), (0.72, 0.65, 0.26, 0.32), (0.3, 0.3, 0.4, 0.4)],
 )
-def test_the_moved_gameplay_pane_is_even_and_overlaps_least(
+def test_the_moved_gameplay_pane_is_even_and_clear_whenever_it_can_be(
     size: tuple[int, int], cam: Box
 ) -> None:
     width, height = size
-    crop = plan_reframe(stacked_layout_from_region(cam), width, height).bottom.crop
+    plan = plan_reframe(stacked_layout_from_region(cam), width, height)
+    crop = plan.bottom.crop
     frame = PixelRect(0, 0, width - width % 2, height - height % 2)
     cam_px = _box_px(cam, width, height)
 
     _assert_even_and_inside(crop, frame)
-    assert _overlap(crop, cam_px) == _least_overlap(crop, frame, cam_px)
+    if _least_overlap(crop, frame, cam_px) == 0:
+        assert _overlap(crop, cam_px) == 0
+    else:
+        # Nothing clears it, so the pane stays where a far-away webcam would leave it.
+        far = plan_reframe(stacked_layout_from_region(FAR_CORNER), width, height)
+        assert crop == far.bottom.crop
 
 
 def test_build_export_command_uses_filter_complex_with_vstack_and_post_filters(
