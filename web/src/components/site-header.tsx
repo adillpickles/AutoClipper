@@ -42,7 +42,7 @@ function NavLinks({
       aria-label={desktop ? "Primary" : "Primary mobile"}
       className={
         desktop
-          ? "flex items-stretch gap-1"
+          ? "flex items-stretch gap-0.5"
           : "-mx-1 flex items-stretch overflow-x-auto"
       }
     >
@@ -55,7 +55,7 @@ function NavLinks({
             aria-current={active ? "page" : undefined}
             className={`relative inline-flex items-center justify-center rounded-control font-semibold whitespace-nowrap transition-colors after:absolute after:inset-x-2 after:-bottom-px after:h-0.5 after:rounded-pill after:transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus-ring ${
               desktop
-                ? "min-h-16 px-3 text-sm"
+                ? "min-h-16 px-2.5 text-sm"
                 : "min-h-11 flex-1 px-1.5 text-[0.8125rem]"
             } ${
               active
@@ -76,7 +76,15 @@ function ActiveNavLinks({ variant }: { variant: "desktop" | "mobile" }) {
   return <NavLinks pathname={pathname} variant={variant} />;
 }
 
-export function SiteHeader() {
+/**
+ * The app bar. `width` matches the page's content column: "wide" for the results and clip
+ * editor screens, "default" (max-w-5xl) everywhere else.
+ */
+export function SiteHeader({
+  width = "default",
+}: {
+  width?: "default" | "wide";
+} = {}) {
   const browserMock = isMockMode();
   const [badge, setBadge] = useState<RunnerBadge>(browserMock ? "mock" : null);
 
@@ -97,30 +105,38 @@ export function SiteHeader() {
   }, [browserMock]);
 
   return (
-    <header className="flex flex-wrap items-center border-b border-border-subtle sm:flex-nowrap sm:items-stretch">
-      <Link
-        href="/"
-        aria-label="AutoClipper home"
-        className="group order-1 my-2 inline-flex min-h-10 min-w-0 items-center gap-2.5 self-center rounded-control font-display text-[1.0625rem] font-bold tracking-[-0.02em] text-ink-primary focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-focus-ring sm:my-3 sm:mr-8"
+    // Full-bleed: the bar spans the viewport and centers its own content, so it never depends
+    // on how wide the page below is (the progress screen is much narrower than results).
+    <header className="ml-[calc(50%-50vw)] w-screen border-b border-border-subtle">
+      <div
+        className={`mx-auto flex flex-wrap items-center px-4 sm:px-8 md:flex-nowrap md:items-stretch ${
+          width === "wide" ? "max-w-7xl" : "max-w-5xl"
+        }`}
       >
-        <BrandMark />
-        <span className="truncate">AutoClipper</span>
-      </Link>
+        <Link
+          href="/"
+          aria-label="AutoClipper home"
+          className="group order-1 my-2 inline-flex min-h-10 shrink-0 items-center gap-2.5 self-center rounded-control font-display text-[1.0625rem] font-bold tracking-[-0.02em] whitespace-nowrap text-ink-primary focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-focus-ring md:my-3 md:mr-5"
+        >
+          <BrandMark />
+          <span>AutoClipper</span>
+        </Link>
 
-      <div className="order-2 hidden sm:flex">
-        <Suspense fallback={<NavLinks pathname="" variant="desktop" />}>
-          <ActiveNavLinks variant="desktop" />
-        </Suspense>
-      </div>
+        <div className="order-2 hidden min-w-0 md:flex">
+          <Suspense fallback={<NavLinks pathname="" variant="desktop" />}>
+            <ActiveNavLinks variant="desktop" />
+          </Suspense>
+        </div>
 
-      <div className="order-2 ml-auto flex items-center pl-4 sm:order-3">
-        {badge === "mock" && <MockBadge />}
-      </div>
+        <div className="order-2 ml-auto flex shrink-0 items-center pl-4 md:order-3">
+          {badge === "mock" && <MockBadge />}
+        </div>
 
-      <div className="order-4 w-full sm:hidden">
-        <Suspense fallback={<NavLinks pathname="" variant="mobile" />}>
-          <ActiveNavLinks variant="mobile" />
-        </Suspense>
+        <div className="order-4 w-full md:hidden">
+          <Suspense fallback={<NavLinks pathname="" variant="mobile" />}>
+            <ActiveNavLinks variant="mobile" />
+          </Suspense>
+        </div>
       </div>
     </header>
   );
