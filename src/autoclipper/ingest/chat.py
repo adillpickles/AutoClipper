@@ -393,6 +393,11 @@ def parse_chat_json(data: bytes, *, video_id: str, salt: SecretStr) -> ChatRepla
     Comments that don't have the expected shape are skipped, counted per reason and logged by
     count only. A file that isn't a supported chat replay of ``video_id`` raises instead.
 
+    The ``comments`` array is decoded one comment at a time and each comment is reduced to the
+    fields a message needs before the next one is read (`_load_json`), so the whole replay is
+    never held as one tree of JSON objects (#115). The result is the same as decoding the file
+    in one go: the whole file is still read and checked before any message is returned.
+
     Args:
         data: The file's bytes (UTF-8 JSON, as TwitchDownloaderCLI writes it).
         video_id: The Twitch video ID the file must belong to.
@@ -405,27 +410,26 @@ def parse_chat_json(data: bytes, *, video_id: str, salt: SecretStr) -> ChatRepla
     """
     _check_video_id(video_id)
     _check_salt(salt)
-    root = _load_json(data)
+    scan = _CommentScan(video_id, salt)
+    root = _load_json(data, scan)
     format_version = _format_version(root)
     video = root.get("video")
     if not isinstance(video, dict) or video.get("id") != video_id:
         raise ChatDownloadError(f"the chat file is not the chat of video_id={video_id}")
-    comments = root.get("comments")
-    if not isinstance(comments, list):
+    if root.get("comments") is not _STREAMED_COMMENTS:
         raise ChatDownloadError("the chat file has no comments list")
     third_party = _third_party_emote_names(root.get("embeddedData"))
 
-    redact = _Redactor(_commenter_names(comments))
-    hashes: dict[str, str] = {}
+    # Redaction needs every commenter's name, and the third-party emote list comes after the
+    # comments in the file, so both are applied once the whole file has been read.
+    redact = _Redactor(scan.names)
+    emote_names = third_party or frozenset()
+    pending = scan.comments
+    pending.reverse()
     messages: list[ChatMessage] = []
-    malformed: Counter[str] = Counter()
-    for comment in comments:
-        try:
-            messages.append(
-                _parse_comment(comment, video_id, salt, redact, third_party or frozenset(), hashes)
-            )
-        except _MalformedCommentError as exc:
-            malformed[exc.reason] += 1
+    while pending:  # popped one by one, so each scanned comment is freed once it is converted
+        messages.append(pending.pop().to_message(video_id, redact, emote_names))
+    malformed = scan.malformed
 
     if malformed:
         log.warning(
@@ -513,7 +517,14 @@ def _check_salt(salt: SecretStr) -> None:
         raise ValueError("the salt is empty or blank; set AUTOCLIPPER_CHAT_HASH_SALT")
 
 
-def _load_json(data: bytes) -> dict[str, object]:
+def _load_json(data: bytes, scan: "_CommentScan") -> dict[str, object]:
+    """Decode the file's top-level object, handing each element of ``comments`` to `scan`.
+
+    The returned object holds every other member as `json.loads` would decode it, and
+    ``comments`` is `_STREAMED_COMMENTS` when it was an array (or the decoded value when it
+    wasn't). Errors are the ones `json.loads` gives for the same text, so a file is accepted or
+    rejected exactly as before.
+    """
     # Errors are raised `from None`: decode and JSON errors keep the whole input on the exception.
     if data[:2] == b"\x1f\x8b":
         raise ChatDownloadError("the chat file is gzip-compressed; download it without compression")
@@ -522,14 +533,91 @@ def _load_json(data: bytes) -> dict[str, object]:
     except UnicodeDecodeError:
         raise ChatDownloadError("the chat file is not UTF-8 text") from None
     try:
-        root = json.loads(text)
+        root = _decode_root(text, scan)
     except json.JSONDecodeError as exc:
         raise ChatDownloadError(
             f"the chat file is not valid JSON (line {exc.lineno}, column {exc.colno})"
         ) from None
-    if not isinstance(root, dict):
+    if root is None:
         raise ChatDownloadError("the chat file is not a JSON object")
     return root
+
+
+_JSON_DECODER: Final = json.JSONDecoder()
+_JSON_WHITESPACE: Final = re.compile(r"[ \t\n\r]*")
+_STREAMED_COMMENTS: Final = object()
+"""Stands in for the ``comments`` array in `_load_json`'s result: its elements went to the scan."""
+
+
+def _skip(text: str, pos: int) -> int:
+    """The index of the first non-whitespace character at or after ``pos``."""
+    match = _JSON_WHITESPACE.match(text, pos)
+    return pos if match is None else match.end()
+
+
+def _decode_root(text: str, scan: "_CommentScan") -> dict[str, object] | None:
+    """`_load_json`'s decoder: the top-level object, or None if the text holds another value.
+
+    Mirrors `json.loads` for the top-level object and the ``comments`` array, and uses the
+    standard decoder for every value inside them; raises `json.JSONDecodeError` like it does.
+    """
+    decode = _JSON_DECODER.raw_decode
+    end = _skip(text, 0)
+    if text[end : end + 1] != "{":
+        # Not an object: json.loads tells apart "invalid JSON" and "valid, but not an object".
+        json.loads(text)
+        return None
+    root: dict[str, object] = {}
+    end = _skip(text, end + 1)
+    if text[end : end + 1] == "}":
+        end += 1
+    else:
+        while True:
+            if text[end : end + 1] != '"':
+                raise json.JSONDecodeError(
+                    "Expecting property name enclosed in double quotes", text, end
+                )
+            key, end = decode(text, end)
+            end = _skip(text, end)
+            if text[end : end + 1] != ":":
+                raise json.JSONDecodeError("Expecting ':' delimiter", text, end)
+            end = _skip(text, end + 1)
+            if key == "comments" and text[end : end + 1] == "[":
+                scan.reset()  # a repeated key replaces the earlier value, as in json.loads
+                end = _decode_comments(text, end + 1, scan)
+                root[key] = _STREAMED_COMMENTS
+            else:
+                root[key], end = decode(text, end)
+            end = _skip(text, end)
+            delimiter = text[end : end + 1]
+            if delimiter == "}":
+                end += 1
+                break
+            if delimiter != ",":
+                raise json.JSONDecodeError("Expecting ',' delimiter", text, end)
+            end = _skip(text, end + 1)
+    end = _skip(text, end)
+    if end != len(text):
+        raise json.JSONDecodeError("Extra data", text, end)
+    return root
+
+
+def _decode_comments(text: str, end: int, scan: "_CommentScan") -> int:
+    """Decode the array elements starting at ``end`` (just past ``[``); return the end index."""
+    decode = _JSON_DECODER.raw_decode
+    end = _skip(text, end)
+    if text[end : end + 1] == "]":
+        return end + 1
+    while True:
+        comment, end = decode(text, end)
+        scan.add(comment)
+        end = _skip(text, end)
+        delimiter = text[end : end + 1]
+        if delimiter == "]":
+            return end + 1
+        if delimiter != ",":
+            raise json.JSONDecodeError("Expecting ',' delimiter", text, end)
+        end = _skip(text, end + 1)
 
 
 def _format_version(root: dict[str, object]) -> str:
@@ -571,27 +659,83 @@ def _is_name(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _commenter_names(comments: list[object]) -> set[str]:
-    """Logins and display names of every commenter, malformed comments included."""
-    names: set[str] = set()
-    for comment in comments:
+class _CommentScan:
+    """Reduces each decoded comment to what its message needs, as `_load_json` streams them.
+
+    Each well-formed comment becomes a `_ScannedComment`; every commenter's names are collected
+    on the way, malformed comments included.
+    """
+
+    def __init__(self, video_id: str, salt: SecretStr) -> None:
+        self._video_id = video_id
+        self._salt = salt
+        self._hashes: dict[str, str] = {}  # user ID -> user_hash, so each ID is hashed once
+        self.reset()
+
+    def reset(self) -> None:
+        """Forget the comments seen so far (the file repeats its ``comments`` key)."""
+        self.comments: list[_ScannedComment] = []
+        self.names: set[str] = set()  # logins and display names, malformed comments included
+        self.malformed: Counter[str] = Counter()
+
+    def add(self, comment: object) -> None:
+        """Take one decoded element of the ``comments`` array."""
         commenter = comment.get("commenter") if isinstance(comment, dict) else None
         if isinstance(commenter, dict):
             for key in ("name", "display_name"):
                 value = commenter.get(key)
                 if _is_name(value):
-                    names.add(value.strip())
-    return names
+                    self.names.add(value.strip())
+        try:
+            self.comments.append(_scan_comment(comment, self._video_id, self._salt, self._hashes))
+        except _MalformedCommentError as exc:
+            self.malformed[exc.reason] += 1
 
 
-def _parse_comment(
-    comment: object,
-    video_id: str,
-    salt: SecretStr,
-    redact: _Redactor,
-    third_party: frozenset[str],
-    hashes: dict[str, str],
-) -> ChatMessage:
+@dataclass(frozen=True, slots=True)
+class _ScannedComment:
+    """A well-formed comment, before redaction and third-party emote counting.
+
+    Both need the whole file: redaction needs every commenter's name, and the third-party emote
+    list (``embeddedData``) comes after the comments.
+
+    Attributes:
+        plain_text: The text of the fragments that aren't native emotes, joined by spaces; the
+            third-party emote names are counted in it.
+    """
+
+    offset_s: float
+    user_hash: str
+    body: str
+    emote_ids: tuple[str, ...]
+    plain_text: str
+    is_subscriber: bool | None
+    is_moderator: bool | None
+    bits: int
+
+    def to_message(
+        self, video_id: str, redact: _Redactor, third_party: frozenset[str]
+    ) -> ChatMessage:
+        n_third_party = (
+            sum(token in third_party for token in self.plain_text.split()) if third_party else 0
+        )
+        return ChatMessage(
+            video_id=video_id,
+            offset_s=self.offset_s,
+            user_hash=self.user_hash,
+            text=redact(self.body),
+            emote_ids=self.emote_ids,
+            n_emotes=len(self.emote_ids) + n_third_party,
+            is_subscriber=self.is_subscriber,
+            is_moderator=self.is_moderator,
+            bits=self.bits,
+            source="replay",
+        )
+
+
+def _scan_comment(
+    comment: object, video_id: str, salt: SecretStr, hashes: dict[str, str]
+) -> _ScannedComment:
     if not isinstance(comment, dict):
         raise _MalformedCommentError("not_an_object")
     if comment.get("content_id") != video_id:
@@ -622,31 +766,33 @@ def _parse_comment(
     bits = message.get("bits_spent", 0)
     if not _is_count(bits):
         raise _MalformedCommentError("bad_bits")
-    emote_ids, n_third_party = _emotes(message.get("fragments"), third_party)
+    emote_ids, plain_text = _emotes(message.get("fragments"))
     is_subscriber, is_moderator = _badge_flags(message.get("user_badges"))
 
     if user_id not in hashes:
         hashes[user_id] = pseudonymize(user_id, salt)
-    return ChatMessage(
-        video_id=video_id,
+    return _ScannedComment(
         offset_s=offset_s,
         user_hash=hashes[user_id],
-        text=redact(body),
+        body=body,
         emote_ids=emote_ids,
-        n_emotes=len(emote_ids) + n_third_party,
+        # A message without emotes has one fragment equal to its body: keep one string, not two.
+        plain_text=body if plain_text == body else plain_text,
         is_subscriber=is_subscriber,
         is_moderator=is_moderator,
         bits=bits,
-        source="replay",
     )
 
 
-def _emotes(fragments: object, third_party: frozenset[str]) -> tuple[tuple[str, ...], int]:
-    """Native emote IDs, and the number of whitespace-separated third-party emote names."""
+def _emotes(fragments: object) -> tuple[tuple[str, ...], str]:
+    """Native emote IDs, and the text of the other fragments joined by spaces.
+
+    Splitting that text on whitespace gives the same tokens as splitting each fragment.
+    """
     if not isinstance(fragments, list):
         raise _MalformedCommentError("bad_fragments")
     emote_ids: list[str] = []
-    n_third_party = 0
+    texts: list[str] = []
     for fragment in fragments:
         if not isinstance(fragment, dict):
             raise _MalformedCommentError("bad_fragments")
@@ -654,13 +800,13 @@ def _emotes(fragments: object, third_party: frozenset[str]) -> tuple[tuple[str, 
         if not isinstance(text, str):
             raise _MalformedCommentError("bad_fragments")
         if emoticon is None:
-            n_third_party += sum(token in third_party for token in text.split())
+            texts.append(text)
             continue
         emote_id = emoticon.get("emoticon_id") if isinstance(emoticon, dict) else None
         if not isinstance(emote_id, str) or not emote_id:
             raise _MalformedCommentError("bad_fragments")
         emote_ids.append(emote_id)
-    return tuple(emote_ids), n_third_party
+    return tuple(emote_ids), texts[0] if len(texts) == 1 else " ".join(texts)
 
 
 def _badge_flags(badges: object) -> tuple[bool | None, bool | None]:

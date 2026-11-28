@@ -378,6 +378,104 @@ def test_accepts_a_utf8_byte_order_mark() -> None:
     assert len(parse_chat_json(data, video_id=VIDEO_ID, salt=SALT).messages) == 8
 
 
+# The parser decodes the comments array one comment at a time (#115); these check that it reads
+# a file exactly as decoding it whole with json.loads would.
+
+
+def _with_third_party_emotes(root: dict[str, Any]) -> dict[str, Any]:
+    emote = {"id": "fake-emote", "imageScale": 2, "data": "", "width": 28, "height": 28}
+    root["embeddedData"] = {"thirdParty": [emote | {"name": "OMEGALUL"}]}
+    return root
+
+
+def _layouts(root: dict[str, Any]) -> dict[str, bytes]:
+    """The same JSON object written in different but equivalent ways."""
+    first = {key: root[key] for key in ("embeddedData", "comments")}
+    return {
+        "compact": json.dumps(root, separators=(",", ":"), ensure_ascii=False).encode(),
+        "indented": json.dumps(root, indent=2).encode(),
+        "tabs and CRLF": json.dumps(root, indent="\t").replace("\n", "\r\n").encode(),
+        "padded": b" \n" + json.dumps(root, separators=(" , ", " : ")).encode() + b"\n\n",
+        "comments last": _dump({**{k: v for k, v in root.items() if k not in first}, **root}),
+        "comments first": _dump({**first, **root}),
+    }
+
+
+def test_every_layout_of_the_same_json_parses_the_same() -> None:
+    root = _with_third_party_emotes(_fixture())
+    expected = _parse(root)
+
+    for name, data in _layouts(root).items():
+        assert parse_chat_json(data, video_id=VIDEO_ID, salt=SALT) == expected, name
+    assert expected.messages
+    assert expected.n_malformed > 0
+    assert sum(m.n_emotes for m in expected.messages) > sum(
+        len(m.emote_ids) for m in expected.messages
+    )
+
+
+def test_a_repeated_comments_key_keeps_the_last_list_like_json_loads() -> None:
+    root = _fixture()
+    first, last = root["comments"][:2], root["comments"][2:5]
+    body = _dump({**root, "comments": last})[1:]
+    data = b'{"comments": ' + _dump(first) + b", " + body
+
+    replay = parse_chat_json(data, video_id=VIDEO_ID, salt=SALT)
+
+    assert replay == _parse({**root, "comments": last})
+
+
+def test_empty_comments_list() -> None:
+    replay = _parse({**_fixture(), "comments": []})
+
+    assert replay.messages == ()
+    assert replay.n_malformed == 0
+
+
+def _broken(text: str, old: str, new: str) -> str:
+    assert old in text
+    return text.replace(old, new, 1)
+
+
+BROKEN_JSON: dict[str, Callable[[str], str]] = {
+    "empty": lambda text: "",
+    "whitespace only": lambda text: " \n ",
+    "truncated in comments": lambda text: text[: text.index('"comments"') + 400],
+    "truncated after a comment": lambda text: text[: text.index("}, {", text.index('"comments"'))],
+    "missing comma in comments": lambda text: _broken(text, "}, {", "} {"),
+    "trailing comma in comments": lambda text: _broken(text, "}], ", "},], "),
+    "missing comma after comments": lambda text: _broken(text, "}], ", "}] "),
+    "missing colon": lambda text: _broken(text, '"comments": ', '"comments" '),
+    "unquoted key": lambda text: _broken(text, '"comments": ', "comments: "),
+    "trailing comma in object": lambda text: text[:-1] + ", }",
+    "extra data": lambda text: text + ' {"a": 1}',
+    "two objects": lambda text: text + text,
+    "not closed": lambda text: text[:-1],
+}
+
+
+@pytest.mark.parametrize("breaks", BROKEN_JSON.values(), ids=BROKEN_JSON.keys())
+def test_broken_json_is_reported_where_json_loads_reports_it(breaks: Callable[[str], str]) -> None:
+    text = breaks(_dump(_fixture()).decode())
+    with pytest.raises(json.JSONDecodeError) as expected:
+        json.loads(text)
+
+    with pytest.raises(ChatDownloadError) as excinfo:
+        parse_chat_json(text.encode(), video_id=VIDEO_ID, salt=SALT)
+
+    position = f"line {expected.value.lineno}, column {expected.value.colno}"
+    assert str(excinfo.value) == f"the chat file is not valid JSON ({position})"
+    _assert_clean_error(excinfo.value)
+
+
+@pytest.mark.parametrize("data", [b"null", b'"user_001"', b"[]", b"  42 "])
+def test_json_that_is_not_an_object_raises(data: bytes) -> None:
+    with pytest.raises(ChatDownloadError, match="not a JSON object") as excinfo:
+        parse_chat_json(data, video_id=VIDEO_ID, salt=SALT)
+
+    _assert_clean_error(excinfo.value)
+
+
 FULL_WIDTH_123 = "".join(chr(0xFF11 + i) for i in range(3))  # "123" in full-width digits
 
 
