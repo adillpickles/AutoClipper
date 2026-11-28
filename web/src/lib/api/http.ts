@@ -14,6 +14,7 @@ import type {
   DeleteJobResponse,
   ErrorResponse,
   Export,
+  ArchiveStatus,
   Health,
   HighlightsVideo,
   Job,
@@ -222,6 +223,14 @@ export function createHttpClient(
         body: JSON.stringify(body),
       });
       return { export: data, created: status === 201 };
+    },
+
+    async getArchiveStatus(jobId, kind) {
+      return (
+        await request<ArchiveStatus>(
+          `/jobs/${encodeURIComponent(jobId)}/archives/${kind}`,
+        )
+      ).data;
     },
 
     async getExport(exportId: string): Promise<Export> {

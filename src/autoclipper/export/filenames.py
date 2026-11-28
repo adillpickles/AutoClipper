@@ -13,7 +13,7 @@ import math
 import re
 import unicodedata
 from datetime import UTC, datetime
-from typing import Final
+from typing import Final, Literal
 
 # Device names Windows rejects with or without an extension (case-insensitive).
 WINDOWS_RESERVED_NAMES: Final[frozenset[str]] = frozenset(
@@ -194,9 +194,44 @@ def build_highlights_filename(
     max_bytes: int = DEFAULT_MAX_FILENAME_BYTES,
 ) -> str:
     """Build ``<channel>_<YYYY-MM-DD>_highlights.mp4`` within the byte budget."""
+    return _build_vod_filename(
+        channel=channel,
+        created_at=created_at,
+        fallback_id=fallback_id,
+        label="highlights.mp4",
+        max_bytes=max_bytes,
+    )
+
+
+def build_archive_filename(
+    *,
+    channel: str | None,
+    created_at: datetime | None,
+    fallback_id: str,
+    kind: Literal["clips", "highlights"],
+    max_bytes: int = DEFAULT_MAX_FILENAME_BYTES,
+) -> str:
+    """Build ``<channel>_<YYYY-MM-DD>_clips.zip`` or ``..._highlights.zip`` for a job's ZIP."""
+    return _build_vod_filename(
+        channel=channel,
+        created_at=created_at,
+        fallback_id=fallback_id,
+        label=f"{kind}.zip",
+        max_bytes=max_bytes,
+    )
+
+
+def _build_vod_filename(
+    *,
+    channel: str | None,
+    created_at: datetime | None,
+    fallback_id: str,
+    label: str,
+    max_bytes: int,
+) -> str:
     id_fallback = sanitize_filename_component(fallback_id, fallback="vod", max_bytes=48)
     date_part = format_vod_date(created_at) if created_at is not None else "unknown-date"
-    suffix = f"_{date_part}_highlights.mp4"
+    suffix = f"_{date_part}_{label}"
     channel_budget = max_bytes - len(suffix.encode("utf-8"))
     if channel_budget < 1:
         raise ValueError("filename byte limit leaves no room for the channel")

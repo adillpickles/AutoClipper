@@ -7,6 +7,7 @@ import { createHttpClient } from "@/lib/api/http";
 import { createMockClient } from "@/lib/api/mock";
 import type {
   AnalysisResult,
+  ArchiveKind,
   CandidateMedia,
   ChannelVodsResponse,
   CreateExportRequest,
@@ -14,6 +15,7 @@ import type {
   CreateJobRequest,
   DeleteJobResponse,
   Export,
+  ArchiveStatus,
   Health,
   HighlightsVideo,
   Job,
@@ -64,6 +66,8 @@ export interface ApiClient {
   ): Promise<{ export: Export; created: boolean }>;
   /** `GET /exports/{export_id}`. */
   getExport(exportId: string): Promise<Export>;
+  /** Get availability and omissions before starting a native ZIP download. */
+  getArchiveStatus(jobId: string, kind: ArchiveKind): Promise<ArchiveStatus>;
   /** `POST /highlights`: `created` is false when a queued or running video for the same
    * request came back. */
   createHighlights(

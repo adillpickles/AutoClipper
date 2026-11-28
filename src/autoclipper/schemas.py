@@ -25,6 +25,9 @@ __all__ = [
     "AnalysisResult",
     "AnalysisWarning",
     "ApiError",
+    "ArchiveKind",
+    "ArchiveOmission",
+    "ArchiveStatus",
     "Candidate",
     "CandidateMedia",
     "ChannelInfo",
@@ -63,6 +66,7 @@ __all__ = [
 SCHEMA_VERSION: Final = "1.1"
 
 type State = Literal["queued", "running", "done", "failed"]
+type ArchiveKind = Literal["clips", "highlights"]
 type Layout = Literal["center_crop", "configured_region", "stacked"]
 type Order = Literal["chronological", "rank"]
 type PreflightStatus = Literal["ok", "warn", "fail"]
@@ -211,6 +215,25 @@ class JobRenderSummary(_Response):
     duration_s: FiniteFloat | None
     created_at: UtcDatetime
     finished_at: UtcDatetime | None
+
+
+class ArchiveOmission(_Response):
+    """A requested render left out of a job's ZIP download (§ 7.6)."""
+
+    render_id: str
+    candidate_id: str | None
+    rank: int | None
+    reason: Literal["queued", "running", "failed", "file_missing"]
+
+
+class ArchiveStatus(_Response):
+    """What a job's ZIP download would contain right now (``GET /jobs/{id}/archives/{kind}``)."""
+
+    kind: ArchiveKind
+    ready_count: int
+    omitted: tuple[ArchiveOmission, ...]
+    filename: str
+    download_url: str | None
 
 
 class JobSummary(_Response):

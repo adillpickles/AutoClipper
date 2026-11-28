@@ -1,11 +1,13 @@
 """Table-driven tests for cross-platform export filename formatting and sanitization."""
 
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Literal
 
 import pytest
 
 from autoclipper.export.filenames import (
     WINDOWS_RESERVED_NAMES,
+    build_archive_filename,
     build_clip_filename,
     build_highlights_filename,
     deduplicate_filename,
@@ -145,6 +147,23 @@ def test_build_highlights_filename() -> None:
     assert len(bounded.encode("utf-8")) <= 32
     with pytest.raises(ValueError, match="no room for the channel"):
         build_highlights_filename(channel="User", created_at=ts, fallback_id="vod", max_bytes=25)
+
+
+@pytest.mark.parametrize("kind", ["clips", "highlights"])
+def test_build_archive_filename_names_the_vod_and_kind(
+    kind: Literal["clips", "highlights"],
+) -> None:
+    ts = datetime(2026, 10, 12, 18, 0, tzinfo=UTC)
+    assert (
+        build_archive_filename(
+            channel="User 001", created_at=ts, fallback_id="9000000001", kind=kind
+        )
+        == f"User-001_2026-10-12_{kind}.zip"
+    )
+    assert (
+        build_archive_filename(channel=None, created_at=None, fallback_id="9000000001", kind=kind)
+        == f"9000000001_unknown-date_{kind}.zip"
+    )
 
 
 def test_sanitize_normalizes_combining_marks_after_stripping_invisible() -> None:

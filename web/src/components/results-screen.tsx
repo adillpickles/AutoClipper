@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
+import { ArchiveDownloads } from "@/components/archive-downloads";
 import { ClipCard, type ClipExport } from "@/components/clip-card";
 import { HighlightsDialog } from "@/components/highlights-dialog";
 import { StreamTimeline } from "@/components/stream-timeline";
@@ -19,7 +20,6 @@ import type {
   ExportAvailability,
   Layout,
 } from "@/lib/api/types";
-import { buildClipFilename } from "@/lib/filenames";
 import { formatTime } from "@/lib/format";
 import {
   isTrimReset,
@@ -38,8 +38,6 @@ const FIRST_BACKOFF_MS = 2000;
 const MAX_BACKOFF_MS = 10_000;
 const GIVE_UP_AFTER_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 3000;
-// Spacing between the clicks of "Download all", so the browser starts every download.
-const DOWNLOAD_SPACING_MS = 400;
 
 const KNOWN_LAYOUTS: readonly Layout[] = [
   "center_crop",
@@ -410,32 +408,6 @@ export function ResultsScreen() {
   });
   const { vod } = view.result;
 
-  function downloadAll() {
-    // Trigger one download per finished clip, spaced out so the browser starts every file;
-    // works from both the clip-cards grid and the timeline view.
-    ready.forEach((candidate, index) => {
-      const clip = clips[candidate.candidate_id];
-      if (!clip || clip.kind !== "export" || !clip.url) return;
-      const url = clip.url;
-      const filename =
-        clip.export.filename ??
-        buildClipFilename({
-          channel: vod.broadcaster_display_name,
-          createdAt: vod.created_at,
-          title: candidate.title ?? null,
-          rank: candidate.rank,
-          startS: clip.export.start_s,
-          fallbackId: vod.video_id,
-        });
-      setTimeout(() => {
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = filename;
-        link.click();
-      }, index * DOWNLOAD_SPACING_MS);
-    });
-  }
-
   function selectTimelineCandidate(candidate: Candidate) {
     setSelectedCandidateId(candidate.candidate_id);
     // Candidates beyond the auto-rendered top 10 render on demand when selected from the timeline.
@@ -568,15 +540,8 @@ export function ResultsScreen() {
             >
               Make highlights video
             </button>
-            <button
-              type="button"
-              onClick={downloadAll}
-              disabled={ready.length === 0}
-              className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-            >
-              Download all{ready.length > 0 ? ` (${ready.length})` : ""}
-            </button>
           </div>
+          <ArchiveDownloads key={jobId} jobId={jobId} />
           {viewMode === "timeline" ? (
             <StreamTimeline
               jobId={jobId}
