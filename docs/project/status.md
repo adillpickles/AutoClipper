@@ -70,7 +70,7 @@ Follow the [roadmap](../product/roadmap.md). Before the freeze (Wed Dec 2):
 
 - **Data and models:** build the real dataset (#40) from the pilot collection (#35), using the label-rule proposals of the pilot exploration (#36, [pilot report § 16](../data/pilot-report.md#16-exploration-findings-36)). Then run the baselines on it (#41), train and evaluate logistic regression and LightGBM (#42, #43) and put the best scorer in the app (#47). Tune the answer-spam rule on that dataset (#192).
 - **App polish:** UI primitives and loading/error states in the results screen, clip editor and highlights dialog (#117, partly done in #224), and keeping the webcam out of the gameplay pane (#229). Also reuse a finished highlights video for an identical request (#230).
-- **Demo:** results write-up (#49), blind taste test (#69), demo rehearsal (#50).
+- **Demo:** results write-up (#49), blind taste test (#69; the tooling, `scripts/taste_test.py` with a static rating page and win-rate scoring, is in place, and the rating with real people is still to do), demo rehearsal (#50).
 
 ## Known issues / caveats
 

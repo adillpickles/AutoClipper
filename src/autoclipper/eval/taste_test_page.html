@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clip taste test: __TITLE__</title>
+<style>
+  :root { color-scheme: light dark; --line: #8884; --muted: #888; --accent: #2f6fd6; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p { margin: 8px 0; }
+  .muted { color: var(--muted); }
+  .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 16px 0; }
+  .grow { flex: 1; }
+  .clips { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .clip { border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+  .clip h2 { font-size: 16px; margin: 0 0 8px; }
+  video { width: 100%; max-height: 62vh; aspect-ratio: 9 / 16; background: #000; display: block; }
+  fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 16px 0 0; padding: 10px 14px; }
+  legend { padding: 0 4px; }
+  label.opt { margin-right: 18px; white-space: nowrap; }
+  select, input[type=text], textarea { font: inherit; }
+  input[type=text] { padding: 4px 6px; min-width: 14em; }
+  textarea { width: 100%; min-height: 3.5em; padding: 6px; }
+  button { font: inherit; padding: 6px 14px; border: 1px solid var(--line); border-radius: 6px;
+    background: transparent; color: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  .dots { display: flex; gap: 4px; flex-wrap: wrap; }
+  .dots button { padding: 0; width: 26px; height: 26px; font-size: 12px; }
+  .dots button.done { border-color: var(--accent); }
+  .dots button.here { outline: 2px solid var(--accent); }
+  #status { min-height: 1.5em; }
+  @media (max-width: 600px) { .clips { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Which clip is better?</h1>
+  <p class="muted">Test <span id="test-id"></span>. Each pair shows two short clips from a
+    stream. Watch both and pick the one you would rather watch or post as a short. There are no
+    right answers, and you don't need to know the streamer.</p>
+
+  <div class="bar">
+    <label>Your name or initials <input type="text" id="rater" autocomplete="off"></label>
+    <span class="muted">Only used to tell raters apart; it is removed before results are shared.</span>
+  </div>
+
+  <div class="bar">
+    <strong id="where"></strong>
+    <div class="dots grow" id="dots"></div>
+  </div>
+
+  <section class="clips">
+    <div class="clip"><h2>Clip A</h2><video id="video-a" controls preload="metadata" playsinline></video></div>
+    <div class="clip"><h2>Clip B</h2><video id="video-b" controls preload="metadata" playsinline></video></div>
+  </section>
+
+  <fieldset>
+    <legend>Which is better?</legend>
+    <label class="opt"><input type="radio" name="choice" value="A"> A</label>
+    <label class="opt"><input type="radio" name="choice" value="tie"> About the same</label>
+    <label class="opt"><input type="radio" name="choice" value="B"> B</label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Optional: rate each clip from 1 (wouldn't watch) to 5 (would post it)</legend>
+    <label class="opt">A <select id="rating-a"></select></label>
+    <label class="opt">B <select id="rating-b"></select></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Optional note</legend>
+    <textarea id="note" placeholder="Anything that made the choice easy or hard"></textarea>
+  </fieldset>
+
+  <div class="bar">
+    <button id="prev">Previous</button>
+    <button id="next" class="primary">Next</button>
+    <span class="grow"></span>
+    <button id="download">Download answers</button>
+  </div>
+  <p id="status" class="muted"></p>
+  <p class="muted">Answers are saved in this browser as you go. When you are done, press
+    <em>Download answers</em> and send the JSON file back.</p>
+</main>
+
+<script>
+"use strict";
+const TEST = __TEST_DATA__;
+const STORE = "autoclipper-taste-" + TEST.test_id;
+const $ = (id) => document.getElementById(id);
+
+function emptyAnswer(id) {
+  return { pair_id: id, choice: null, rating_a: null, rating_b: null, note: "" };
+}
+
+let state = { rater: "", index: 0, answers: TEST.pairs.map((p) => emptyAnswer(p.id)) };
+try {
+  const saved = JSON.parse(localStorage.getItem(STORE) || "null");
+  if (saved && Array.isArray(saved.answers)) {
+    const byId = Object.fromEntries(saved.answers.map((a) => [a.pair_id, a]));
+    state.rater = saved.rater || "";
+    state.index = Math.min(Math.max(0, saved.index | 0), TEST.pairs.length - 1);
+    state.answers = TEST.pairs.map((p) => Object.assign(emptyAnswer(p.id), byId[p.id] || {}));
+  }
+} catch (e) { /* storage unavailable: answers live until the tab closes */ }
+
+function save() {
+  try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) { /* ignore */ }
+}
+
+for (const id of ["rating-a", "rating-b"]) {
+  const select = $(id);
+  for (const value of ["", "1", "2", "3", "4", "5"]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value || "—";
+    select.appendChild(option);
+  }
+}
+
+const dots = TEST.pairs.map((p, i) => {
+  const button = document.createElement("button");
+  button.textContent = String(i + 1);
+  button.title = "Pair " + (i + 1);
+  button.addEventListener("click", () => show(i));
+  $("dots").appendChild(button);
+  return button;
+});
+
+function answered() { return state.answers.filter((a) => a.choice).length; }
+
+function show(index) {
+  state.index = index;
+  const pair = TEST.pairs[index];
+  const answer = state.answers[index];
+  for (const side of ["a", "b"]) {
+    const video = $("video-" + side);
+    video.pause();
+    video.src = pair[side];
+  }
+  for (const radio of document.getElementsByName("choice")) radio.checked = radio.value === answer.choice;
+  $("rating-a").value = answer.rating_a == null ? "" : String(answer.rating_a);
+  $("rating-b").value = answer.rating_b == null ? "" : String(answer.rating_b);
+  $("note").value = answer.note || "";
+  $("where").textContent = "Pair " + (index + 1) + " of " + TEST.pairs.length;
+  $("prev").disabled = index === 0;
+  $("next").textContent = index === TEST.pairs.length - 1 ? "Finish" : "Next";
+  refresh();
+  save();
+}
+
+function refresh() {
+  dots.forEach((dot, i) => {
+    dot.classList.toggle("done", Boolean(state.answers[i].choice));
+    dot.classList.toggle("here", i === state.index);
+  });
+  $("status").textContent = answered() + " of " + TEST.pairs.length + " pairs answered.";
+}
+
+function current() { return state.answers[state.index]; }
+
+for (const radio of document.getElementsByName("choice")) {
+  radio.addEventListener("change", () => { current().choice = radio.value; refresh(); save(); });
+}
+for (const side of ["a", "b"]) {
+  $("rating-" + side).addEventListener("change", (event) => {
+    const value = event.target.value;
+    current()["rating_" + side] = value ? Number(value) : null;
+    save();
+  });
+  // Playing one clip pauses the other.
+  $("video-" + side).addEventListener("play", () => $("video-" + (side === "a" ? "b" : "a")).pause());
+}
+$("note").addEventListener("input", (event) => { current().note = event.target.value; save(); });
+$("rater").value = state.rater;
+$("rater").addEventListener("input", (event) => { state.rater = event.target.value.trim(); save(); });
+$("prev").addEventListener("click", () => show(state.index - 1));
+$("next").addEventListener("click", () => {
+  if (state.index < TEST.pairs.length - 1) { show(state.index + 1); return; }
+  $("status").textContent = answered() === TEST.pairs.length
+    ? "All pairs answered. Press Download answers and send the file back. Thank you!"
+    : answered() + " of " + TEST.pairs.length + " answered; the pair numbers without a blue border are still open.";
+});
+$("download").addEventListener("click", () => {
+  if (!state.rater) { $("status").textContent = "Enter your name or initials first."; $("rater").focus(); return; }
+  if (answered() < TEST.pairs.length &&
+      !confirm(answered() + " of " + TEST.pairs.length + " pairs answered. Download anyway?")) return;
+  const data = {
+    format: TEST.format,
+    test_id: TEST.test_id,
+    rater: state.rater,
+    submitted_at: new Date().toISOString(),
+    answers: state.answers,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const link = document.createElement("a");
+  const safe = state.rater.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 40) || "rater";
+  link.href = URL.createObjectURL(blob);
+  link.download = "answers-" + TEST.test_id + "-" + safe + ".json";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  $("status").textContent = "Saved " + link.download + ".";
+});
+
+$("test-id").textContent = TEST.test_id;
+show(state.index);
+</script>
+</body>
+</html>
