@@ -1529,6 +1529,69 @@ def test_an_export_whose_facecam_detection_errored_isnt_reused(
     assert again.json()["export_id"] != first.json()["export_id"]
 
 
+CENTER_CROP_NOTE = "No facecam found in this part of the stream, so this clip is a center crop."
+
+
+class CenterCropFallbackRenderer(FakeRenderer):
+    """Renders, reporting that ``stacked`` found no facecam and fell back (#218)."""
+
+    def __call__(
+        self,
+        spec: ClipSpec,
+        /,
+        *,
+        region: tuple[float, float, float, float] | None,
+        transcriber: Transcriber | None,
+        on_stage: Callable[[Stage], None],
+        on_warning: object = None,
+    ) -> object:
+        assert callable(on_warning)
+        if spec.layout == "stacked":
+            on_warning(
+                LayoutWarning(
+                    "no facecam detected: full_camera; rendering center_crop instead of stacked",
+                    effective_layout="center_crop",
+                    note=CENTER_CROP_NOTE,
+                )
+            )
+        return super().__call__(spec, region=region, transcriber=transcriber, on_stage=on_stage)
+
+
+def test_a_stacked_export_that_fell_back_says_so_and_keeps_it_after_a_restart(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    client, _ = make_client(render=CenterCropFallbackRenderer())
+    job = done_job(client)
+
+    created = client.post(f"{API}/exports", json=export_body(job["job_id"], layout="stacked"))
+    export_id = created.json()["export_id"]
+    # Not known until the render ran.
+    assert created.json()["effective_layout"] is None
+    assert created.json()["layout_note"] is None
+    done = client.get(f"{API}/exports/{export_id}").json()
+    plain = client.post(f"{API}/exports", json=export_body(job["job_id"])).json()
+
+    assert done["state"] == "done"
+    assert done["layout"] == "stacked"  # as requested
+    assert (done["effective_layout"], done["layout_note"]) == ("center_crop", CENTER_CROP_NOTE)
+    plain_done = client.get(f"{API}/exports/{plain['export_id']}").json()
+    assert (plain_done["effective_layout"], plain_done["layout_note"]) == (None, None)
+
+    restarted, _ = make_client()
+    after = restarted.get(f"{API}/exports/{export_id}").json()
+    assert (after["effective_layout"], after["layout_note"]) == ("center_crop", CENTER_CROP_NOTE)
+
+
+def test_a_normal_stacked_export_has_no_layout_note(client: TestClient) -> None:
+    job = done_job(client)
+
+    created = client.post(f"{API}/exports", json=export_body(job["job_id"], layout="stacked"))
+    done = client.get(f"{API}/exports/{created.json()['export_id']}").json()
+
+    assert done["state"] == "done"
+    assert (done["effective_layout"], done["layout_note"]) == (None, None)
+
+
 def test_a_failed_export_is_retried_with_a_new_render(
     make_client: Callable[..., tuple[TestClient, MockService]],
 ) -> None:

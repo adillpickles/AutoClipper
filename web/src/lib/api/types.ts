@@ -244,6 +244,10 @@ export interface Export {
   error: ApiError | null;
   download_url: string | null;
   filename?: string | null;
+  /** Set when a finished `stacked` export fell back (#218): the layout it was rendered with. */
+  effective_layout?: string | null;
+  /** One sentence saying why the layout fell back (#218); null when it rendered as asked. */
+  layout_note?: string | null;
   created_at: string;
   started_at: string | null;
   updated_at: string;

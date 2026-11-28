@@ -286,6 +286,64 @@ def test_store_adds_layout_key_to_a_renders_table_from_before_191(tmp_path: Path
         migrated.close()
 
 
+def test_store_adds_the_layout_note_columns_to_a_renders_table_from_before_218(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "artifacts" / DEFAULT_DB_NAME
+    job = _sample_job("job_1", seq=1)
+    request = CreateExportRequest(
+        job_id="job_1",
+        candidate_id="c001",
+        start_s=10.0,
+        end_s=35.0,
+        layout="stacked",
+        captions=False,
+    )
+    render = StoredRenderRecord(
+        render_id="exp_1",
+        job_id="job_1",
+        kind="export",
+        video_id="9000000001",
+        captions=False,
+        request=request,
+        segments=(),
+        order="chronological",
+        state="done",
+        progress=None,
+        error=None,
+        file=None,
+        duration_s=25.0,
+        created_at=job.created_at,
+        started_at=job.created_at,
+        updated_at=job.created_at,
+        finished_at=job.created_at,
+        layout_key="stacked:v2:None:None",
+        effective_layout="center_crop",
+        layout_note="No facecam found in this part of the stream, so this clip is a center crop.",
+    )
+    store = JobStore(db_path)
+    store.upsert_job(job)
+    store.upsert_render(render)
+    store.close()
+    # Recreate the renders table as it was before #218: no fallback columns.
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("ALTER TABLE renders DROP COLUMN effective_layout")
+        conn.execute("ALTER TABLE renders DROP COLUMN layout_note")
+        conn.commit()
+    finally:
+        conn.close()
+
+    migrated = JobStore(db_path)
+    try:
+        _, renders = migrated.load_all()
+        assert renders == [dataclasses.replace(render, effective_layout=None, layout_note=None)]
+        migrated.upsert_render(render)
+        assert migrated.load_all()[1] == [render]
+    finally:
+        migrated.close()
+
+
 def test_an_identical_stacked_export_is_reused_after_a_restart(tmp_path: Path) -> None:
     region = (0.0, 0.6, 0.3, 0.4)
     body = {

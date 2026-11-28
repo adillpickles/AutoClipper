@@ -136,6 +136,8 @@ CREATE TABLE IF NOT EXISTS renders (
     file_path TEXT,
     filename TEXT,
     layout_key TEXT,
+    effective_layout TEXT,
+    layout_note TEXT,
     duration_s REAL,
     created_at TEXT NOT NULL,
     started_at TEXT,
@@ -220,6 +222,9 @@ class StoredRenderRecord:
     filename: str | None = None
     # What an export's layout resolved from (service `_layout_key`, #191); None before #191.
     layout_key: str | None = None
+    # How a stacked export fell back, if it did (#218); None otherwise and before #218.
+    effective_layout: str | None = None
+    layout_note: str | None = None
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -391,6 +396,11 @@ class JobStore:
             if "layout_key" not in render_cols:
                 conn.execute("ALTER TABLE renders ADD COLUMN layout_key TEXT")
                 conn.commit()
+            # Renders from before #218 have no layout fallback note; their rows read it as NULL.
+            for column in ("effective_layout", "layout_note"):
+                if column not in render_cols:
+                    conn.execute(f"ALTER TABLE renders ADD COLUMN {column} TEXT")
+                    conn.commit()
             conn.execute(_SETTINGS_DDL)
             conn.commit()
             return conn
@@ -565,6 +575,8 @@ class JobStore:
             _encode_path(record.file),
             record.filename,
             record.layout_key,
+            record.effective_layout,
+            record.layout_note,
             record.duration_s,
             _iso(record.created_at),
             _iso(record.started_at),
@@ -577,8 +589,9 @@ class JobStore:
                 INSERT INTO renders (
                     render_id, job_id, kind, video_id, captions, request_json, segments_json,
                     sort_order, state, progress_json, error_json, file_path, filename, layout_key,
-                    duration_s, created_at, started_at, updated_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    effective_layout, layout_note, duration_s, created_at, started_at,
+                    updated_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(render_id) DO UPDATE SET
                     job_id = excluded.job_id,
                     kind = excluded.kind,
@@ -593,6 +606,8 @@ class JobStore:
                     file_path = excluded.file_path,
                     filename = excluded.filename,
                     layout_key = excluded.layout_key,
+                    effective_layout = excluded.effective_layout,
+                    layout_note = excluded.layout_note,
                     duration_s = excluded.duration_s,
                     created_at = excluded.created_at,
                     started_at = excluded.started_at,
@@ -760,4 +775,6 @@ def _row_to_render(row: sqlite3.Row, base_dir: Path) -> StoredRenderRecord:
         finished_at=_parse_opt_dt(row["finished_at"]),
         filename=_parse_opt_str(row["filename"], "filename"),
         layout_key=_parse_opt_str(row["layout_key"], "layout_key"),
+        effective_layout=_parse_opt_str(row["effective_layout"], "effective_layout"),
+        layout_note=_parse_opt_str(row["layout_note"], "layout_note"),
     )

@@ -603,6 +603,63 @@ def test_only_a_detection_error_is_flagged_as_failed(
     assert [w.detection_failed for w in seen] == [True, False]
 
 
+@pytest.mark.parametrize(
+    ("detection", "preset", "effective", "note_part"),
+    [
+        pytest.param(_detection("not_found"), None, "center_crop", "center crop", id="none"),
+        pytest.param(
+            _detection("full_camera"), PRESET, "center_crop", "camera fills", id="full-camera"
+        ),
+        pytest.param(_detection("not_found"), PRESET, "stacked", "saved facecam", id="preset"),
+        pytest.param(
+            _detection("found_padded", BOTTOM_LEFT_CAM), None, "stacked", "estimated", id="guess"
+        ),
+    ],
+)
+def test_a_fallback_reports_the_layout_rendered_and_a_note_for_people(
+    tmp_path: Path,
+    rendered: list[ExportRequest],
+    detection: FacecamDetection,
+    preset: StackedLayout | None,
+    effective: str,
+    note_part: str,
+) -> None:
+    source = tmp_path / "vod.mp4"
+    source.write_bytes(b"video")
+    spec = ClipSpec(
+        source,
+        Interval(0.0, 5.0),
+        tmp_path / "out.mp4",
+        layout="stacked",
+        stacked_fallback=preset,
+    )
+    seen: list[LayoutWarning] = []
+
+    render_clip(spec, facecam_detector=lambda *_: detection, on_warning=seen.append)
+
+    # One short sentence for the clip editor (#218), not the detector's log detail.
+    assert [w.effective_layout for w in seen] == [effective]
+    assert note_part in seen[0].note
+    assert "stacked_layout" not in seen[0].note
+
+
+def test_a_detected_facecam_reports_no_fallback(
+    tmp_path: Path, rendered: list[ExportRequest]
+) -> None:
+    source = tmp_path / "vod.mp4"
+    source.write_bytes(b"video")
+    spec = ClipSpec(source, Interval(0.0, 5.0), tmp_path / "out.mp4", layout="stacked")
+    seen: list[LayoutWarning] = []
+
+    render_clip(
+        spec,
+        facecam_detector=lambda *_: _detection("found", BOTTOM_LEFT_CAM),
+        on_warning=seen.append,
+    )
+
+    assert seen == []
+
+
 def test_with_detection_off_the_preset_is_used_or_the_layout_refused(
     tmp_path: Path, rendered: list[ExportRequest]
 ) -> None:
