@@ -257,13 +257,13 @@ else
     if [ "$WEB_PORT" != "3000" ] && [ -z "${AUTOCLIPPER_CORS_ORIGINS:-}" ]; then
         export AUTOCLIPPER_CORS_ORIGINS="http://localhost:$WEB_PORT,http://127.0.0.1:$WEB_PORT"
     fi
-    uv run autoclipper serve --port "$API_PORT" --jobs "$JOBS" >"$API_LOG" 2>&1 &
+    uv run autoclipper serve --port "$API_PORT" --jobs "$JOBS" </dev/null >"$API_LOG" 2>&1 &
     PIDS="$PIDS $!"
 fi
 if port_open "$WEB_PORT"; then
     warn "Something is already listening on port $WEB_PORT; assuming the web app is running."
 else
-    (cd "$ROOT/web" && exec npx --no-install next dev --port "$WEB_PORT") >"$WEB_LOG" 2>&1 &
+    (cd "$ROOT/web" && exec npx --no-install next dev --port "$WEB_PORT") </dev/null >"$WEB_LOG" 2>&1 &
     PIDS="$PIDS $!"
 fi
 set +m
