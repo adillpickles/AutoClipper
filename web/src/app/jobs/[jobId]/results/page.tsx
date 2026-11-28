@@ -7,7 +7,7 @@ import { ClipListSkeleton } from "@/components/ui/skeleton";
 export default function ResultsPage() {
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col px-4 sm:px-8">
-      <SiteHeader />
+      <SiteHeader width="wide" />
       <main
         id="main-content"
         tabIndex={-1}

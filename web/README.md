@@ -64,8 +64,9 @@ web/
 │   │   ├── page.tsx         # start screen: VOD link and optional file upload or local path
 │   │   ├── jobs/[jobId]/    # progress screen; results/ holds the results screen
 │   │   ├── icon.svg         # favicon
-│   │   └── globals.css      # Tailwind entry point and color tokens
+│   │   └── globals.css      # Tailwind entry point, design tokens and keyframes
 │   ├── components/          # start form, job progress, results and clip cards, header
+│   │   └── ui/              # shared primitives: button, card, badge, input, dialog, progress, …
 │   └── lib/api/             # the typed API client: types, mock mode, fixtures
 ├── e2e/                     # Playwright specs and the shared selectors (npm run test:e2e)
 ├── AGENTS.md           # maintained by Next.js; see below
@@ -77,6 +78,12 @@ web/
 ```
 
 New code follows the frontend conventions in [docs/development/conventions.md § 10](../docs/development/conventions.md#10-frontend). That's where components and the typed API client will live.
+
+## Design system
+
+The look is "Broadcast Edit Bay": one dark theme, matching the landing page in `site/`. Surfaces are quiet with hairline borders. Broadcast Violet (`accent`) marks the one primary action on a screen. Peak Amber (`signal`) marks peaks, live work and warnings. Headings use Space Grotesk, body text Plus Jakarta Sans, and JetBrains Mono is kept for timecodes, durations and file names. The chat-signal strip (`SignalStrip`, grey bars with amber spikes and violet rank pins) is the brand motif shared with the landing page. It animates once on the start screen, and only when the OS allows motion.
+
+Tokens live in `src/app/globals.css` and reach Tailwind as `bg-surface-*`, `text-ink-*`, `border-border-*`, `bg-accent*`, `bg-signal*`, `bg-success*`, `bg-danger*` and `bg-source-*`. Build screens from `src/components/ui/` rather than raw Tailwind palette colors. Text pairings target WCAG AA, and focus is a visible violet outline.
 
 ## Mock mode
 

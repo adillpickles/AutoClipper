@@ -19,11 +19,11 @@ export function EmptyState({
 }) {
   return (
     <section
-      className={`flex flex-col items-center gap-4 rounded-panel border border-dashed border-border-strong bg-surface-panel px-5 py-8 text-center shadow-card sm:px-8 sm:py-10 ${className}`}
+      className={`flex flex-col items-center gap-4 rounded-panel border border-dashed border-border-strong bg-surface-panel/60 px-5 py-9 text-center sm:px-8 sm:py-12 ${className}`}
     >
       <span
         aria-hidden="true"
-        className="flex size-11 items-center justify-center rounded-pill border border-border-subtle bg-surface-elevated text-ink-secondary"
+        className="flex size-11 items-center justify-center rounded-card border border-border-subtle bg-surface-elevated text-ink-tertiary"
       >
         {icon ?? (
           <svg
@@ -35,14 +35,13 @@ export function EmptyState({
             strokeLinecap="round"
             strokeLinejoin="round"
           >
-            <rect x="3" y="5" width="18" height="14" rx="2.5" />
-            <path d="M8 12h8" />
+            <path d="M4 18V14M8 18V9M12 18v-5M16 18V6M20 18v-3" />
           </svg>
         )}
       </span>
       <div className="flex max-w-md flex-col gap-1.5">
         <Heading
-          className={`font-display font-semibold tracking-tight text-balance text-ink-primary ${
+          className={`font-display font-semibold tracking-[-0.02em] text-balance text-ink-primary ${
             Heading === "h1" ? "text-2xl sm:text-3xl" : "text-lg"
           }`}
         >

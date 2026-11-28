@@ -16,9 +16,20 @@ import {
   ChannelQueue,
   type ChannelQueueItem,
 } from "@/components/channel-queue";
-import { Button, ButtonLink } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Button,
+  ButtonLink,
+  FOCUS_RING,
+  TEXT_LINK,
+} from "@/components/ui/button";
+import { cardClasses } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
+import { FieldMessage, Input, Label } from "@/components/ui/input";
+import { Notice } from "@/components/ui/notice";
+import { PageHeader } from "@/components/ui/page-header";
+import { SignalStrip } from "@/components/ui/signal-strip";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   CHANNEL_FORMAT_EXAMPLES,
@@ -125,7 +136,7 @@ function ChannelVodsSkeleton({ label }: { label: string }) {
         {label}
       </div>
       <div aria-busy="true" aria-label={label} className="flex flex-col gap-5">
-        <div className="flex flex-wrap items-center justify-between gap-4 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-card">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border-subtle pb-5">
           <div className="flex items-center gap-3.5">
             <Skeleton className="size-12 shrink-0 rounded-pill" />
             <div className="flex flex-col gap-2">
@@ -189,17 +200,23 @@ function VodThumbnail({
     );
   }
 
+  const seed = Number(vod.video_id.slice(-4)) || vod.video_id.length * 97;
   return (
     <div
       aria-hidden="true"
-      className="relative flex size-full flex-col items-center justify-center gap-2 overflow-hidden bg-gradient-to-br from-surface-media via-[#161926] to-[#231942] px-4 text-center"
+      className="relative flex size-full flex-col justify-end gap-2.5 overflow-hidden bg-surface-media px-4 pt-12 pb-3"
     >
-      <div className="flex size-10 items-center justify-center rounded-pill border border-white/15 bg-white/10 text-white/85">
-        <svg viewBox="0 0 24 24" fill="currentColor" className="size-4">
-          <path d="M8 6.82v10.36c0 .79.87 1.27 1.54.84l8.14-5.18a1 1 0 0 0 0-1.68L9.54 5.98A1 1 0 0 0 8 6.82z" />
-        </svg>
-      </div>
-      <span className="max-w-full truncate font-mono text-[11px] text-white/70">
+      <SignalStrip
+        bars={40}
+        pins={false}
+        animate={false}
+        peaks={[
+          { at: 0.15 + ((seed % 37) / 37) * 0.25, rank: 2 },
+          { at: 0.55 + ((seed % 23) / 23) * 0.3, rank: 1 },
+        ]}
+        className="min-h-0 flex-1 opacity-70"
+      />
+      <span className="max-w-[70%] truncate font-mono text-[11px] text-white/55">
         {channelName} · VOD {vod.video_id}
       </span>
     </div>
@@ -696,49 +713,29 @@ export function ChannelBrowser() {
 
   return (
     <div className="flex flex-col gap-8">
-      <section className="flex flex-col gap-3">
-        <p className="text-xs font-semibold tracking-[0.14em] text-accent uppercase">
-          Channel browser
-        </p>
-        <h1 className="font-display text-3xl font-bold tracking-tight text-balance text-ink-primary sm:text-4xl">
-          Analyze a channel&apos;s recent streams.
-        </h1>
-        <p className="max-w-2xl text-base/7 text-pretty text-ink-secondary">
-          Paste a Twitch channel link or login to browse its recent past
-          broadcasts, pick the streams you want, and queue them all at once.
-          Jobs run one at a time in order.
-        </p>
-      </section>
+      <PageHeader
+        title="Analyze a channel's recent streams."
+        description="Look up a Twitch channel, pick the past broadcasts you want and queue them all at once. They run one at a time, in order."
+      />
 
       <form
         onSubmit={handleSubmit}
         noValidate
         aria-labelledby="channel-lookup-heading"
-        className="flex flex-col gap-4 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-panel sm:p-6"
+        className={cardClasses({
+          tone: "panel",
+          padding: "lg",
+          className: "flex flex-col gap-4",
+        })}
       >
-        <div className="flex flex-col gap-1">
-          <h2
-            id="channel-lookup-heading"
-            className="font-display text-base font-semibold text-ink-primary"
-          >
-            Look up a Twitch channel
-          </h2>
-          <p className="text-sm text-ink-secondary">
-            Paste a channel URL (like{" "}
-            <code className="font-mono text-xs">twitch.tv/user_001</code>) or
-            just the login name.
-          </p>
-        </div>
+        <h2 id="channel-lookup-heading" className="sr-only">
+          Look up a Twitch channel
+        </h2>
 
         <div className="flex flex-col gap-2">
-          <label
-            htmlFor={inputId}
-            className="text-sm font-semibold text-ink-primary"
-          >
-            Twitch channel link or login
-          </label>
+          <Label htmlFor={inputId}>Twitch channel link or login</Label>
           <div className="flex flex-col gap-2.5 sm:flex-row">
-            <input
+            <Input
               ref={inputRef}
               id={inputId}
               name="channel"
@@ -757,7 +754,8 @@ export function ChannelBrowser() {
                   ? `${inputId}-error`
                   : `${inputId}-hint ${inputId}-examples`
               }
-              className="min-w-0 flex-1 rounded-control border border-border-strong bg-surface-elevated px-4 py-3 text-base text-ink-primary transition-colors placeholder:text-ink-tertiary focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none aria-invalid:border-danger"
+              inputSize="lg"
+              className="flex-1"
             />
             <Button
               type="submit"
@@ -772,37 +770,33 @@ export function ChannelBrowser() {
 
           {inputError ? (
             <div className="flex flex-col gap-1">
-              <p
-                id={`${inputId}-error`}
-                role="alert"
-                className="text-sm font-medium text-danger"
-              >
+              <FieldMessage id={`${inputId}-error`} role="alert" tone="error">
                 {inputError}
-              </p>
+              </FieldMessage>
               {parsedVodId && (
-                <p className="text-sm text-ink-secondary">
+                <p className="text-sm leading-6 text-ink-secondary">
                   Have a single VOD?{" "}
-                  <Link
-                    href="/"
-                    className="font-semibold text-accent underline underline-offset-2 hover:text-accent-hover"
-                  >
+                  <Link href="/" className={TEXT_LINK}>
                     Analyze a single VOD on the home page
                   </Link>
                 </p>
               )}
             </div>
           ) : (
-            <p id={`${inputId}-hint`} className="text-sm text-ink-secondary">
+            <FieldMessage
+              id={`${inputId}-hint`}
+              tone={parsedLogin ? "success" : "hint"}
+            >
               {parsedLogin
                 ? `Ready to load recent past broadcasts for @${parsedLogin}.`
                 : "Accepts twitch.tv/<name>, twitch.tv/<name>/videos, @<name>, or a channel login."}
-            </p>
+            </FieldMessage>
           )}
 
-          <div className="flex flex-wrap items-center gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
             <span
               id={`${inputId}-examples`}
-              className="text-xs font-medium text-ink-tertiary"
+              className="text-xs text-ink-tertiary"
             >
               Try a format:
             </span>
@@ -814,7 +808,7 @@ export function ChannelBrowser() {
                   setChannelInput(example.value);
                   setInputError(null);
                 }}
-                className="rounded-pill border border-border-subtle bg-surface-elevated px-3 py-1 text-xs font-medium text-ink-secondary transition-colors hover:border-accent-border hover:text-ink-primary focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"
+                className={`min-h-7 rounded-pill border border-border-subtle px-2.5 text-xs font-medium text-ink-secondary transition-colors hover:border-accent-border hover:text-ink-primary ${FOCUS_RING}`}
               >
                 {example.label}
               </button>
@@ -824,12 +818,9 @@ export function ChannelBrowser() {
       </form>
 
       {queueError && (
-        <p
-          role="alert"
-          className="rounded-control border border-danger-border bg-danger-soft px-4 py-3 text-sm font-medium text-danger-soft-ink"
-        >
+        <Notice role="alert" tone="danger">
           {queueError}
-        </p>
+        </Notice>
       )}
 
       <ChannelQueue
@@ -941,7 +932,7 @@ export function ChannelBrowser() {
           aria-labelledby="channel-results-heading"
           className="flex flex-col gap-5"
         >
-          <div className="flex flex-wrap items-center justify-between gap-4 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-card">
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border-subtle pb-5">
             <div className="flex min-w-0 items-center gap-3.5">
               {lookup.data.channel.profile_image_url ? (
                 /* eslint-disable-next-line @next/next/no-img-element */
@@ -953,7 +944,7 @@ export function ChannelBrowser() {
               ) : (
                 <span
                   aria-hidden="true"
-                  className="flex size-12 shrink-0 items-center justify-center rounded-pill border border-accent-border bg-accent-soft font-display text-lg font-bold text-accent-soft-ink uppercase"
+                  className="flex size-12 shrink-0 items-center justify-center rounded-pill border border-accent-border bg-accent-soft font-display text-lg font-semibold text-accent-soft-ink uppercase"
                 >
                   {lookup.data.channel.display_name.slice(0, 1) || "?"}
                 </span>
@@ -961,7 +952,7 @@ export function ChannelBrowser() {
               <div className="min-w-0">
                 <h2
                   id="channel-results-heading"
-                  className="truncate font-display text-lg font-bold text-ink-primary sm:text-xl"
+                  className="truncate font-display text-xl font-semibold tracking-[-0.02em] text-ink-primary sm:text-2xl"
                 >
                   {lookup.data.channel.display_name}
                 </h2>
@@ -981,7 +972,7 @@ export function ChannelBrowser() {
             </div>
 
             <Button
-              variant="subtle"
+              variant="ghost"
               size="sm"
               onClick={() => {
                 void loadChannel(lookup.data.channel.login, { syncUrl: false });
@@ -1010,12 +1001,18 @@ export function ChannelBrowser() {
             />
           ) : (
             <>
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-card border border-border-subtle bg-surface-panel px-4 py-3 shadow-card">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button variant="subtle" size="sm" onClick={selectUnanalyzed}>
+              <div
+                className={`sticky bottom-3 z-20 flex flex-wrap items-center justify-between gap-3 rounded-card border bg-surface-panel/95 px-3 py-2.5 shadow-dialog backdrop-blur-md sm:px-4 ${
+                  selectedCount > 0
+                    ? "border-accent-border"
+                    : "border-border-strong"
+                }`}
+              >
+                <div className="flex flex-wrap items-center gap-1">
+                  <Button variant="ghost" size="sm" onClick={selectUnanalyzed}>
                     Select unanalyzed
                   </Button>
-                  <Button variant="subtle" size="sm" onClick={selectAll}>
+                  <Button variant="ghost" size="sm" onClick={selectAll}>
                     Select all
                   </Button>
                   {selectedCount > 0 && (
@@ -1025,9 +1022,9 @@ export function ChannelBrowser() {
                   )}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-1 flex-wrap items-center justify-end gap-3">
                   <span
-                    className="font-mono text-xs font-medium text-ink-secondary"
+                    className="text-xs font-medium text-ink-secondary tabular-nums"
                     aria-live="polite"
                   >
                     {selectedCount} selected
@@ -1075,9 +1072,9 @@ export function ChannelBrowser() {
                   return (
                     <li
                       key={vod.video_id}
-                      className={`flex flex-col overflow-hidden rounded-card border bg-surface-panel shadow-card transition-colors ${
+                      className={`flex flex-col overflow-hidden rounded-card border bg-surface-panel shadow-card transition-[border-color,box-shadow] duration-150 ${
                         selected
-                          ? "border-accent ring-2 ring-accent/25"
+                          ? "border-accent shadow-[0_0_0_1px_var(--accent),0_12px_32px_-18px_rgb(167_139_250/0.6)]"
                           : "border-border-subtle hover:border-border-strong"
                       }`}
                     >
@@ -1122,7 +1119,7 @@ export function ChannelBrowser() {
                             />
                             <span
                               aria-hidden="true"
-                              className={`flex size-4 items-center justify-center rounded-[4px] border transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-focus-ring-media peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-surface-media ${
+                              className={`flex size-4 items-center justify-center rounded-[4px] border transition-colors peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus-ring-media ${
                                 selected
                                   ? "border-accent bg-accent text-accent-ink"
                                   : isAnalyzed
@@ -1149,30 +1146,32 @@ export function ChannelBrowser() {
 
                         <div className="pointer-events-none absolute top-2.5 right-2.5 flex flex-wrap justify-end gap-1.5">
                           {queueState === "running" && (
-                            <span className="inline-flex items-center gap-1 rounded-pill border border-accent-border bg-accent px-2.5 py-0.5 font-mono text-[11px] font-semibold text-accent-ink shadow-card">
+                            <Badge tone="solid-accent" live>
                               Analyzing
-                            </span>
+                            </Badge>
                           )}
                           {queueState === "queued" && (
-                            <span className="inline-flex items-center rounded-pill border border-white/20 bg-black/75 px-2.5 py-0.5 font-mono text-[11px] font-medium text-white">
-                              Queued
-                            </span>
+                            <Badge tone="media">Queued</Badge>
                           )}
                           {queueState !== "running" &&
                             queueState !== "queued" &&
                             isAnalyzed && (
-                              <span className="inline-flex items-center gap-1 rounded-pill border border-source-both-border bg-source-both-soft px-2.5 py-0.5 font-mono text-[11px] font-semibold text-source-both-soft-ink shadow-card">
+                              <Badge
+                                tone="success"
+                                dot
+                                className="bg-surface-media/85 backdrop-blur-sm"
+                              >
                                 Already analyzed
-                              </span>
+                              </Badge>
                             )}
                         </div>
 
-                        <span className="pointer-events-none absolute right-2.5 bottom-2.5 rounded-control bg-black/80 px-2 py-0.5 font-mono text-xs font-medium text-white">
+                        <span className="pointer-events-none absolute right-2.5 bottom-2.5 rounded-[0.375rem] bg-black/80 px-1.5 py-0.5 font-mono text-xs font-medium text-white tabular-nums">
                           {formatTime(vod.duration_s)}
                         </span>
                       </div>
 
-                      <div className="flex flex-1 flex-col gap-2.5 p-4">
+                      <div className="flex flex-1 flex-col gap-2 p-4">
                         <h3
                           title={vod.title}
                           className="line-clamp-2 text-sm leading-5 font-semibold text-ink-primary"
@@ -1180,7 +1179,7 @@ export function ChannelBrowser() {
                           {vod.title}
                         </h3>
 
-                        <p className="text-xs text-ink-secondary">
+                        <p className="text-xs text-ink-tertiary">
                           {formatBroadcastDate(vod.created_at)} ·{" "}
                           {formatViewCount(vod.view_count)}
                         </p>
@@ -1189,7 +1188,7 @@ export function ChannelBrowser() {
                           {resultJobId ? (
                             <Link
                               href={`/jobs/${resultJobId}/results`}
-                              className="text-xs font-semibold text-accent hover:text-accent-hover hover:underline focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"
+                              className={`rounded-[3px] text-xs font-semibold text-accent hover:text-accent-hover hover:underline ${FOCUS_RING}`}
                             >
                               View results &rarr;
                             </Link>
@@ -1198,7 +1197,7 @@ export function ChannelBrowser() {
                               queueState === "running") ? (
                             <Link
                               href={`/jobs/${queueItem.jobId}`}
-                              className="text-xs font-semibold text-accent hover:text-accent-hover hover:underline focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"
+                              className={`rounded-[3px] text-xs font-semibold text-accent hover:text-accent-hover hover:underline ${FOCUS_RING}`}
                             >
                               View progress &rarr;
                             </Link>
@@ -1216,7 +1215,7 @@ export function ChannelBrowser() {
                             href={vod.url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-xs font-medium text-ink-secondary transition-colors hover:text-ink-primary focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"
+                            className={`rounded-[3px] text-xs font-medium text-ink-tertiary transition-colors hover:text-ink-primary ${FOCUS_RING}`}
                           >
                             Twitch ↗
                           </a>

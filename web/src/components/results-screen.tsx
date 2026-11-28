@@ -8,6 +8,7 @@ import { ArchiveDownloads } from "@/components/archive-downloads";
 import { ClipCard, type ClipExport } from "@/components/clip-card";
 import { HighlightsDialog } from "@/components/highlights-dialog";
 import { StreamTimeline } from "@/components/stream-timeline";
+import { buttonClasses } from "@/components/ui/button";
 import {
   ApiRequestError,
   getApiClient,
@@ -371,7 +372,7 @@ export function ResultsScreen() {
 
   if (view.kind === "loading") {
     return (
-      <h1 className="text-2xl font-semibold tracking-tight">
+      <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-primary">
         Loading the results…
       </h1>
     );
@@ -379,11 +380,13 @@ export function ResultsScreen() {
   if (view.kind === "problem") {
     return (
       <div className="flex flex-col gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">{view.title}</h1>
-        <p className="text-zinc-700 dark:text-zinc-300">{view.message}</p>
+        <h1 className="font-display text-2xl font-semibold tracking-tight text-ink-primary">
+          {view.title}
+        </h1>
+        <p className="text-ink-secondary">{view.message}</p>
         <Link
           href={`/jobs/${jobId}`}
-          className="self-start font-medium text-amber-800 underline dark:text-amber-300"
+          className="self-start rounded-[3px] font-semibold text-accent underline decoration-accent/40 underline-offset-[3px] hover:text-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
         >
           Back to the analysis
         </Link>
@@ -425,17 +428,17 @@ export function ResultsScreen() {
   return (
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-3">
-        <p className="text-sm font-medium text-zinc-600 dark:text-zinc-400">
+        <p className="text-sm font-medium text-ink-tertiary">
           {vod.broadcaster_display_name} · {formatTime(vod.duration_s)} · VOD{" "}
           {vod.video_id}
         </p>
-        <h1 className="text-2xl font-semibold tracking-tight text-balance sm:text-3xl">
+        <h1 className="font-display text-2xl font-semibold tracking-tight text-balance break-words text-ink-primary sm:text-3xl">
           {vod.title}
         </h1>
         {view.result.warnings.map((warning) => (
           <p
             key={warning.code}
-            className="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-400/10 dark:text-amber-100"
+            className="rounded-control border border-signal-border bg-signal-soft px-4 py-3 text-sm text-signal-soft-ink"
           >
             {warning.message}
           </p>
@@ -468,9 +471,11 @@ export function ResultsScreen() {
       </div>
 
       {top.length === 0 ? (
-        <div className="flex flex-col gap-3 rounded-2xl border border-dashed border-zinc-300 p-8 text-center dark:border-zinc-700">
-          <h2 className="text-lg font-semibold">No moments stood out</h2>
-          <p className="text-zinc-600 dark:text-zinc-400">
+        <div className="flex flex-col gap-3 rounded-panel border border-dashed border-border-strong bg-surface-panel/60 p-8 text-center">
+          <h2 className="font-display text-lg font-semibold text-ink-primary">
+            No moments stood out
+          </h2>
+          <p className="text-ink-secondary">
             {view.result.warnings.length > 0
               ? "Nothing could be ranked from the signals that were available for this VOD."
               : view.result.n_viewer_clips_total === 0
@@ -479,7 +484,7 @@ export function ResultsScreen() {
           </p>
           <Link
             href="/"
-            className="font-medium text-amber-800 underline dark:text-amber-300"
+            className="self-center rounded-[3px] font-semibold text-accent underline decoration-accent/40 underline-offset-[3px] hover:text-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
           >
             Try another VOD
           </Link>
@@ -491,13 +496,13 @@ export function ResultsScreen() {
         >
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 id="clips-heading" className="text-lg font-semibold">
+              <h2
+                id="clips-heading"
+                className="font-display text-lg font-semibold text-ink-primary"
+              >
                 Top {top.length} {top.length === 1 ? "moment" : "moments"}
               </h2>
-              <p
-                className="text-sm text-zinc-600 dark:text-zinc-400"
-                aria-live="polite"
-              >
+              <p className="text-sm text-ink-secondary" aria-live="polite">
                 {finished < top.length
                   ? `Rendering clips: ${finished} of ${top.length} done`
                   : `${ready.length} of ${top.length} clips ready`}
@@ -508,16 +513,16 @@ export function ResultsScreen() {
             <div
               role="group"
               aria-label="Results view"
-              className="inline-flex rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800"
+              className="inline-flex rounded-control border border-border-control bg-surface-canvas p-0.5"
             >
               <button
                 type="button"
                 aria-pressed={viewMode === "cards"}
                 onClick={() => setViewMode("cards")}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none ${
+                className={`min-h-8 rounded-[0.375rem] px-3 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${
                   viewMode === "cards"
-                    ? "bg-white text-zinc-950 shadow-xs dark:bg-zinc-950 dark:text-zinc-50"
-                    : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                    ? "bg-surface-subtle text-ink-primary shadow-card"
+                    : "text-ink-tertiary hover:text-ink-primary"
                 }`}
               >
                 Clip cards
@@ -526,10 +531,10 @@ export function ResultsScreen() {
                 type="button"
                 aria-pressed={viewMode === "timeline"}
                 onClick={() => setViewMode("timeline")}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none ${
+                className={`min-h-8 rounded-[0.375rem] px-3 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring ${
                   viewMode === "timeline"
-                    ? "bg-white text-zinc-950 shadow-xs dark:bg-zinc-950 dark:text-zinc-50"
-                    : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                    ? "bg-surface-subtle text-ink-primary shadow-card"
+                    : "text-ink-tertiary hover:text-ink-primary"
                 }`}
               >
                 Timeline
@@ -538,7 +543,7 @@ export function ResultsScreen() {
             <button
               type="button"
               onClick={() => setHighlightsOpen(true)}
-              className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-zinc-900 ring-1 ring-zinc-300 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none dark:bg-zinc-900 dark:text-zinc-100 dark:ring-zinc-700 dark:hover:bg-zinc-800"
+              className={buttonClasses()}
             >
               Make highlights video
             </button>

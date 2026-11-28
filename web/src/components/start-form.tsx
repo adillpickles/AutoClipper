@@ -13,7 +13,10 @@ import {
   type FormEvent,
 } from "react";
 
-import { Button } from "@/components/ui/button";
+import { Button, FOCUS_RING, TEXT_LINK } from "@/components/ui/button";
+import { cardClasses } from "@/components/ui/card";
+import { FieldMessage, Input, Label } from "@/components/ui/input";
+import { Notice } from "@/components/ui/notice";
 import { parseChannel } from "@/lib/api/channel";
 import { ApiRequestError, getApiClient, isMockMode } from "@/lib/api/client";
 import type { UploadProgress, VideoUpload } from "@/lib/api/types";
@@ -332,171 +335,169 @@ export function StartForm() {
       onSubmit={submit}
       noValidate
       aria-labelledby="analyze-heading"
-      className="flex flex-col gap-6 rounded-panel border border-border-subtle bg-surface-panel p-5 shadow-panel sm:p-7"
+      className={cardClasses({
+        tone: "panel",
+        padding: "none",
+        className: "flex flex-col",
+      })}
     >
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-col gap-5 p-5 sm:p-7">
         <div className="flex flex-col gap-1">
           <h2
             id="analyze-heading"
-            className="font-display text-lg font-semibold text-ink-primary"
+            className="font-display text-xl font-semibold tracking-[-0.02em] text-ink-primary"
           >
             Analyze a VOD
           </h2>
-          <p className="text-sm text-ink-secondary">
-            Paste the Twitch broadcast link. Add your own video file only if you
-            already downloaded it.
+          <p className="text-sm leading-6 text-ink-secondary">
+            Paste a past broadcast from Twitch. That&apos;s all it needs.
           </p>
         </div>
-        <Link
-          href="/channels"
-          className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-pill border border-accent-border bg-accent-soft px-3.5 py-1.5 text-xs font-semibold text-accent-soft-ink transition-colors hover:bg-accent hover:text-accent-ink focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"
-        >
-          Browse a channel&apos;s VODs
-          <span aria-hidden="true">&rarr;</span>
-        </Link>
-      </div>
 
-      <div className="flex flex-col gap-2">
-        <label
-          htmlFor={vodId}
-          className="text-sm font-semibold text-ink-primary"
-        >
-          Twitch VOD link
-        </label>
-        <input
-          id={vodId}
-          name="vod"
-          type="text"
-          inputMode="url"
-          autoComplete="off"
-          spellCheck={false}
-          disabled={submitting}
-          placeholder="https://www.twitch.tv/videos/2345678901"
-          value={vod}
-          onChange={(event) => {
-            clearStalePending();
-            setVod(event.target.value);
-            setFilledFromExample(false);
-            setVodError(null);
-          }}
-          aria-invalid={vodError !== null}
-          aria-describedby={
-            vodError ? `${vodId}-error` : `${vodId}-hint ${vodId}-examples`
-          }
-          className="rounded-control border border-border-strong bg-surface-elevated px-4 py-3 text-base text-ink-primary transition-colors placeholder:text-ink-tertiary focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 aria-invalid:border-danger"
-        />
-        {vodError ? (
-          <div className="flex flex-col gap-1.5">
-            <p
-              id={`${vodId}-error`}
-              role="alert"
-              className="text-sm font-medium text-danger"
+        <div className="flex flex-col gap-2">
+          <Label htmlFor={vodId}>Twitch VOD link</Label>
+          <Input
+            id={vodId}
+            name="vod"
+            type="text"
+            inputMode="url"
+            autoComplete="off"
+            spellCheck={false}
+            inputSize="lg"
+            disabled={submitting}
+            placeholder="https://www.twitch.tv/videos/2345678901"
+            value={vod}
+            onChange={(event) => {
+              clearStalePending();
+              setVod(event.target.value);
+              setFilledFromExample(false);
+              setVodError(null);
+            }}
+            aria-invalid={vodError !== null}
+            aria-describedby={
+              vodError ? `${vodId}-error` : `${vodId}-hint ${vodId}-examples`
+            }
+          />
+          {vodError ? (
+            <div className="flex flex-col gap-1">
+              <FieldMessage id={`${vodId}-error`} role="alert" tone="error">
+                {vodError}
+              </FieldMessage>
+              {parsedChannelLogin && (
+                <p className="text-sm leading-6 text-ink-secondary">
+                  Want to pick from this channel&apos;s recent broadcasts?{" "}
+                  <Link
+                    href={`/channels?channel=${encodeURIComponent(parsedChannelLogin)}`}
+                    className={TEXT_LINK}
+                  >
+                    Open {parsedChannelLogin} in Channels
+                  </Link>
+                </p>
+              )}
+            </div>
+          ) : (
+            <FieldMessage
+              id={`${vodId}-hint`}
+              tone={parsedId && !exampleOnly ? "success" : "hint"}
             >
-              {vodError}
+              {exampleOnly
+                ? EXAMPLE_VOD_MESSAGE
+                : parsedId
+                  ? `Ready to analyze VOD ${parsedId}. Chat and viewer clips come from this broadcast.`
+                  : "A past broadcast: a twitch.tv/videos/… link, or just its numeric ID."}
+            </FieldMessage>
+          )}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            <p id={`${vodId}-examples`} className="text-xs text-ink-tertiary">
+              Example formats (swap in your own VOD):
             </p>
-            {parsedChannelLogin && (
-              <p className="text-sm text-ink-secondary">
-                Want to pick from this channel&apos;s recent broadcasts?{" "}
-                <Link
-                  href={`/channels?channel=${encodeURIComponent(parsedChannelLogin)}`}
-                  className="font-semibold text-accent underline underline-offset-2 hover:text-accent-hover focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none"
+            <div
+              className="flex flex-wrap gap-1.5"
+              role="group"
+              aria-label="Example VOD links"
+            >
+              {VOD_EXAMPLES.map((example) => (
+                <button
+                  key={example.label}
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => {
+                    setVod(example.value);
+                    setFilledFromExample(true);
+                    setVodError(null);
+                  }}
+                  className={`min-h-7 rounded-pill border border-border-subtle px-2.5 text-xs font-medium text-ink-secondary transition-colors hover:border-accent-border hover:text-ink-primary disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING}`}
                 >
-                  Open {parsedChannelLogin} in Channels
-                </Link>
-              </p>
-            )}
-          </div>
-        ) : (
-          <p id={`${vodId}-hint`} className="text-sm text-ink-secondary">
-            {exampleOnly
-              ? EXAMPLE_VOD_MESSAGE
-              : parsedId
-                ? `Ready to analyze VOD ${parsedId}. Chat and viewer clips come from this broadcast.`
-                : "A past broadcast: a twitch.tv/videos/… link, or just its numeric ID."}
-          </p>
-        )}
-        <div className="flex flex-col gap-2 pt-1">
-          <p
-            id={`${vodId}-examples`}
-            className="text-xs font-medium text-ink-tertiary"
-          >
-            Example formats — replace the sample ID with your VOD
-          </p>
-          <div
-            className="flex flex-wrap gap-2"
-            role="group"
-            aria-label="Example VOD links"
-          >
-            {VOD_EXAMPLES.map((example) => (
-              <button
-                key={example.label}
-                type="button"
-                disabled={submitting}
-                onClick={() => {
-                  setVod(example.value);
-                  setFilledFromExample(true);
-                  setVodError(null);
-                }}
-                className="rounded-pill border border-border-subtle bg-surface-elevated px-3 py-1 text-xs font-medium text-ink-secondary transition-colors hover:border-accent-border hover:text-ink-primary focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {example.label}
-              </button>
-            ))}
+                  {example.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </div>
 
-      <fieldset className="flex min-w-0 flex-col gap-3 rounded-card border border-border-subtle bg-surface-elevated/50 p-4">
-        <div className="flex flex-col gap-1">
-          <legend className="text-sm font-semibold text-ink-primary">
-            Already have the VOD video?{" "}
-            <span className="font-normal text-ink-tertiary">(optional)</span>
-          </legend>
-          <p className="text-sm text-ink-secondary">
-            Your file only replaces the media download — the Twitch VOD link
-            above is still required for metadata, chat, and viewer clips.
-          </p>
-        </div>
+      <fieldset className="flex min-w-0 flex-col gap-3 border-t border-border-subtle bg-surface-canvas/35 px-5 py-5 sm:px-7">
+        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+          <div className="flex min-w-0 flex-col gap-1">
+            <legend className="text-sm font-semibold text-ink-primary">
+              Already have the video?{" "}
+              <span className="font-normal text-ink-tertiary">(optional)</span>
+            </legend>
+            <p className="max-w-md text-sm leading-6 text-ink-secondary">
+              Your file only replaces the media download. The Twitch VOD link
+              above is still required for metadata, chat, and viewer clips.
+            </p>
+          </div>
 
-        <div
-          role="group"
-          aria-label="Video file source"
-          className="flex flex-wrap gap-2"
-        >
-          <button
-            type="button"
-            disabled={submitting}
-            aria-pressed={sourceMode === "upload"}
-            onClick={() => {
-              setSourceMode("upload");
-              setPathError(null);
-            }}
-            className={`min-h-9 rounded-pill border px-3.5 py-1.5 text-xs font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
-              sourceMode === "upload"
-                ? "border-accent bg-accent text-accent-ink"
-                : "border-border-strong bg-surface-panel text-ink-secondary hover:text-ink-primary"
-            }`}
+          <div
+            role="group"
+            aria-label="Video file source"
+            className="inline-flex shrink-0 rounded-control border border-border-control bg-surface-canvas p-0.5"
           >
-            Upload or drop file
-          </button>
-          <button
-            type="button"
-            disabled={submitting}
-            aria-pressed={sourceMode === "path"}
-            onClick={() => {
-              setSourceMode("path");
-              setSelectionError(null);
-              setRequestError(null);
-              setUploadNotice(null);
-            }}
-            className={`min-h-9 rounded-pill border px-3.5 py-1.5 text-xs font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
-              sourceMode === "path"
-                ? "border-accent bg-accent text-accent-ink"
-                : "border-border-strong bg-surface-panel text-ink-secondary hover:text-ink-primary"
-            }`}
-          >
-            Use file path on this computer
-          </button>
+            {(
+              [
+                { mode: "upload", label: "Upload or drop file" },
+                { mode: "path", label: "Use file path on this computer" },
+              ] as const
+            ).map((option) => {
+              const pressed = sourceMode === option.mode;
+              return (
+                <button
+                  key={option.mode}
+                  type="button"
+                  disabled={submitting}
+                  aria-pressed={pressed}
+                  onClick={() => {
+                    if (option.mode === "upload") {
+                      setSourceMode("upload");
+                      setPathError(null);
+                    } else {
+                      setSourceMode("path");
+                      setSelectionError(null);
+                      setRequestError(null);
+                      setUploadNotice(null);
+                    }
+                  }}
+                  className={`min-h-8 rounded-[0.375rem] px-3 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING} ${
+                    pressed
+                      ? "bg-surface-subtle text-ink-primary shadow-card"
+                      : "text-ink-tertiary hover:text-ink-primary"
+                  }`}
+                >
+                  {option.mode === "upload" ? (
+                    option.label
+                  ) : (
+                    <>
+                      <span className="sm:hidden" aria-hidden="true">
+                        File path
+                      </span>
+                      <span className="max-sm:sr-only">{option.label}</span>
+                    </>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {sourceMode === "upload" ? (
@@ -526,23 +527,50 @@ export function StartForm() {
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
-                className={`flex flex-col items-center justify-center gap-2.5 rounded-control border-2 border-dashed p-5 text-center transition-colors ${
+                className={`flex flex-col items-start gap-3 rounded-card border border-dashed p-4 transition-colors sm:flex-row sm:items-center sm:justify-between ${
                   isDragging
-                    ? "border-accent bg-accent-soft text-accent-soft-ink"
+                    ? "border-accent bg-accent-soft"
                     : uploadError
-                      ? "border-danger bg-danger-soft/40"
-                      : "border-border-strong bg-surface-panel"
+                      ? "border-danger-border bg-danger-soft"
+                      : "border-border-strong hover:border-ink-tertiary/60"
                 }`}
               >
-                <p className="text-sm font-medium text-ink-primary">
-                  {isDragging
-                    ? "Drop video file to attach it"
-                    : "Drop a video file here, or choose one from your computer"}
-                </p>
-                <p id={`${fileId}-hint`} className="text-xs text-ink-secondary">
-                  Supports .mp4, .mkv, .ts, .mov, .webm, .flv, and .avi. Large
-                  4–6 hour VODs stream directly to the server.
-                </p>
+                <div className="flex min-w-0 items-start gap-3">
+                  <span
+                    aria-hidden="true"
+                    className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-control border ${
+                      isDragging
+                        ? "border-accent-border bg-accent text-accent-ink"
+                        : "border-border-subtle bg-surface-elevated text-ink-tertiary"
+                    }`}
+                  >
+                    <svg
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      className="size-4"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M10 13V4M6.5 7.5 10 4l3.5 3.5M4 13.5v1A1.5 1.5 0 0 0 5.5 16h9a1.5 1.5 0 0 0 1.5-1.5v-1" />
+                    </svg>
+                  </span>
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <p className="text-sm font-medium text-ink-primary">
+                      {isDragging
+                        ? "Drop video file to attach it"
+                        : "Drop a video file here, or choose one"}
+                    </p>
+                    <p
+                      id={`${fileId}-hint`}
+                      className="text-xs leading-5 text-ink-tertiary"
+                    >
+                      .mp4, .mkv, .ts, .mov, .webm, .flv or .avi. Long VODs
+                      stream straight to the server.
+                    </p>
+                  </div>
+                </div>
                 <Button
                   variant="secondary"
                   size="sm"
@@ -551,28 +579,43 @@ export function StartForm() {
                     uploadError ? `${fileId}-error` : `${fileId}-hint`
                   }
                   onClick={() => fileInputRef.current?.click()}
+                  className="shrink-0"
                 >
                   Choose video file
                 </Button>
               </div>
             ) : (
-              <div className="flex flex-col gap-3 rounded-control border border-border-strong bg-surface-panel p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <p
-                      title={selectedFile.name}
-                      className="truncate font-mono text-sm font-medium text-ink-primary"
+              <div className="flex flex-col gap-3 rounded-card border border-border-strong bg-surface-elevated p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                    <span
+                      aria-hidden="true"
+                      className="flex size-9 shrink-0 items-center justify-center rounded-control bg-surface-media text-ink-secondary"
                     >
-                      {selectedFile.name}
-                    </p>
-                    <p className="text-xs text-ink-secondary">
-                      {formatBytes(selectedFile.size)}
-                      {uploading
-                        ? " · Uploading to server"
-                        : uploadedRef?.file === selectedFile
-                          ? " · Uploaded and verified"
-                          : " · Ready to upload when analysis starts"}
-                    </p>
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                        className="size-3.5"
+                      >
+                        <path d="M6 4.8v10.4c0 .8.9 1.3 1.6.9l8-5.2a1 1 0 0 0 0-1.7l-8-5.2C6.9 3.5 6 4 6 4.8z" />
+                      </svg>
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p
+                        title={selectedFile.name}
+                        className="truncate font-mono text-sm font-medium text-ink-primary"
+                      >
+                        {selectedFile.name}
+                      </p>
+                      <p className="text-xs text-ink-secondary">
+                        {formatBytes(selectedFile.size)}
+                        {uploading
+                          ? " · Uploading to server"
+                          : uploadedRef?.file === selectedFile
+                            ? " · Uploaded and verified"
+                            : " · Ready to upload when analysis starts"}
+                      </p>
+                    </div>
                   </div>
                   {uploading ? (
                     <Button
@@ -583,7 +626,7 @@ export function StartForm() {
                       Cancel upload
                     </Button>
                   ) : (
-                    <div className="flex shrink-0 items-center gap-2">
+                    <div className="flex shrink-0 items-center gap-1">
                       <Button
                         variant="subtle"
                         size="sm"
@@ -615,14 +658,14 @@ export function StartForm() {
                           ? "Checking video with server…"
                           : `Uploading video…${uploadPercent !== null ? ` ${uploadPercent}%` : ""}`}
                       </span>
-                      <span className="font-mono">
+                      <span className="font-mono tabular-nums">
                         {formatBytes(uploadProgress.loaded)}
                         {uploadProgress.total !== null
                           ? ` / ${formatBytes(uploadProgress.total)}`
                           : ""}
                       </span>
                     </div>
-                    <div className="h-2 w-full overflow-hidden rounded-pill bg-surface-subtle">
+                    <div className="h-1.5 w-full overflow-hidden rounded-pill bg-surface-subtle">
                       <div
                         role="progressbar"
                         aria-label="Video upload progress"
@@ -639,38 +682,26 @@ export function StartForm() {
             )}
 
             {uploadNotice && (
-              <p
-                role="status"
-                className="text-sm font-medium text-ink-secondary"
-              >
-                {uploadNotice}
-              </p>
+              <FieldMessage role="status">{uploadNotice}</FieldMessage>
             )}
             {uploadError && (
-              <p
-                id={`${fileId}-error`}
-                role="alert"
-                className="text-sm font-medium text-danger"
-              >
+              <FieldMessage id={`${fileId}-error`} role="alert" tone="error">
                 {uploadError}
-              </p>
+              </FieldMessage>
             )}
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            <label
-              htmlFor={pathId}
-              className="text-sm font-semibold text-ink-primary"
-            >
-              VOD file on this computer{" "}
-              <span className="font-normal text-ink-tertiary">(optional)</span>
-            </label>
-            <input
+            <Label htmlFor={pathId} optional>
+              VOD file on this computer
+            </Label>
+            <Input
               id={pathId}
               name="video_path"
               type="text"
               autoComplete="off"
               spellCheck={false}
+              mono
               disabled={submitting}
               placeholder="/Users/you/Videos/vod.mp4"
               value={videoPath}
@@ -685,21 +716,16 @@ export function StartForm() {
                   ? `${pathId}-error`
                   : `${pathId}-hint ${pathId}-examples`
               }
-              className="rounded-control border border-border-strong bg-surface-panel px-4 py-3 font-mono text-sm text-ink-primary transition-colors placeholder:text-ink-tertiary focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 aria-invalid:border-danger"
             />
             {pathError ? (
-              <p
-                id={`${pathId}-error`}
-                role="alert"
-                className="text-sm font-medium text-danger"
-              >
+              <FieldMessage id={`${pathId}-error`} role="alert" tone="error">
                 {pathError}
-              </p>
+              </FieldMessage>
             ) : (
-              <p id={`${pathId}-hint`} className="text-sm text-ink-secondary">
+              <FieldMessage id={`${pathId}-hint`}>
                 Paste the file&apos;s full path to skip copying a large VOD when
                 the server runs on this same computer.
-              </p>
+              </FieldMessage>
             )}
             <p id={`${pathId}-examples`} className="text-xs text-ink-tertiary">
               Examples:{" "}
@@ -711,28 +737,35 @@ export function StartForm() {
         )}
       </fieldset>
 
-      {formError && (
-        <p
-          role="alert"
-          className="rounded-control border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger-soft-ink"
-        >
-          {formError}
-        </p>
-      )}
-
-      <button
-        type="submit"
-        disabled={
-          submitting || (sourceMode === "upload" && selectionError !== null)
-        }
-        className="self-start rounded-control bg-accent px-5 py-3 text-sm font-semibold text-accent-ink shadow-card transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface-panel focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {uploading
-          ? "Uploading video…"
-          : submitting
-            ? "Starting…"
-            : "Find the best moments"}
-      </button>
+      <div className="flex flex-col gap-4 border-t border-border-subtle px-5 py-5 sm:px-7">
+        {formError && (
+          <Notice role="alert" tone="danger">
+            {formError}
+          </Notice>
+        )}
+        <div className="flex flex-col-reverse gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-ink-secondary">
+            Several streams?{" "}
+            <Link href="/channels" className={`whitespace-nowrap ${TEXT_LINK}`}>
+              Browse a channel&apos;s VODs
+            </Link>
+          </p>
+          <Button
+            type="submit"
+            size="lg"
+            disabled={
+              submitting || (sourceMode === "upload" && selectionError !== null)
+            }
+            className="w-full sm:w-auto"
+          >
+            {uploading
+              ? "Uploading video…"
+              : submitting
+                ? "Starting…"
+                : "Find the best moments"}
+          </Button>
+        </div>
+      </div>
     </form>
   );
 }

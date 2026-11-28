@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
-import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Button, FOCUS_RING } from "@/components/ui/button";
 import { getApiClient, isMockMode } from "@/lib/api/client";
 import type {
   PreflightCheck,
@@ -11,6 +12,11 @@ import type {
   ToolSetupName,
   ToolSetupStatus,
 } from "@/lib/api/types";
+
+const BANNER_BASE =
+  "relative overflow-hidden rounded-card border bg-surface-panel p-4 pl-5 text-sm leading-6 shadow-card sm:p-5 sm:pl-6";
+const EDGE = "absolute inset-y-0 left-0 w-[3px]";
+const DISMISS_CLASS = `-mt-1 -mr-1 inline-flex min-h-9 shrink-0 items-center rounded-control px-2.5 text-xs font-semibold text-ink-tertiary transition-colors hover:bg-surface-elevated hover:text-ink-primary ${FOCUS_RING}`;
 
 const SETUP_POLL_BASE_MS = 1000;
 const SETUP_POLL_MAX_BACKOFF_MS = 8000;
@@ -307,14 +313,15 @@ export function PreflightBanner() {
         aria-live="polite"
         aria-atomic="true"
         onKeyDown={handleKeyDown}
-        className="rounded-card border border-source-both-border bg-source-both-soft p-4 text-sm text-source-both-soft-ink shadow-card"
+        className={`${BANNER_BASE} border-success-border`}
       >
+        <span aria-hidden="true" className={`${EDGE} bg-success`} />
         <div className="flex items-start justify-between gap-4">
           <div className="flex flex-col gap-1">
-            <h2 className="font-display text-base font-semibold">
+            <h2 className="font-display text-base font-semibold text-success-soft-ink">
               Managed tools installed
             </h2>
-            <p>
+            <p className="text-ink-secondary">
               Pinned FFmpeg/FFprobe and TwitchDownloaderCLI builds were verified
               and installed. AutoClipper is ready.
             </p>
@@ -323,7 +330,7 @@ export function PreflightBanner() {
             type="button"
             onClick={() => setDismissed(true)}
             aria-label="Dismiss setup notice"
-            className="shrink-0 rounded-control border border-source-both-border bg-surface-panel px-2.5 py-1 text-xs font-medium text-source-both-soft-ink hover:bg-surface-elevated focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-source-both-soft focus-visible:outline-none"
+            className={DISMISS_CLASS}
           >
             Dismiss
           </button>
@@ -342,12 +349,9 @@ export function PreflightBanner() {
     return (
       <div
         onKeyDown={handleKeyDown}
-        className={
-          visible
-            ? "rounded-card border border-signal-border bg-signal-soft p-4 text-sm text-signal-soft-ink shadow-card"
-            : undefined
-        }
+        className={visible ? `${BANNER_BASE} border-signal-border` : undefined}
       >
+        {visible && <span aria-hidden="true" className={`${EDGE} bg-signal`} />}
         <section
           role="status"
           aria-live="polite"
@@ -391,8 +395,9 @@ export function PreflightBanner() {
   return (
     <div
       onKeyDown={handleKeyDown}
-      className="rounded-card border border-danger-border bg-danger-soft p-4 text-sm text-danger-soft-ink shadow-card"
+      className={`${BANNER_BASE} border-danger-border`}
     >
+      <span aria-hidden="true" className={`${EDGE} bg-danger`} />
       <section role="alert" aria-atomic="true">
         <BannerHeader
           tone="fail"
@@ -437,18 +442,20 @@ function BannerHeader({
   return (
     <div className="flex items-start justify-between gap-4">
       <div className="flex flex-col gap-1">
-        <h2 className="font-display text-base font-semibold">{title}</h2>
-        <p>{summary}</p>
+        <h2
+          className={`font-display text-base font-semibold ${
+            fail ? "text-danger-soft-ink" : "text-signal-soft-ink"
+          }`}
+        >
+          {title}
+        </h2>
+        <p className="text-ink-secondary">{summary}</p>
       </div>
       <button
         type="button"
         onClick={onDismiss}
         aria-label="Dismiss setup notice"
-        className={`shrink-0 rounded-control border bg-surface-panel px-2.5 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:outline-none ${
-          fail
-            ? "border-danger-border text-danger-soft-ink ring-offset-danger-soft hover:bg-surface-elevated"
-            : "border-signal-border text-signal-soft-ink ring-offset-signal-soft hover:bg-surface-elevated"
-        }`}
+        className={DISMISS_CLASS}
       >
         Dismiss
       </button>
@@ -475,10 +482,10 @@ function InstallPanel({
 }) {
   const items = setup?.items ?? [];
   return (
-    <div className="mt-3 rounded-control border border-border-subtle bg-surface-panel p-3 text-ink-primary">
+    <div className="mt-4 rounded-card border border-border-subtle bg-surface-elevated p-4 text-ink-primary">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-col gap-0.5">
-          <p className="font-medium text-ink-primary">
+          <p className="font-semibold text-ink-primary">
             Automatic local tool setup
           </p>
           <p className="text-xs text-ink-secondary">
@@ -519,7 +526,7 @@ function InstallPanel({
       {setupError && (
         <p
           role="alert"
-          className="mt-2.5 rounded-control border border-danger-border bg-danger-soft px-3 py-2 text-xs text-danger-soft-ink"
+          className="mt-3 rounded-control border border-danger-border bg-danger-soft px-3 py-2 text-xs leading-5 text-danger-soft-ink"
         >
           {setupError}
         </p>
@@ -542,35 +549,26 @@ function BannerChecklist({
   return (
     <>
       {completedInstall && !running && !setupError && problems.length > 0 && (
-        <p className="mt-2.5 rounded-control border border-source-both-border bg-source-both-soft px-3 py-2 text-xs text-source-both-soft-ink">
+        <p className="mt-3 rounded-control border border-success-border bg-success-soft px-3 py-2 text-xs leading-5 text-success-soft-ink">
           Managed tools installed. Complete the remaining items below to finish
           setup.
         </p>
       )}
 
-      <ul className="mt-3 flex flex-col gap-2.5">
+      <ul className="mt-4 flex flex-col divide-y divide-border-subtle border-t border-border-subtle">
         {problems.map((check) => {
           const isFail = check.status === "fail";
           return (
-            <li
-              key={check.name}
-              className="rounded-control bg-surface-panel px-3 py-2.5 text-ink-primary"
-            >
+            <li key={check.name} className="py-3 text-ink-primary">
               <div className="flex flex-wrap items-center gap-2">
-                <span
-                  className={
-                    isFail
-                      ? "rounded-pill bg-danger px-2 py-0.5 text-xs font-semibold text-danger-ink"
-                      : "rounded-pill border border-signal-border bg-signal-soft px-2 py-0.5 text-xs font-semibold text-signal-soft-ink"
-                  }
-                >
+                <Badge tone={isFail ? "danger" : "signal"}>
                   {isFail ? "Required" : "Warning"}
-                </span>
-                <span className="font-medium">{check.label}</span>
+                </Badge>
+                <span className="font-semibold">{check.label}</span>
               </div>
               <p className="mt-1 text-ink-secondary">{check.message}</p>
               {check.fix && (
-                <p className="mt-1.5 font-mono text-xs break-words text-ink-tertiary">
+                <p className="mt-2 rounded-control border border-border-subtle bg-surface-canvas/70 px-2.5 py-1.5 font-mono text-xs break-words text-ink-secondary">
                   Fix: {check.fix}
                 </p>
               )}
@@ -598,7 +596,7 @@ function ToolProgressRow({ item }: { item: ToolSetupItem }) {
     <div className="flex flex-col gap-1 text-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium text-ink-primary">{item.label}</span>
-        <span className="font-mono text-ink-secondary">
+        <span className="font-mono text-ink-secondary tabular-nums">
           {stageBadgeText(item.stage)}
           {pct !== null ? ` (${pct}%)` : ""}
           {byteText ? ` · ${byteText}` : ""}
@@ -620,7 +618,7 @@ function ToolProgressRow({ item }: { item: ToolSetupItem }) {
                 ? "h-full rounded-pill bg-source-both transition-all"
                 : pct !== null
                   ? "h-full rounded-pill bg-accent transition-all"
-                  : "h-full w-1/3 animate-pulse rounded-pill bg-accent"
+                  : "h-full w-1/3 rounded-pill bg-accent motion-safe:animate-pulse"
             }
             style={
               item.stage === "done"

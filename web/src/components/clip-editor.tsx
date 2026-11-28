@@ -7,6 +7,8 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 
+import { buttonClasses } from "@/components/ui/button";
+
 import {
   ApiRequestError,
   getApiClient,
@@ -269,10 +271,10 @@ export function ClipEditor() {
         <h1 className="text-2xl font-semibold tracking-tight">
           {loaded.title}
         </h1>
-        <p className="text-zinc-700 dark:text-zinc-300">{loaded.message}</p>
+        <p className="text-ink-secondary">{loaded.message}</p>
         <Link
           href={`/jobs/${jobId}/results`}
-          className="self-start font-medium text-amber-800 underline dark:text-amber-300"
+          className="self-start rounded-[3px] font-semibold text-accent underline decoration-accent/40 underline-offset-[3px] hover:text-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
         >
           Back to clips
         </Link>
@@ -581,11 +583,11 @@ export function ClipEditor() {
       <div className="flex flex-col gap-2">
         <Link
           href={`/jobs/${jobId}/results`}
-          className="self-start text-sm font-medium text-amber-800 hover:underline dark:text-amber-300"
+          className="self-start rounded-[3px] text-sm font-semibold text-accent underline decoration-accent/40 underline-offset-[3px] hover:text-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
         >
           ← Back to clips
         </Link>
-        <p className="text-sm font-medium text-zinc-600 dark:text-zinc-400">
+        <p className="text-sm font-medium text-ink-tertiary">
           Clip #{candidate.rank} · {result.vod.broadcaster_display_name} · VOD{" "}
           {result.vod.video_id}
         </p>
@@ -637,13 +639,13 @@ export function ClipEditor() {
       {mediaError && previewPlayable && !videoFailed && !retryingPreview && (
         <div
           role="alert"
-          className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800 dark:bg-red-950/50 dark:text-red-200"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger-soft-ink"
         >
           <p>{mediaError}</p>
           <button
             type="button"
             onClick={retryPreview}
-            className="rounded-md bg-red-100 px-3 py-1 text-xs font-semibold text-red-900 hover:bg-red-200 dark:bg-red-900/60 dark:text-red-100 dark:hover:bg-red-900"
+            className={buttonClasses({ variant: "secondary", size: "sm" })}
           >
             Retry preview
           </button>
@@ -656,7 +658,7 @@ export function ClipEditor() {
           className="flex flex-col gap-4 lg:col-span-7"
         >
           <div
-            className={`relative w-full overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-950 dark:border-zinc-800 ${
+            className={`relative w-full overflow-hidden rounded-panel border border-border-subtle bg-surface-media ${
               previewPlayable && previewUrl && !videoFailed && !retryingPreview
                 ? "aspect-video"
                 : "flex min-h-64 items-center justify-center sm:aspect-video"
@@ -681,9 +683,9 @@ export function ClipEditor() {
             ) : retryingPreview ||
               (mediaError === null &&
                 (previewInfo?.status === "preparing" || media === null)) ? (
-              <div className="flex size-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-zinc-300">
+              <div className="flex size-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-white/80">
                 <span
-                  className="size-7 animate-spin rounded-full border-2 border-amber-500 border-t-transparent"
+                  className="size-7 rounded-full border-2 border-accent border-t-transparent motion-safe:animate-spin"
                   aria-hidden="true"
                 />
                 <p>
@@ -700,8 +702,8 @@ export function ClipEditor() {
                 <span
                   className={`rounded-full px-3 py-1 text-xs font-semibold ${
                     isPermanentUnavailable
-                      ? "bg-red-500/20 text-red-200"
-                      : "bg-amber-500/20 text-amber-200"
+                      ? "bg-danger-soft text-danger-soft-ink"
+                      : "bg-signal-soft text-signal-soft-ink"
                   }`}
                 >
                   {videoFailed
@@ -714,7 +716,7 @@ export function ClipEditor() {
                 <h2 className="text-lg font-semibold text-white">
                   Video unavailable
                 </h2>
-                <p className="max-w-md text-sm text-zinc-300">
+                <p className="max-w-md text-sm text-white/80">
                   {videoFailed
                     ? "The preview video couldn't be played in this browser."
                     : mediaError !== null &&
@@ -726,20 +728,20 @@ export function ClipEditor() {
                 {canRetryPreview && (
                   <>
                     {exportInfo?.status === "available" && (
-                      <p className="max-w-md text-xs text-zinc-400">
+                      <p className="max-w-md text-xs text-white/60">
                         Your trim and export settings are kept. You can retry
                         the preview or export directly.
                       </p>
                     )}
                     {exportInfo === null && (
-                      <p className="max-w-md text-xs text-zinc-400">
+                      <p className="max-w-md text-xs text-white/60">
                         Trimming and export are paused until the media limits
                         load. Retry to load them.
                       </p>
                     )}
                     {exportInfo !== null &&
                       exportInfo.status !== "available" && (
-                        <p className="max-w-md text-xs text-zinc-400">
+                        <p className="max-w-md text-xs text-white/60">
                           Trimming and export are paused while this clip
                           can&apos;t be exported. Retry to check again.
                         </p>
@@ -747,7 +749,7 @@ export function ClipEditor() {
                     <button
                       type="button"
                       onClick={retryPreview}
-                      className="mt-1 rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-amber-400 focus-visible:ring-2 focus-visible:ring-amber-300 focus-visible:outline-none"
+                      className={buttonClasses({ className: "mt-1" })}
                     >
                       Retry preview
                     </button>
@@ -757,13 +759,16 @@ export function ClipEditor() {
                   !videoFailed && (
                     <Link
                       href="/"
-                      className="mt-1 rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-100 ring-1 ring-zinc-700 hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:outline-none"
+                      className={buttonClasses({
+                        variant: "media",
+                        className: "mt-1",
+                      })}
                     >
                       Analyze with a local file
                     </Link>
                   )}
                 {previewInfo?.reason && !videoFailed && (
-                  <p className="font-mono text-xs text-zinc-400">
+                  <p className="font-mono text-xs text-white/60">
                     Reason: {previewInfo.reason}
                   </p>
                 )}
@@ -776,7 +781,7 @@ export function ClipEditor() {
               <button
                 type="button"
                 onClick={playSelection}
-                className="rounded-lg bg-zinc-900 px-3.5 py-2 text-sm font-medium text-white hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+                className={buttonClasses({ variant: "secondary" })}
               >
                 Play selection
               </button>
@@ -796,7 +801,7 @@ export function ClipEditor() {
               >
                 Set end to playhead
               </button>
-              <span className="ml-auto text-xs text-zinc-600 tabular-nums dark:text-zinc-400">
+              <span className="ml-auto text-xs text-ink-secondary tabular-nums">
                 Preview window: {formatTime(mediaStartS)}–
                 {formatTime(mediaEndS)}
               </span>
@@ -806,12 +811,12 @@ export function ClipEditor() {
 
         <section
           aria-label="Trim and export settings"
-          className="flex flex-col gap-6 rounded-2xl border border-zinc-200 bg-white p-6 lg:col-span-5 dark:border-zinc-800 dark:bg-zinc-900"
+          className="flex flex-col gap-6 rounded-panel border border-border-subtle bg-surface-panel p-6 shadow-panel lg:col-span-5"
         >
           <div className="flex items-center justify-between gap-2">
             <div>
               <h2 className="text-lg font-semibold">Trim &amp; export</h2>
-              <p className="text-sm text-zinc-600 tabular-nums dark:text-zinc-400">
+              <p className="text-sm text-ink-secondary tabular-nums">
                 {formatTime(trim.startS)}–{formatTime(trim.endS)} (
                 {selectionDurationS.toFixed(1)}s)
               </p>
@@ -821,7 +826,7 @@ export function ClipEditor() {
               onClick={resetTrim}
               disabled={!isModified || trimLocked}
               aria-describedby={trimLockProps["aria-describedby"]}
-              className="rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 ring-1 ring-zinc-300 hover:bg-zinc-50 disabled:opacity-45 dark:bg-zinc-900 dark:text-zinc-200 dark:ring-zinc-700 dark:hover:bg-zinc-800"
+              className={buttonClasses({ variant: "subtle", size: "sm" })}
             >
               Reset
             </button>
@@ -833,7 +838,7 @@ export function ClipEditor() {
                 <label htmlFor="trim-start" className="text-sm font-medium">
                   Start (seconds)
                 </label>
-                <span className="text-xs text-zinc-500 tabular-nums">
+                <span className="text-xs text-ink-tertiary tabular-nums">
                   {formatTime(trim.startS)}
                 </span>
               </div>
@@ -900,7 +905,7 @@ export function ClipEditor() {
                 <label htmlFor="trim-end" className="text-sm font-medium">
                   End (seconds)
                 </label>
-                <span className="text-xs text-zinc-500 tabular-nums">
+                <span className="text-xs text-ink-tertiary tabular-nums">
                   {formatTime(trim.endS)}
                 </span>
               </div>
@@ -966,7 +971,7 @@ export function ClipEditor() {
               <p
                 id={trimStatusId}
                 role="status"
-                className="text-xs text-zinc-500 dark:text-zinc-400"
+                className="text-xs text-ink-tertiary"
               >
                 {exportInfo !== null
                   ? canRetryPreview
@@ -977,7 +982,7 @@ export function ClipEditor() {
                     : "Loading media limits… Trimming unlocks when they arrive."}
               </p>
             ) : (
-              <p className="text-xs text-zinc-500 tabular-nums dark:text-zinc-400">
+              <p className="text-xs text-ink-tertiary tabular-nums">
                 Allowed range: {formatTime(bounds.minStartS)}–
                 {formatTime(bounds.maxEndS)} · min {MIN_TRIM_DURATION_S}s
                 {bounds.maxDurationS !== null
@@ -994,7 +999,7 @@ export function ClipEditor() {
                 {layouts.map((option) => (
                   <label
                     key={option}
-                    className="flex items-center gap-2 text-sm text-zinc-800 dark:text-zinc-200"
+                    className="flex items-center gap-2 text-sm text-ink-primary"
                   >
                     <input
                       type="radio"
@@ -1011,7 +1016,7 @@ export function ClipEditor() {
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              <p className="text-sm text-ink-tertiary">
                 No export layouts available right now.
               </p>
             )}
@@ -1059,7 +1064,7 @@ export function ClipEditor() {
           {exportInfo?.status === "unavailable" && (
             <div
               role="status"
-              className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100"
+              className="rounded-card border border-signal-border bg-signal-soft p-4 text-sm text-signal-soft-ink"
             >
               <p className="font-semibold">
                 Export unavailable ({unavailableReasonLabel(exportInfo.reason)})
@@ -1073,7 +1078,7 @@ export function ClipEditor() {
           {validationError && exportInfo?.status !== "unavailable" && (
             <p
               role="alert"
-              className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-400/10 dark:text-amber-100"
+              className="rounded-control border border-signal-border bg-signal-soft px-3 py-2 text-sm text-signal-soft-ink"
             >
               {validationError}
             </p>
@@ -1083,7 +1088,7 @@ export function ClipEditor() {
             type="button"
             onClick={reRender}
             disabled={!canExport}
-            className="rounded-lg bg-amber-500 px-5 py-3 text-sm font-semibold text-zinc-950 hover:bg-amber-400 focus-visible:ring-2 focus-visible:ring-amber-700 focus-visible:outline-none disabled:opacity-50"
+            className={buttonClasses({ size: "lg" })}
           >
             {render.kind === "active" ? "Rendering…" : "Re-render clip"}
           </button>
@@ -1095,15 +1100,15 @@ export function ClipEditor() {
           {render.kind === "failed" && (
             <p
               role="alert"
-              className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800 dark:bg-red-950/50 dark:text-red-200"
+              className="rounded-control border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger-soft-ink"
             >
               {render.message}
             </p>
           )}
 
           {render.kind === "done" && (
-            <div className="flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900/60 dark:bg-emerald-950/30">
-              <p className="text-sm font-semibold text-emerald-900 dark:text-emerald-200">
+            <div className="flex flex-col gap-3 rounded-card border border-success-border bg-success-soft p-4">
+              <p className="text-sm font-semibold text-success-soft-ink">
                 Clip ready ({formatTime(render.export.start_s)}–
                 {formatTime(render.export.end_s)})
               </p>
@@ -1118,7 +1123,7 @@ export function ClipEditor() {
               <a
                 href={render.url}
                 download={downloadFilename}
-                className="self-start rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600 focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:outline-none"
+                className={buttonClasses({ className: "self-start" })}
               >
                 Download clip
               </a>
@@ -1138,7 +1143,7 @@ function ExportProgressPanel({ exportRecord }: { exportRecord: Export }) {
   return (
     <div
       aria-live="polite"
-      className="flex flex-col gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950"
+      className="flex flex-col gap-3 rounded-card border border-border-subtle bg-surface-elevated p-4"
     >
       <p className="text-sm font-medium">
         {exportRecord.state === "queued"
@@ -1154,10 +1159,10 @@ function ExportProgressPanel({ exportRecord }: { exportRecord: Export }) {
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.round(fraction * 100)}
-          className="h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800"
+          className="h-2 overflow-hidden rounded-full bg-surface-subtle"
         >
           <div
-            className="h-full rounded-full bg-amber-500 transition-[width] duration-300"
+            className="h-full rounded-full bg-accent transition-[width] duration-300"
             style={{ width: `${Math.round(fraction * 100)}%` }}
           />
         </div>
@@ -1173,10 +1178,10 @@ function ExportProgressPanel({ exportRecord }: { exportRecord: Export }) {
               key={stage.stage}
               className={
                 done
-                  ? "text-emerald-700 dark:text-emerald-300"
+                  ? "text-success-soft-ink"
                   : active
-                    ? "font-semibold text-zinc-900 dark:text-zinc-100"
-                    : "text-zinc-500 dark:text-zinc-400"
+                    ? "font-semibold text-ink-primary"
+                    : "text-ink-tertiary"
               }
             >
               {done ? "✓" : active ? "•" : "○"} {stage.message}
@@ -1189,10 +1194,10 @@ function ExportProgressPanel({ exportRecord }: { exportRecord: Export }) {
 }
 
 const PLAYHEAD_BUTTON =
-  "rounded-lg bg-white px-3 py-2 text-sm font-medium text-zinc-800 ring-1 ring-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-zinc-900 dark:text-zinc-200 dark:ring-zinc-700 dark:hover:bg-zinc-800";
+  "rounded-control border border-border-strong bg-surface-elevated text-ink-primary transition-colors hover:border-ink-tertiary hover:bg-surface-subtle focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring px-3 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-45";
 
 const NUDGE_BUTTON =
-  "rounded-lg bg-zinc-100 px-2.5 py-2 text-xs font-semibold tabular-nums text-zinc-800 hover:bg-zinc-200 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-45 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700";
+  "rounded-control border border-border-subtle bg-surface-elevated px-2.5 py-2 text-xs font-semibold tabular-nums text-ink-primary transition-colors hover:bg-surface-subtle focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring disabled:cursor-not-allowed disabled:opacity-45";
 
 const TIME_INPUT =
-  "w-full min-w-0 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-center text-sm tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-amber-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950";
+  "w-full min-w-0 rounded-control border border-border-control bg-surface-canvas px-3 py-2 text-center font-mono text-sm text-ink-primary tabular-nums outline-none focus-visible:border-accent focus-visible:shadow-[0_0_0_3px_rgb(167_139_250/0.22)] disabled:cursor-not-allowed disabled:opacity-60";
