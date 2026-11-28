@@ -460,9 +460,12 @@ describe("HighlightsDialog focus", () => {
     expect(player.getAttribute("src")).toBe("/mock-media/highlights.mp4");
     expect(player.hasAttribute("controls")).toBe(true);
     expect(player.parentElement?.className).toContain("aspect-video");
-    expect(poster.clipPoster).toHaveBeenCalledWith(
-      "/mock-media/highlights.mp4",
-      { width: 960 },
+    // The poster is asked for from an effect, which can land just after the render.
+    await vi.waitFor(() =>
+      expect(poster.clipPoster).toHaveBeenCalledWith(
+        "/mock-media/highlights.mp4",
+        { width: 960 },
+      ),
     );
     await vi.waitFor(() =>
       expect(player.getAttribute("poster")).toBe("data:image/jpeg;base64,DDDD"),
