@@ -527,7 +527,7 @@ p {
 /* Screens */
 .gallery {
   display: grid;
-  grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr);
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
   grid-template-rows: auto auto;
   gap: 1rem;
   margin-top: 2.5rem;
@@ -567,6 +567,29 @@ p {
   color: var(--accent);
 }
 
+.features {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+.features li {
+  padding: 1.1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--panel);
+}
+.features h3 {
+  font-size: 1.05rem;
+}
+.features p {
+  margin-top: 0.35rem;
+  color: var(--ink-2);
+  font-size: 0.9rem;
+}
+
 .demo {
   max-width: 56rem;
   margin: 2.5rem auto 0;
@@ -574,16 +597,11 @@ p {
 .demo-frame {
   position: relative;
   aspect-ratio: 16 / 9;
-  border: 1px dashed var(--border-strong);
+  border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      transparent 0 14px,
-      rgb(255 255 255 / 0.015) 14px 28px
-    ),
-    var(--media);
+  background: var(--media);
   overflow: hidden;
+  box-shadow: var(--shadow);
 }
 .demo-frame iframe,
 .demo-frame video {
@@ -592,34 +610,7 @@ p {
   width: 100%;
   height: 100%;
   border: 0;
-}
-.demo-placeholder {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: 0.9rem;
-  color: var(--ink-2);
-  font-weight: 600;
-}
-.play {
-  width: 4rem;
-  height: 4rem;
-  border-radius: 50%;
-  border: 1px solid var(--accent-border);
-  background: var(--accent-soft);
-  position: relative;
-}
-.play::after {
-  content: "";
-  position: absolute;
-  left: 52%;
-  top: 50%;
-  transform: translate(-40%, -50%);
-  border-style: solid;
-  border-width: 0.6rem 0 0.6rem 1rem;
-  border-color: transparent transparent transparent var(--accent);
+  object-fit: cover;
 }
 .demo figcaption {
   margin-top: 0.75rem;
@@ -816,6 +807,9 @@ p {
 
 /* Responsive */
 @media (max-width: 960px) {
+  .features {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .hero-grid,
   .get-grid,
   .duo {
@@ -838,14 +832,15 @@ p {
 }
 
 @media (max-width: 720px) {
-  .gallery {
+  .gallery,
+  .features {
     grid-template-columns: minmax(0, 1fr);
   }
   .shot-tall {
     grid-row: auto;
   }
   .shot-tall img {
-    aspect-ratio: 752 / 900;
+    aspect-ratio: 760 / 900;
     object-fit: cover;
   }
   .nav-list li:not(:last-child) {

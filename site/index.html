@@ -262,10 +262,10 @@
               <span class="step-num mono">02</span>
               <h3>Score every moment</h3>
               <p>
-                Each window gets a score from chat and loudness signals. Next up: a model trained on
-                viewer clips (logistic regression, then LightGBM) that has to beat those simple
-                baselines to earn its keep.
-                Each pick comes with a one-line reason.
+                Each window gets a score from chat and loudness signals, and every pick comes with a
+                one-line reason. A model trained on viewer clips (logistic regression, then
+                LightGBM) is built; training it on real Twitch data is in progress, and it has to
+                beat those simple baselines to earn its keep.
               </p>
               <div class="chips" aria-hidden="true">
                 <span>ranked top 10</span><span>why this moment</span>
@@ -275,11 +275,13 @@
               <span class="step-num mono">03</span>
               <h3>Cut, caption, post</h3>
               <p>
-                The top moments come back as vertical 9:16 clips with burned-in captions. Nudge the
-                start or end, download, or join them into one 16:9 highlights video to watch.
+                The top moments come back as vertical 9:16 clips with burned-in captions, center
+                cropped or stacked with the streamer's facecam on top, found automatically. Nudge
+                the start or end, download or share, or join them into one 16:9 highlights video.
               </p>
               <div class="chips" aria-hidden="true">
-                <span>9:16 clips</span><span>captions</span><span>16:9 highlights</span>
+                <span>9:16 clips</span><span>captions</span><span>facecam</span
+                ><span>16:9 highlights</span>
               </div>
             </li>
           </ol>
@@ -299,11 +301,11 @@
             <figure class="shot shot-tall">
               <img
                 src="assets/screen-start.webp"
-                width="752"
-                height="1290"
+                width="760"
+                height="1590"
                 loading="lazy"
                 decoding="async"
-                alt="AutoClipper start screen: the headline 'Find the moments worth posting', four steps, and a form with a Twitch VOD link field and a 'Find the best moments' button."
+                alt="AutoClipper start screen: the headline 'Find the moments worth posting', an Analyze a VOD form with a Twitch VOD link field, an optional upload or file path for a video you already have, and a 'Find the best moments' button above the chat-spike strip."
               />
               <figcaption><span class="mono">01</span> Start: paste a VOD link</figcaption>
             </figure>
@@ -311,10 +313,10 @@
               <img
                 src="assets/screen-results.webp"
                 width="1248"
-                height="1064"
+                height="1170"
                 loading="lazy"
                 decoding="async"
-                alt="Results screen: ranked clip cards, each with a vertical preview, a source tag, a title, a one-line reason, a score bar, and Download and Edit buttons."
+                alt="Results screen: the top moments as ranked vertical clip cards, each with a preview, rank and length, a source tag, a title, a one-line reason, a score bar, and Download, Edit and Share buttons; above them Clip cards and Timeline views, Make highlights video and Re-analyze."
               />
               <figcaption><span class="mono">02</span> Results: ranked clips with reasons</figcaption>
             </figure>
@@ -325,30 +327,65 @@
                 height="700"
                 loading="lazy"
                 decoding="async"
-                alt="Clip editor: a video preview beside a Trim and export panel with start and end controls, a 9:16 center-crop layout option, a burn-in captions checkbox and a Re-render clip button."
+                alt="Clip editor: a video preview with play-selection and set-to-playhead buttons beside a Trim and export panel with start and end nudges, a layout choice, a burn-in captions checkbox and a Re-render clip button."
               />
               <figcaption><span class="mono">03</span> Clip editor: nudge start and end</figcaption>
             </figure>
           </div>
 
-          <!--
-            Demo video slot. To add the demo later, replace the <div class="demo-placeholder">
-            below with either:
-              - a YouTube embed: <iframe src="https://www.youtube-nocookie.com/embed/VIDEO_ID"
-                title="AutoClipper demo" allowfullscreen loading="lazy"></iframe>
-              - or a small, compressed clip committed as site/assets/demo.mp4 (keep it under ~5 MB):
-                <video src="assets/demo.mp4" controls muted playsinline preload="metadata"
-                poster="assets/screen-results.webp"></video>
-          -->
+          <ul class="features" aria-label="What's in the app">
+            <li>
+              <h3>Top 10, ready to post</h3>
+              <p>Ranked 9:16 clips with burned-in captions, each with a one-line reason.</p>
+            </li>
+            <li>
+              <h3>Facecam, found for you</h3>
+              <p>A stacked layout puts the streamer's webcam over the gameplay, detected per clip.</p>
+            </li>
+            <li>
+              <h3>See the whole stream</h3>
+              <p>A timeline draws chat rate and loudness behind every ranked moment.</p>
+            </li>
+            <li>
+              <h3>Highlights video</h3>
+              <p>Join the moments you pick into one 16:9 video, in stream order or best first.</p>
+            </li>
+            <li>
+              <h3>Share or download</h3>
+              <p>Share a finished clip, copy a caption with a timestamped VOD link, or grab a ZIP.</p>
+            </li>
+            <li>
+              <h3>Library and re-analyze</h3>
+              <p>Past analyses stay on your machine; run any VOD again with one click.</p>
+            </li>
+          </ul>
+
           <figure class="demo" aria-labelledby="demo-caption">
             <div class="demo-frame">
-              <div class="demo-placeholder">
-                <span class="play" aria-hidden="true"></span>
-                <p>Demo video coming soon</p>
-              </div>
+              <!--
+                No autoplay attribute: main.js starts the clip when it scrolls into view, unless
+                the visitor prefers reduced motion. preload="none" keeps it off the first load.
+              -->
+              <video
+                class="demo-video"
+                width="1280"
+                height="720"
+                muted
+                loop
+                playsinline
+                controls
+                preload="none"
+                poster="assets/demo-poster.webp"
+                aria-label="Demo: a Twitch VOD link is pasted, the analysis runs through its six steps, the ranked clip cards fill in, and the top clip opens in the editor."
+                data-autoplay
+              >
+                <source src="assets/demo.webm" type="video/webm" />
+                <source src="assets/demo.mp4" type="video/mp4" />
+              </video>
             </div>
             <figcaption id="demo-caption" class="muted">
-              A short walkthrough: VOD link in, ranked clips out.
+              14 seconds, sped up and silent: VOD link in, ranked clips out, top clip opened in the
+              editor. Recorded with the app's built-in sample data.
             </figcaption>
           </figure>
         </div>

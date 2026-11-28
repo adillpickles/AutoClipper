@@ -3,7 +3,7 @@
 > **Find the highlights in a long Twitch stream.**
 > Paste a Twitch VOD link, get its best moments ranked, preview and trim them, and export vertical, captioned clips ready to post, or one highlights video to watch.
 
-**Website:** [adillpickles.github.io/AutoClipper](https://adillpickles.github.io/AutoClipper/), what it does, screenshots and how to get it.
+**Website:** [adillpickles.github.io/AutoClipper](https://adillpickles.github.io/AutoClipper/): what it does, a short demo clip and how to get it.
 
 ![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-lightgrey)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
@@ -12,6 +12,45 @@
 > **Project status: pre-alpha.** The local CLI pipeline (`ingest`, `analyze`, `export`, `highlights`, `doctor`, `serve`) and Next.js web app are wired up and tested on synthetic data, but there is no real Twitch dataset or model trained on real data yet. See [`docs/project/status.md`](docs/project/status.md) for what exists today.
 
 ---
+
+## What it looks like
+
+Paste a Twitch VOD link; AutoClipper reads the chat and audio and comes back with the top 10 moments as ranked, captioned vertical clips. These screens use the app's built-in mock data and synthetic test-pattern video, not real stream footage; the sample stream has only 3 moments, so the screens show a top 3 rather than a top 10.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/img/screenshots/start.webp" alt="Start screen: paste a Twitch VOD link, optionally add a video you already downloaded, then Find the best moments"><br><sub><b>Start:</b> paste a VOD link</sub></td>
+    <td width="50%"><img src="docs/img/screenshots/results.webp" alt="Results: ranked vertical clip cards with a source tag, title, one-line reason, score bar, and Download, Edit and Share buttons"><br><sub><b>Results:</b> ranked clips, each with a reason</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/img/screenshots/timeline.webp" alt="Timeline view: the whole stream with chat rate and loudness drawn behind the ranked moments, and a hover preview of moment #1"><br><sub><b>Timeline:</b> chat and loudness across the stream</sub></td>
+    <td width="50%"><img src="docs/img/screenshots/editor.webp" alt="Clip editor: video preview beside a Trim and export panel with start and end nudges, layout, captions and Re-render"><br><sub><b>Clip editor:</b> nudge start and end, re-render</sub></td>
+  </tr>
+</table>
+
+<details>
+<summary>More screens: progress, highlights video, library, phone, stacked facecam layout</summary>
+
+| Progress | Highlights video |
+|---|---|
+| ![Progress screen: step 4 of 6, listening to the audio, with the stage list](docs/img/screenshots/progress.webp) | ![Make highlights video dialog: moments to include, stream order or best first, trim fields and a captions toggle](docs/img/screenshots/highlights.webp) |
+
+| Library | Results on a phone | Stacked facecam layout |
+|---|---|---|
+| ![Library: past and running analyses with search and status filters](docs/img/screenshots/library.webp) | <img src="docs/img/screenshots/results-phone.webp" width="250" alt="Results screen at 375 px wide"> | <img src="docs/img/stacked-output.png" width="180" alt="A stacked 9:16 export of test-pattern video: the facecam region on top, gameplay below"> |
+
+</details>
+
+**What it does today**
+
+- **Top 10 vertical clips:** ranked 9:16 clips with burned-in captions, each with a one-line reason and a "Why" breakdown.
+- **Stacked facecam layout:** the streamer's webcam over the gameplay; the webcam box is detected in each clip automatically (a heuristic that falls back to a center crop).
+- **Highlights video:** join the moments you pick into one 16:9 video, in stream order or best first.
+- **Timeline:** the whole stream, with measured chat rate and loudness behind every ranked moment.
+- **Share and download:** share a finished clip, copy a caption with a timestamped VOD link, or download one clip or a ZIP of all of them.
+- **Library and re-analyze:** reopen past analyses, or run a VOD again with one click.
+
+Ranking today uses chat activity and loudness. The trained scorers (logistic regression and LightGBM) are built but so far trained only on synthetic data; training on real Twitch data is in progress.
 
 ## Start here (humans and AI agents)
 
@@ -162,7 +201,7 @@ Twitch VOD URL
    └─▶ 6. App            ranked clip cards: preview, nudge start/end, download
 ```
 
-Viewer clips double as **noisy training labels**: roughly, a stretch of the VOD that viewers clipped counts as a good moment ([modeling plan](docs/ml/modeling-plan.md#0-the-plan-in-plain-english)). The model is evaluated on streamers it never trained on and compared against simple baselines (random, biggest chat spike, loudest audio, and chat + loudness combined). Results get reported honestly, even if a baseline wins. See [evaluation](docs/ml/evaluation.md). No dataset or model exists yet.
+Viewer clips double as **noisy training labels**: roughly, a stretch of the VOD that viewers clipped counts as a good moment ([modeling plan](docs/ml/modeling-plan.md#0-the-plan-in-plain-english)). The model is evaluated on streamers it never trained on and compared against simple baselines (random, biggest chat spike, loudest audio, and chat + loudness combined). Results get reported honestly, even if a baseline wins. See [evaluation](docs/ml/evaluation.md). The training and evaluation code is built and tested on synthetic data; a real dataset and a model trained on it don't exist yet.
 
 ## Tech stack
 

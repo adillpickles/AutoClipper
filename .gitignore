@@ -57,6 +57,9 @@ token*.json
 *.avi
 *.flv
 *.m3u8
+# The landing page's short demo clip, recorded in mock mode with test-pattern video only.
+!site/assets/demo.mp4
+!site/assets/demo.webm
 # Note: MPEG-TS (.ts) segments are not ignored by extension because .ts is TypeScript.
 # Keep downloads under /data/ (ignored) instead.
 *.wav
