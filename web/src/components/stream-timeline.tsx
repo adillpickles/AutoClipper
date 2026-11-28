@@ -371,7 +371,7 @@ export function StreamTimeline({
               <li className="inline-flex items-center gap-1.5">
                 <span
                   aria-hidden="true"
-                  className="h-0.5 w-3 rounded-pill bg-ink-secondary/80"
+                  className="h-px w-3 rounded-pill bg-ink-secondary/80"
                 />
                 Loudness
               </li>

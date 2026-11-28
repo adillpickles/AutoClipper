@@ -55,6 +55,11 @@ def _finite(value: float) -> float:
 FiniteFloat = Annotated[float, AfterValidator(_finite)]
 
 
+# A window needs at least this much of the VOD left (half a 10 s window); a shorter tail
+# has no activity point (#213).
+ACTIVITY_MIN_TAIL_S: Final = 5.0
+
+
 class _Model(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -222,11 +227,11 @@ class AnalysisResult(_Model):
     @model_validator(mode="after")
     def _check(self) -> Self:
         if self.activity is not None:
-            # One point per step from 0: the last one starts before the end, and at most one
-            # step of the end (the tail without a window) has no point.
+            # One point per step from 0: the last one starts before the end, and only the
+            # tail too short for a window (under ACTIVITY_MIN_TAIL_S) has no point.
             n, step = self.activity.n_points, self.activity.step_s
             end = self.vod.duration_s
-            if (n - 1) * step >= end or (n + 1) * step < end - 1e-6:
+            if (n - 1) * step >= end or n * step < end - ACTIVITY_MIN_TAIL_S - 1e-6:
                 raise ValueError("activity must have one point per step_s of the VOD")
         ids = [c.candidate_id for c in self.candidates]
         if len(set(ids)) != len(ids):

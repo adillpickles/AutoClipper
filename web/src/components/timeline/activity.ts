@@ -80,7 +80,11 @@ export function normalizeSeries(
   const span = high - low;
   return values.map((v) => {
     if (v === null) return null;
-    if (!(span > 0)) return kind === "chat" && high <= 0 ? 0 : 0.5;
+    if (!(span > 0)) {
+      if (kind === "chat") return high <= 0 ? 0 : 0.5;
+      // Silence stays on the baseline even when every audible point has the same level.
+      return audible.length > 0 && v <= SILENCE_DBFS ? 0 : 0.5;
+    }
     return Math.min(1, Math.max(0, (v - low) / span));
   });
 }
@@ -151,7 +155,7 @@ function withoutDatalessTail(
 ): (number | null)[] | null {
   if (!values || values.length < 2 || durationS === undefined) return values;
   const last = values.length - 1;
-  if (values[last] === null && last * stepS >= durationS - MIN_WINDOW_S) {
+  if (values[last] === null && last * stepS > durationS - MIN_WINDOW_S) {
     return values.slice(0, last);
   }
   return values;

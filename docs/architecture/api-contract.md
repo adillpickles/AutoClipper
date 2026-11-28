@@ -544,7 +544,7 @@ The server checks every result against these before returning it, and the CLI be
 5. At most 200 candidates. Zero is valid (e.g. a very short VOD) and the UI shows an empty state.
 6. All numbers are finite.
 7. `n_viewer_clips_total` is `null` exactly when `warnings` contains `viewer_clips_missing`, and then every candidate is `discovered`. Otherwise `n_viewer_clips ≤ n_viewer_clips_total` for every candidate.
-8. When `activity` is present, its `n` points start inside the VOD and reach to within one step of its end: `(n - 1) * step_s < vod.duration_s ≤ (n + 1) * step_s`.
+8. When `activity` is present, its `n` points start inside the VOD and cover it except a tail shorter than half a window (5 s), which has no window: `(n - 1) * step_s < vod.duration_s ≤ n * step_s + 5`.
 
 Candidates may overlap each other; the timeline has to cope with overlapping markers.
 

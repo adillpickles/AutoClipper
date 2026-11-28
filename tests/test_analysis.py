@@ -280,12 +280,13 @@ def test_invalid_activity_is_rejected(fields: dict[str, object]) -> None:
         Activity.model_validate(fields)
 
 
-@pytest.mark.parametrize("n_points", [34, 37])
+@pytest.mark.parametrize("n_points", [34, 35, 37])
 def test_activity_must_tile_the_vod(n_points: int) -> None:
+    # A 360 s VOD has windows starting at 0..350 s, so 36 points of 10 s; 35 lost one.
     with pytest.raises(ValidationError, match="one point per step_s"):
         result(activity=Activity(step_s=10.0, chat=(0.0,) * n_points))
 
 
-def test_activity_may_stop_one_step_short_of_the_end() -> None:
-    # The tail after the last window gets no point (a 360 s VOD here, 35 points of 10 s).
-    assert result(activity=Activity(step_s=10.0, chat=(0.0,) * 35)).activity is not None
+def test_activity_covers_the_vod_up_to_a_tail_too_short_for_a_window() -> None:
+    # A 360 s VOD: the last window starts at 350 s, so 36 points of 10 s.
+    assert result(activity=Activity(step_s=10.0, chat=(0.0,) * 36)).activity is not None

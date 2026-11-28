@@ -62,6 +62,8 @@ describe("normalizeSeries", () => {
     expect(normalizeSeries([0, 0], "chat")).toEqual([0, 0]);
     expect(normalizeSeries([-20, -20], "loudness")).toEqual([0.5, 0.5]);
     expect(normalizeSeries([-60, -60], "loudness")).toEqual([0.5, 0.5]);
+    // Silence stays on the baseline when every audible point has the same level.
+    expect(normalizeSeries([-60, -20, -20], "loudness")).toEqual([0, 0.5, 0.5]);
   });
 });
 
@@ -140,6 +142,8 @@ describe("drawableActivity and activitySummary", () => {
     expect(activitySummary(activity, 40)).toContain(
       "Some stretches have no chat measurement.",
     );
+    // 35 s: exactly half a window is left, so a window starts at 30 s and the gap is real.
+    expect(drawableActivity(activity, 35).chat).toEqual([1, 2, 1, null]);
   });
 
   it("names chat's peak rate", () => {
