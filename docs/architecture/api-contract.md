@@ -51,7 +51,8 @@ Model names used below: `CreateJobRequest`, `VideoUpload`, `Job`, `JobRenderSumm
 | `PUT` | `/api/v1/settings` | Set or clear the output folder finished renders are copied to (§ 9.9) | `200` `AppSettings` |
 | `GET` | `/api/v1/jobs` | List analysis jobs (newest first, paginated, optional `q` and `state` filters, § 3.7) | `200` `JobListResponse` |
 | `POST` | `/api/v1/jobs/status` | Look up current library summaries for a batch of job IDs (§ 3.7) | `200` list of `JobSummary` |
-| `POST` | `/api/v1/jobs` | Start analyzing a VOD | `201` new `Job`; `200` if the same VOD and video source is already analyzed or queued/running |
+| `POST` | `/api/v1/jobs` | Start analyzing a VOD | `201` new `Job`; `200` if the same VOD and video source is already analyzed or queued/running (unless `reanalyze`) |
+| `POST` | `/api/v1/jobs/{job_id}/reanalyze` | Analyze a job's VOD and video source again from scratch (§ 3.9) | `201` new `Job`; `200` if an analysis of that source is already queued/running |
 | `GET` | `/api/v1/jobs/{job_id}` | Job status and progress (poll this) | `200` `Job` |
 | `DELETE` | `/api/v1/jobs/{job_id}` | Remove a finished job from the library index and optionally delete its rendered files (§ 3.8) | `200` `DeleteJobResponse` |
 | `GET` | `/api/v1/jobs/{job_id}/result` | Ranked candidates of a `done` job | `200` `AnalysisResult` |
@@ -79,6 +80,7 @@ Clients never build media or file URLs; they use `PreviewMedia.url`, `Export.dow
 | `vod` | str | A Twitch VOD link or bare video ID, as the user typed it. Always required: chat and viewer clips come from Twitch. |
 | `video_path` | str \| null | Optional, default `null`. Absolute path on the server machine to a video file of this VOD the user already downloaded. Mutually exclusive with `upload_id`. When given, preview and export read this file instead of downloading video (§ 5). |
 | `upload_id` | str \| null | Optional, default `null`. Opaque upload ID returned by `POST /api/v1/uploads` (§ 3.1a). Mutually exclusive with `video_path`. Keeps `Job.video_path` as `null` so server paths are never exposed over HTTP. |
+| `reanalyze` | bool | Optional, default `false`. `true` always creates a new job instead of reusing one for the same input (#187), e.g. after training a new model. To re-analyze an existing job, including one from an upload, use § 3.9. |
 
 The request handler validates and normalizes `vod` and checks `video_path` or `upload_id`; it makes no Twitch calls. Whether the VOD exists, is a past broadcast and matches the video file is checked by the worker, and those problems arrive as job failures (§ 3.5). Passing both `video_path` and `upload_id` fails with `422 invalid_request`.
 
@@ -95,7 +97,7 @@ The digits become `video_id`. Not accepted in v1: clip links, channel pages, oth
 
 **Local video file.** If `video_path` is not `null`, it must be an absolute path to an existing, readable file with a supported video extension (`.mp4`, `.mkv`, `.ts`, `.mts`, `.m2ts`, `.mov`, `.webm`, `.flv`, `.m4v`, `.avi`, `.mpg`, `.mpeg`, `.wmv`, `.ogv`) that the shared media probe (#51) reads as a video with a known duration; otherwise the request fails with `422 invalid_video_path` (without exposing local filesystem paths in `message`) and no job is created. If `upload_id` is not `null`, it must refer to a validated upload from `POST /api/v1/uploads`; otherwise the request fails with `422 invalid_video_upload`. Comparing the file with the VOD needs Twitch's duration, so the worker does it while resolving the VOD: if the file's duration differs from the VOD's `duration_s` by more than 2 s, the job fails with `video_mismatch` (§ 3.5). The pipeline may also take the VOD's audio from this file instead of downloading it (#44).
 
-**Responses.** `201 Created` with the new `Job` (`queued`) and `Location: /api/v1/jobs/{job_id}`. If a job with the same `video_id`, `video_path`, and `upload_id` (the same VOD and video source) already exists, nothing new is created and that job comes back with `200 OK` (no `Location`), so double-clicks, reloads and analyzing a VOD again don't start duplicate work or add a second Library entry (#186). The newest `done` job whose saved result is still on disk wins; otherwise a `queued` or `running` one. A `failed` job, or a `done` job whose result file is gone, is never reused: posting again re-analyzes. This is the "caching analyzed VODs" Should item in the [PRD](../product/prd.md#scope-at-a-glance). To re-analyze a VOD from scratch (e.g. after training a new model), delete its job (§ 3.8) and post again. A new upload has a new `upload_id`, so it counts as a new source.
+**Responses.** `201 Created` with the new `Job` (`queued`) and `Location: /api/v1/jobs/{job_id}`. If a job with the same `video_id`, `video_path`, and `upload_id` (the same VOD and video source) already exists, nothing new is created and that job comes back with `200 OK` (no `Location`), so double-clicks, reloads and analyzing a VOD again don't start duplicate work or add a second Library entry (#186). The newest job that is `queued`, `running`, or `done` with its saved result still on disk is returned, so a re-analysis (§ 3.9) wins over the analysis it replaces from the moment it is created. A `failed` job, or a `done` job whose result file is gone, is never reused: posting again re-analyzes. This is the "caching analyzed VODs" Should item in the [PRD](../product/prd.md#scope-at-a-glance). To re-analyze a VOD from scratch (e.g. after training a new model), pass `reanalyze: true` or use § 3.9. A new upload has a new `upload_id`, so it counts as a new source.
 
 ### 3.1a Upload a VOD video file
 
@@ -351,7 +353,7 @@ HTTP errors for jobs use the envelope from § 8:
 
 `GET /api/v1/jobs` returns a paginated `JobListResponse` with `Cache-Control: no-store`, ordered by `created_at`, creation sequence, and `job_id`, all descending.
 
-The list has **one row per VOD and video source** (`video_id`, `video_path`, `upload_id`). Libraries from before #186 can hold several jobs for the same source; the list shows only the newest `done` job whose result is on disk, or the newest job if none is. The others are hidden, not deleted: they and their renders still answer by ID (`GET /jobs/{job_id}`, `POST /jobs/status`, result and file downloads), and deleting the shown row (§ 3.8) reveals the next one. Collapsing happens before the `q` and `state` filters, and `total` counts rows, not jobs.
+The list has **one row per VOD and video source** (`video_id`, `video_path`, `upload_id`). Libraries from before #186 can hold several jobs for the same source, and a re-analysis (§ 3.9) adds a newer one; the list shows only the newest job that is `queued`, `running`, or `done` with its result on disk, or the newest job if none is. So a re-analysis is the row as soon as it is created, and if it fails, the row goes back to the previous finished analysis. The others are hidden, not deleted: they and their renders still answer by ID (`GET /jobs/{job_id}`, `POST /jobs/status`, result and file downloads), and deleting the shown row (§ 3.8) reveals the next one. Collapsing happens before the `q` and `state` filters, and `total` counts rows, not jobs.
 
 Query parameters (unknown or out-of-range values return `422 invalid_request`):
 
@@ -427,6 +429,14 @@ To continue browsing, pass the last page's `next_cursor` as `before`. The cursor
 
 - Success: `200 OK` with `Cache-Control: no-store` and `DeleteJobResponse`: `{ "job_id": "...", "deleted": true, "deleted_files": <int> }`, where `deleted_files` counts rendered MP4 files removed from disk.
 - Errors: `404 job_not_found`, `409 job_in_progress` (the job or one of its renders is still `queued` or `running`), `422 invalid_request`, `500 delete_failed` (one or more files couldn't be removed from disk; the job record is kept intact so retrying `DELETE` can complete cleanup).
+
+### 3.9 Re-analyze a job
+
+`POST /api/v1/jobs/{job_id}/reanalyze` (no body) analyzes the job's VOD again from scratch, reading the same video source: its `video_path`, or the upload behind it, which the client can't name (#187). The job can be in any state; it is kept, hidden behind the new one in the Library (§ 3.7), with its result and renders.
+
+- `201 Created` with the new `Job` (`queued`) and `Location: /api/v1/jobs/{new_job_id}`. It is a normal job: it runs, finishes and queues its top exports (§ 6.1a) like any other.
+- `200 OK` (no `Location`) with the newest `queued` or `running` job of the same VOD and source, if there is one, so a double click starts one re-analysis.
+- Errors: `404 job_not_found`, and the source checks of § 3.1 (`422 invalid_video_path`, `invalid_video_upload`) if the file is gone.
 
 ## 4. Results and candidates
 
@@ -833,6 +843,10 @@ Further layouts (e.g. automatic smart crop, optional polish) would be added as n
 
 **Responses.** `201 Created` with the new `Export` (`queued`) and `Location: /api/v1/exports/{export_id}`. If an export with the same six request fields is `queued` or `running`, or `done` with its file still on disk, it comes back with `200 OK` instead, so opening a results page again never renders its clips twice (#186). The region its layout resolves from must also be unchanged: for `stacked` the `AUTOCLIPPER_EXPORT_FACECAM_REGION`, the channel preset and the facecam detector version, for `configured_region` the `AUTOCLIPPER_EXPORT_REGION` (#191); otherwise a new export is rendered. This fingerprint is saved with the render, so reuse survives a server restart; renders saved before #191 have none and are reused only for `center_crop`. A `stacked` export whose facecam detection raised an error (rather than finding no facecam) is never reused. A `failed` export, or a `done` one whose file was removed, is never reused: posting again renders a new one. Errors: `404 job_not_found` or `candidate_not_found`, `409 job_not_done`, `409 media_unavailable` (export isn't available now; `details.reason` holds the `MediaUnavailableReason`), `422 invalid_request` (including a layout not in `export.layouts`) or `invalid_export_bounds`. Checks run in this order and the first failure is returned: the body's shape and types (`422 invalid_request`), the job (`404 job_not_found`, then `409 job_not_done`), the candidate (`404 candidate_not_found`), export availability (`409 media_unavailable`), the layout (`422 invalid_request`), then the bounds (`422 invalid_export_bounds`). So when export is unavailable, an empty `export.layouts` and null bounds never produce a `422`.
 
+### 6.1a Automatic exports when a job finishes
+
+When a job enters `done`, the server itself queues exports of its top 10 candidates on the render worker (#187, [PRD § Export](../product/prd.md#export)), so clips render before the results page is opened. Each one is exactly the results page's default request: the candidate's own `start_s` and `end_s` as in the result, `layout: "center_crop"` (or `configured_region` if `center_crop` isn't offered), and `captions` equal to `/health`'s `captions_available` (§ 9.5). Candidates whose export isn't available, or that are longer than `export.max_duration_s`, are skipped. Because § 6.1 reuses identical requests, the results page's requests return these renders (`200`) and render nothing new; a client that wants them sends the same six fields. These exports are ordinary: they show in `JobSummary.exports` and download like any other. A problem queuing them is logged and never changes the job's state.
+
 ### 6.2 The `Export` resource
 
 | Field | Type | Notes |
@@ -1220,7 +1234,8 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 
 ### 9.2 Duplicates
 
-- `POST /jobs` for a `video_id`, `video_path` and `upload_id` that already have a `done` job with its result, or a `queued` or `running` one, returns that job (`200`, § 3.1). Failed jobs are retried.
+- `POST /jobs` for a `video_id`, `video_path` and `upload_id` that already have a `done` job with its result, or a `queued` or `running` one, returns the newest such job (`200`, § 3.1). Failed jobs are retried. `reanalyze: true` always creates a new job; `POST /jobs/{job_id}/reanalyze` (§ 3.9) creates one unless an analysis of that source is already queued or running.
+- A finished job's automatic top-10 exports (§ 6.1a) are the same requests the results page sends, so opening it returns them.
 - `POST /exports` with the same six fields as an export that's `queued`, `running` or `done` with its file on disk returns it (`200`, § 6.1), unless the region its layout resolves from changed. Failed exports are retried.
 - `POST /highlights` with the same `job_id`, resolved `segments`, `order` and `captions` as a highlights video that's `queued` or `running` returns it (`200`).
 - `GET` requests are safe and idempotent. There's no `Idempotency-Key` header: matching on content is enough for one local user.

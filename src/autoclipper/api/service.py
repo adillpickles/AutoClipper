@@ -141,6 +141,7 @@ from autoclipper.schemas import (
     JobListResponse,
     JobRenderSummary,
     JobSummary,
+    Layout,
     OutputCopy,
     PreviewMedia,
     Progress,
@@ -160,6 +161,9 @@ MAX_HIGHLIGHTS_DURATION_S: Final = 900.0  # § 7.1
 # How much more than a candidate (or trim) is fetched for preview and cuts (#46): room to move
 # a trim without another download, kept well under the 90 s export bound.
 SEGMENT_MARGIN_S: Final = 30.0
+# How many top candidates are exported as soon as a job finishes (#187, PRD § 4): the results
+# page shows the same top 10 as clip cards.
+AUTO_EXPORT_TOP: Final = 10
 # Same one-output-frame slack that `render_clip` and `render_highlights` allow at segment ends.
 _RENDER_END_TOLERANCE_S: Final = 1.0 / EncodeSettings().frame_rate
 # How ``missing.txt`` in a ZIP download describes each omission reason.
@@ -675,6 +679,8 @@ class MockService:
             settings). Required in pipeline mode.
         analyze: The pipeline's analysis function; tests pass a fake.
         baseline: The scorer the pipeline scores with (§ 4.1 ``scorer``).
+        auto_export_top: How many top candidates are exported, with the results page's default
+            request, as soon as a job finishes (#187); 0 turns it off.
     """
 
     samples: SampleMedia
@@ -699,6 +705,7 @@ class MockService:
     baseline: str = DEFAULT_SCORER
     segment_fetcher: SegmentFetcher | None = field(default=None, kw_only=True)
     store_path: Path | None = field(default=None, kw_only=True)
+    auto_export_top: int = field(default=AUTO_EXPORT_TOP, kw_only=True)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _store: JobStore = field(init=False)
     _next_seq: int = field(default=0, init=False)
@@ -1030,7 +1037,11 @@ class MockService:
     # --- Jobs ----------------------------------------------------------------------------------
 
     def create_job(self, request: CreateJobRequest) -> tuple[Job, bool]:
-        """Create a job, or return the queued/running one for the same input (`created` False)."""
+        """Create a job, or return the existing one for the same input (`created` False).
+
+        With `reanalyze` a new job is always created (#187). It is then the newest job for its
+        VOD and source, so the Library and later posts use it instead of the older analysis.
+        """
         video_id = parse_vod(request.vod)
         if video_id is None:
             raise ApiException(
@@ -1067,7 +1078,7 @@ class MockService:
                 )
         with self._lock:
             key = (video_id, request.video_path, request.upload_id)
-            reusable = self._reusable_job(key)
+            reusable = None if request.reanalyze else self._reusable_job(key)
             if reusable is not None:
                 return reusable.model(), False
             now = self.clock()
@@ -1088,33 +1099,62 @@ class MockService:
         self._enqueue(self._analysis_queue, record.job_id, self._run_job_safely)
         return model, True
 
+    def reanalyze_job(self, job_id: str) -> tuple[Job, bool]:
+        """Analyze a job's VOD and video source again from scratch (#187).
+
+        The new job reads the same source as `job_id`, including an upload the client can't
+        name. If an analysis of that source is already queued or running, it is returned
+        instead (`created` False), so a double click starts one re-analysis.
+        """
+        with self._lock:
+            record = self._job(job_id)
+            key = _job_key(record)
+            active = [
+                other
+                for other in self._jobs.values()
+                if _job_key(other) == key and other.state in ("queued", "running")
+            ]
+            if active:
+                return max(active, key=_job_sort_key).model(), False
+            request = CreateJobRequest(
+                vod=record.video_id,
+                video_path=record.video_path,
+                upload_id=record.upload_id,
+                reanalyze=True,
+            )
+        return self.create_job(request)
+
     def _reusable_job(self, key: tuple[str, str | None, str | None]) -> _JobRecord | None:
         """The job a new request for `key` should reuse, with the service lock held (#186).
 
-        A `done` job whose result is still on disk wins (newest first), then a `queued` or
-        `running` one. Failed jobs and done jobs whose result file is gone are never reused, so
-        posting again retries them.
+        The newest job that is `queued`, `running`, or `done` with its result still on disk. A
+        re-analysis (#187) is newer than the analysis it replaces, so it wins while it runs.
+        Failed jobs and done jobs whose result file is gone are never reused, so posting again
+        retries them.
         """
-        done: list[_JobRecord] = []
-        active: list[_JobRecord] = []
-        for record in self._jobs.values():
-            if _job_key(record) != key or record.job_id in self._deleting:
-                continue
-            if record.state == "done" and self._result_available(record):
-                done.append(record)
-            elif record.state in ("queued", "running"):
-                active.append(record)
-        if done or active:
-            return max(done or active, key=_job_sort_key)
-        return None
+        usable = [
+            record
+            for record in self._jobs.values()
+            if _job_key(record) == key
+            and record.job_id not in self._deleting
+            and self._usable_job(record)
+        ]
+        return max(usable, key=_job_sort_key) if usable else None
+
+    def _usable_job(self, record: _JobRecord) -> bool:
+        """Whether a job is in progress or has a result to show (call with the lock held)."""
+        if record.state in ("queued", "running"):
+            return True
+        return record.state == "done" and self._result_available(record)
 
     def _library_rows(self, jobs: Iterable[_JobRecord]) -> list[_JobRecord]:
         """One job per VOD and video source for the Library, with the service lock held (#186).
 
         Older libraries can hold several analyses of the same VOD from before job creation reused
-        finished jobs. They are collapsed here rather than deleted, so no result or render is lost:
-        the row is the newest `done` job with its result on disk, else the newest job. Deleting
-        that row reveals the next one.
+        finished jobs, and a re-analysis (#187) adds a newer job next to the old one. They are
+        collapsed here rather than deleted, so no result or render is lost: the row is the newest
+        job that is `queued`, `running`, or `done` with its result on disk, else the newest job.
+        Deleting that row reveals the next one.
         """
         groups: dict[tuple[str, str | None, str | None], list[_JobRecord]] = {}
         for record in jobs:
@@ -1124,8 +1164,8 @@ class MockService:
             if len(members) == 1:
                 rows.append(members[0])
                 continue
-            done = [rec for rec in members if rec.state == "done" and self._result_available(rec)]
-            rows.append(max(done or members, key=_job_sort_key))
+            usable = [rec for rec in members if self._usable_job(rec)]
+            rows.append(max(usable or members, key=_job_sort_key))
         return rows
 
     def get_job(self, job_id: str) -> Job:
@@ -2333,6 +2373,7 @@ class MockService:
             record.progress = None
             record.times.updated_at = record.times.finished_at = now
             self._persist_job(record)
+        self._queue_top_exports(job_id)
 
     def _run_pipeline_job(self, job_id: str) -> None:
         """Run one job through the real analysis, reporting progress as stages begin."""
@@ -2433,6 +2474,66 @@ class MockService:
             len(result.candidates),
             len(result.warnings),
         )
+        self._queue_top_exports(job_id)
+
+    def _queue_top_exports(self, job_id: str) -> None:
+        """Export a finished job's top candidates on the render worker (#187).
+
+        Each request is exactly the one the results page sends for a card by default, so when
+        the page opens, `create_export` returns these renders instead of starting new ones
+        (§ 6.1): the candidate's own `start_s` and `end_s`, `center_crop` (else
+        `configured_region`), and captions on iff the server can caption (as `/health` says).
+        Candidates the page wouldn't export (media unavailable, too long) are skipped. Never
+        raises: the job is done whatever happens here.
+        """
+        if self.auto_export_top <= 0:
+            return
+        try:
+            requests = self._default_export_requests(job_id, captions=self.captions_available)
+            for request in requests:
+                try:
+                    self.create_export(request)
+                except ApiException as exc:
+                    log.info(
+                        "auto export skipped job_id=%s candidate_id=%s code=%s",
+                        job_id,
+                        request.candidate_id,
+                        exc.error.code,
+                    )
+        except Exception:  # a bug here must not fail the finished job
+            log.exception("auto exports failed job_id=%s", job_id)
+
+    def _default_export_requests(self, job_id: str, *, captions: bool) -> list[CreateExportRequest]:
+        """The results page's default export request for each of a job's top candidates."""
+        requests: list[CreateExportRequest] = []
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None or not self._result_available(record) or record.result is None:
+                return requests
+            for candidate in record.result.candidates[: self.auto_export_top]:
+                export = self._media_for(record, candidate).export
+                if export.status != "available":
+                    continue
+                if "center_crop" in export.layouts:
+                    layout: Layout = "center_crop"
+                elif "configured_region" in export.layouts:
+                    layout = "configured_region"
+                else:
+                    continue
+                duration_s = candidate.end_s - candidate.start_s
+                if export.max_duration_s is not None and duration_s > export.max_duration_s:
+                    continue
+                requests.append(
+                    CreateExportRequest(
+                        job_id=job_id,
+                        candidate_id=candidate.candidate_id,
+                        start_s=candidate.start_s,
+                        end_s=candidate.end_s,
+                        layout=layout,
+                        captions=captions,
+                    )
+                )
+        return requests
 
     def _fail_job(self, job_id: str, error: ApiError) -> None:
         with self._lock:

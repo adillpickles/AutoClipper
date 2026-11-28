@@ -112,6 +112,8 @@ def _make_service(
         "probe_video": lambda p: p.suffix == ".mp4",
         "render": _FakeClipRenderer(),
         "highlights_render": _FakeHighlightsRenderer(),
+        # Most tests count renders; the auto-queued top 10 (#187) have their own tests.
+        "auto_export_top": 0,
     }
     if clock is not None:
         options["clock"] = clock

@@ -303,6 +303,13 @@ def create_app(
             return _json(job, 200, _NO_STORE)
         return _json(job, 201, {"Location": f"{API_PREFIX}/jobs/{job.job_id}", **_NO_STORE})
 
+    @app.post(f"{API_PREFIX}/jobs/{{job_id}}/reanalyze", response_model=Job, status_code=201)
+    def reanalyze_job(job_id: str) -> Response:
+        job, created = service.reanalyze_job(job_id)
+        if not created:
+            return _json(job, 200, _NO_STORE)
+        return _json(job, 201, {"Location": f"{API_PREFIX}/jobs/{job.job_id}", **_NO_STORE})
+
     @app.get(f"{API_PREFIX}/jobs/{{job_id}}", response_model=Job)
     def get_job(job_id: str) -> Response:
         return _json(service.get_job(job_id), headers=_NO_STORE)
