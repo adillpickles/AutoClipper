@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { ShareMenu } from "@/components/share-menu";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonClasses } from "@/components/ui/button";
 import { Dialog, DialogHeader } from "@/components/ui/dialog";
@@ -559,6 +560,15 @@ export function HighlightsDialog({
               >
                 Download
               </a>
+              <ShareMenu
+                fileUrl={stage.download}
+                filename={stage.filename}
+                title="Stream highlights"
+                channel={channelName}
+                videoId={videoId}
+                subject="the highlights video"
+                size="lg"
+              />
               <Button variant="ghost" size="lg" onClick={onClose}>
                 Back to the results
               </Button>

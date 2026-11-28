@@ -61,7 +61,7 @@ Inspired by tools like Opus Clip: the analysis is a black box to the user; the o
 2. **Wait.** A progress screen: "Downloading chat… Listening to audio… Finding moments… Rendering clips (4 of 10)".
 3. **Results.** When analysis finishes, the app opens the results by itself. A grid of 10 clip cards, ranked 1–10. Each card shows the vertical clip (playable), its rank and score bar, the time in the stream, and a one-line reason, e.g. "Chat exploded to 9× normal and the streamer screamed".
 4. **Adjust.** Open a card to nudge start/end and re-render, or toggle captions.
-5. **Download** one clip or all of them.
+5. **Download or share** one clip or all of them. A Share button sends a finished clip or highlights video to another app through the browser's share sheet where it can (the MP4 itself, or the caption and link), and otherwise offers Download, "Copy caption" (title, channel and a Twitch VOD link at the moment) and "Copy VOD timestamp link". Posting to TikTok or YouTube directly is out of scope.
 6. **Highlights video.** A "Make highlights video" button joins the top moments (all 10 by default; untick any you don't want; uses your trims) in stream order into one 16:9 video, then offers it for download.
 
 A whole-stream timeline with the top moments highlighted is a Should, as a secondary view. It works like a video editor's timeline: a scrub bar across the VOD with shaded and numbered spans for the ranked moments, hover or drag to see the time, the moment there and a preview frame when the video is available, and click to open that moment.
