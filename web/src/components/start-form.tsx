@@ -27,6 +27,7 @@ import {
   vodInputMessage,
 } from "@/lib/api/vod";
 import { formatBytes } from "@/lib/format";
+import { markJustRequested } from "@/lib/stage-pacing";
 
 const PATH_MESSAGE =
   "Use the full path of the file, like /Users/you/Videos/vod.mp4 or C:\\Videos\\vod.mp4.";
@@ -271,7 +272,12 @@ export function StartForm() {
                 sourceMode === "path" ? videoPath.trim() || null : null,
             },
       );
-      if (!controller.signal.aborted) router.push(`/jobs/${job.job_id}`);
+      if (!controller.signal.aborted) {
+        // The server may hand back a job that finished earlier (#186); the progress page still
+        // walks through its stages for a request made just now (#188).
+        markJustRequested(job.job_id);
+        router.push(`/jobs/${job.job_id}`);
+      }
     } catch (error) {
       if (abortControllerRef.current !== controller) return;
       setUploading(false);

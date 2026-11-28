@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JobProgress } from "@/components/job-progress";
 import exampleResult from "@/lib/api/fixtures/result-example.json";
 import type { AnalysisResult, Job, Progress } from "@/lib/api/types";
-import { MIN_STAGE_MS } from "@/lib/stage-pacing";
+import { markJustRequested, MIN_STAGE_MS } from "@/lib/stage-pacing";
 
 const state = vi.hoisted(() => ({
   getJob: vi.fn(),
@@ -134,6 +134,7 @@ describe("JobProgress stage pacing", () => {
     cleanup();
     vi.useRealTimers();
     vi.clearAllMocks();
+    window.sessionStorage.clear();
     // @ts-expect-error -- jsdom has no matchMedia; tests that need it install a fake.
     delete window.matchMedia;
   });
@@ -239,6 +240,21 @@ describe("JobProgress stage pacing", () => {
     expect(value.querySelector("[title]")?.getAttribute("title")).toBe(
       "123,456",
     );
+  });
+
+  it("replays a reused job the start form just asked for, once", async () => {
+    // The server returned a job that finished an hour ago for this VOD (#186).
+    state.getJob.mockResolvedValue(doneJob("2026-11-20T11:00:00Z"));
+    markJustRequested("job_1");
+    render(<JobProgress />);
+    await flush();
+    expect(heading()).toBe("Step 1 of 6: Looking up the VOD");
+
+    // The mark is used up: reopening the page shows the finished job at once.
+    cleanup();
+    render(<JobProgress />);
+    await flush();
+    expect(heading()).toBe("Analysis finished");
   });
 
   it("shows an old finished job at once", async () => {

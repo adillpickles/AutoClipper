@@ -20,7 +20,13 @@ import {
 } from "@/lib/api/client";
 import { JOB_STAGES } from "@/lib/api/stages";
 import type { AnalysisResult, Job } from "@/lib/api/types";
-import { shouldPace, targetStep, usePacedStep } from "@/lib/stage-pacing";
+import {
+  clearJustRequested,
+  shouldPace,
+  targetStep,
+  usePacedStep,
+  wasJustRequested,
+} from "@/lib/stage-pacing";
 import { usePrefersReducedMotion } from "@/lib/use-reduced-motion";
 
 type View =
@@ -158,7 +164,12 @@ function JobStatus({
   const knownStages = stageCount === JOB_STAGES.length;
   // Decided once, from the job as first seen (#188): walk through the stages unless this is an
   // old finished job. A failure is shown at once.
-  const [paceOnOpen] = useState(() => shouldPace(job, Date.now()));
+  // A job the start form just asked for is replayed too, even when the server reused one that
+  // finished earlier (#186).
+  const [paceOnOpen] = useState(
+    () => wasJustRequested(job.job_id) || shouldPace(job, Date.now()),
+  );
+  useEffect(() => clearJustRequested(job.job_id), [job.job_id]);
   const { shown, catchingUp, skip } = usePacedStep(
     targetStep(job, stageCount),
     { pace: knownStages && paceOnOpen && job.state !== "failed" },

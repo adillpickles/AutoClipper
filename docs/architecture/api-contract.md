@@ -155,7 +155,7 @@ stateDiagram-v2
 | `stage_fraction` | float \| null | Fraction of **the current stage** done, 0–1, only when actually measured (e.g. bytes downloaded of a known total, windows scored of the total). `null` when unknown. |
 | `message` | str | Short status for display, e.g. "Downloading chat replay" |
 
-There's no overall percentage: stage durations vary too much for one honest number. Show a stepper ("Step 4 of 6") and add a bar only when `stage_fraction` isn't `null`. A cached VOD can pass every stage between two polls, so the web app's stepper walks forward one stage at a time and keeps each on screen for at least 1 s (#188); that pacing is display-only and never changes what the server reports.
+There's no overall percentage: stage durations vary too much for one honest number. Show a stepper ("Step 4 of 6") and add a bar only when `stage_fraction` isn't `null`. A cached VOD can pass every stage between two polls, so the web app's stepper walks forward one stage at a time and keeps each on screen for at least 1 s (#188), also when `POST /jobs` returned an already finished job for a VOD the user just asked to analyze (§ 3.1); that pacing is display-only and never changes what the server reports.
 
 `progress` is `null` while `queued` and once `done`. While `running` it describes the current stage. When `failed` it keeps the last value (or `null` if the job never started), so the UI can say where it stopped.
 

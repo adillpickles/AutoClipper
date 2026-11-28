@@ -53,6 +53,41 @@ export function shouldPace(job: Job, nowMs: number): boolean {
 /** How far in the future `finished_at` may be and still count as "just now" (rounding). */
 export const CLOCK_TOLERANCE_MS = 2000;
 
+const JUST_REQUESTED_KEY = "autoclipper.progress.just-requested";
+
+/**
+ * Remember that this tab just asked to analyze `jobId`. The server returns an existing finished
+ * job when the same VOD was analyzed before (#186), possibly long ago, so the progress page
+ * can't tell that from reopening an old job. With this mark it still walks through the stages.
+ */
+export function markJustRequested(jobId: string): void {
+  try {
+    window.sessionStorage.setItem(JUST_REQUESTED_KEY, jobId);
+  } catch {
+    // Storage is optional: without it a reused job just isn't replayed.
+  }
+}
+
+/** Whether `markJustRequested(jobId)` was the last mark (read-only; see `clearJustRequested`). */
+export function wasJustRequested(jobId: string): boolean {
+  try {
+    return window.sessionStorage.getItem(JUST_REQUESTED_KEY) === jobId;
+  } catch {
+    return false;
+  }
+}
+
+/** Drop the mark once the progress page has used it, so a reload doesn't replay again. */
+export function clearJustRequested(jobId: string): void {
+  try {
+    if (wasJustRequested(jobId)) {
+      window.sessionStorage.removeItem(JUST_REQUESTED_KEY);
+    }
+  } catch {
+    // Storage is optional.
+  }
+}
+
 export interface PacedStep {
   /** The step to show: never ahead of `target`. */
   shown: number;
