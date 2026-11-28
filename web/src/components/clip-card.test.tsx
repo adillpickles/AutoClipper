@@ -278,7 +278,7 @@ describe("ClipCard media (#185)", () => {
     const video = container.querySelector("video");
     // The card never preloads the video itself: a placeholder covers it until the poster is in.
     expect(video?.getAttribute("preload")).toBe("none");
-    expect(poster.clipPoster).toHaveBeenCalledWith(url);
+    expect(poster.clipPoster).toHaveBeenCalledWith(url, { width: undefined });
     expect(screen.getByTestId("clip-frame-placeholder")).toBeTruthy();
 
     await act(async () => resolvePoster("data:image/jpeg;base64,AAAA"));
@@ -352,7 +352,7 @@ describe("ClipCard media (#185)", () => {
         }),
         url: null,
       },
-      /Rendering… Rendering clip/,
+      /^Rendering clip$/,
     ],
     [
       "a failed export",

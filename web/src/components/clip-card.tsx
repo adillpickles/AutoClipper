@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useState } from "react";
 
+import { PosterVideo } from "@/components/poster-video";
 import { ClipShareMenu } from "@/components/share-menu";
 import { Button, buttonClasses, ButtonLink } from "@/components/ui/button";
 import type { Candidate, Export, VodSummary } from "@/lib/api/types";
-import { clipPoster, posterTime } from "@/lib/clip-poster";
 import { buildClipFilename } from "@/lib/filenames";
 import { formatTime } from "@/lib/format";
 import { reasonFor, signalDetailsFor, titleFor } from "@/lib/reason";
+import { renderProgressText } from "@/lib/render-progress";
 
 export type ClipExport =
   | { kind: "pending" }
@@ -87,7 +88,7 @@ export function ClipCard({
             default, and `object-cover` would crop the vertical clip to a landscape band of the
             screen in fullscreen (#185). In the 9:16 box, contain and cover look the same. */}
         {ready && !videoFailed ? (
-          <ClipVideo
+          <PosterVideo
             src={clip.url ?? ""}
             label={`Clip ${candidate.rank}, ${span} in the stream`}
             onFailed={() => setVideoFailed(true)}
@@ -251,107 +252,6 @@ export function ClipCard({
   );
 }
 
-/**
- * The finished clip with a real frame before it plays (#217). The video itself never preloads
- * (`preload="none"`), so ten cards never queue up behind the browser's per-host connection
- * limit; a poster frame is grabbed separately (`clipPoster`). If that can't be done (say the
- * server sends no CORS headers), the video preloads its metadata and seeks to a frame instead,
- * rewinding to the start when it's first played.
- */
-function ClipVideo({
-  src,
-  label,
-  onFailed,
-}: {
-  src: string;
-  label: string;
-  onFailed: () => void;
-}) {
-  const [poster, setPoster] = useState<{ src: string; url: string } | null>(
-    null,
-  );
-  const [fallbackFor, setFallbackFor] = useState<string | null>(null);
-  const [frameFor, setFrameFor] = useState<string | null>(null);
-  const seekedTo = useRef<number | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    clipPoster(src).then(
-      (url) => {
-        if (!cancelled) setPoster({ src, url });
-      },
-      () => {
-        if (!cancelled) setFallbackFor(src);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [src]);
-
-  const posterUrl = poster?.src === src ? poster.url : undefined;
-  const fallback = fallbackFor === src;
-  const showFrame = posterUrl !== undefined || frameFor === src;
-
-  // A `preload="none"` video that hasn't started loading won't always pick up a later
-  // `preload="metadata"` by itself.
-  useEffect(() => {
-    const video = videoRef.current;
-    if (fallback && video && video.readyState === 0 && video.paused) {
-      video.load();
-    }
-  }, [fallback]);
-
-  return (
-    <>
-      <video
-        ref={videoRef}
-        src={src}
-        poster={posterUrl}
-        controls
-        playsInline
-        preload={fallback ? "metadata" : "none"}
-        onError={onFailed}
-        onLoadedMetadata={(event) => {
-          if (!fallback || posterUrl) return;
-          const video = event.currentTarget;
-          if (!video.paused || video.currentTime > 0) return;
-          const at = posterTime(video.duration);
-          seekedTo.current = at;
-          video.currentTime = at;
-        }}
-        onSeeked={() => setFrameFor(src)}
-        onPlaying={() => setFrameFor(src)}
-        onPlay={(event) => {
-          // Start from the beginning, not the frame the fallback seeked to for the thumbnail.
-          const video = event.currentTarget;
-          const at = seekedTo.current;
-          seekedTo.current = null;
-          if (at !== null && Math.abs(video.currentTime - at) < 0.05) {
-            video.currentTime = 0;
-          }
-        }}
-        className="absolute inset-0 size-full object-contain"
-        aria-label={label}
-      />
-      {!showFrame && (
-        <div
-          aria-hidden="true"
-          data-testid="clip-frame-placeholder"
-          className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[radial-gradient(80%_60%_at_50%_40%,var(--surface-elevated),var(--surface-media))]"
-        >
-          <span className="flex size-14 items-center justify-center rounded-pill bg-white/10 ring-1 ring-white/20 backdrop-blur-sm motion-safe:animate-pulse">
-            <svg viewBox="0 0 20 20" className="ml-0.5 size-6 text-white">
-              <polygon points="6,4.5 6,15.5 15,10" fill="currentColor" />
-            </svg>
-          </span>
-        </div>
-      )}
-    </>
-  );
-}
-
 // Card glyphs use lines and polylines, not <path>: the timeline view embeds this card and
 // checks that it draws no activity curve (a <path>) while there's no data for one.
 function DownloadGlyph() {
@@ -431,15 +331,23 @@ function ClipPlaceholder({
       </div>
     );
   }
-  const progress = clip.export.progress;
+  const { label, step } = renderProgressText(
+    clip.export.progress,
+    "Rendering…",
+  );
   return (
     <div role="status" className="flex flex-col items-center gap-2.5">
       <span
         aria-hidden="true"
         className="size-6 rounded-full border-2 border-accent border-t-transparent motion-safe:animate-spin"
       />
-      <p className="max-w-52 text-pretty text-ink-primary">
-        {progress ? `Rendering… ${progress.message}` : "Rendering…"}
+      <p className="flex max-w-52 flex-col items-center gap-0.5 text-pretty">
+        <span className="text-ink-primary">{label}</span>
+        {step && (
+          <span className="font-mono text-xs text-ink-tertiary tabular-nums">
+            {step}
+          </span>
+        )}
       </p>
     </div>
   );

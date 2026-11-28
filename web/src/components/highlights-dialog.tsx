@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { PosterVideo } from "@/components/poster-video";
 import { ShareMenu } from "@/components/share-menu";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonClasses } from "@/components/ui/button";
@@ -28,6 +29,7 @@ import { buildHighlightsFilename } from "@/lib/filenames";
 import { formatTime } from "@/lib/format";
 import { rememberedTrims, type SavedTrim } from "@/lib/job-state";
 import { titleFor } from "@/lib/reason";
+import { renderProgressText } from "@/lib/render-progress";
 
 /** The whole video's bound (§ 7.1). */
 const MAX_TOTAL_S = 900;
@@ -267,8 +269,8 @@ export function HighlightsDialog({
             : stage.kind === "making" && stage.highlights?.state === "queued"
               ? "Queued to render. It will start automatically."
               : stage.kind === "making" && stage.highlights?.state === "running"
-                ? (stage.highlights.progress?.message ??
-                  "Rendering your highlights video.")
+                ? // The stage itself is shown in the progress panel below.
+                  "Rendering your highlights video."
                 : "One 16:9 video from the ticked moments, joined in the chosen order."
         }
         onClose={onClose}
@@ -525,55 +527,70 @@ export function HighlightsDialog({
         )}
 
         {stage.kind === "done" && (
-          <div
-            className="flex flex-col items-start gap-4 rounded-card border border-success-border bg-success-soft p-5"
-            aria-live="polite"
+          <section
+            aria-label="Your highlights video"
+            className="flex flex-col gap-4"
           >
-            <div className="flex items-center gap-3">
-              <span
-                aria-hidden="true"
-                className="flex size-9 items-center justify-center rounded-pill bg-success text-surface-canvas"
-              >
-                <svg
-                  viewBox="0 0 20 20"
-                  fill="none"
-                  className="size-4"
-                  stroke="currentColor"
-                  strokeWidth="2.4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M4.5 10.5 8 14l7.5-8" />
-                </svg>
-              </span>
-              <p className="text-sm font-semibold text-success-soft-ink">
-                The highlights video is ready ({formatTime(stage.duration_s)}
-                {captionsAllowed && captions ? " · captioned" : ""}).
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <a
-                href={stage.download}
-                download={stage.filename}
-                ref={downloadRef}
-                className={buttonClasses({ size: "lg" })}
-              >
-                Download
-              </a>
-              <ShareMenu
-                fileUrl={stage.download}
-                filename={stage.filename}
-                title="Stream highlights"
-                channel={channelName}
-                videoId={videoId}
-                subject="the highlights video"
-                size="lg"
+            {/* Watch it here before downloading (16:9, the file's own frame as the poster).
+                `key`: a new render gets a fresh poster. */}
+            <div className="relative aspect-video w-full overflow-hidden rounded-card bg-surface-media ring-1 ring-border-subtle">
+              <PosterVideo
+                key={stage.download}
+                src={stage.download}
+                label="Highlights video"
+                posterWidth={960}
               />
-              <Button variant="ghost" size="lg" onClick={onClose}>
-                Back to the results
-              </Button>
             </div>
-          </div>
+            <div
+              className="flex flex-col items-start gap-4 rounded-card border border-success-border bg-success-soft p-5"
+              aria-live="polite"
+            >
+              <div className="flex items-center gap-3">
+                <span
+                  aria-hidden="true"
+                  className="flex size-9 items-center justify-center rounded-pill bg-success text-surface-canvas"
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    className="size-4"
+                    stroke="currentColor"
+                    strokeWidth="2.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M4.5 10.5 8 14l7.5-8" />
+                  </svg>
+                </span>
+                <p className="text-sm font-semibold text-success-soft-ink">
+                  The highlights video is ready ({formatTime(stage.duration_s)}
+                  {captionsAllowed && captions ? " · captioned" : ""}).
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href={stage.download}
+                  download={stage.filename}
+                  ref={downloadRef}
+                  className={buttonClasses({ size: "lg" })}
+                >
+                  Download
+                </a>
+                <ShareMenu
+                  fileUrl={stage.download}
+                  filename={stage.filename}
+                  title="Stream highlights"
+                  channel={channelName}
+                  videoId={videoId}
+                  subject="the highlights video"
+                  size="lg"
+                />
+                <Button variant="ghost" size="lg" onClick={onClose}>
+                  Back to the results
+                </Button>
+              </div>
+            </div>
+          </section>
         )}
       </div>
 
@@ -721,6 +738,7 @@ function HighlightsProgressPanel({
   const progress = highlights.progress;
   const current = progress?.stage_index ?? 0;
   const fraction = progress?.stage_fraction ?? null;
+  const { label, step } = renderProgressText(progress, "Starting the render…");
 
   return (
     <div
@@ -739,14 +757,10 @@ function HighlightsProgressPanel({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone={isQueued ? "neutral" : "accent"}>
-              {isQueued ? "Queued" : "Rendering"}
+              {isQueued ? "Queued" : (step ?? "Rendering")}
             </Badge>
             <p className="text-sm font-medium text-ink-primary">
-              {isQueued
-                ? "Waiting in render queue…"
-                : progress
-                  ? `Step ${progress.stage_index} of ${progress.stage_count}: ${progress.message}`
-                  : "Rendering the highlights video…"}
+              {isQueued ? "Waiting in render queue…" : label}
             </p>
           </div>
           {isQueued && (

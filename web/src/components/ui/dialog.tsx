@@ -14,6 +14,9 @@ const FOCUSABLE = [
   "input:not([disabled]):not([type='hidden'])",
   "select:not([disabled])",
   "textarea:not([disabled])",
+  // Media with native controls is a Tab stop in every browser (the highlights player).
+  "video[controls]",
+  "audio[controls]",
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
