@@ -29,3 +29,9 @@ npm-debug.log*
 
 # sample videos for mock mode (npm run mock-media)
 /public/mock-media/
+
+# Playwright (npm run test:e2e)
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
