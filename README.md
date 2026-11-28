@@ -15,7 +15,7 @@
 
 ## What it looks like
 
-Paste a Twitch VOD link; AutoClipper reads the chat and audio and comes back with the top 10 moments as ranked, captioned vertical clips. These screens use the app's built-in mock data and synthetic test-pattern video, not real stream footage.
+Paste a Twitch VOD link; AutoClipper reads the chat and audio and comes back with the top 10 moments as ranked, captioned vertical clips. These screens use the app's built-in mock data and synthetic test-pattern video, not real stream footage; the sample stream has only 3 moments, so the screens show a top 3 rather than a top 10.
 
 <table>
   <tr>
