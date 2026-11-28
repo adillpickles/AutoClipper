@@ -945,7 +945,7 @@ describe("createMockClient library (listJobs and deleteJob)", () => {
     });
 
     now += 12 * MOCK_STEP_MS;
-    await client.createExport({
+    const { export: exp } = await client.createExport({
       job_id: active.job_id,
       candidate_id: "c001",
       start_s: 118,
@@ -953,7 +953,14 @@ describe("createMockClient library (listJobs and deleteJob)", () => {
       layout: "center_crop",
       captions: false,
     });
-    now += 4 * MOCK_RENDER_STEP_MS;
+    // A render in progress blocks the delete (#187)…
+    now += 2 * MOCK_RENDER_STEP_MS;
+    expect((await client.getExport(exp.export_id)).state).toBe("running");
+    await expect(client.deleteJob(active.job_id)).rejects.toMatchObject({
+      status: 409,
+      error: { code: "job_in_progress" },
+    });
+    now += 2 * MOCK_RENDER_STEP_MS;
 
     const kept = await client.deleteJob(active.job_id);
     expect(kept).toEqual({
@@ -978,6 +985,29 @@ describe("createMockClient library (listJobs and deleteJob)", () => {
       job_id: second.job_id,
       deleted: true,
       deleted_files: 1,
+    });
+  });
+
+  it("cancels a finished job's queued renders when it is deleted (#187)", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const job = (await client.createJob({ vod: "9000000001" })).job;
+    now += 12 * MOCK_STEP_MS;
+    const { export: queued } = await client.createExport({
+      job_id: job.job_id,
+      candidate_id: "c001",
+      start_s: 118,
+      end_s: 148,
+      layout: "center_crop",
+      captions: false,
+    });
+    expect(queued.state).toBe("queued");
+
+    await expect(client.deleteJob(job.job_id)).resolves.toMatchObject({
+      deleted: true,
+    });
+    await expect(client.getExport(queued.export_id)).rejects.toMatchObject({
+      status: 404,
     });
   });
 

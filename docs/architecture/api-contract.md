@@ -428,7 +428,8 @@ To continue browsing, pass the last page's `next_cursor` as `before`. The cursor
 `DELETE /api/v1/jobs/{job_id}` removes a finished (`done` or `failed`) job and its render records from the persistent index, and removes its saved per-job analysis result JSON. By default (`delete_exports=false`), finished export and highlights MP4 files are left on disk; pass `?delete_exports=true` to also delete them. Never deletes a user-supplied `video_path`.
 
 - Success: `200 OK` with `Cache-Control: no-store` and `DeleteJobResponse`: `{ "job_id": "...", "deleted": true, "deleted_files": <int> }`, where `deleted_files` counts rendered MP4 files removed from disk.
-- Errors: `404 job_not_found`, `409 job_in_progress` (the job or one of its renders is still `queued` or `running`), `422 invalid_request`, `500 delete_failed` (one or more files couldn't be removed from disk; the job record is kept intact so retrying `DELETE` can complete cleanup).
+- Renders of the job that are still `queued` (such as its automatic exports, § 6.1a) are cancelled and removed with it; they never start.
+- Errors: `404 job_not_found`, `409 job_in_progress` (the job is still `queued` or `running`, or one of its renders is `running`), `422 invalid_request`, `500 delete_failed` (one or more files couldn't be removed from disk; the job record is kept intact so retrying `DELETE` can complete cleanup).
 
 ### 3.9 Re-analyze a job
 
@@ -436,7 +437,7 @@ To continue browsing, pass the last page's `next_cursor` as `before`. The cursor
 
 - `201 Created` with the new `Job` (`queued`) and `Location: /api/v1/jobs/{new_job_id}`. It is a normal job: it runs, finishes and queues its top exports (§ 6.1a) like any other.
 - `200 OK` (no `Location`) with the newest `queued` or `running` job of the same VOD and source, if there is one, so a double click starts one re-analysis.
-- Errors: `404 job_not_found`, and the source checks of § 3.1 (`422 invalid_video_path`, `invalid_video_upload`) if the file is gone.
+- Errors: `404 job_not_found`, `403 origin_not_allowed` (a browser `Origin` outside `AUTOCLIPPER_CORS_ORIGINS`: a body-less POST is a simple cross-origin request, so the server checks it as for settings, § 9.9), and the source checks of § 3.1 (`422 invalid_video_path`, `invalid_video_upload`) if the file is gone.
 
 ## 4. Results and candidates
 
@@ -845,7 +846,11 @@ Further layouts (e.g. automatic smart crop, optional polish) would be added as n
 
 ### 6.1a Automatic exports when a job finishes
 
-When a job enters `done`, the server itself queues exports of its top 10 candidates on the render worker (#187, [PRD § Export](../product/prd.md#export)), so clips render before the results page is opened. Each one is exactly the results page's default request: the candidate's own `start_s` and `end_s` as in the result, `layout: "center_crop"` (or `configured_region` if `center_crop` isn't offered), and `captions` equal to `/health`'s `captions_available` (§ 9.5). Candidates whose export isn't available, or that are longer than `export.max_duration_s`, are skipped. Because § 6.1 reuses identical requests, the results page's requests return these renders (`200`) and render nothing new; a client that wants them sends the same six fields. These exports are ordinary: they show in `JobSummary.exports` and download like any other. A problem queuing them is logged and never changes the job's state.
+When a job enters `done`, the server itself queues exports of its top 10 candidates on the render worker (#187, [PRD § Export](../product/prd.md#export)), so clips render before the results page is opened. Each one is exactly the results page's default request: the candidate's own `start_s` and `end_s` as in the result, `layout: "center_crop"` (or `configured_region` if `center_crop` isn't offered), and `captions` equal to `/health`'s `captions_available` (§ 9.5). Candidates whose export isn't available, or that are longer than `export.max_duration_s`, are skipped. Because § 6.1 reuses identical requests, the results page's requests return these renders (`200`) and render nothing new; a client that wants them sends the same six fields. These exports are ordinary: they show in `JobSummary.exports`, download like any other, and once finished are copied into the output folder like every render (§ 9.9). A problem queuing them is logged and never changes the job's state.
+
+- **Priority.** Automatic exports render after everything a user asked for: exports and highlights videos created through the API always go first (§ 9.3). When a request matches a waiting automatic export (e.g. the results page opens), that export moves up to user priority.
+- **Cap.** At most 20 automatic exports wait at a time. When more jobs finish (e.g. a channel queue), the oldest waiting ones are dropped: their records are removed, nothing was rendered, and the results page renders them when it's opened, as for any clip. Exports already rendering or finished are never dropped.
+- **Deleting the job** cancels its waiting exports (§ 3.8).
 
 ### 6.2 The `Export` resource
 
@@ -1168,10 +1173,10 @@ FastAPI's default `{"detail": …}` bodies for validation errors, unknown routes
 | 404 | `highlights_file_missing` | Highlights file | `null` |
 | 404 | `media_not_found` | `/media/{media_id}` | `null` |
 | 404 | `channel_not_found` | `GET /channels/vods` | `null` |
-| 403 | `origin_not_allowed` | `POST /tools/setup`, `PUT /settings` from a browser origin outside `AUTOCLIPPER_CORS_ORIGINS` | `null` |
+| 403 | `origin_not_allowed` | `POST /tools/setup`, `PUT /settings`, `POST /jobs/{job_id}/reanalyze` from a browser origin outside `AUTOCLIPPER_CORS_ORIGINS` | `null` |
 | 405 | `method_not_allowed` | Known path, wrong method | `null` |
 | 409 | `job_not_done` | Result, media, `POST /exports`, `POST /highlights` | `{ "state": "<job state>" }` |
-| 409 | `job_in_progress` | `DELETE /jobs/{job_id}` (job or one of its renders is `queued` or `running`) | `null` |
+| 409 | `job_in_progress` | `DELETE /jobs/{job_id}` (the job is `queued` or `running`, or one of its renders is `running`) | `null` |
 | 409 | `export_not_done` | Export file | `{ "state": "<export state>" }` |
 | 409 | `highlights_not_done` | Highlights file | `{ "state": "<highlights state>" }` |
 | 409 | `archive_empty` | ZIP download file (§ 7.6): no requested render has a finished file | `null` |
@@ -1242,7 +1247,7 @@ Job failure codes (§ 3.5, including `video_mismatch`), export failure codes (§
 
 ### 9.3 Worker, concurrency and restarts
 
-- Long work runs in an in-process background worker, never in the request handler ([overview § 4.7](overview.md#47-interfaces)). One analysis job and one render run at a time; exports and highlights videos share the render queue. Others wait in `queued`, first in, first out.
+- Long work runs in an in-process background worker, never in the request handler ([overview § 4.7](overview.md#47-interfaces)). One analysis job and one render run at a time; exports and highlights videos share the render queue. Others wait in `queued`: exports and highlights videos a user asked for first in, first out, then the automatic exports of finished jobs (§ 6.1a), also first in, first out.
 - There is no cancel endpoint in v1; a later cancel endpoint that fails a job with a new `cancelled` code would be a minor change (§ 10). Finished jobs can be listed via `GET /api/v1/jobs` (§ 3.7) and removed via `DELETE /api/v1/jobs/{job_id}` (§ 3.8).
 - Job, export and highlights records are persisted in a SQLite index (`<artifacts_dir>/library.db` for `pipeline` jobs and `<artifacts_dir>/library-mock.db` for `mock` jobs, WAL mode) and each finished job's `AnalysisResult` is written atomically to `<artifacts_dir>/analysis/<job_id>.json`. On restart, past `done` and `failed` jobs, results, exports, highlights and downloads keep working without mixing mock and pipeline media sources.
 - A render's download name is assigned when the render finishes and stored with the render. Older renders receive a name on first access. If their analysis JSON is unavailable, the server uses the saved channel or VOD ID, the job submission date and, for a clip, its saved start time.

@@ -535,11 +535,18 @@ describe("ResultsScreen re-analyze", () => {
       name: "Confirm re-analyzing this VOD",
     });
     expect(api.reanalyzeJob).not.toHaveBeenCalled();
+    // Focus moves into the panel, onto its confirm button.
+    expect(document.activeElement).toBe(
+      within(confirm).getByRole("button", { name: "Re-analyze" }),
+    );
 
-    // Cancel leaves everything as it was.
+    // Cancel leaves everything as it was, with focus back on "Re-analyze".
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(confirm.isConnected).toBe(false);
     expect(api.reanalyzeJob).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Re-analyze" }),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Re-analyze" }));
     fireEvent.click(

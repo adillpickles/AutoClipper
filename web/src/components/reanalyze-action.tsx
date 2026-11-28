@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ApiRequestError, getApiClient } from "@/lib/api/client";
@@ -19,6 +19,20 @@ type State =
 export function ReanalyzeAction({ jobId }: { jobId: string }) {
   const router = useRouter();
   const [state, setState] = useState<State>({ kind: "idle" });
+  // Focus follows the swap: into the confirm panel's first button when it opens, back to
+  // "Re-analyze" on Cancel (the button that had focus is replaced each time).
+  const container = useRef<HTMLDivElement>(null);
+  const moveFocus = useRef(false);
+  const confirming = state.kind === "confirm";
+  useEffect(() => {
+    if (!moveFocus.current) return;
+    moveFocus.current = false;
+    container.current?.querySelector<HTMLElement>("button")?.focus();
+  }, [confirming]);
+  function show(next: State) {
+    moveFocus.current = true;
+    setState(next);
+  }
 
   async function reanalyze() {
     setState({ kind: "confirm", pending: true, error: null });
@@ -39,21 +53,23 @@ export function ReanalyzeAction({ jobId }: { jobId: string }) {
 
   if (state.kind === "idle") {
     return (
-      <Button
-        variant="ghost"
-        size="sm"
-        className="self-start"
-        onClick={() =>
-          setState({ kind: "confirm", pending: false, error: null })
-        }
-      >
-        Re-analyze
-      </Button>
+      <div key="idle" ref={container} className="contents">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="self-start"
+          onClick={() => show({ kind: "confirm", pending: false, error: null })}
+        >
+          Re-analyze
+        </Button>
+      </div>
     );
   }
 
   return (
     <div
+      key="confirm"
+      ref={container}
       role="region"
       aria-label="Confirm re-analyzing this VOD"
       className="flex flex-col gap-3 rounded-control border border-border-subtle bg-surface-elevated p-4 text-sm text-ink-secondary"
@@ -83,7 +99,7 @@ export function ReanalyzeAction({ jobId }: { jobId: string }) {
           variant="secondary"
           size="sm"
           disabled={state.pending}
-          onClick={() => setState({ kind: "idle" })}
+          onClick={() => show({ kind: "idle" })}
         >
           Cancel
         </Button>

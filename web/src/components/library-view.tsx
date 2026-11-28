@@ -53,6 +53,14 @@ function hasActiveRender(job: JobSummary): boolean {
   );
 }
 
+/** A render in progress blocks deleting its job; queued ones are cancelled with it (#187). */
+function hasRunningRender(job: JobSummary): boolean {
+  return (
+    job.exports.some((e) => e.state === "running") ||
+    job.highlights.some((h) => h.state === "running")
+  );
+}
+
 function jobDisplayTitle(job: JobSummary): string {
   if (job.title && job.title.trim() !== "") return job.title;
   const fileName = localFileName(job.video_path);
@@ -650,7 +658,7 @@ export function LibraryView() {
               const deletion = deletes[job.job_id];
               const isDeleting = deletion?.pending ?? false;
               const renderFilesCount = job.export_count + job.highlights_count;
-              const activeChildRender = hasActiveRender(job);
+              const activeChildRender = hasRunningRender(job);
               const canDelete =
                 (job.state === "done" || job.state === "failed") &&
                 !activeChildRender;
@@ -861,7 +869,7 @@ export function LibraryView() {
                             disabled={!canDelete}
                             title={
                               activeChildRender
-                                ? "Wait for active clip or highlights renders to finish before deleting."
+                                ? "Wait for the clip or highlights render in progress to finish before deleting."
                                 : undefined
                             }
                             onClick={() =>

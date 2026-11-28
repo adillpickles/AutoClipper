@@ -1467,15 +1467,13 @@ export function createMockClient(
             renderStarts.get(entry.highlights.highlights_id),
           ),
         );
+      // Only a render that is actually running blocks the delete; ones still queued are
+      // cancelled with the job (§ 3.8, #187).
       if (
         job.state === "queued" ||
         job.state === "running" ||
-        childExports.some(
-          (e) => e.state === "queued" || e.state === "running",
-        ) ||
-        childHighlights.some(
-          (h) => h.state === "queued" || h.state === "running",
-        )
+        childExports.some((e) => e.state === "running") ||
+        childHighlights.some((h) => h.state === "running")
       ) {
         throw new ApiRequestError(409, {
           code: "job_in_progress",
