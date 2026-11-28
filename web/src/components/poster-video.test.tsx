@@ -72,4 +72,46 @@ describe("PosterVideo", () => {
     fireEvent.play(video);
     expect(video.currentTime).toBe(0);
   });
+
+  it("replaces a video that fails to load with a note and a Retry that loads it again (#238)", async () => {
+    poster.clipPoster.mockRejectedValue(new Error("network"));
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+    const { container } = renderVideo({ src: "/v.mp4" });
+    await act(async () => {});
+    expect(screen.getByTestId("clip-frame-placeholder")).toBeTruthy();
+
+    fireEvent.error(container.querySelector("video") as HTMLVideoElement);
+    // The pulsing placeholder doesn't stay up forever.
+    expect(screen.queryByTestId("clip-frame-placeholder")).toBeNull();
+    expect(container.querySelector("video")).toBeNull();
+    expect(screen.getByRole("status").textContent).toMatch(
+      /can.t be played here/i,
+    );
+
+    poster.clipPoster.mockResolvedValue("data:image/jpeg;base64,CCCC");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    const retried = container.querySelector("video") as HTMLVideoElement;
+    expect(retried).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+    // A fresh attempt: the poster is captured again.
+    expect(poster.clipPoster).toHaveBeenCalledTimes(2);
+    await act(async () => {});
+    expect(retried.getAttribute("poster")).toBe("data:image/jpeg;base64,CCCC");
+  });
+
+  it("tells the parent about a failure and drops the placeholder when it handles it", async () => {
+    poster.clipPoster.mockReturnValue(new Promise<string>(() => {}));
+    const onFailed = vi.fn();
+    const { container } = render(
+      <div className="relative">
+        <PosterVideo src="/v.mp4" label="Clip" onFailed={onFailed} />
+      </div>,
+    );
+    fireEvent.error(container.querySelector("video") as HTMLVideoElement);
+    expect(onFailed).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("clip-frame-placeholder")).toBeNull();
+    // The parent decides what replaces it; until then the native video stays.
+    expect(container.querySelector("video")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
 });

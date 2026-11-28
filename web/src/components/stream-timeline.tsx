@@ -433,6 +433,7 @@ export function StreamTimeline({
               timeS={sliderS}
               onSourceError={markFailed}
               boundsRef={cardRef}
+              reserveFrame={sources.length > 0}
             />
             <div
               role="slider"

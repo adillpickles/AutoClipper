@@ -10,21 +10,56 @@
 //
 // The label floats above the track, but never past the top of the timeline card (`boundsRef`):
 // where the card has too little room above the track it is clamped to the card's top edge and
-// moved beside the playhead (`popoverPlacement`), so it never covers the controls above the card.
+// moved beside the playhead (`popoverPosition`), so it never covers the controls above the card.
+// It is also clamped between the card's left and right edges at every width. The placement is
+// chosen from the tallest the label can get (a hidden copy with a frame, a two-line moment title
+// and a hint), so it doesn't jump between above and beside while scrubbing on and off a moment.
 
 import {
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
+  type ReactNode,
   type RefObject,
 } from "react";
 
-import { popoverPlacement } from "./geometry";
+import { popoverPosition } from "./geometry";
 
 import type { PreviewSource } from "./use-preview-media";
 
 export const SEEK_INTERVAL_MS = 120;
+
+/** Width and text styles shared by the label and its hidden tallest-size copy. */
+const LABEL_BOX =
+  "w-40 flex-col overflow-hidden rounded-card border border-border-subtle text-xs sm:w-48";
+
+/** The longest hint the timeline shows, for the tallest-size copy. */
+const LONGEST_HINT = "Press Enter to open";
+
+function LabelLines({
+  timeLabel,
+  momentLabel,
+  hint,
+}: {
+  timeLabel: string;
+  momentLabel: ReactNode;
+  hint: string | null;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5 px-2 py-1.5">
+      <span className="font-mono font-semibold text-ink-primary tabular-nums">
+        {timeLabel}
+      </span>
+      {momentLabel && (
+        <span className="line-clamp-2 font-medium text-ink-primary">
+          {momentLabel}
+        </span>
+      )}
+      {hint && <span className="text-ink-tertiary">{hint}</span>}
+    </div>
+  );
+}
 
 /** Release a media element's file: removing `src` alone keeps the old file loaded. */
 export function unloadVideo(video: HTMLVideoElement): void {
@@ -48,6 +83,7 @@ export function ScrubPreview({
   timeS,
   onSourceError,
   boundsRef,
+  reserveFrame = false,
 }: {
   /** Whether the label is shown; the video element stays mounted either way. */
   visible: boolean;
@@ -62,8 +98,14 @@ export function ScrubPreview({
   onSourceError: (url: string) => void;
   /** The box the label must stay inside (the timeline card); unset, it just floats above. */
   boundsRef?: RefObject<HTMLElement | null>;
+  /**
+   * Whether a frame may appear anywhere on the timeline: the tallest-size copy then includes
+   * one, so the placement stays the same where a frame shows and where it doesn't.
+   */
+  reserveFrame?: boolean;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const sizerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingRef = useRef<number | null>(null);
   const lastSeekRef = useRef(Number.NEGATIVE_INFINITY);
@@ -113,30 +155,27 @@ export function ScrubPreview({
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
-  // Runs after every render: the label's height changes with the frame and the moment text.
-  // Written straight to the element so measuring never costs another render.
+  // Runs after every render: the label's size changes with the frame and the moment text, and
+  // the card's with the screen width. Written straight to the element so measuring never costs
+  // another render; once placed, `left` is in pixels and the `align` class no longer applies.
   useLayoutEffect(() => {
     const root = rootRef.current;
     const track = root?.offsetParent;
     const bounds = boundsRef?.current;
     if (!root || !visible || !bounds || !(track instanceof HTMLElement)) return;
-    const { topPx, beside } = popoverPlacement({
-      trackTop: track.getBoundingClientRect().top,
-      boundsTop: bounds.getBoundingClientRect().top,
-      height: root.offsetHeight,
+    const { topPx, leftPx, placement } = popoverPosition({
+      track: track.getBoundingClientRect(),
+      bounds: bounds.getBoundingClientRect(),
+      width: root.offsetWidth,
+      height: Math.max(root.offsetHeight, sizerRef.current?.offsetHeight ?? 0),
       cursorPct: leftPct,
     });
     root.style.top = `${topPx}px`;
     root.style.bottom = "auto";
     root.style.marginBottom = "0px";
-    // Beside the playhead, 12 px clear of it; otherwise the `align` class decides.
-    root.style.translate =
-      beside === "right"
-        ? "12px 0"
-        : beside === "left"
-          ? "calc(-100% - 12px) 0"
-          : "";
-    root.dataset.placement = beside ? `beside-${beside}` : "above";
+    root.style.left = `${leftPx}px`;
+    root.style.translate = "none";
+    root.dataset.placement = placement;
   });
 
   const translate =
@@ -147,44 +186,60 @@ export function ScrubPreview({
         : "-translate-x-1/2";
 
   return (
-    <div
-      ref={rootRef}
-      data-testid="scrub-preview"
-      data-visible={visible ? "true" : "false"}
-      aria-hidden="true"
-      style={{ left: `${leftPct}%` }}
-      className={`pointer-events-none absolute bottom-full z-30 mb-2 w-40 flex-col overflow-hidden rounded-card border border-border-subtle bg-surface-panel text-xs shadow-card sm:w-48 ${translate} ${
-        visible ? "flex" : "hidden"
-      }`}
-    >
-      {videoUrl && (
-        <video
-          ref={videoRef}
-          data-testid="scrub-frame"
-          data-showing={showFrame ? "true" : "false"}
-          muted
-          playsInline
-          preload="auto"
-          disablePictureInPicture
-          onLoadedMetadata={flush}
-          onSeeked={flush}
-          onError={() => onSourceError(videoUrl)}
-          className={`aspect-video w-full bg-surface-media object-cover ${
-            showFrame ? "block" : "hidden"
-          }`}
-        />
+    <>
+      {/* The tallest this label can get, never shown: its height decides the placement. */}
+      {boundsRef && (
+        <div
+          ref={sizerRef}
+          aria-hidden="true"
+          data-testid="scrub-preview-sizer"
+          className={`pointer-events-none invisible absolute top-0 left-0 flex ${LABEL_BOX}`}
+        >
+          {reserveFrame && <div className="aspect-video w-full" />}
+          <LabelLines
+            timeLabel={timeLabel}
+            momentLabel={
+              <>
+                M<br />M
+              </>
+            }
+            hint={LONGEST_HINT}
+          />
+        </div>
       )}
-      <div className="flex flex-col gap-0.5 px-2 py-1.5">
-        <span className="font-mono font-semibold text-ink-primary tabular-nums">
-          {timeLabel}
-        </span>
-        {momentLabel && (
-          <span className="line-clamp-2 font-medium text-ink-primary">
-            {momentLabel}
-          </span>
+      <div
+        ref={rootRef}
+        data-testid="scrub-preview"
+        data-visible={visible ? "true" : "false"}
+        aria-hidden="true"
+        style={{ left: `${leftPct}%` }}
+        className={`pointer-events-none absolute bottom-full z-30 mb-2 ${LABEL_BOX} bg-surface-panel shadow-card ${translate} ${
+          visible ? "flex" : "hidden"
+        }`}
+      >
+        {videoUrl && (
+          <video
+            ref={videoRef}
+            data-testid="scrub-frame"
+            data-showing={showFrame ? "true" : "false"}
+            muted
+            playsInline
+            preload="auto"
+            disablePictureInPicture
+            onLoadedMetadata={flush}
+            onSeeked={flush}
+            onError={() => onSourceError(videoUrl)}
+            className={`aspect-video w-full bg-surface-media object-cover ${
+              showFrame ? "block" : "hidden"
+            }`}
+          />
         )}
-        {hint && <span className="text-ink-tertiary">{hint}</span>}
+        <LabelLines
+          timeLabel={timeLabel}
+          momentLabel={momentLabel}
+          hint={hint}
+        />
       </div>
-    </div>
+    </>
   );
 }
