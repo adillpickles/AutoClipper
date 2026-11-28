@@ -575,10 +575,62 @@ def test_the_worker_runs_queued_jobs_in_order_and_dedupes_running_ones(
     wait_until(
         lambda: client.get(f"{API}/jobs/{second.json()['job_id']}").json()["state"] == "done"
     )
-    # A finished job is never reused.
+    # A finished job with its result is reused too (#186).
+    rerun = client.post(f"{API}/jobs", json={"vod": "9000000001"})
+    assert rerun.status_code == 200
+    assert rerun.json()["job_id"] == job_id
+    assert rerun.json()["state"] == "done"
+
+
+def test_analyzing_the_same_vod_again_reuses_the_finished_job(
+    client: TestClient, tmp_path: Path
+) -> None:
+    job = done_job(client)
+
+    again = client.post(f"{API}/jobs", json={"vod": "https://www.twitch.tv/videos/9000000001"})
+
+    assert again.status_code == 200
+    assert "location" not in again.headers
+    assert again.json() == client.get(f"{API}/jobs/{job['job_id']}").json()
+    listed = client.get(f"{API}/jobs").json()
+    assert [item["job_id"] for item in listed["items"]] == [job["job_id"]]
+
+    # A different video source is a different analysis, reused in its own right.
+    video = tmp_path / "vod.mp4"
+    video.write_bytes(b"x")
+    local = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(video)})
+    local_again = client.post(f"{API}/jobs", json={"vod": "9000000001", "video_path": str(video)})
+    assert local.status_code == 201
+    assert local.json()["job_id"] != job["job_id"]
+    assert (local_again.status_code, local_again.json()["job_id"]) == (200, local.json()["job_id"])
+    assert client.get(f"{API}/jobs").json()["total"] == 2
+
+
+def test_a_failed_analysis_or_a_lost_result_is_analyzed_again(
+    client: TestClient, tmp_path: Path
+) -> None:
+    failed = done_job(client, "9000000004")
+    assert failed["state"] == "failed"
+    retry = client.post(f"{API}/jobs", json={"vod": "9000000004"})
+    assert retry.status_code == 201
+    assert retry.json()["job_id"] != failed["job_id"]
+
+    job = done_job(client)
+    (tmp_path / "artifacts" / "analysis" / f"{job['job_id']}.json").unlink()
     rerun = client.post(f"{API}/jobs", json={"vod": "9000000001"})
     assert rerun.status_code == 201
-    assert rerun.json()["job_id"] != job_id
+    assert rerun.json()["job_id"] != job["job_id"]
+
+    # The Library still shows each VOD once: the newest done analysis, else the newest one.
+    listed = client.get(f"{API}/jobs").json()
+    assert [item["job_id"] for item in listed["items"]] == [
+        rerun.json()["job_id"],
+        retry.json()["job_id"],
+    ]
+    assert listed["total"] == 2
+    # Collapsed jobs stay reachable by ID.
+    status = client.post(f"{API}/jobs/status", json={"job_ids": [failed["job_id"]]}).json()
+    assert [item["job_id"] for item in status] == [failed["job_id"]]
 
 
 # --- Media -------------------------------------------------------------------------------------
@@ -1002,6 +1054,52 @@ def test_a_running_export_dedupes_and_its_file_isnt_ready(
 
     wait_until(done)
     assert "transcribing" in seen or "rendering" in seen
+
+
+def test_an_identical_export_reuses_the_finished_render(client: TestClient, tmp_path: Path) -> None:
+    job = done_job(client)
+
+    first = client.post(f"{API}/exports", json=export_body(job["job_id"]))
+    again = client.post(f"{API}/exports", json=export_body(job["job_id"]))
+
+    # Opening the results page again asks for the same clip: it gets the finished render (#186).
+    assert first.status_code == 201
+    assert again.status_code == 200
+    assert again.json()["export_id"] == first.json()["export_id"]
+    assert again.json()["state"] == "done"
+    assert again.json()["filename"] is not None
+    assert "location" not in again.headers
+    summary = client.get(f"{API}/jobs").json()["items"][0]
+    assert summary["export_count"] == 1
+    assert [render["render_id"] for render in summary["exports"]] == [first.json()["export_id"]]
+
+    # Any other trim, layout or captions choice is a new render.
+    other = client.post(f"{API}/exports", json=export_body(job["job_id"], captions=False))
+    assert other.status_code == 201
+    assert other.json()["export_id"] != first.json()["export_id"]
+
+    # A finished render whose file was removed is rendered again.
+    (tmp_path / "artifacts" / "exports" / f"{first.json()['export_id']}.mp4").unlink()
+    redo = client.post(f"{API}/exports", json=export_body(job["job_id"]))
+    assert redo.status_code == 201
+    assert redo.json()["export_id"] not in (first.json()["export_id"], other.json()["export_id"])
+
+
+def test_a_failed_export_is_retried_with_a_new_render(
+    make_client: Callable[..., tuple[TestClient, MockService]],
+) -> None:
+    renderer = FakeRenderer(ExportError("bad layout"))
+    client, _ = make_client(render=renderer)
+    job = done_job(client)
+
+    failed = client.post(f"{API}/exports", json=export_body(job["job_id"]))
+    assert client.get(f"{API}/exports/{failed.json()['export_id']}").json()["state"] == "failed"
+    renderer.error = None
+    retry = client.post(f"{API}/exports", json=export_body(job["job_id"]))
+
+    assert retry.status_code == 201
+    assert retry.json()["export_id"] != failed.json()["export_id"]
+    assert client.get(f"{API}/exports/{retry.json()['export_id']}").json()["state"] == "done"
 
 
 def test_exports_and_highlights_share_one_render_queue(

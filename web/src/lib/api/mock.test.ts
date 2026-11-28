@@ -122,7 +122,7 @@ describe("createMockClient", () => {
     expect(result.candidates.map((c) => c.source)).toEqual(["discovered"]);
   });
 
-  it("returns the queued or running job for the same input", async () => {
+  it("returns the queued, running or done job for the same input", async () => {
     let now = T0;
     const client = createMockClient(() => now);
     const first = await client.createJob({ vod: "9000000011" });
@@ -132,8 +132,61 @@ describe("createMockClient", () => {
     expect(again.created).toBe(false);
     expect(again.job.job_id).toBe(first.job.job_id);
     now += 60_000;
+    // A finished analysis is reused too (#186), so the Library keeps one row.
     const rerun = await client.createJob({ vod: "9000000011" });
-    expect(rerun.created).toBe(true);
+    expect(rerun.created).toBe(false);
+    expect(rerun.job.job_id).toBe(first.job.job_id);
+    expect(rerun.job.state).toBe("done");
+    const listed = await client.listJobs();
+    expect(listed.items.map((item) => item.job_id)).toEqual([first.job.job_id]);
+    // Another video source is its own analysis.
+    const local = await client.createJob({
+      vod: "9000000011",
+      video_path: "/videos/vod.mp4",
+    });
+    expect(local.created).toBe(true);
+  });
+
+  it("retries a failed analysis instead of reusing it", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const failed = await client.createJob({ vod: "9000000004" });
+    now += 60_000;
+    expect((await client.getJob(failed.job.job_id)).state).toBe("failed");
+    const retry = await client.createJob({ vod: "9000000004" });
+    expect(retry.created).toBe(true);
+    expect(retry.job.job_id).not.toBe(failed.job.job_id);
+    // The Library still lists the VOD once, newest first.
+    const listed = await client.listJobs();
+    expect(listed.items.map((item) => item.job_id)).toEqual([retry.job.job_id]);
+    expect(listed.total).toBe(1);
+  });
+
+  it("reuses a finished export for an identical request", async () => {
+    let now = T0;
+    const client = createMockClient(() => now);
+    const { job } = await client.createJob({ vod: "9000000001" });
+    now += 60_000;
+    const request = {
+      job_id: job.job_id,
+      candidate_id: "c001",
+      start_s: 115.5,
+      end_s: 150.0,
+      layout: "center_crop" as const,
+      captions: false,
+    };
+    const first = await client.createExport(request);
+    expect(first.created).toBe(true);
+    now += 60_000;
+    expect((await client.getExport(first.export.export_id)).state).toBe("done");
+    const again = await client.createExport(request);
+    expect(again.created).toBe(false);
+    expect(again.export.export_id).toBe(first.export.export_id);
+    expect(again.export.state).toBe("done");
+    const other = await client.createExport({ ...request, captions: true });
+    expect(other.created).toBe(true);
+    const [summary] = (await client.listJobs()).items;
+    expect(summary.exports).toHaveLength(2);
   });
 
   it("rejects bad links and relative paths with the contract's codes", async () => {

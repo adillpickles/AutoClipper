@@ -169,6 +169,43 @@ describe("ResultsScreen captions capability and fallback", () => {
     );
   });
 
+  it("doesn't request its clips again when the results page is opened a second time (#186)", async () => {
+    api.getHealth.mockResolvedValue({
+      status: "ok",
+      schema_version: "1.1",
+      job_runner: "mock",
+      captions_available: true,
+    });
+    api.getResult.mockResolvedValue(RESULT);
+    api.getCandidateMedia.mockResolvedValue(MEDIA);
+    api.createExport.mockImplementation(async (req: CreateExportRequest) => ({
+      export: makeExport(req),
+      created: true,
+    }));
+    api.getExport.mockImplementation(async (exportId: string) =>
+      makeExport(
+        {
+          job_id: "job_1",
+          candidate_id: "c001",
+          start_s: 118,
+          end_s: 148,
+          layout: "center_crop",
+          captions: true,
+        },
+        { export_id: exportId },
+      ),
+    );
+
+    render(<ResultsScreen />);
+    expect(await screen.findByText(/1 of 1 clips ready/)).toBeTruthy();
+    cleanup();
+    render(<ResultsScreen />);
+    expect(await screen.findByText(/1 of 1 clips ready/)).toBeTruthy();
+
+    expect(api.createExport).toHaveBeenCalledTimes(1);
+    expect(api.getExport).toHaveBeenCalledWith("exp_captioned");
+  });
+
   it("falls back to uncaptioned export if a captioned export fails with captioning_failed", async () => {
     api.getHealth.mockRejectedValue(new Error("temporary health error"));
     api.getResult.mockResolvedValue(RESULT);

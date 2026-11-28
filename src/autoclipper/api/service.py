@@ -30,7 +30,7 @@ import sqlite3
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1058,14 +1058,10 @@ class MockService:
                     "again.",
                 )
         with self._lock:
-            for record in self._jobs.values():
-                if (
-                    record.video_id == video_id
-                    and record.video_path == request.video_path
-                    and record.upload_id == request.upload_id
-                    and record.state in ("queued", "running")
-                ):
-                    return record.model(), False
+            key = (video_id, request.video_path, request.upload_id)
+            reusable = self._reusable_job(key)
+            if reusable is not None:
+                return reusable.model(), False
             now = self.clock()
             next_seq = self._next_seq + 1
             record = _JobRecord(
@@ -1083,6 +1079,46 @@ class MockService:
             model = record.model()
         self._enqueue(self._analysis_queue, record.job_id, self._run_job_safely)
         return model, True
+
+    def _reusable_job(self, key: tuple[str, str | None, str | None]) -> _JobRecord | None:
+        """The job a new request for `key` should reuse, with the service lock held (#186).
+
+        A `done` job whose result is still on disk wins (newest first), then a `queued` or
+        `running` one. Failed jobs and done jobs whose result file is gone are never reused, so
+        posting again retries them.
+        """
+        done: list[_JobRecord] = []
+        active: list[_JobRecord] = []
+        for record in self._jobs.values():
+            if _job_key(record) != key or record.job_id in self._deleting:
+                continue
+            if record.state == "done" and self._result_available(record):
+                done.append(record)
+            elif record.state in ("queued", "running"):
+                active.append(record)
+        if done or active:
+            return max(done or active, key=_job_sort_key)
+        return None
+
+    def _library_rows(self, jobs: Iterable[_JobRecord]) -> list[_JobRecord]:
+        """One job per VOD and video source for the Library, with the service lock held (#186).
+
+        Older libraries can hold several analyses of the same VOD from before job creation reused
+        finished jobs. They are collapsed here rather than deleted, so no result or render is lost:
+        the row is the newest `done` job with its result on disk, else the newest job. Deleting
+        that row reveals the next one.
+        """
+        groups: dict[tuple[str, str | None, str | None], list[_JobRecord]] = {}
+        for record in jobs:
+            groups.setdefault(_job_key(record), []).append(record)
+        rows: list[_JobRecord] = []
+        for members in groups.values():
+            if len(members) == 1:
+                rows.append(members[0])
+                continue
+            done = [rec for rec in members if rec.state == "done" and self._result_available(rec)]
+            rows.append(max(done or members, key=_job_sort_key))
+        return rows
 
     def get_job(self, job_id: str) -> Job:
         """The job (`404 job_not_found` if unknown)."""
@@ -1126,12 +1162,11 @@ class MockService:
                 ) from None
         needle = q.strip().lower() if q is not None else ""
 
-        def sort_key(rec: _JobRecord) -> tuple[datetime, int, str]:
-            return rec.times.created_at, rec.seq, rec.job_id
+        sort_key = _job_sort_key
 
         with self._lock:
             matched: list[_JobRecord] = []
-            for record in self._jobs.values():
+            for record in self._library_rows(self._jobs.values()):
                 if state is not None and record.state != state:
                     continue
                 if needle:
@@ -1494,13 +1529,24 @@ class MockService:
                         "max_duration_s": export.max_duration_s,
                     },
                 )
+            # Identical requests reuse the queued, running or finished render (#186), so a page
+            # that asks for its top clips again doesn't render them twice. A failed render, or a
+            # finished one whose file was removed, is retried with a new export.
             for record in self._renders.values():
                 if (
                     record.kind == "export"
                     and record.request == request
-                    and record.state in ("queued", "running")
+                    and (
+                        record.state in ("queued", "running")
+                        or (
+                            record.state == "done"
+                            and record.file is not None
+                            and record.file.is_file()
+                        )
+                    )
                 ):
-                    return record.export_model(), False
+                    filename = self._render_filename(record) if record.state == "done" else None
+                    return record.export_model(filename=filename), False
             now = self.clock()
             record = _RenderRecord(
                 "export",
@@ -3350,6 +3396,16 @@ _HIGHLIGHTS_INTERRUPTED: Final = ApiError(
     code="interrupted",
     message="The server stopped while this highlights video was rendering. Make it again.",
 )
+
+
+def _job_key(record: _JobRecord) -> tuple[str, str | None, str | None]:
+    """What makes two analyses the same: the VOD and the video source it reads (#186)."""
+    return record.video_id, record.video_path, record.upload_id
+
+
+def _job_sort_key(record: _JobRecord) -> tuple[datetime, int, str]:
+    """Library order key: `created_at`, creation sequence, then `job_id` (§ 3.7)."""
+    return record.times.created_at, record.seq, record.job_id
 
 
 def _is_within(path: Path, root: Path) -> bool:

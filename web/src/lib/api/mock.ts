@@ -811,6 +811,51 @@ const MOCK_CHANNEL_VODS: ReadonlyArray<{
   { video_id: "9000000007", view_count: 1210 },
 ];
 
+type JobSource = Pick<StoredJob, "video_id" | "video_path" | "upload_id">;
+
+/** What makes two analyses the same: the VOD and the video source it reads (§ 3.1). */
+function jobSourceKey(job: JobSource): string {
+  return JSON.stringify([job.video_id, job.video_path, job.upload_id ?? null]);
+}
+
+/** Library order (§ 3.7): negative when `a` is newer than `b`. */
+function compareJobsNewestFirst(
+  a: Pick<StoredJob, "created_ms" | "seq" | "job_id">,
+  b: Pick<StoredJob, "created_ms" | "seq" | "job_id">,
+): number {
+  return (
+    b.created_ms - a.created_ms ||
+    (b.seq ?? 0) - (a.seq ?? 0) ||
+    b.job_id.localeCompare(a.job_id)
+  );
+}
+
+/**
+ * One Library row per VOD and source (§ 3.7, #186): the newest done job, else the newest job.
+ * Older duplicates are hidden, not deleted.
+ */
+function libraryRows(
+  jobs: StoredJob[],
+  at: number,
+  starts: Map<string, number>,
+): StoredJob[] {
+  const best = new Map<string, { stored: StoredJob; done: boolean }>();
+  for (const stored of jobs) {
+    const key = jobSourceKey(stored);
+    const done = jobAt(stored, at, starts.get(stored.job_id)).state === "done";
+    const current = best.get(key);
+    if (
+      !current ||
+      (done && !current.done) ||
+      (done === current.done &&
+        compareJobsNewestFirst(stored, current.stored) < 0)
+    ) {
+      best.set(key, { stored, done });
+    }
+  }
+  return [...best.values()].map((entry) => entry.stored);
+}
+
 function doneJobsByVideo(store: Store, at: number): Map<string, string> {
   const latest = new Map<string, { finishedAt: string; jobId: string }>();
   const starts = schedule(store.jobs);
@@ -1076,7 +1121,7 @@ export function createMockClient(
         ? [...new Set(jobIds)]
             .filter((id) => Object.hasOwn(store.jobs, id))
             .map((id) => store.jobs[id])
-        : Object.values(store.jobs);
+        : libraryRows(Object.values(store.jobs), at, jobStarts);
       for (const stored of jobs) {
         const job = jobAt(stored, at, jobStarts.get(stored.job_id));
         if (stateFilter !== undefined && job.state !== stateFilter) continue;
@@ -1321,17 +1366,34 @@ export function createMockClient(
         });
       }
       const at = now();
+      // Reuse the newest done analysis of the same VOD and source, else a queued/running one
+      // (§ 3.1, #186). Failed jobs are retried.
+      const starts = schedule(store.jobs);
+      let reusable: { job: Job; done: boolean; stored: StoredJob } | null =
+        null;
       for (const stored of Object.values(store.jobs)) {
-        const job = jobNow(store, stored.job_id, at) as Job;
         if (
-          stored.video_id === videoId &&
-          stored.video_path === videoPath &&
-          (stored.upload_id ?? null) === uploadId &&
-          (job.state === "queued" || job.state === "running")
+          jobSourceKey(stored) !==
+          jobSourceKey({
+            video_id: videoId,
+            video_path: videoPath,
+            upload_id: uploadId,
+          })
+        )
+          continue;
+        const job = jobAt(stored, at, starts.get(stored.job_id));
+        if (job.state === "failed") continue;
+        const done = job.state === "done";
+        if (
+          reusable === null ||
+          (done && !reusable.done) ||
+          (done === reusable.done &&
+            compareJobsNewestFirst(stored, reusable.stored) < 0)
         ) {
-          return { job, created: false };
+          reusable = { job, done, stored };
         }
       }
+      if (reusable) return { job: reusable.job, created: false };
       const seq = (store.next_seq ?? 0) + 1;
       const stored: StoredJob = {
         job_id: randomId("job"),
@@ -1522,7 +1584,9 @@ export function createMockClient(
           at,
           starts.get(existing.export.export_id),
         );
-        if (state === "queued" || state === "running") {
+        // Queued, running and finished renders are all reused (§ 6.1, #186); mock renders
+        // never fail.
+        if (state === "queued" || state === "running" || state === "done") {
           return {
             export: exportNow(store, existing.export.export_id, at) as Export,
             created: false,
