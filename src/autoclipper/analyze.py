@@ -30,9 +30,9 @@ analyze`` writes and the API will return (#45):
    With neither family and no viewer-clip moment, no scorer — ``random`` included — has
    anything to rank, and the § 3.5 precedence decides the code.
 5. **Ranking rules** (`apply_ranking_rules`, #192), for the default ``chat_loudness`` ranking
-   only (and what it degrades to): windows at the stream's start and end, with silent audio,
-   greeting/farewell waves or answer spam are down-weighted, never dropped. Each lowered
-   candidate's reason says why, and a VOD with a long silent stretch gets the
+   only (and what it degrades to): windows at the stream's start and end, with silent audio or
+   greeting/farewell waves (and, once enabled, answer spam) are down-weighted, never dropped.
+   Each lowered candidate's reason says why, and a VOD with a long silent stretch gets the
    ``audio_partly_silent`` warning (whatever the scorer). Named baselines and trained models
    rank unchanged.
 6. **Candidates** (`generate_candidates`): ranked, merged with the snapshot's moments.

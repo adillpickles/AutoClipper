@@ -17,11 +17,18 @@ thresholds and factors come from ``configs/ranking.yaml`` (`load_ranking_rules`)
 | ``stream_start`` | it starts in the first ``intro_s`` seconds |
 | ``stream_end`` | it ends in the last ``outro_s`` seconds |
 | ``silent_audio`` | ``audio_silence_frac >= silence_frac_min`` and the window isn't Twitch-muted |
-| ``greetings`` | greetings + farewells are at least ``participation_frac_min`` of its messages |
-| ``answer_spam`` | ``chat_answer_frac >= answer_frac_min`` and ``answer_min_msg_rate`` msg/s+ |
+| ``greetings`` | it is in the first ``intro_s`` / last ``outro_s`` seconds and whole-message |
+|  | greetings + farewells are at least ``participation_frac_min`` of its messages |
+| ``answer_spam`` | ``chat_answer_frac >= answer_frac_min`` in a window that is busy for its VOD |
+|  | (at least ``answer_min_msgs`` messages, ``answer_min_msg_rate`` msg/s and the VOD's |
+|  | ``answer_rate_quantile`` chat rate). **Off by default** (``answer_factor`` 1.0) |
 
 The edge rules are skipped for a VOD no longer than ``intro_s + outro_s`` (every window would be
-an edge). A rule whose feature columns are missing (no audio, no chat) matches nothing.
+an edge). ``greetings`` only looks at the stream's start and end, so a mid-stream "BYE BYE" kill
+wave or an outraged "HEY" stays a reaction. ``answer_spam`` stays off until it is tuned on
+dataset v1 (#40): a small channel's reactive chat ("bro what", "no shot") is answer-shaped too.
+A rule whose factor is 1 or whose feature columns are missing (no audio, no chat) changes
+nothing and is never reported.
 Windows Twitch reports as muted keep the baselines' rule (their audio counts as missing,
 `autoclipper.models.baselines`) and aren't flagged as silent.
 
@@ -70,12 +77,15 @@ class RankingRules:
             window's audio counts as silent.
         silence_factor: Share a silent window keeps.
         participation_frac_min: Share of a window's messages that are greetings or farewells at
-            which it is a greeting/farewell wave.
+            which it is a greeting/farewell wave (stream start and end windows only).
         participation_factor: Share such a window keeps.
         answer_frac_min: ``chat_answer_frac`` at which a window is answer spam.
         answer_min_msg_rate: Messages per second a window needs before it can be answer spam (a
             few messages in a quiet window aren't spam).
-        answer_factor: Share an answer-spam window keeps.
+        answer_min_msgs: Messages a window needs before it can be answer spam.
+        answer_rate_quantile: The window's chat rate must also reach this quantile of the VOD's
+            windows with chat, so the floor scales with the channel's own chat.
+        answer_factor: Share an answer-spam window keeps; 1.0 (the default) turns the rule off.
         silent_warning_min_s: Seconds of silent audio at which the result carries the
             ``audio_partly_silent`` warning.
     """
@@ -89,8 +99,10 @@ class RankingRules:
     participation_frac_min: float = 0.25
     participation_factor: float = 0.5
     answer_frac_min: float = 0.7
-    answer_min_msg_rate: float = 1.0
-    answer_factor: float = 0.5
+    answer_min_msg_rate: float = 2.0
+    answer_min_msgs: float = 40.0
+    answer_rate_quantile: float = 0.9
+    answer_factor: float = 1.0
     silent_warning_min_s: float = 60.0
 
     def __post_init__(self) -> None:
@@ -104,7 +116,7 @@ class RankingRules:
                 raise ValueError(f"{item.name} must be a number")
             if not (math.isfinite(value) and value >= 0):
                 raise ValueError(f"{item.name} must be finite and >= 0")
-            if item.name.endswith(("_factor", "_frac_min")) and value > 1:
+            if item.name.endswith(("_factor", "_frac_min", "_quantile")) and value > 1:
                 raise ValueError(f"{item.name} must be between 0 and 1")
 
 
@@ -214,9 +226,11 @@ def apply_ranking_rules(
     ends = frame["end_s"].to_numpy()
     none = np.zeros(n, dtype=bool)
     edges = duration_s > rules.intro_s + rules.outro_s
+    near_start = starts < rules.intro_s
+    near_end = ends > duration_s - rules.outro_s
     matches: dict[str, np.ndarray] = {
-        "stream_start": (starts < rules.intro_s) if edges else none,
-        "stream_end": (ends > duration_s - rules.outro_s) if edges else none,
+        "stream_start": near_start if edges else none,
+        "stream_end": near_end if edges else none,
         "silent_audio": none,
         "greetings": none,
         "answer_spam": none,
@@ -229,10 +243,20 @@ def apply_ranking_rules(
         if {"chat_greeting_rate", "chat_farewell_rate"} <= columns:
             waves = value("chat_greeting_rate") + value("chat_farewell_rate")
             share = np.divide(waves, rate, out=np.zeros(n), where=rate > 0)
-            matches["greetings"] = (rate > 0) & (share >= rules.participation_frac_min)
+            matches["greetings"] = (
+                (near_start | near_end) & (rate > 0) & (share >= rules.participation_frac_min)
+            )
         if "chat_answer_frac" in columns:
-            matches["answer_spam"] = (rate >= rules.answer_min_msg_rate) & (
-                value("chat_answer_frac") >= rules.answer_frac_min
+            n_msgs = rate * (ends - starts)
+            with_chat = rate[rate > 0]
+            busy_for_vod = (
+                float(np.quantile(with_chat, rules.answer_rate_quantile)) if len(with_chat) else 0.0
+            )
+            matches["answer_spam"] = (
+                (n_msgs >= rules.answer_min_msgs - 1e-9)
+                & (rate >= rules.answer_min_msg_rate)
+                & (rate >= busy_for_vod)
+                & (value("chat_answer_frac") >= rules.answer_frac_min)
             )
     factors = {
         "stream_start": rules.edge_factor,
@@ -250,8 +274,10 @@ def apply_ranking_rules(
     lowered = (raw > baseline) & (factor < 1.0)
     adjusted = np.where(lowered, baseline + factor * (raw - baseline), raw)
     ids = frame["window_id"].to_list()
+    # Only rules that changed something are reported (a factor of 1 is a rule turned off).
     flags = {
-        ids[i]: tuple(flag for flag in FLAGS if matches[flag][i]) for i in np.flatnonzero(lowered)
+        ids[i]: tuple(flag for flag in FLAGS if matches[flag][i] and factors[flag] < 1.0)
+        for i in np.flatnonzero(lowered)
     }
     counts = {flag: int(matches[flag].sum()) for flag in FLAGS}
     log.info(

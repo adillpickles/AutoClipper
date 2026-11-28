@@ -153,7 +153,7 @@ def load_lexicon(path: Path) -> Lexicon:
         name: _category_regex(categories[name], f"{path}: categories.{name}") for name in REACTIONS
     }
     participation = {
-        name: _category_regex(categories[name], f"{path}: categories.{name}")
+        name: _category_regex(categories[name], f"{path}: categories.{name}", whole_message=True)
         for name in PARTICIPATION
         if name in categories
     }
@@ -180,13 +180,21 @@ def load_lexicon(path: Path) -> Lexicon:
 _ANSWER_DEFAULTS: Final = {"max_tokens": ANSWER_MAX_TOKENS, "max_chars": ANSWER_MAX_CHARS}
 
 
-def _category_regex(section: object, where: str) -> str:
-    """One regex matching a message when any of the section's entries matches."""
+def _category_regex(section: object, where: str, *, whole_message: bool = False) -> str:
+    """One regex matching a message when any of the section's entries matches.
+
+    With `whole_message`, the message must consist of the section's entries alone (repeated,
+    separated by spaces or punctuation): "hi chat" and "bye bye" match, "hey what was that" and
+    "he said bye" don't. Greetings and farewells use it, so a reaction that merely contains
+    "hey" or "bye" isn't counted as one.
+    """
     if not isinstance(section, dict) or not set(section) <= {"emotes", "words", "patterns"}:
         raise LexiconError(f"{where} must be a mapping of emotes, words and patterns")
     emotes = _strings(section.get("emotes", []), f"{where}.emotes")
     words = _strings(section.get("words", []), f"{where}.words")
     patterns = _strings(section.get("patterns", []), f"{where}.patterns")
+    if whole_message:
+        return _compiled(_whole_message_regex(emotes, words, patterns, where), where)
     parts: list[str] = []
     # Emoji match anywhere ("😂😂😂"); other emotes are whole tokens in exact case ("W" is hype,
     # "w" isn't), optionally followed by punctuation ("KEKW!").
@@ -203,7 +211,27 @@ def _category_regex(section: object, where: str) -> str:
     parts.extend(f"(?i:{pattern})" for pattern in patterns)
     if not parts:
         raise LexiconError(f"{where} has no entries")
-    regex = "|".join(parts)
+    return _compiled("|".join(parts), where)
+
+
+def _whole_message_regex(
+    emotes: list[str], words: list[str], patterns: list[str], where: str
+) -> str:
+    """A regex for messages made only of these entries (see `_category_regex`)."""
+    tokens: list[str] = []
+    if emotes:  # exact case, emoji included
+        tokens.append("|".join(pl.escape_regex(e) for e in sorted(emotes, key=len, reverse=True)))
+    if words:
+        alternatives = "|".join(pl.escape_regex(w) for w in sorted(words, key=len, reverse=True))
+        tokens.append(rf"(?i:(?:{alternatives})\b)")
+    tokens.extend(f"(?i:{pattern})" for pattern in patterns)
+    if not tokens:
+        raise LexiconError(f"{where} has no entries")
+    token = "|".join(f"(?:{t})" for t in tokens)
+    return rf"^\W*(?:(?:{token})\W*)+$"
+
+
+def _compiled(regex: str, where: str) -> str:
     try:
         pl.Series([""]).str.contains(regex)
     except pl.exceptions.ComputeError as exc:

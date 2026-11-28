@@ -118,25 +118,130 @@ def test_rules_multiply_and_only_lower_windows_above_the_median() -> None:
     assert "v:3" not in ruled.flags
 
 
-def test_greeting_waves_and_answer_spam_are_down_weighted() -> None:
-    greeting, answers, quiet_answers, reaction = 100, 150, 200, 250
-    features = vod(
-        chat_msg_rate={greeting: 8.0, answers: 8.0, quiet_answers: 0.5, reaction: 8.0},
-        chat_greeting_rate={greeting: 3.0, reaction: 0.1},
-        chat_farewell_rate={greeting: 1.0},
-        chat_answer_frac={answers: 0.9, quiet_answers: 0.9, reaction: 0.3},
+def chat_window_features(
+    windows: pl.DataFrame, rows: list[tuple[float, str, str]], *, duration_s: float = DURATION_S
+) -> pl.DataFrame:
+    """Real chat features for messages (offset_s, user, text) over `windows`, audible audio."""
+    chat = pl.DataFrame(
+        {
+            "video_id": "v",
+            "offset_s": [r[0] for r in rows],
+            "user_hash": [r[1] for r in rows],
+            "text": [r[2] for r in rows],
+            "n_emotes": 0,
+            "bits": 0,
+        },
+        schema={
+            "video_id": pl.String,
+            "offset_s": pl.Float64,
+            "user_hash": pl.String,
+            "text": pl.String,
+            "n_emotes": pl.Int64,
+            "bits": pl.Int64,
+        },
     )
-    scores = scores_of(features, {greeting: 4.0, answers: 4.0, quiet_answers: 4.0, reaction: 4.0})
+    features = compute_chat_features(windows, chat, lexicon=load_lexicon(LEXICON_PATH))
+    return features.with_columns(audio_silence_frac=pl.lit(0.1), audio_is_muted=pl.lit(0.0))
+
+
+def burst(start_s: float, texts: list[str], n: int, tag: str) -> list[tuple[float, str, str]]:
+    """`n` messages spread over the 10 s window starting at `start_s`, cycling through `texts`."""
+    return [(start_s + i * 10.0 / n, f"{tag}{i}", texts[i % len(texts)]) for i in range(n)]
+
+
+def score_at(ruled: RuledScores, start_s: float) -> float:
+    row = ruled.scores.filter(pl.col("start_s") == start_s)
+    return float(row["score"][0])
+
+
+def flags_at(ruled: RuledScores, windows: pl.DataFrame, start_s: float) -> tuple[str, ...]:
+    window_id = windows.filter(pl.col("start_s") == start_s)["window_id"][0]
+    return ruled.flags.get(window_id, ())
+
+
+def test_an_intro_greeting_wave_is_flagged_but_mid_stream_kill_waves_are_not() -> None:
+    """Greetings count only as whole messages, and only at the stream's start and end: a
+    mid-stream "BYE BYE" kill wave or an outraged "HEY" stays a clippable reaction."""
+    windows = make_windows("v", DURATION_S)
+    intro, kill_wave, outrage = 60.0, 1800.0, 2400.0
+    rows = [
+        *burst(intro, ["hi chat", "hello", "LATE", "hiii", "HeyGuys", "first", "im late"], 80, "g"),
+        *burst(kill_wave, ["BYE BYE", "byeee", "cya", "get out", "BYE", "peepoBye"], 80, "k"),
+        *burst(outrage, ["HEY", "hey what was that", "HEY!!", "HEYYY", "hey"], 80, "o"),
+    ]
+    features = chat_window_features(windows, rows)
+    scores = windows.select("window_id", "start_s", "end_s").with_columns(
+        score=pl.when(pl.col("start_s").is_in([intro, kill_wave, outrage])).then(4.0).otherwise(0.0)
+    )
 
     ruled = apply_ranking_rules(scores, features, duration_s=DURATION_S, rules=RankingRules())
 
-    assert ruled.flags[f"v:{greeting}"] == ("greetings",)
-    assert ruled.flags[f"v:{answers}"] == ("answer_spam",)
-    assert adjusted(ruled, greeting) == pytest.approx(2.0)
-    assert adjusted(ruled, answers) == pytest.approx(2.0)
-    # Too few messages to be spam, and a shared reaction: untouched.
-    assert adjusted(ruled, quiet_answers) == 4.0
-    assert adjusted(ruled, reaction) == 4.0
+    assert flags_at(ruled, windows, intro) == ("stream_start", "greetings")
+    assert score_at(ruled, intro) == pytest.approx(1.0)  # 0.5 x 0.5 of the height
+    # The kill wave is nearly all farewells and the outrage mostly "hey", but mid-stream.
+    kill_row = features.filter(pl.col("window_id") == "v:180")
+    assert kill_row["chat_farewell_rate"][0] / kill_row["chat_msg_rate"][0] > 0.6
+    for start in (kill_wave, outrage):
+        assert flags_at(ruled, windows, start) == ()
+        assert score_at(ruled, start) == 4.0
+
+
+def test_whole_message_greetings_only() -> None:
+    windows = make_windows("v", 20.0)
+    texts = ["hey what was that", "he said bye", "hello there friend", "bye bye bye lol"]
+    features = chat_window_features(windows, burst(0.0, texts, 8, "a"), duration_s=20.0)
+
+    assert features["chat_greeting_rate"][0] == 0.0
+    assert features["chat_farewell_rate"][0] == 0.0
+
+
+def test_small_channel_hype_is_not_answer_spam() -> None:
+    """A small chat (1.2 msg/s) reacting in different words is answer-shaped
+    (chat_answer_frac 0.83) but not spam, even with the rule switched on."""
+    windows = make_windows("v", DURATION_S)
+    hype = 1800.0
+    # A quiet 0.2 msg/s chat, then 12 messages in 10 s, all different, two of them reactions.
+    rows = [(s + 0.5, f"u{s % 7}", "ok") for s in range(0, int(DURATION_S), 5) if s // 10 != 180]
+    texts = ["bro what", "nahh", "hes cooked", "no shot", "he did not", "cmon man"]
+    texts += ["not again", "why", "how", "stop", "KEKW", "LMAO"]
+    rows += burst(hype, texts, 12, "h")
+    features = chat_window_features(windows, rows)
+    scores = windows.select("window_id", "start_s", "end_s").with_columns(
+        score=pl.when(pl.col("start_s") == hype).then(4.0).otherwise(0.0)
+    )
+    hype_row = features.filter(pl.col("window_id") == "v:180")
+    assert hype_row["chat_msg_rate"][0] == pytest.approx(1.2)
+    assert hype_row["chat_answer_frac"][0] == pytest.approx(10 / 12)  # 0.83 > answer_frac_min
+
+    for rules in (RankingRules(), RankingRules(answer_factor=0.5)):
+        ruled = apply_ranking_rules(scores, features, duration_s=DURATION_S, rules=rules)
+        assert flags_at(ruled, windows, hype) == ()
+        assert score_at(ruled, hype) == 4.0
+
+
+def test_answer_spam_is_off_by_default_and_needs_a_busy_window_when_on() -> None:
+    windows = make_windows("v", DURATION_S)
+    game, small = 1800.0, 2400.0
+    rows = [(s + 0.5, f"u{s % 40}", "ok") for s in range(int(DURATION_S))]  # 1 msg/s
+    countries = [f"country{i}" for i in range(80)]
+    rows += burst(game, countries, 80, "c")  # 8 msg/s, every answer different
+    rows += burst(small, countries[:20], 20, "s")  # answer-shaped but only 2 msg/s
+    features = chat_window_features(windows, rows)
+    scores = windows.select("window_id", "start_s", "end_s").with_columns(
+        score=pl.when(pl.col("start_s").is_in([game, small])).then(4.0).otherwise(0.0)
+    )
+
+    off = apply_ranking_rules(scores, features, duration_s=DURATION_S, rules=RankingRules())
+    on = apply_ranking_rules(
+        scores, features, duration_s=DURATION_S, rules=RankingRules(answer_factor=0.5)
+    )
+
+    assert RankingRules().answer_factor == 1.0
+    assert off.flags == {}
+    assert score_at(off, game) == 4.0
+    assert flags_at(on, windows, game) == ("answer_spam",)
+    assert score_at(on, game) == pytest.approx(2.0)
+    assert flags_at(on, windows, small) == ()  # under answer_min_msgs
 
 
 def test_disabled_rules_and_missing_columns_change_nothing() -> None:

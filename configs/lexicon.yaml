@@ -14,17 +14,20 @@ version: 2
 # `laugh`, `hype`, `shock` and `keyword` are reactions (chat_<category>_rate). `greeting` and
 # `farewell` (optional sections) are participation, not reactions: "hi", "LATE", "bye" waves at
 # a stream's start and end look like hype by volume alone (chat_greeting_rate,
-# chat_farewell_rate; docs/ml/features.md).
+# chat_farewell_rate; docs/ml/features.md). They match WHOLE messages only: the message must be
+# made of these entries alone, repeated or with punctuation ("hi chat", "bye bye", "LATE!!"), so
+# "hey what was that" or "he said bye" is not a greeting or farewell. Their patterns are tokens
+# of such a message, not searches.
 categories:
   greeting:
     emotes: [HeyGuys, VoHiYo, peepoHey, peepoHi, HiHi]
-    words: [hi, hello, hey, hiya, howdy, yo chat, hi chat, hey chat, good morning, gm, wassup, whats up, sup chat]
-    # Whole-message "late" / "early" / "first" / "here" check-ins, and stretched greetings.
-    patterns: ['^\W*(?:i''?m\s+|im\s+)?(?:late|early|first|here)\W*$', '\bhi{2,}\b', '\bhe+y{2,}\b', '\bhel{2,}o+\b']
+    words: [hi, hello, hey, hiya, howdy, yo chat, hi chat, hey chat, hello chat, good morning, gm, wassup, whats up, sup chat]
+    # "late" / "im late" / "early" / "first" / "here" check-ins, and stretched greetings.
+    patterns: ['(?:i''?m\s+)?(?:late|early|first|here)\b', 'hi{2,}\b', 'he+y{2,}\b', 'hel{2,}o+\b']
   farewell:
     emotes: [peepoBye, Bye, ByeBye]
     words: [bye, goodbye, good night, goodnight, gn, gn chat, cya, see ya, see you, see you tomorrow, peace out, bye chat]
-    patterns: ['\bby+e{2,}\b', '\bba+i+\b']
+    patterns: ['by+e{2,}\b', 'ba+i+\b']
   laugh:
     emotes: [KEKW, OMEGALUL, LUL, LULW, KEKL, ICANT, "😂", "🤣"]
     words: [lol, lmao, lmfao, rofl, haha, hahaha]

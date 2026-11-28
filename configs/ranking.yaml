@@ -21,17 +21,22 @@ edge_factor: 0.5
 silence_frac_min: 0.95
 silence_factor: 0.5
 
-# Greeting/farewell waves: greetings + farewells (lexicon) are at least this share of messages.
+# Greeting/farewell waves at the stream's start and end (first intro_s / last outro_s seconds
+# only, whole-message greetings and farewells from the lexicon): at least this share of messages.
+# A mid-stream "BYE BYE" kill wave or an outraged "HEY" is a reaction and is never flagged.
 participation_frac_min: 0.25
 participation_factor: 0.5
 
-# Answer spam (chat-guessing games): at least this share of messages are different short
-# reaction-free answers (chat_answer_frac), in a window with at least answer_min_msg_rate msg/s.
-# Ordinary busy chat on the demo VOD sits around 0.4 (0.54 at the 90th percentile), so this is
-# deliberately well above it.
+# Answer spam (chat-guessing games): at least answer_frac_min of the messages are different short
+# reaction-free answers (chat_answer_frac), in a window busy for its VOD (at least answer_min_msgs
+# messages, answer_min_msg_rate msg/s and the VOD's answer_rate_quantile chat rate).
+# OFF by default (answer_factor 1.0): a small channel's reactive chat ("bro what", "no shot") is
+# answer-shaped too. Enable it (e.g. 0.5) only after tuning on dataset v1 validation (#40).
 answer_frac_min: 0.7
-answer_min_msg_rate: 1.0
-answer_factor: 0.5
+answer_min_msg_rate: 2.0
+answer_min_msgs: 40
+answer_rate_quantile: 0.9
+answer_factor: 1.0
 
 # The result warns (audio_partly_silent) when at least this many seconds of audio are silent.
 silent_warning_min_s: 60

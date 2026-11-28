@@ -780,7 +780,8 @@ def analyze(
         Path | None,
         typer.Option(
             help="Ranking rules of the default scorer: how much the stream's start and end, "
-            "silent audio, greeting waves and answer spam are down-weighted. Default: "
+            "silent audio, greeting waves (and answer spam, off by default) are down-weighted. "
+            "Default: "
             "configs/ranking.yaml, or the identical built-in rules when it isn't there.",
             show_default=False,
         ),
