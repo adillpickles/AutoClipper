@@ -81,15 +81,21 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 OS_NAME="$(uname -s)"
 
-# Reads NAME=value from an env file (first match), without surrounding quotes or spaces.
+# Reads NAME=value from an env file (first match), like python-dotenv: surrounding quotes and
+# spaces are dropped, and an unquoted value's " # comment" is ignored (so "NAME= # x" is empty).
 get_env_value() {
     [ -f "$1" ] || return 0
-    grep -E "^[[:space:]]*$2[[:space:]]*=" "$1" | head -n 1 | cut -d= -f2- |
-        sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" |
-        tr -d '\r'
+    grep -E "^[[:space:]]*$2[[:space:]]*=" "$1" | head -n 1 | tr -d '\r' | cut -d= -f2- |
+        sed -e 's/^[[:space:]]*//' \
+            -e 's/^#.*$//' \
+            -e "/^[\"']/!s/[[:space:]][[:space:]]*#.*\$//" \
+            -e 's/^"\([^"]*\)".*$/\1/' \
+            -e "s/^'\\([^']*\\)'.*\$/\\1/" \
+            -e 's/[[:space:]]*$//'
 }
 
-# Sets NAME=value in an env file, replacing the first NAME= line or appending one.
+# Sets NAME=value in an env file, replacing the first NAME= line or appending one. Rewrites the
+# file in place, so its permissions and any symlink are kept.
 set_env_value() {
     tmp="$1.tmp.$$"
     awk -v name="$2" -v value="$3" '
@@ -99,7 +105,15 @@ set_env_value() {
         { print }
         END { if (!done) print name "=" value }
     ' "$1" >"$tmp"
-    mv "$tmp" "$1"
+    cat "$tmp" >"$1"
+    rm -f "$tmp"
+}
+
+# True when web/node_modules is missing or older than web/package-lock.json (e.g. after a pull).
+web_deps_stale() {
+    installed="$ROOT/web/node_modules/.package-lock.json"
+    [ -f "$installed" ] || return 0
+    [ "$ROOT/web/package-lock.json" -nt "$installed" ]
 }
 
 random_hex() {
@@ -124,6 +138,22 @@ url_ok() {
     else
         port_open "$3"
     fi
+}
+
+# Prints the body of URL, or nothing (curl missing or no answer).
+url_body() {
+    have curl || return 0
+    curl -fsS --max-time "$2" "$1" 2>/dev/null || true
+}
+
+# An open port must belong to AutoClipper; otherwise stop now instead of waiting 3 minutes.
+# Without curl the check is skipped and the open port is trusted.
+check_port_owner() { # PORT URL MARKER WHAT FLAG
+    have curl || return 0
+    case "$(url_body "$2" 30)" in
+        *"$3"*) return 0 ;;
+    esac
+    fail "Port $1 is in use by another program (it does not answer as the AutoClipper $4). Stop that program or pick another port with $5 N."
 }
 
 open_browser() {
@@ -191,7 +221,12 @@ if [ "$MOCK" -eq 1 ]; then JOBS=mock; else JOBS=pipeline; fi
 # 3. Dependencies and tools --------------------------------------------------
 if [ "$SKIP_INSTALL" -eq 0 ]; then
     step "Installing Python dependencies (uv sync --extra captions)"
-    uv sync --extra captions || fail "uv sync failed."
+    if ! uv sync --extra captions; then
+        # The captions extra (faster-whisper/onnxruntime) has no wheel for some platforms, e.g.
+        # Intel Macs and macOS 13 or older. Everything else works without it.
+        warn "Captions unavailable on this platform; installing without them (exports work with captions off)."
+        uv sync || fail "uv sync failed."
+    fi
 
     # Mock mode still needs FFmpeg (the backend renders sample videos); pipeline mode also
     # needs TwitchDownloaderCLI. Both are skipped quickly when already installed.
@@ -207,13 +242,15 @@ if [ "$SKIP_INSTALL" -eq 0 ]; then
     [ "$tools_ok" -eq 1 ] || warn "setup-tools reported a problem; see the doctor output below."
 
     step "Installing web dependencies (npm ci)"
-    if [ -d "$ROOT/web/node_modules" ]; then
-        echo "web/node_modules exists; skipping."
-    else
+    if web_deps_stale; then
         (cd "$ROOT/web" && npm ci) || fail "npm ci failed."
+    else
+        echo "web/node_modules is up to date; skipping."
     fi
 elif [ ! -d "$ROOT/.venv" ] || [ ! -d "$ROOT/web/node_modules" ]; then
     fail "--skip-install needs an existing .venv and web/node_modules. Run once without it."
+elif web_deps_stale; then
+    warn "web/package-lock.json changed since the last npm ci; run once without --skip-install if the web app fails."
 fi
 
 API_ORIGIN="http://127.0.0.1:$API_PORT"
@@ -234,25 +271,50 @@ API_LOG="$LOG_DIR/backend.log"
 WEB_LOG="$LOG_DIR/web.log"
 PIDS=""
 
+# Sends signal $1 to each server. Each runs in its own process group (set -m below), so this
+# reaches its children (uvicorn under `uv run`, next under npx) too.
+signal_servers() {
+    for pid in $PIDS; do
+        kill "-$1" -- "-$pid" 2>/dev/null || kill "-$1" "$pid" 2>/dev/null || true
+    done
+}
+
+servers_alive() {
+    for pid in $PIDS; do
+        if kill -0 -- "-$pid" 2>/dev/null || kill -0 "$pid" 2>/dev/null; then return 0; fi
+    done
+    return 1
+}
+
 cleanup() {
-    trap - INT TERM EXIT
-    if [ -n "$PIDS" ]; then
-        echo
-        echo "Stopping AutoClipper..."
-        for pid in $PIDS; do
-            # Each server runs in its own process group (set -m), so this stops its children too.
-            kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-        done
-        wait 2>/dev/null || true
-    fi
+    set +e
+    trap - EXIT
+    # A second Ctrl+C (or a hangup) while stopping kills the servers outright.
+    trap 'signal_servers KILL; exit 130' INT TERM HUP
+    [ -n "$PIDS" ] || return 0
+    signal_servers TERM
+    printf '\nStopping AutoClipper (Ctrl+C again to force)...\n' 2>/dev/null
+    n=0
+    while [ "$n" -lt 10 ] && servers_alive; do
+        sleep 1
+        n=$((n + 1))
+    done
+    servers_alive && signal_servers KILL
+    wait 2>/dev/null
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 set -m  # own process group per background job, so Ctrl+C and cleanup reach the servers' children
 if port_open "$API_PORT"; then
-    warn "Something is already listening on port $API_PORT; assuming the backend is running."
+    check_port_owner "$API_PORT" "$API_ORIGIN/api/v1/health" '"job_runner"' backend --api-port
+    case "$(url_body "$API_ORIGIN/api/v1/health" 5)" in
+        *"\"job_runner\":\"$JOBS\""*) ;;
+        *) warn "The backend already on port $API_PORT runs a different job mode than $JOBS; stop it to switch." ;;
+    esac
+    warn "Port $API_PORT already has an AutoClipper backend; using it."
 else
     if [ "$WEB_PORT" != "3000" ] && [ -z "${AUTOCLIPPER_CORS_ORIGINS:-}" ]; then
         export AUTOCLIPPER_CORS_ORIGINS="http://localhost:$WEB_PORT,http://127.0.0.1:$WEB_PORT"
@@ -261,7 +323,8 @@ else
     PIDS="$PIDS $!"
 fi
 if port_open "$WEB_PORT"; then
-    warn "Something is already listening on port $WEB_PORT; assuming the web app is running."
+    check_port_owner "$WEB_PORT" "$WEB_URL" AutoClipper "web app" --web-port
+    warn "Port $WEB_PORT already has the AutoClipper web app; using it."
 else
     (cd "$ROOT/web" && exec npx --no-install next dev --port "$WEB_PORT") </dev/null >"$WEB_LOG" 2>&1 &
     PIDS="$PIDS $!"

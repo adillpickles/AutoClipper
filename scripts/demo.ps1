@@ -46,19 +46,38 @@ function Test-Port([int]$Port) {
     $null -ne (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
 }
 
+# Body of a URL, or $null when nothing answers.
+function Get-UrlBody([string]$Url, [int]$TimeoutSec) {
+    try { (Invoke-WebRequest -UseBasicParsing $Url -TimeoutSec $TimeoutSec).Content } catch { $null }
+}
+
+# True when web\node_modules is missing or older than web\package-lock.json (e.g. after a pull).
+function Test-WebDepsStale {
+    $installed = Join-Path $Root "web\node_modules\.package-lock.json"
+    if (-not (Test-Path $installed)) { return $true }
+    (Get-Item (Join-Path $Root "web\package-lock.json")).LastWriteTimeUtc -gt (Get-Item $installed).LastWriteTimeUtc
+}
+
+# Reads NAME=value like python-dotenv: quotes and spaces are dropped, and an unquoted value's
+# " # comment" is ignored (so "NAME= # x" counts as empty).
 function Get-EnvValue([string]$Path, [string]$Name) {
     if (-not (Test-Path $Path)) { return "" }
-    $line = Get-Content $Path | Where-Object { $_ -match "^\s*$Name\s*=" } | Select-Object -First 1
+    $line = Get-Content -Encoding UTF8 $Path | Where-Object { $_ -match "^\s*$Name\s*=" } | Select-Object -First 1
     if ($null -eq $line) { return "" }
-    return ($line -split "=", 2)[1].Trim().Trim('"').Trim("'")
+    $value = ($line -split "=", 2)[1].Trim()
+    if ($value -match '^"([^"]*)"') { return $Matches[1] }
+    if ($value -match "^'([^']*)'") { return $Matches[1] }
+    if ($value.StartsWith("#")) { return "" }
+    return ($value -replace '\s+#.*$', '').Trim()
 }
 
 function Set-EnvValue([string]$Path, [string]$Name, [string]$Value) {
-    $lines = @(Get-Content $Path)
+    $lines = @(Get-Content -Encoding UTF8 $Path)
     $found = $false
-    $lines = $lines | ForEach-Object {
-        if ($_ -match "^\s*$Name\s*=") { $found = $true; "$Name=$Value" } else { $_ }
-    }
+    # @() keeps a one-line result an array, so += below appends a line instead of concatenating.
+    $lines = @($lines | ForEach-Object {
+        if (-not $found -and $_ -match "^\s*$Name\s*=") { $found = $true; "$Name=$Value" } else { $_ }
+    })
     if (-not $found) { $lines += "$Name=$Value" }
     # UTF-8 without BOM, LF endings, so python-dotenv reads it the same everywhere.
     [IO.File]::WriteAllText($Path, (($lines -join "`n") + "`n"), (New-Object Text.UTF8Encoding $false))
@@ -99,7 +118,13 @@ $Jobs = if ($Mock) { "mock" } else { "pipeline" }
 if (-not $SkipInstall) {
     Write-Step "Installing Python dependencies (uv sync --extra captions)"
     uv sync --extra captions
-    if ($LASTEXITCODE -ne 0) { Fail "uv sync failed." }
+    if ($LASTEXITCODE -ne 0) {
+        # The captions extra (faster-whisper/onnxruntime) has no wheel for some platforms, e.g.
+        # Windows on ARM. Everything else works without it.
+        Write-Host "Captions unavailable on this platform; installing without them (exports work with captions off)." -ForegroundColor Yellow
+        uv sync
+        if ($LASTEXITCODE -ne 0) { Fail "uv sync failed." }
+    }
 
     # Mock mode still needs FFmpeg (the backend renders sample videos); pipeline mode also
     # needs TwitchDownloaderCLI. Both are skipped quickly when already installed.
@@ -113,8 +138,8 @@ if (-not $SkipInstall) {
     if ($LASTEXITCODE -ne 0) { Write-Host "setup-tools reported a problem; see the doctor output below." -ForegroundColor Yellow }
 
     Write-Step "Installing web dependencies (npm ci)"
-    if (Test-Path (Join-Path $Root "web\node_modules")) {
-        Write-Host "web\node_modules exists; skipping."
+    if (-not (Test-WebDepsStale)) {
+        Write-Host "web\node_modules is up to date; skipping."
     } else {
         Push-Location (Join-Path $Root "web")
         try {
@@ -124,6 +149,8 @@ if (-not $SkipInstall) {
     }
 } elseif (-not (Test-Path (Join-Path $Root ".venv")) -or -not (Test-Path (Join-Path $Root "web\node_modules"))) {
     Fail "-SkipInstall needs an existing .venv and web\node_modules. Run once without it."
+} elseif (Test-WebDepsStale) {
+    Write-Host "web\package-lock.json changed since the last npm ci; run once without -SkipInstall if the web app fails." -ForegroundColor Yellow
 }
 
 $WebEnv = Join-Path $Root "web\.env.local"
@@ -138,23 +165,37 @@ if ($LASTEXITCODE -ne 0) { Write-Host "doctor reported problems (see above); con
 
 # 5. Start -------------------------------------------------------------------
 Write-Step "Starting the app"
+$ChildPs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-Command")
 if (Test-Port $ApiPort) {
-    Write-Host "Something is already listening on port $ApiPort; assuming the backend is running." -ForegroundColor Yellow
+    # An open port must belong to AutoClipper; otherwise stop now instead of waiting 3 minutes.
+    $health = $null
+    try { $health = Get-UrlBody "$ApiOrigin/api/v1/health" 30 | ConvertFrom-Json } catch { }
+    if ($null -eq $health -or $null -eq $health.job_runner) {
+        Fail "Port $ApiPort is in use by another program (it does not answer as the AutoClipper backend). Stop that program or pick another port with -ApiPort N."
+    }
+    if ($health.job_runner -ne $Jobs) {
+        Write-Host "The backend already on port $ApiPort runs $($health.job_runner) jobs, not $Jobs; stop it to switch." -ForegroundColor Yellow
+    }
+    Write-Host "Port $ApiPort already has an AutoClipper backend; using it." -ForegroundColor Yellow
 } else {
     # The backend's default CORS origins only cover port 3000.
     $Cors = ""
     if ($WebPort -ne 3000 -and -not $env:AUTOCLIPPER_CORS_ORIGINS) {
         $Cors = "`$env:AUTOCLIPPER_CORS_ORIGINS = 'http://localhost:$WebPort,http://127.0.0.1:$WebPort'; "
     }
-    Start-Process powershell -ArgumentList "-NoExit", "-Command",
-        "`$Host.UI.RawUI.WindowTitle = 'AutoClipper backend'; Set-Location $(ConvertTo-Quoted $Root); ${Cors}uv run autoclipper serve --port $ApiPort --jobs $Jobs"
+    Start-Process powershell -ArgumentList ($ChildPs + @(
+        "`$Host.UI.RawUI.WindowTitle = 'AutoClipper backend'; Set-Location $(ConvertTo-Quoted $Root); ${Cors}uv run autoclipper serve --port $ApiPort --jobs $Jobs"))
 }
 if (Test-Port $WebPort) {
-    Write-Host "Something is already listening on port $WebPort; assuming the web app is running." -ForegroundColor Yellow
+    $page = Get-UrlBody "http://localhost:$WebPort" 30
+    if ($null -eq $page -or -not $page.Contains("AutoClipper")) {
+        Fail "Port $WebPort is in use by another program (it does not answer as the AutoClipper web app). Stop that program or pick another port with -WebPort N."
+    }
+    Write-Host "Port $WebPort already has the AutoClipper web app; using it." -ForegroundColor Yellow
 } else {
     # npx rather than `npm run dev -- --port`: Windows PowerShell 5.1 drops the `--` for npm.
-    Start-Process powershell -ArgumentList "-NoExit", "-Command",
-        "`$Host.UI.RawUI.WindowTitle = 'AutoClipper web'; Set-Location $(ConvertTo-Quoted (Join-Path $Root 'web')); npx --no-install next dev --port $WebPort"
+    Start-Process powershell -ArgumentList ($ChildPs + @(
+        "`$Host.UI.RawUI.WindowTitle = 'AutoClipper web'; Set-Location $(ConvertTo-Quoted (Join-Path $Root 'web')); npx --no-install next dev --port $WebPort"))
 }
 
 Write-Host "Waiting for the backend and web app (first start can take a minute)..."
