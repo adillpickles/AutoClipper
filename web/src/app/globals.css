@@ -26,6 +26,8 @@
   /* Borders: hairlines, not boxes */
   --border-subtle: #222838;
   --border-strong: #343c52;
+  /* Edges of form controls: >= 3:1 against panels and canvas (WCAG 1.4.11) */
+  --border-control: #5d6784;
 
   /* Ink (text) */
   --ink-primary: #f2f4f9;
@@ -132,6 +134,7 @@
 
   --color-border-subtle: var(--border-subtle);
   --color-border-strong: var(--border-strong);
+  --color-border-control: var(--border-control);
 
   --color-ink-primary: var(--ink-primary);
   --color-ink-secondary: var(--ink-secondary);

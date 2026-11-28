@@ -452,7 +452,7 @@ export function StartForm() {
           <div
             role="group"
             aria-label="Video file source"
-            className="inline-flex shrink-0 rounded-control border border-border-strong bg-surface-canvas p-0.5"
+            className="inline-flex shrink-0 rounded-control border border-border-control bg-surface-canvas p-0.5"
           >
             {(
               [
