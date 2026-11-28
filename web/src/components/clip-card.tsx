@@ -2,6 +2,7 @@
 
 import { useId, useState } from "react";
 
+import { ClipShareMenu } from "@/components/share-menu";
 import { Button, buttonClasses, ButtonLink } from "@/components/ui/button";
 import type { Candidate, Export, VodSummary } from "@/lib/api/types";
 import { buildClipFilename } from "@/lib/filenames";
@@ -208,6 +209,7 @@ export function ClipCard({
           >
             Edit <span className="sr-only">clip {candidate.rank}</span>
           </ButtonLink>
+          <ClipShareMenu {...{ clip, candidate, filename, vod, videoId }} />
         </div>
       </div>
     </li>

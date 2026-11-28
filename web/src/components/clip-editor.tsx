@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 
+import { ShareMenu } from "@/components/share-menu";
 import { buttonClasses } from "@/components/ui/button";
 
 import {
@@ -1120,13 +1121,24 @@ export function ClipEditor() {
                 className="mx-auto aspect-[9/16] max-h-72 rounded-lg bg-black"
                 aria-label="Rendered vertical clip"
               />
-              <a
-                href={render.url}
-                download={downloadFilename}
-                className={buttonClasses({ className: "self-start" })}
-              >
-                Download clip
-              </a>
+              <div className="flex flex-wrap items-center gap-2">
+                <a
+                  href={render.url}
+                  download={downloadFilename}
+                  className={buttonClasses()}
+                >
+                  Download clip
+                </a>
+                <ShareMenu
+                  fileUrl={render.url}
+                  filename={downloadFilename}
+                  title={clipTitle}
+                  channel={result.vod.broadcaster_display_name}
+                  videoId={result.vod.video_id}
+                  startS={render.export.start_s}
+                  subject="this clip"
+                />
+              </div>
             </div>
           )}
         </section>
