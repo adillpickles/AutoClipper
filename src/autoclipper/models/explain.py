@@ -262,6 +262,40 @@ def explain_candidates(
     return explained
 
 
+def candidate_stats(
+    candidates: Sequence[Candidate],
+    *,
+    windows: pl.DataFrame | None = None,
+    features: pl.DataFrame | None = None,
+) -> list[dict[str, float]]:
+    """Peak aggregate feature values inside each candidate, for the optional title polisher.
+
+    Reads the same windows and features as `explain_candidates` and only the numeric columns in
+    `ALLOWED_FEATURE_COLUMNS` (never text, usernames or hashes, whatever else `features` holds).
+    Each value is the largest finite value among the windows overlapping the candidate, rounded
+    to 2 decimals; audio columns skip muted windows, as the explanations do. ``audio_is_muted``
+    itself is left out. A column without a finite value is omitted.
+
+    Returns:
+        One dict per candidate, in input order (empty dicts when there are no features).
+    """
+    index = _build_feature_index(windows, features)
+    stats: list[dict[str, float]] = []
+    for candidate in candidates:
+        values: dict[str, float] = {}
+        if index is not None:
+            inside = (index.starts < candidate.end_s) & (index.ends > candidate.start_s)
+            for column, array in index.columns.items():
+                if column == "audio_is_muted":
+                    continue
+                mask = inside & index.unmuted if column.startswith("audio_") else inside
+                peak = _max_finite(array[mask])
+                if peak is not None:
+                    values[column] = round(peak, 2)
+        stats.append(values)
+    return stats
+
+
 def _build_feature_index(
     windows: pl.DataFrame | None, features: pl.DataFrame | None
 ) -> _FeatureIndex | None:
@@ -1016,4 +1050,4 @@ def _max_finite(values: _FloatArray) -> float | None:
     return val if math.isfinite(val) else None
 
 
-__all__ = ["ALLOWED_FEATURE_COLUMNS", "explain_candidates"]
+__all__ = ["ALLOWED_FEATURE_COLUMNS", "candidate_stats", "explain_candidates"]

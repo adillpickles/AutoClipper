@@ -4181,3 +4181,48 @@ def test_segment_preview_that_misses_the_candidate_says_so_and_keeps_export(
     assert "doesn't cover this whole moment" in media["preview"]["message"]
     assert "couldn't be prepared" not in media["preview"]["message"]
     assert media["export"]["status"] == "available"
+
+
+def test_serve_passes_the_configured_title_polisher_to_pipeline_jobs(
+    monkeypatch: pytest.MonkeyPatch, samples: SampleMedia
+) -> None:
+    """With AUTOCLIPPER_TITLE_LLM_* set, the API's analysis runs with the polisher (#65);
+    without them it runs plain `analyze_vod`."""
+    import functools
+
+    import uvicorn
+    from typer.testing import CliRunner
+
+    from autoclipper.analyze import analyze_vod
+    from autoclipper.api import service as service_module
+    from autoclipper.cli import app as cli
+    from autoclipper.config import get_settings
+
+    monkeypatch.setattr(service_module, "ensure_sample_media", lambda directory: samples)
+    seen: list[object] = []
+    real_service = service_module.MockService
+
+    def capture(**kwargs: object) -> MockService:
+        seen.append(kwargs.get("analyze", analyze_vod))
+        return real_service(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(service_module, "MockService", capture)
+
+    def run(api: object, **kwargs: object) -> None:
+        with TestClient(api):  # type: ignore[arg-type]  # runs the lifespan, stops the workers
+            pass
+
+    monkeypatch.setattr(uvicorn, "run", run)
+    lexicon = Path(__file__).parents[2] / "configs" / "lexicon.yaml"
+
+    assert CliRunner().invoke(cli, ["serve", "--lexicon", str(lexicon)]).exit_code == 0
+    monkeypatch.setenv("AUTOCLIPPER_TITLE_LLM_BASE_URL", "http://127.0.0.1:9/v1")
+    monkeypatch.setenv("AUTOCLIPPER_TITLE_LLM_MODEL", "local")
+    get_settings.cache_clear()
+    assert CliRunner().invoke(cli, ["serve", "--lexicon", str(lexicon)]).exit_code == 0
+
+    plain, polished = seen
+    assert plain is analyze_vod
+    assert isinstance(polished, functools.partial)
+    assert polished.func is analyze_vod
+    assert polished.keywords["title_polisher"].model == "local"

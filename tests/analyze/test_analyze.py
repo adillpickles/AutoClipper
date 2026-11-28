@@ -1567,3 +1567,85 @@ def test_analyze_a_real_vod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     )
     assert written.vod.video_id == video_id
     assert written.candidates
+
+
+@pytest.mark.ffmpeg
+def test_the_optional_title_polisher_sends_only_aggregates_and_keeps_the_ranking(
+    tmp_path: Path, chat_binary: Path, audio_source: Path, lexicon: Lexicon
+) -> None:
+    """With the polisher configured, one request goes to the OpenAI-compatible endpoint. It
+    holds no chat text, usernames, VOD title, channel or path, and only titles change (#65)."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from autoclipper.models.title_polish import TitlePolisherConfig
+
+    bodies: list[bytes] = []
+    reply = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps({"titles": [{"id": "1", "title": "Chat wakes up"}]})
+                }
+            }
+        ]
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            bodies.append(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+            data = json.dumps(reply).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, format: str, *args: object) -> None:
+            del format, args
+
+    def run(root: Path, polisher: TitlePolisherConfig | None) -> AnalysisResult:
+        return analyze_vod(
+            VIDEO_ID,
+            data_dir=root / "data",
+            artifacts_dir=root / "artifacts",
+            tools=tools(chat_binary, downloader=FakeDownloader(audio_source)),
+            lexicon=lexicon,
+            clock=lambda: NOW,
+            title_polisher=polisher,
+        )
+
+    plain = run(tmp_path / "plain", None)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/v1"
+        polished = run(tmp_path / "polished", TitlePolisherConfig(url, "local", None, 5.0))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    (body,) = bodies
+    comments = json.loads((FIXTURES / "chat_replay.json").read_text(encoding="utf-8"))["comments"]
+    private = {"Synthetic test stream", "Streamer_000", "streamer_000", str(tmp_path)}
+    for comment in comments:  # the fixture also holds malformed entries for the parser tests
+        commenter = comment.get("commenter") if isinstance(comment, dict) else None
+        message = comment.get("message") if isinstance(comment, dict) else None
+        if isinstance(commenter, dict):
+            private |= {v for k, v in commenter.items() if k in ("display_name", "name") and v}
+        chat_body = message.get("body") if isinstance(message, dict) else None
+        if isinstance(chat_body, str) and len(chat_body) >= 6:
+            private.add(chat_body)
+    assert len(private) > 10  # the fixture's names and messages were found
+    text = body.decode("utf-8")
+    assert not [value for value in private if value in text]
+    assert json.loads(body)["model"] == "local"
+
+    keep = {"title", "title_source"}
+    assert [c.model_dump(exclude=keep) for c in polished.candidates] == [
+        c.model_dump(exclude=keep) for c in plain.candidates
+    ]
+    assert polished.candidates[0].title == "Chat wakes up"
+    assert polished.candidates[0].title_source == "llm"
+    assert all(c.title_source is None for c in polished.candidates[1:])
+    assert [c.title for c in polished.candidates[1:]] == [c.title for c in plain.candidates[1:]]
