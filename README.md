@@ -24,6 +24,8 @@ Start with the task guide and current state, then read what's relevant:
 
 ## First local run
 
+**Windows shortcut:** with uv and Node.js installed, `powershell -ExecutionPolicy Bypass -File scripts/demo.ps1` does steps 2–4 in one go: installs dependencies and tools, fills in `.env` (including a generated chat hash salt) and `web/.env.local`, runs `autoclipper doctor`, starts the backend and web app in their own windows and opens the browser. Without Twitch credentials in `.env` it starts in mock mode; `-Mock` forces it and `-SkipInstall` skips the installs.
+
 ### 1. Prerequisites
 
 - **[uv](https://docs.astral.sh/uv/getting-started/installation/)** — manages the Python **3.12** environment pinned in [`.python-version`](.python-version) (`uv sync` downloads 3.12 if needed).
