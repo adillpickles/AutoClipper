@@ -12,8 +12,13 @@ import { safeDuration } from "./geometry";
 export const VIEW_W = 1000;
 /** viewBox height; y = 0 is the top of the track. */
 export const VIEW_H = 100;
-/** Highest a curve reaches, leaving the top of the track to the rank labels. */
+/** Highest a curve reaches by default, leaving the top of the track to the rank labels. */
 const CURVE_TOP = 24;
+/**
+ * Highest the loudness line reaches: 60% of the track, anchored at the bottom, so it reads as
+ * context behind the chat area rather than competing with it.
+ */
+export const LOUDNESS_TOP = VIEW_H * 0.4;
 /**
  * Loudness at or below this (dBFS) is digital silence at the contract's -60 floor: a muted song
  * or a starting screen. It is drawn at the baseline and left out of the scale, so a few minutes
@@ -102,19 +107,19 @@ function fmt(n: number): string {
 /**
  * One SVG path per run of measured points. Each point sits at the centre of its step; a run's
  * ends extend flat to its outer step edges, so a lone point still shows as a short plateau.
- * `area` closes each run down to the baseline.
+ * `area` closes each run down to the baseline; `top` is the y a height of 1 reaches.
  */
 export function curvePaths(
   heights: Series,
   stepS: number,
   durationS: number,
-  { area }: { area: boolean },
+  { area, top = CURVE_TOP }: { area: boolean; top?: number },
 ): string[] {
   const duration = safeDuration(durationS);
   if (!(stepS > 0)) return [];
   const x = (s: number) =>
     (Math.min(Math.max(s, 0), duration) / duration) * VIEW_W;
-  const y = (h: number) => VIEW_H - h * (VIEW_H - CURVE_TOP);
+  const y = (h: number) => VIEW_H - h * (VIEW_H - top);
   // Points past the VOD's end can't be placed; drop them.
   const placed = heights.map((h, i) => (i * stepS < duration ? h : null));
   return seriesRuns(placed).map(([first, last]) => {

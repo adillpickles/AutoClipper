@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  LOUDNESS_TOP,
   activitySummary,
   curvePaths,
   drawableActivity,
@@ -82,6 +83,15 @@ describe("curvePaths", () => {
     expect(paths[0]).toBe("M0 24 L125 24 L375 24 L500 24");
     // The lone last point is a flat plateau across its own step, at the baseline.
     expect(paths[1]).toBe("M750 100 L875 100 L1000 100");
+  });
+
+  it("caps a curve at a lower top, anchored at the bottom", () => {
+    const [line] = curvePaths([1, 0], 10, 20, {
+      area: false,
+      top: LOUDNESS_TOP,
+    });
+    expect(LOUDNESS_TOP).toBe(40); // 60% of the track's height
+    expect(line).toBe("M0 40 L250 40 L750 100 L1000 100");
   });
 
   it("closes an area down to the baseline", () => {
