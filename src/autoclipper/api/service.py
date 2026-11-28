@@ -2004,7 +2004,10 @@ class MockService:
         )
 
     def _stacked_layout_for(self, job: _JobRecord) -> StackedLayout | None:
-        """Return the channel preset or global facecam stacked layout for `job`, if any (#68)."""
+        """The channel's stacked_layout preset for `job`, if any (#68).
+
+        It is the fallback when no facecam is detected in the clip (#191).
+        """
         if self.channel_layouts and job.result is not None:
             vod = job.result.vod
             layouts = {k.strip().lower(): v for k, v in self.channel_layouts.items()}
@@ -2021,8 +2024,6 @@ class MockService:
                 preset = layouts.get(key)
                 if preset is not None:
                     return preset
-        if self.export_facecam_region is not None:
-            return stacked_layout_from_region(self.export_facecam_region)
         return None
 
     def _broadcaster_login(self, broadcaster_id: str) -> str | None:
@@ -2037,11 +2038,9 @@ class MockService:
             return None
 
     def _layouts_for(self, job: _JobRecord) -> tuple[str, ...]:
-        return available_layouts(
-            self.export_region,
-            facecam_region=self.export_facecam_region,
-            stacked_layout=self._stacked_layout_for(job),
-        )
+        # `stacked` needs no configuration: the facecam is detected in the clip, with the
+        # channel preset or center_crop as fallbacks (#191).
+        return available_layouts(self.export_region, facecam_detection=True)
 
     def _whole_vod_export(self, job: _JobRecord, duration_s: float) -> ExportAvailability:
         """Export availability over a source that covers the whole VOD."""
@@ -3334,7 +3333,14 @@ class MockService:
                 output=target,
                 layout=request.layout,
                 captions=request.captions,
+                # An explicit facecam region wins; otherwise the facecam is detected in the clip
+                # and the channel preset is the fallback (#191).
                 stacked_layout=(
+                    stacked_layout_from_region(self.export_facecam_region)
+                    if request.layout == "stacked" and self.export_facecam_region is not None
+                    else None
+                ),
+                stacked_fallback=(
                     self._stacked_layout_for(job) if request.layout == "stacked" else None
                 ),
             )

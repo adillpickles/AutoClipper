@@ -33,7 +33,7 @@ from autoclipper.export.reframe import (
     layout_from_settings,
     stacked_layout_from_region,
 )
-from autoclipper.ffmpeg import FFmpegError, Runner
+from autoclipper.ffmpeg import Runner
 
 log = logging.getLogger(__name__)
 
@@ -101,12 +101,17 @@ def available_layouts(
     *,
     facecam_region: tuple[float, float, float, float] | None = None,
     stacked_layout: StackedLayout | None = None,
+    facecam_detection: bool = False,
 ) -> tuple[LayoutName, ...]:
-    """The layouts that can be rendered given the configured regions and channel preset."""
+    """The layouts that can be rendered given the configured regions and channel preset.
+
+    With `facecam_detection`, ``stacked`` is always offered: `render_clip` finds the facecam
+    in the clip or falls back to a preset or ``center_crop`` (#191).
+    """
     layouts: list[LayoutName] = ["center_crop"]
     if region is not None:
         layouts.append("configured_region")
-    if stacked_layout is not None or facecam_region is not None:
+    if facecam_detection or stacked_layout is not None or facecam_region is not None:
         layouts.append("stacked")
     return tuple(layouts)
 
@@ -152,6 +157,11 @@ def _detected_stacked_layout(
 ) -> Layout:
     """The stacked layout from facecam detection, else the fallback preset, else center crop.
 
+    A detected overlay (``found``) beats the preset; a box estimated around a borderless
+    webcam (``found_padded``) loses to it. A full-screen camera renders ``center_crop`` even
+    with a preset. Any error while detecting (FFmpeg, OpenCV missing or failing, the file
+    vanishing) is logged and treated as no detection.
+
     Raises:
         NoFacecamConfiguredError: Detection is off and there is no fallback preset.
     """
@@ -165,26 +175,42 @@ def _detected_stacked_layout(
         if spec.stacked_fallback is not None:
             return spec.stacked_fallback
         return layout_named("stacked", None)
+    preset = spec.stacked_fallback
     try:
         detection = detector(spec.source, spec.interval)
-    except FFmpegError as exc:
-        detection = None
-        reason = f"facecam detection couldn't read frames ({exc})"
-    else:
-        reason = f"no facecam detected: {detection.message}"
-    if detection is not None and detection.region is not None:
-        base = spec.stacked_fallback
-        return stacked_layout_from_region(
-            detection.region,
-            gameplay_region=None if base is None else _region_tuple(base),
-            facecam_fraction=DEFAULT_FACECAM_FRACTION if base is None else base.facecam_fraction,
-        )
-    full_camera = detection is not None and detection.status == "full_camera"
-    if spec.stacked_fallback is not None and not full_camera:
+    except Exception as exc:  # detection is best effort; it must never fail the render
+        log.warning("facecam detection failed source=%s", spec.source, exc_info=True)
+        reason = f"facecam detection failed ({type(exc).__name__}: {exc})"
+        if preset is not None:
+            warn(f"{reason}; using the channel's stacked_layout preset")
+            return preset
+        warn(f"{reason}; rendering center_crop instead of stacked")
+        return CenterCrop()
+    if detection.status == "found" and detection.region is not None:
+        return _stacked_from_detection(detection.region, preset)
+    if detection.status == "found_padded" and detection.region is not None:
+        # A box estimated around a borderless webcam is a guess; a measured preset is better.
+        if preset is not None:
+            return preset
+        warn(f"{detection.message}; using that estimate")
+        return _stacked_from_detection(detection.region, None)
+    reason = f"no facecam detected: {detection.message}"
+    if preset is not None and detection.status != "full_camera":
         warn(f"{reason}; using the channel's stacked_layout preset")
-        return spec.stacked_fallback
+        return preset
     warn(f"{reason}; rendering center_crop instead of stacked")
     return CenterCrop()
+
+
+def _stacked_from_detection(
+    region: tuple[float, float, float, float], preset: StackedLayout | None
+) -> StackedLayout:
+    """The detected facecam over the preset's gameplay region and pane split, if any."""
+    return stacked_layout_from_region(
+        region,
+        gameplay_region=None if preset is None else _region_tuple(preset),
+        facecam_fraction=DEFAULT_FACECAM_FRACTION if preset is None else preset.facecam_fraction,
+    )
 
 
 def _region_tuple(layout: StackedLayout) -> tuple[float, float, float, float]:

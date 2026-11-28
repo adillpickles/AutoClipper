@@ -714,7 +714,7 @@ When the user selects a candidate, the client calls `GET /api/v1/jobs/{job_id}/c
 | `min_start_s` | float \| null | Earliest export `start_s` allowed; non-null iff `available` |
 | `max_end_s` | float \| null | Latest export `end_s` allowed; non-null iff `available` |
 | `max_duration_s` | float \| null | Longest export allowed (`end_s - start_s`); non-null iff `available`. Server-configured; default 90 s, the export preset in [labeling § 2](../data/labeling.md#2-from-clips-to-moments). |
-| `layouts` | list<str> | Layouts the server can render now (§ 6.1); `[]` iff `unavailable`. `configured_region` is listed only when `AUTOCLIPPER_EXPORT_REGION` is set; `stacked` is listed when `AUTOCLIPPER_EXPORT_FACECAM_REGION` or a channel preset in `configs/channels.yaml` applies (#68). Clients ignore values they don't know. |
+| `layouts` | list<str> | Layouts the server can render now (§ 6.1); `[]` iff `unavailable`. `configured_region` is listed only when `AUTOCLIPPER_EXPORT_REGION` is set; `stacked` is always listed: the server detects the facecam in the clip, falling back to the channel preset in `configs/channels.yaml` or to a center crop (#68, #191). Clients ignore values they don't know. |
 
 `MediaUnavailableReason` (open enum):
 
@@ -759,7 +759,7 @@ When the user selects a candidate, the client calls `GET /api/v1/jobs/{job_id}/c
     "min_start_s": 0.0,
     "max_end_s": 360.0,
     "max_duration_s": 90.0,
-    "layouts": ["center_crop", "configured_region"]
+    "layouts": ["center_crop", "configured_region", "stacked"]
   }
 }
 ```
@@ -825,7 +825,7 @@ Layouts ([PRD § Export](../product/prd.md#export), #20, #68):
 
 - `center_crop`: the central 9:16 region of the 16:9 source, scaled to 1080×1920.
 - `configured_region`: one fixed 9:16 source region set in server configuration (e.g. where a streamer's layout puts the action). It isn't chosen per request in v1.
-- `stacked`: facecam region stacked above gameplay inside 1080×1920, listed when `AUTOCLIPPER_EXPORT_FACECAM_REGION` or a per-channel `stacked_layout` preset in `configs/channels.yaml` applies (#68).
+- `stacked`: facecam region stacked above gameplay inside 1080×1920 (#68), always listed. The facecam region is `AUTOCLIPPER_EXPORT_FACECAM_REGION` when set, otherwise the webcam overlay detected in the clip, otherwise the channel's `stacked_layout` preset in `configs/channels.yaml`; a full-screen camera, or no facecam and no preset, renders a center crop instead (#191). The export still succeeds in those cases; the fallback is logged on the server.
 
 Further layouts (e.g. automatic smart crop, optional polish) would be added as new values (§ 10).
 

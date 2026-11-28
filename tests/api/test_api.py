@@ -653,7 +653,8 @@ def test_candidate_media_is_the_sample_video_with_full_bounds(client: TestClient
         "min_start_s": 0.0,
         "max_end_s": 360.0,
         "max_duration_s": 90.0,
-        "layouts": ["center_crop"],  # configured_region needs AUTOCLIPPER_EXPORT_REGION
+        # configured_region needs AUTOCLIPPER_EXPORT_REGION; stacked detects the facecam (#191)
+        "layouts": ["center_crop", "stacked"],
     }
     file = client.get(preview["url"])
     assert file.status_code == 200
@@ -732,7 +733,10 @@ def test_an_integer_bound_is_accepted_and_strict_types_are_enforced(client: Test
     ok = client.post(f"{API}/exports", json=export_body(job["job_id"], start_s=115))
     text = client.post(f"{API}/exports", json=export_body(job["job_id"], start_s="115.5"))
     yes = client.post(f"{API}/exports", json=export_body(job["job_id"], captions="yes"))
-    layout = client.post(f"{API}/exports", json=export_body(job["job_id"], layout="stacked"))
+    # A layout the server doesn't offer: no AUTOCLIPPER_EXPORT_REGION is set.
+    layout = client.post(
+        f"{API}/exports", json=export_body(job["job_id"], layout="configured_region")
+    )
 
     assert ok.status_code == 201
     assert error_code(text) == "invalid_request"
@@ -945,7 +949,7 @@ def test_configured_region_is_offered_and_passed_on_when_set(
         f"{API}/exports", json=export_body(job["job_id"], layout="configured_region")
     )
 
-    assert media["export"]["layouts"] == ["center_crop", "configured_region"]
+    assert media["export"]["layouts"] == ["center_crop", "configured_region", "stacked"]
     assert created.status_code == 201
     assert renderer.specs[0].layout == "configured_region"
     assert renderer.regions == [region]
@@ -4028,7 +4032,9 @@ def test_stacked_layout_resolves_channel_preset_by_broadcaster_id_and_login(
         json=export_body(job["job_id"], layout="stacked", captions=False),
     )
     assert made.status_code == 201
-    assert renderer.specs[0].stacked_layout == preset
+    # The preset is the fallback; the facecam detected in the clip comes first (#191).
+    assert renderer.specs[0].stacked_layout is None
+    assert renderer.specs[0].stacked_fallback == preset
 
 
 @pytest.mark.parametrize(
@@ -4363,7 +4369,9 @@ def test_stacked_layout_resolves_on_fresh_data_dir_when_display_name_differs_fro
     )
     assert made.status_code == 201, made.text
     assert client.get(f"{API}/exports/{made.json()['export_id']}").json()["state"] == "done"
-    assert renderer.specs[0].stacked_layout == preset
+    # The preset is the fallback; the facecam detected in the clip comes first (#191).
+    assert renderer.specs[0].stacked_layout is None
+    assert renderer.specs[0].stacked_fallback == preset
 
 
 def _make_forward_jump_ts(tmp_path: Path, *, audio_codec: str = "aac") -> Path:

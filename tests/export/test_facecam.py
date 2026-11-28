@@ -184,6 +184,23 @@ def test_a_large_face_is_a_full_screen_camera() -> None:
     assert_region(found.face, big_face)
 
 
+def test_a_small_steady_face_in_a_corner_without_a_border_gets_a_padded_corner_box() -> None:
+    face: Region = (0.82, 0.68, 0.12, 0.2)
+    frames, boxes = make_frames(cam=None, faces=[face] * 7)
+
+    found = locate_facecam(frames, face_detector=fake_detector(frames, boxes))
+
+    assert found.status == "found_padded"
+    # 3 face widths wide at 4:3, flush with the bottom-right corner.
+    assert_region(found.region, (0.64, 0.52, 0.36, 0.48))
+    assert found.region is not None
+    x, y, w, h = found.region
+    assert x <= face[0]
+    assert y <= face[1]
+    assert x + w >= face[0] + face[2]
+    assert y + h >= face[1] + face[3]
+
+
 def test_a_steady_face_without_an_overlay_box_is_a_full_screen_camera() -> None:
     face: Region = (0.42, 0.3, 0.12, 0.2)
     frames, boxes = make_frames(cam=None, faces=[face] * 7)
@@ -427,17 +444,53 @@ def test_a_full_screen_camera_ignores_the_preset(
     assert isinstance(layout, CenterCrop)
 
 
-def test_unreadable_frames_fall_back_to_the_preset(
+def test_a_padded_box_loses_to_the_channel_preset(
     tmp_path: Path, rendered: list[ExportRequest]
 ) -> None:
-    def broken(_source: Path, _interval: Interval) -> FacecamDetection:
-        raise FFmpegExitError(FFmpegCommand(("ffmpeg",)), 1, b"bad frame")
+    padded = _detection("found_padded", (0.64, 0.52, 0.36, 0.48))
 
+    assert _render(tmp_path, rendered, lambda *_: padded, stacked_fallback=PRESET) == PRESET
+
+
+def test_without_a_preset_the_padded_box_is_used_with_a_warning(
+    tmp_path: Path, rendered: list[ExportRequest]
+) -> None:
     warnings: list[str] = []
-    layout = _render(tmp_path, rendered, broken, warnings=warnings, stacked_fallback=PRESET)
+    padded = _detection("found_padded", (0.64, 0.52, 0.36, 0.48))
 
+    layout = _render(tmp_path, rendered, lambda *_: padded, warnings=warnings)
+
+    assert isinstance(layout, StackedLayout)
+    assert (layout.facecam.x, layout.facecam.y) == pytest.approx((0.64, 0.52))
+    assert len(warnings) == 1
+    assert "estimate" in warnings[0]
+
+
+def _raise(exc: BaseException) -> Callable[[Path, Interval], FacecamDetection]:
+    def detector(_source: Path, _interval: Interval) -> FacecamDetection:
+        raise exc
+
+    return detector
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(FFmpegExitError(FFmpegCommand(("ffmpeg",)), 1, b"bad frame"), id="ffmpeg"),
+        pytest.param(RuntimeError("couldn't load the face cascade"), id="cascade"),
+        pytest.param(ImportError("No module named 'cv2'"), id="no-opencv"),
+        pytest.param(FileNotFoundError("vod.mp4"), id="file-gone"),
+    ],
+)
+def test_a_failing_detector_never_fails_the_render(
+    tmp_path: Path, rendered: list[ExportRequest], error: Exception
+) -> None:
+    warnings: list[str] = []
+    layout = _render(tmp_path, rendered, _raise(error), warnings=warnings, stacked_fallback=PRESET)
     assert layout == PRESET
-    assert "couldn't read frames" in warnings[0]
+    assert "facecam detection failed" in warnings[0]
+
+    assert isinstance(_render(tmp_path, rendered, _raise(error)), CenterCrop)
 
 
 def test_with_detection_off_the_preset_is_used_or_the_layout_refused(

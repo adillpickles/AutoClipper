@@ -16,7 +16,10 @@ Results:
 - ``found``: a normalized ``(x, y, width, height)`` region for the facecam pane.
 - ``not_found``: no face in enough frames (no camera, or a face the detector can't see).
 - ``inconsistent``: faces, but not in one place (a moving or full-screen camera, scene changes).
-- ``full_camera``: one face in place, but it fills the frame or has no overlay box around it.
+- ``found_padded``: a steady face near a frame corner with no visible overlay border; the
+  region is a webcam-shaped box estimated around the face, flush with that corner.
+- ``full_camera``: one face in place, but it fills the frame, or it has no overlay box around it
+  and isn't near a corner.
 
 Detection costs about 0.3-1.5 s per clip on a laptop CPU: seven 640 px grayscale keyframes (the
 seeks run in parallel) and a Haar cascade on each. `FacecamCache` keeps results per source file
@@ -29,6 +32,7 @@ import json
 import logging
 import math
 import threading
+import uuid
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -39,12 +43,18 @@ import numpy as np
 import numpy.typing as npt
 
 from autoclipper.export.cut import Interval
-from autoclipper.ffmpeg import FFmpegError, Runner, ffmpeg_command, run_command
+from autoclipper.ffmpeg import (
+    TIMELINE_OPTIONS,
+    FFmpegError,
+    Runner,
+    ffmpeg_command,
+    run_command,
+)
 
 log = logging.getLogger(__name__)
 
 # Bump when the detection logic changes, so stale on-disk cache entries are ignored.
-DETECTOR_VERSION: Final = 1
+DETECTOR_VERSION: Final = 2
 
 DEFAULT_SAMPLES: Final = 7
 # Frames are scaled to this width before detection; 640 px keeps a corner webcam's face around
@@ -90,10 +100,16 @@ _EDGE_PEAK_RATIO: Final = 2.5
 _EDGE_MIN_STRENGTH: Final = 6.0
 # Edges at least this share of the strongest one in range count; the nearest of them wins.
 _NEAR_PEAK_SHARE: Final = 0.5
+# A borderless webcam's estimated box: this many face widths wide (4:3), the face's center this
+# far down it, flush with the frame edges it comes within the slack of (a corner is required).
+_PAD_BOX_FACES: Final = 3.0
+_PAD_FACE_DROP: Final = 0.45
+_PAD_CORNER_SLACK: Final = 0.12
 # Sides within this share of the frame edge are snapped to it.
 _SNAP: Final = 0.03
 
-type FacecamStatus = Literal["found", "not_found", "inconsistent", "full_camera"]
+type FacecamStatus = Literal["found", "found_padded", "not_found", "inconsistent", "full_camera"]
+_STATUSES: Final = ("found", "found_padded", "not_found", "inconsistent", "full_camera")
 type Region = tuple[float, float, float, float]
 type GrayFrame = npt.NDArray[np.uint8]
 # A face as (x, y, width, height) in frame pixels.
@@ -106,8 +122,10 @@ class FacecamDetection:
     """What `detect_facecam` found.
 
     Attributes:
-        status: ``found``, ``not_found``, ``inconsistent`` or ``full_camera`` (module docs).
-        region: The facecam overlay as normalized ``(x, y, width, height)``; set iff ``found``.
+        status: ``found``, ``found_padded``, ``not_found``, ``inconsistent`` or
+            ``full_camera`` (module docs).
+        region: The facecam overlay as normalized ``(x, y, width, height)``; set iff the status
+            is ``found`` or ``found_padded``.
         face: The consistent face as normalized ``(x, y, width, height)``, when there was one.
         frames: How many frames were decoded and searched.
         face_frames: How many of them showed the consistent face.
@@ -138,7 +156,7 @@ class FacecamDetection:
             return (x, y, w, h)
 
         status = data["status"]
-        if status not in ("found", "not_found", "inconsistent", "full_camera"):
+        if status not in _STATUSES:
             raise ValueError(f"bad status {status!r}")
         frames = data["frames"]
         face_frames = data["face_frames"]
@@ -197,6 +215,7 @@ def read_gray_frame(
     # Keyframes only, and the keyframe at or before `time_s` (within a couple of seconds on
     # Twitch): decoding stops after one frame instead of running up to the exact time.
     command = ffmpeg_command(
+        *TIMELINE_OPTIONS,
         *("-skip_frame", "nokey", "-noaccurate_seek"),
         *("-ss", f"{max(0.0, time_s):.3f}"),
         *("-i", source),
@@ -317,15 +336,27 @@ def locate_facecam(
         )
     )
     # An overlay away from the frame edges shows a border on both axes; one in a corner shows
-    # its two inner borders. Without one each way, the face isn't in a box.
+    # its two inner borders. Without one each way, the box is estimated around the face.
     if "edge" not in (left.kind, right.kind) or "edge" not in (top.kind, bottom.kind):
+        padded = _padded_corner_box(face, width, height)
+        if padded is None:
+            return FacecamDetection(
+                "full_camera",
+                None,
+                _rounded(face),
+                n,
+                len(support),
+                "the face has no overlay box around it and isn't in a corner, so the camera "
+                "likely fills the frame",
+            )
         return FacecamDetection(
-            "full_camera",
-            None,
+            "found_padded",
+            _rounded(padded),
             _rounded(face),
             n,
             len(support),
-            "the face has no overlay box around it, so the camera likely fills the frame",
+            f"a steady face in a corner in {len(support)} of {n} frames, but no overlay border; "
+            "the box is estimated around the face",
         )
     if region[2] * region[3] > MAX_OVERLAY_AREA:
         return FacecamDetection(
@@ -344,6 +375,36 @@ def locate_facecam(
         len(support),
         f"facecam found in {len(support)} of {n} frames",
     )
+
+
+def _padded_corner_box(face: Region, width: int, height: int) -> Region | None:
+    """A webcam-shaped box around a face near a frame corner, or None away from the corners.
+
+    The box is `_PAD_BOX_FACES` face widths wide at 4:3 (in pixels), centered on the face across
+    and with the face's center `_PAD_FACE_DROP` of the way down, then moved flush with the frame
+    edges it comes within `_PAD_CORNER_SLACK` of. It must touch a side edge and the top or
+    bottom: borderless webcams sit in corners, and a face elsewhere is a full-screen camera.
+    """
+    fx, fy, fw, fh = face
+    w = min(1.0, _PAD_BOX_FACES * fw)
+    h = min(1.0, w * width * 3 / 4 / height)
+    x = fx + fw / 2 - w / 2
+    y = fy + fh / 2 - _PAD_FACE_DROP * h
+    if x <= _PAD_CORNER_SLACK:
+        x, horizontal = 0.0, True
+    elif x + w >= 1 - _PAD_CORNER_SLACK:
+        x, horizontal = 1.0 - w, True
+    else:
+        horizontal = False
+    if y <= _PAD_CORNER_SLACK:
+        y, vertical = 0.0, True
+    elif y + h >= 1 - _PAD_CORNER_SLACK:
+        y, vertical = 1.0 - h, True
+    else:
+        vertical = False
+    if not (horizontal and vertical) or w * h > MAX_OVERLAY_AREA:
+        return None
+    return (x, y, w, h)
 
 
 def _face_groups(detections: Sequence[Sequence[FaceBox]]) -> list[list[FaceBox]]:
@@ -563,7 +624,8 @@ class FacecamCache:
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
             path = self.directory / f"{key}.json"
-            tmp = path.with_suffix(".tmp")
+            # A unique temporary name, so two processes writing one entry don't collide.
+            tmp = path.with_name(f"{path.stem}.{uuid.uuid4().hex}.tmp")
             tmp.write_text(json.dumps(detection.to_json()), encoding="utf-8")
             tmp.replace(path)
         except OSError as exc:
