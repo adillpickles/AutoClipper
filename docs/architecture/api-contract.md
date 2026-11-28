@@ -155,7 +155,7 @@ stateDiagram-v2
 | `stage_fraction` | float \| null | Fraction of **the current stage** done, 0–1, only when actually measured (e.g. bytes downloaded of a known total, windows scored of the total). `null` when unknown. |
 | `message` | str | Short status for display, e.g. "Downloading chat replay" |
 
-There's no overall percentage: stage durations vary too much for one honest number. Show a stepper ("Step 4 of 6") and add a bar only when `stage_fraction` isn't `null`.
+There's no overall percentage: stage durations vary too much for one honest number. Show a stepper ("Step 4 of 6") and add a bar only when `stage_fraction` isn't `null`. A cached VOD can pass every stage between two polls, so the web app's stepper walks forward one stage at a time and keeps each on screen for at least 1 s (#188), also when `POST /jobs` returned an already finished job for a VOD the user just asked to analyze (§ 3.1); that pacing is display-only and never changes what the server reports.
 
 `progress` is `null` while `queued` and once `done`. While `running` it describes the current stage. When `failed` it keeps the last value (or `null` if the job never started), so the UI can say where it stopped.
 
@@ -442,6 +442,8 @@ To continue browsing, pass the last page's `next_cursor` as `before`. The cursor
 | `n_viewer_clips_total` | int \| null | Distinct viewer clips linked to this VOD with a VOD offset, as retrieved. `null` when clips couldn't be fetched. |
 | `warnings` | list<`AnalysisWarning`> | Same as the job's final `warnings` |
 | `candidates` | list<`Candidate`> | In `rank` order; 0 to 200 items |
+| `n_chat_messages` | int, optional | Chat messages read from the replay, for the progress screen's numbers (#188). Omitted when no chat replay arrived. |
+| `n_windows` | int, optional | 10 s windows scored ([labeling](../data/labeling.md)). Omitted when nothing was scored (no chat or audio, so viewer clips ranked alone). |
 
 `VodSummary`:
 
@@ -605,7 +607,9 @@ Candidates may overlap each other; the timeline has to cope with overlapping mar
         { "kind": "viewer_clips", "label": "Viewer clips", "detail": "1 viewer clip overlaps this moment" }
       ]
     }
-  ]
+  ],
+  "n_chat_messages": 2418,
+  "n_windows": 36
 }
 ```
 
@@ -662,7 +666,8 @@ Degraded result for `job_8d2e6f0a9b1c4d7e` (chat missing):
         { "kind": "viewer_clips", "label": "Viewer clips", "detail": "1 viewer clip overlaps this moment" }
       ]
     }
-  ]
+  ],
+  "n_windows": 30
 }
 ```
 
@@ -1429,7 +1434,7 @@ The server validates the folder before saving: the path must be absolute, the fo
 
 ## 10. Versioning
 
-- The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` (`"1.1"`, adding `title`, `reason`, and `signal_details` on `Candidate`; `"1.0"` files without those fields remain loadable; the optional `speech_features` and `title_source` fields were added later as minor changes and are omitted when unset, so files without them load unchanged) and `Health` (`"1.1"`, adding `captions_available`).
+- The path prefix `/api/v1` is the major version. `schema_version` (`"MAJOR.MINOR"`) appears in `AnalysisResult` (`"1.1"`, adding `title`, `reason`, and `signal_details` on `Candidate`; `"1.0"` files without those fields remain loadable; the optional `speech_features` and `title_source` fields, and the optional result counts `n_chat_messages` and `n_windows` (#188), were added later as minor changes and are omitted when unset, so files without them load unchanged) and `Health` (`"1.1"`, adding `captions_available`).
 - **Minor change** (same path, `1.x`): a new endpoint, a new response field, an optional request field with a default, or a new value in an **open** enum. Clients must already ignore unknown fields and handle unknown open-enum values with a default branch.
 - **Major change** (`/api/v2`): anything else, such as renaming or removing a field, changing a type, unit or meaning, adding a required request field, or adding a value to a **closed** enum.
 - **Open enums:** error `code`, warning `code`, `progress.stage`, `MediaUnavailableReason`, `PreviewMedia.kind`, `PreflightCheck.name`, `PreflightCheck.source`, `SignalDetail.kind`, `Candidate.title_source`, and layouts listed in `export.layouts`. **Closed enums:** job, export and highlights `state`, `source`, `preview.status`, `export.status`, `scorer.kind`, highlights `order`, and preflight `status`. A request's `layout` must be one the server lists.

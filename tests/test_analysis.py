@@ -224,3 +224,18 @@ def test_speech_features_are_omitted_when_none_and_roundtrip_when_set() -> None:
     assert (
         enriched.model_dump(mode="json")["candidates"][0]["speech_features"]["speech_frac"] == 0.72
     )
+
+
+def test_pipeline_counts_are_omitted_when_unknown_and_roundtrip_when_set() -> None:
+    plain = result(candidate(1, 1.0))
+    dumped = plain.model_dump(mode="json")
+    assert "n_chat_messages" not in dumped
+    assert "n_windows" not in dumped
+    assert plain.n_chat_messages is None
+    assert plain.n_windows is None
+
+    counted = result(candidate(1, 1.0), n_chat_messages=2418, n_windows=36)
+    assert AnalysisResult.model_validate_json(counted.model_dump_json()) == counted
+    assert counted.model_dump(mode="json")["n_windows"] == 36
+    with pytest.raises(ValidationError):
+        result(n_chat_messages=-1)
